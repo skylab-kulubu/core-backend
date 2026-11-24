@@ -831,6 +831,8 @@ func New(deps Deps) *fiber.App {
 	// (docs/ticket-cancellation.md).
 	app.Post("/v1/tickets/:id/cancel", tickets.CancelTicket)
 	app.Post("/v1/tickets/:id/restore", tickets.RestoreTicket)
+	// An operator's "Öne al" off the waiting list (docs/event-capacity.md).
+	app.Post("/v1/tickets/:id/promote", tickets.PromoteTicket)
 	app.Get("/v1/tickets", tickets.List)
 	// The forms service's account with ticket:forms reports each answer to its
 	// forms; an accepted answer to an Event's form writes its Ticket

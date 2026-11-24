@@ -75,6 +75,9 @@ const (
 	// Event, never a person nor the reason.
 	ActionTicketCancel  Action = "ticket.cancel"
 	ActionTicketRestore Action = "ticket.restore"
+	// ActionTicketPromote is an operator moving a waitlisted Ticket to
+	// active (docs/event-capacity.md), recorded as ActionTicketCancel.
+	ActionTicketPromote Action = "ticket.promote"
 	// The user.* actions are a person's account changed from the panel's
 	// person card (docs/user-accounts.md): the target is the person
 	// (TargetUserID), with no Group (GroupID and GroupPath empty). before
@@ -110,7 +113,7 @@ var Actions = []Action{
 	ActionTeamCreate, ActionTeamCode, ActionTeamProfile, ActionTeamMove, ActionTeamDelete,
 	ActionGroupRoles, ActionGroupAttributes, ActionAppAssign, ActionAppUnassign,
 	ActionTermExtend, ActionTermHandover, ActionTermExpired,
-	ActionTicketResend, ActionTicketLinkRenew, ActionTicketCancel, ActionTicketRestore,
+	ActionTicketResend, ActionTicketLinkRenew, ActionTicketCancel, ActionTicketRestore, ActionTicketPromote,
 	ActionUserEnable, ActionUserDisable, ActionUserPasswordSet, ActionUserPasswordMail,
 	ActionUserEmailChange, ActionUserEmailVerify, ActionUserEmailMail, ActionUserEmailPrimary,
 	ActionUserRequiredActions, ActionUserCredentialRemove, ActionUserIdentityUnlink,
@@ -444,7 +447,7 @@ func (r Record) normalize() (Record, string) {
 		}
 	case BasisEventEditor:
 		if _, err := uuid.Parse(r.Actor.ViaGroupID); err != nil ||
-			(r.Action != ActionTicketCancel && r.Action != ActionTicketRestore) {
+			(r.Action != ActionTicketCancel && r.Action != ActionTicketRestore && r.Action != ActionTicketPromote) {
 			return r, "invalid_basis"
 		}
 	default:

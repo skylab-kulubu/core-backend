@@ -14,6 +14,8 @@ no ticket mail went at all; it is off until `TICKET_CREATED_NOTIFICATION=on`.
 | Apply-for-other from the panel | the person added, by subject |
 | Guest apply (the panel's "Katılımcı ekle", Forms, the public route) | the guest, by address |
 | Guest apply that finds the Ticket already there, a Ticket updated | nobody: no new Ticket |
+| A Ticket written on a full Event's waiting list | not this mail: "Bekleme listesindesin" while `TICKET_STATUS_MAIL` is on ([event-capacity.md](event-capacity.md)) |
+| A Ticket promoted off the waiting list | "Yer açıldı" (`event.waitlist-promoted`) while `TICKET_STATUS_MAIL` is on; else this mail, under the next resend number |
 
 Only a Ticket of a **published** Event that is **not over** is told of, when
 the worker sends it: a draft's Tickets (speakers, the team and guests,

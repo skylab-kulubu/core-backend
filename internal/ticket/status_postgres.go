@@ -7,24 +7,26 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/skylab-kulubu/core-backend/internal/event"
 )
 
 // Cancel cancels the Ticket (docs/ticket-cancellation.md) in one
-// transaction that holds it: a Ticket with a check-in is ErrTicketCheckedIn,
-// one in a Competition's current Entrant ErrTicketInCompetition. A Ticket
-// already cancelled is answered as it is, changed false. Its "Biletin
-// hazır" mail still waiting is dropped with it.
+// transaction that holds its Event and then it: a Ticket with a check-in is
+// ErrTicketCheckedIn, one in a Competition's current Entrant
+// ErrTicketInCompetition. A Ticket already cancelled is answered as it is,
+// changed false. Its mail still waiting is dropped with it. An active
+// Ticket's place goes to the Event's waiting list in the same transaction
+// (docs/event-capacity.md).
 func (s *PostgresStore) Cancel(ctx context.Context, id uuid.UUID, by CancelledBy, reason string) (Ticket, bool, error) {
 	var (
 		got     Ticket
 		changed bool
 	)
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		var status Status
-		err := tx.QueryRow(ctx, `SELECT status FROM tickets WHERE id = $1 FOR UPDATE`, id).Scan(&status)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
+		if _, err := lockEvent(ctx, tx, id); err != nil {
+			return err
 		}
+		status, err := lockStatus(ctx, tx, id)
 		if err != nil {
 			return err
 		}
@@ -55,6 +57,12 @@ func (s *PostgresStore) Cancel(ctx context.Context, id uuid.UUID, by CancelledBy
 			changed = true
 		}
 		got, err = scanTicket(tx.QueryRow(ctx, `SELECT `+ticketCols+` FROM tickets WHERE id = $1`, id))
+		if err != nil {
+			return err
+		}
+		if status == StatusActive {
+			_, err = event.PromoteWaitlist(ctx, tx, got.EventID, s.promotionMail())
+		}
 		return err
 	})
 	if err != nil {
@@ -65,54 +73,13 @@ func (s *PostgresStore) Cancel(ctx context.Context, id uuid.UUID, by CancelledBy
 }
 
 // Reopen makes a cancelled Ticket active again, for an operator taking the
-// cancellation back or its holder registering again: a new access key and
-// the next QR version (the old link answers 404, the old QR 410), and,
-// while the Notifications are on, its "Biletin hazır" mail queued under the
-// next resend number, so the mail goes again with the new link. A Ticket
-// that is not cancelled is answered as it is, changed false.
+// cancellation back: past the capacity if it must (Ticket.OverCapacity), a
+// new access key and the next QR version (the old link answers 404, the old
+// QR 410), and, while the Notifications are on, its "Biletin hazır" mail
+// queued under the next resend number, so the mail goes again with the new
+// link. A Ticket that is not cancelled is answered as it is, changed false.
 func (s *PostgresStore) Reopen(ctx context.Context, id uuid.UUID) (Ticket, bool, error) {
-	var (
-		got     Ticket
-		changed bool
-	)
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		var status Status
-		err := tx.QueryRow(ctx, `SELECT status FROM tickets WHERE id = $1 FOR UPDATE`, id).Scan(&status)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
-		}
-		if err != nil {
-			return err
-		}
-		if status == StatusCancelled {
-			key, err := s.newAccessKey()
-			if err != nil {
-				return err
-			}
-			// An erased holder's Ticket keeps no key (erasure nulls it).
-			if _, err := tx.Exec(ctx, `
-				UPDATE tickets SET status = 'active', status_changed_at = now(), waitlisted_at = NULL,
-					cancelled_at = NULL, cancelled_by = NULL, cancel_reason = NULL,
-					access_key = CASE WHEN access_key IS NULL THEN NULL ELSE $2 END,
-					qr_version = qr_version + 1, updated_at = now()
-				WHERE id = $1`, id, key); err != nil {
-				return err
-			}
-			if s.notifyCreated.Load() {
-				if err := queueReopened(ctx, tx, id); err != nil {
-					return err
-				}
-			}
-			changed = true
-		}
-		got, err = scanTicket(tx.QueryRow(ctx, `SELECT `+ticketCols+` FROM tickets WHERE id = $1`, id))
-		return err
-	})
-	if err != nil {
-		return Ticket{}, false, err
-	}
-	got.CheckIns = []CheckIn{}
-	return got, changed, nil
+	return s.ReopenAdmitted(ctx, id, Admission{Over: true})
 }
 
 // queueReopened queues a reopened Ticket's mail under the next resend

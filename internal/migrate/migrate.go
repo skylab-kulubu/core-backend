@@ -1804,6 +1804,35 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
 			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%event_editor%'
 		)`,
+	// An Event's capacity and waiting list (docs/event-capacity.md): the
+	// waiting list's switch, the queued mail's kind and its check, the
+	// waiting list's index, the audit action ticket.promote with the basis
+	// event_editor.
+	20261124110000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'waitlist_enabled'
+		)
+		AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'ticket_notifications' AND column_name = 'kind'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.ticket_notifications') AND conname = 'ticket_notifications_kind_check' AND convalidated
+		)
+		AND to_regclass('public.tickets_waitlist_idx') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.promote%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.promote%'
+		)`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

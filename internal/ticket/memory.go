@@ -2,6 +2,7 @@ package ticket
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sort"
 	"strings"
@@ -9,18 +10,42 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/event"
 )
 
 type MemoryStore struct {
 	mu       sync.Mutex
 	byID     map[uuid.UUID]Ticket
 	checkIns map[uuid.UUID]CheckIn
+	// events reads an Event's capacity (UseEvents); nil bounds none.
+	events EventGetter
+	// seq orders the Tickets as written: the waiting list's order where
+	// two share a time.
+	seq map[uuid.UUID]int
+	n   int
+}
+
+// EventGetter reads an Event (event.Store).
+type EventGetter interface {
+	Get(ctx context.Context, id uuid.UUID) (event.Event, error)
+}
+
+// UseEvents makes the store read its Events' capacity and waiting list from
+// events, as the database reads its events table. NewService does it for a
+// MemoryStore it is given with an event store.
+func (s *MemoryStore) UseEvents(events EventGetter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.events == nil {
+		s.events = events
+	}
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		byID:     make(map[uuid.UUID]Ticket),
 		checkIns: make(map[uuid.UUID]CheckIn),
+		seq:      make(map[uuid.UUID]int),
 	}
 }
 
@@ -38,6 +63,10 @@ func (s *MemoryStore) withCheckInsLocked(t Ticket) Ticket {
 func (s *MemoryStore) Create(_ context.Context, t Ticket) (Ticket, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.createLocked(t)
+}
+
+func (s *MemoryStore) createLocked(t Ticket) (Ticket, error) {
 	if t.ID == uuid.Nil {
 		t.ID = uuid.New()
 	}
@@ -65,6 +94,11 @@ func (s *MemoryStore) Create(_ context.Context, t Ticket) (Ticket, error) {
 			break
 		}
 	}
+	s.n++
+	if s.seq == nil {
+		s.seq = make(map[uuid.UUID]int)
+	}
+	s.seq[t.ID] = s.n
 	s.byID[t.ID] = t
 	return t, nil
 }
@@ -134,7 +168,7 @@ func (s *MemoryStore) ListByEventStatus(_ context.Context, eventID uuid.UUID, st
 
 // Cancel is the database's, without the Competitions (the memory store
 // keeps none).
-func (s *MemoryStore) Cancel(_ context.Context, id uuid.UUID, by CancelledBy, reason string) (Ticket, bool, error) {
+func (s *MemoryStore) Cancel(ctx context.Context, id uuid.UUID, by CancelledBy, reason string) (Ticket, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.byID[id]
@@ -149,39 +183,24 @@ func (s *MemoryStore) Cancel(_ context.Context, id uuid.UUID, by CancelledBy, re
 			return Ticket{}, false, ErrTicketCheckedIn
 		}
 	}
+	was := t.StatusOf()
 	now := time.Now().UTC()
 	t.Status, t.StatusChangedAt, t.WaitlistedAt = StatusCancelled, &now, nil
 	t.CancelledAt, t.CancelledBy, t.CancelReason = &now, by, strings.TrimSpace(reason)
 	t.UpdatedAt = now
 	s.byID[id] = t
+	if was == StatusActive {
+		if err := s.promoteLocked(ctx, t.EventID); err != nil {
+			return Ticket{}, false, err
+		}
+	}
 	return s.withCheckInsLocked(t), true, nil
 }
 
-// Reopen is the database's: a new key and the next QR version.
-func (s *MemoryStore) Reopen(_ context.Context, id uuid.UUID) (Ticket, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	t, ok := s.byID[id]
-	if !ok {
-		return Ticket{}, false, ErrNotFound
-	}
-	if t.StatusOf() != StatusCancelled {
-		return s.withCheckInsLocked(t), false, nil
-	}
-	key, err := NewAccessKey()
-	if err != nil {
-		return Ticket{}, false, err
-	}
-	now := time.Now().UTC()
-	t.Status, t.StatusChangedAt, t.WaitlistedAt = StatusActive, &now, nil
-	t.CancelledAt, t.CancelledBy, t.CancelReason = nil, "", ""
-	if t.AccessKey != "" {
-		t.AccessKey = key
-	}
-	t.QRVersion++
-	t.UpdatedAt = now
-	s.byID[id] = t
-	return s.withCheckInsLocked(t), true, nil
+// Reopen is the database's: a new key and the next QR version, past the
+// capacity if it must.
+func (s *MemoryStore) Reopen(ctx context.Context, id uuid.UUID) (Ticket, bool, error) {
+	return s.ReopenAdmitted(ctx, id, Admission{Over: true})
 }
 
 func (s *MemoryStore) ExistsOwnerEvent(_ context.Context, ownerID, eventID uuid.UUID) (bool, error) {
@@ -325,3 +344,187 @@ func (s *MemoryStore) HasCheckIn(_ context.Context, ticketID, sessionID uuid.UUI
 	}
 	return false, nil
 }
+
+// capacityLocked is the Event's capacity as the database reads it: unbounded
+// without an event store.
+func (s *MemoryStore) capacityLocked(ctx context.Context, eventID uuid.UUID) (event.Capacity, error) {
+	if s.events == nil {
+		return event.Capacity{Waitlist: true}, nil
+	}
+	ev, err := s.events.Get(ctx, eventID)
+	if errors.Is(err, event.ErrNotFound) {
+		return event.Capacity{}, ErrNotFound
+	}
+	if err != nil {
+		return event.Capacity{}, err
+	}
+	active := 0
+	for _, t := range s.byID {
+		if t.EventID == eventID && t.Active() {
+			active++
+		}
+	}
+	return event.CapacityOf(ev, active, time.Now()), nil
+}
+
+// CreateAdmitted is the database's, under the store's lock.
+func (s *MemoryStore) CreateAdmitted(ctx context.Context, t Ticket, a Admission) (Ticket, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, err := s.capacityLocked(ctx, t.EventID)
+	if err != nil {
+		return Ticket{}, err
+	}
+	status, over, err := admit(c, a)
+	if err != nil {
+		return Ticket{}, err
+	}
+	for _, other := range s.byID {
+		if other.EventID == t.EventID && sameHolder(other, t) {
+			return Ticket{}, ErrConflict
+		}
+	}
+	t.Status = status
+	if status == StatusWaitlisted {
+		now := time.Now().UTC()
+		t.StatusChangedAt, t.WaitlistedAt = &now, &now
+	}
+	created, err := s.createLocked(t)
+	if err != nil {
+		return Ticket{}, err
+	}
+	created.OverCapacity = over
+	return created, nil
+}
+
+func sameHolder(a, b Ticket) bool {
+	if a.OwnerID != nil && b.OwnerID != nil {
+		return *a.OwnerID == *b.OwnerID
+	}
+	return a.TicketType == Guest && b.TicketType == Guest &&
+		strings.EqualFold(strings.TrimSpace(a.GuestEmail), strings.TrimSpace(b.GuestEmail))
+}
+
+// ReopenAdmitted is the database's: a new key and the next QR version,
+// active or waitlisted as a lets.
+func (s *MemoryStore) ReopenAdmitted(ctx context.Context, id uuid.UUID, a Admission) (Ticket, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.byID[id]
+	if !ok {
+		return Ticket{}, false, ErrNotFound
+	}
+	if t.StatusOf() != StatusCancelled {
+		return s.withCheckInsLocked(t), false, nil
+	}
+	c, err := s.capacityLocked(ctx, t.EventID)
+	if err != nil {
+		return Ticket{}, false, err
+	}
+	status, over, err := admit(c, a)
+	if err != nil {
+		return Ticket{}, false, err
+	}
+	key, err := NewAccessKey()
+	if err != nil {
+		return Ticket{}, false, err
+	}
+	now := time.Now().UTC()
+	t.Status, t.StatusChangedAt, t.WaitlistedAt = status, &now, nil
+	if status == StatusWaitlisted {
+		t.WaitlistedAt = &now
+	}
+	t.CancelledAt, t.CancelledBy, t.CancelReason = nil, "", ""
+	if t.AccessKey != "" {
+		t.AccessKey = key
+	}
+	t.QRVersion++
+	t.UpdatedAt = now
+	s.byID[id] = t
+	got := s.withCheckInsLocked(t)
+	got.OverCapacity = over
+	return got, true, nil
+}
+
+// Promote is the database's.
+func (s *MemoryStore) Promote(ctx context.Context, id uuid.UUID) (Ticket, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.byID[id]
+	if !ok {
+		return Ticket{}, false, ErrNotFound
+	}
+	if t.StatusOf() != StatusWaitlisted {
+		return s.withCheckInsLocked(t), false, nil
+	}
+	c, err := s.capacityLocked(ctx, t.EventID)
+	if err != nil {
+		return Ticket{}, false, err
+	}
+	now := time.Now().UTC()
+	t.Status, t.StatusChangedAt, t.WaitlistedAt, t.UpdatedAt = StatusActive, &now, nil, now
+	s.byID[id] = t
+	got := s.withCheckInsLocked(t)
+	got.OverCapacity = overCapacity(c)
+	return got, true, nil
+}
+
+// Capacity is the database's.
+func (s *MemoryStore) Capacity(ctx context.Context, eventID uuid.UUID) (event.Capacity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.capacityLocked(ctx, eventID)
+}
+
+// PromoteWaitlist promotes the Event's waiting list as far as its capacity
+// lets, as event.PromoteWaitlist does in the database: for the in-memory
+// Event store's writes that free a place (tests).
+func (s *MemoryStore) PromoteWaitlist(ctx context.Context, eventID uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.promoteLocked(ctx, eventID)
+}
+
+// promoteLocked moves the longest waiting first while the capacity takes
+// them and the Event is promotable.
+func (s *MemoryStore) promoteLocked(ctx context.Context, eventID uuid.UUID) error {
+	if s.events == nil {
+		return nil
+	}
+	c, err := s.capacityLocked(ctx, eventID)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil || !c.Promotable {
+		return err
+	}
+	var waiting []Ticket
+	for _, t := range s.byID {
+		// An erased holder's row (no owner, no address) is nobody.
+		if t.EventID == eventID && t.StatusOf() == StatusWaitlisted && (t.OwnerID != nil || t.GuestEmail != "") {
+			waiting = append(waiting, t)
+		}
+	}
+	sort.Slice(waiting, func(i, j int) bool {
+		a, b := waiting[i], waiting[j]
+		if a.WaitlistedAt != nil && b.WaitlistedAt != nil && !a.WaitlistedAt.Equal(*b.WaitlistedAt) {
+			return a.WaitlistedAt.Before(*b.WaitlistedAt)
+		}
+		return s.seq[a.ID] < s.seq[b.ID]
+	})
+	free := c.Free()
+	now := time.Now().UTC()
+	for _, t := range waiting {
+		if free == 0 {
+			break
+		}
+		t.Status, t.StatusChangedAt, t.WaitlistedAt, t.UpdatedAt = StatusActive, &now, nil, now
+		s.byID[t.ID] = t
+		if free > 0 {
+			free--
+		}
+	}
+	return nil
+}
+
+var _ CapacityStore = (*MemoryStore)(nil)

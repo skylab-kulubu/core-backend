@@ -21,11 +21,21 @@ import (
 
 type Service interface {
 	Apply(ctx context.Context, p authz.Principal, eventID uuid.UUID) (Ticket, error)
+	// ApplyJoining is Member apply that, with joinWaitlist, puts the member
+	// on a full Event's waiting list (docs/event-capacity.md); without it a
+	// full Event is ErrEventFull. Apply is ApplyJoining without it.
+	ApplyJoining(ctx context.Context, p authz.Principal, eventID uuid.UUID, joinWaitlist bool) (Ticket, error)
 	ApplyForOther(ctx context.Context, p authz.Principal, eventID, userID uuid.UUID) (Ticket, error)
 	ListAssignableUsers(ctx context.Context, p authz.Principal, eventID uuid.UUID, query string) ([]PersonSummary, error)
 	ListDoorEvents(ctx context.Context, p authz.Principal) ([]event.Resource, error)
 	SearchDoorAttendees(ctx context.Context, p authz.Principal, eventID uuid.UUID, query string) ([]DoorAttendee, error)
 	ApplyGuest(ctx context.Context, p authz.Principal, eventID uuid.UUID, g GuestInfo) (GuestApplication, error)
+	// ApplyGuestJoining is Guest apply with the waiting list asked for, as
+	// ApplyJoining; an operator of the Event adds past the capacity.
+	ApplyGuestJoining(ctx context.Context, p authz.Principal, eventID uuid.UUID, g GuestInfo, joinWaitlist bool) (GuestApplication, error)
+	// PromoteTicket is an operator's "Öne al": a waitlisted Ticket made
+	// active, past the capacity if it must (docs/event-capacity.md).
+	PromoteTicket(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error)
 	RecordFormResponse(ctx context.Context, p authz.Principal, r FormResponse) (FormResponseResult, error)
 	CanRecordFormResponse(p authz.Principal) bool
 	Mine(ctx context.Context, p authz.Principal) ([]Ticket, error)
@@ -169,6 +179,10 @@ func NewService(tickets Store, events event.Store, az authz.Authorizer, extras .
 		if v, ok := extra.(teamaudit.Writer); ok && v != nil {
 			s.audit = v
 		}
+	}
+	// The in-memory store reads its Events' capacity as the database does.
+	if m, ok := tickets.(*MemoryStore); ok && events != nil {
+		m.UseEvents(events)
 	}
 	if s.door == nil {
 		s.door = doorqr.NewEphemeralGate()
@@ -551,6 +565,10 @@ func (s *service) readable(ctx context.Context, p authz.Principal, t Ticket) err
 }
 
 func (s *service) Apply(ctx context.Context, p authz.Principal, eventID uuid.UUID) (Ticket, error) {
+	return s.ApplyJoining(ctx, p, eventID, false)
+}
+
+func (s *service) ApplyJoining(ctx context.Context, p authz.Principal, eventID uuid.UUID, joinWaitlist bool) (Ticket, error) {
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket}, authz.Create) {
 		return Ticket{}, ErrForbidden
 	}
@@ -568,7 +586,7 @@ func (s *service) Apply(ctx context.Context, p authz.Principal, eventID uuid.UUI
 	if err != nil {
 		return Ticket{}, ErrInvalid
 	}
-	return s.applyRegistered(ctx, eventID, ownerID)
+	return s.applyRegistered(ctx, eventID, ownerID, Admission{Waitlist: joinWaitlist})
 }
 
 func (s *service) ApplyForOther(ctx context.Context, p authz.Principal, eventID, userID uuid.UUID) (Ticket, error) {
@@ -596,7 +614,9 @@ func (s *service) ApplyForOther(ctx context.Context, p authz.Principal, eventID,
 	if err := s.resolveApplyTarget(ctx, userID); err != nil {
 		return Ticket{}, err
 	}
-	return s.applyRegistered(ctx, eventID, userID)
+	// An operator adds past the capacity (Yusuf, 2026-11-24): the answer's
+	// overCapacity tells the panel to warn.
+	return s.applyRegistered(ctx, eventID, userID, Admission{Over: true})
 }
 
 func (s *service) resolveApplyTarget(ctx context.Context, userID uuid.UUID) error {
@@ -637,14 +657,28 @@ func (s *service) resolveApplyTarget(ctx context.Context, userID uuid.UUID) erro
 	return err
 }
 
-// applyRegistered writes the member's Ticket on the Event. One already
-// there is ErrConflict, unless it is cancelled: the member registering
-// again reopens it (new link and QR, its mail again; reopenIfCancelled).
-func (s *service) applyRegistered(ctx context.Context, eventID, ownerID uuid.UUID) (Ticket, error) {
+// applyRegistered writes the member's Ticket on the Event under its
+// capacity (a). One already there is ErrConflict, unless it is cancelled:
+// the member registering again reopens it (new link and QR, its mail again;
+// reopenIfCancelled). A waitlisted one is ErrTicketWaitlisted (409
+// ticket_waitlisted: an older sky-app must not read it as "already
+// registered"), unless an operator adds the person (a.Over): then it is
+// promoted, past the capacity if it must.
+func (s *service) applyRegistered(ctx context.Context, eventID, ownerID uuid.UUID, a Admission) (Ticket, error) {
 	existing, err := s.tickets.GetByOwnerEvent(ctx, ownerID, eventID)
 	switch {
 	case err == nil:
-		reopened, changed, err := s.reopenIfCancelled(ctx, existing)
+		if existing.StatusOf() == StatusWaitlisted {
+			if !a.Over {
+				return Ticket{}, ErrTicketWaitlisted
+			}
+			promoted, err := s.promoteWaiting(ctx, existing)
+			if err != nil {
+				return Ticket{}, err
+			}
+			return s.withEvent(ctx, promoted), nil
+		}
+		reopened, changed, err := s.reopenIfCancelled(ctx, existing, a)
 		if err != nil {
 			return Ticket{}, err
 		}
@@ -655,15 +689,36 @@ func (s *service) applyRegistered(ctx context.Context, eventID, ownerID uuid.UUI
 	case !errors.Is(err, ErrNotFound):
 		return Ticket{}, err
 	}
-	created, err := s.tickets.Create(ctx, Ticket{
+	created, err := s.create(ctx, Ticket{
 		EventID:    eventID,
 		TicketType: Registered,
 		OwnerID:    &ownerID,
-	})
+	}, a)
 	if err != nil {
 		return Ticket{}, err
 	}
 	return s.withEvent(ctx, created), nil
+}
+
+// promoteWaiting moves a waitlisted Ticket to active for an operator
+// adding its holder from the panel ("Katılımcı ekle" on who waits): as
+// "Öne al", past the capacity if it must, its mail queued.
+func (s *service) promoteWaiting(ctx context.Context, t Ticket) (Ticket, error) {
+	store, err := s.capacityStore()
+	if err != nil {
+		return Ticket{}, err
+	}
+	promoted, _, err := store.Promote(ctx, t.ID)
+	return promoted, err
+}
+
+// create writes t under its Event's capacity (a) on a CapacityStore, as
+// Create on any other.
+func (s *service) create(ctx context.Context, t Ticket, a Admission) (Ticket, error) {
+	if store, ok := s.tickets.(CapacityStore); ok {
+		return store.CreateAdmitted(ctx, t, a)
+	}
+	return s.tickets.Create(ctx, t)
 }
 
 func normalizeGuest(g GuestInfo) GuestInfo {
@@ -684,6 +739,15 @@ func normalizeGuest(g GuestInfo) GuestInfo {
 // guest's e-mail and a public Event id must not read the guest's phone number
 // or rename them.
 func (s *service) ApplyGuest(ctx context.Context, p authz.Principal, eventID uuid.UUID, g GuestInfo) (GuestApplication, error) {
+	return s.ApplyGuestJoining(ctx, p, eventID, g, false)
+}
+
+// ApplyGuestJoining is ApplyGuest under the Event's capacity: an operator of
+// the Event adds past it, anybody else joins the waiting list of a full
+// Event only with joinWaitlist (else ErrEventFull). The untrusted answer
+// (Waitlisted) is told from the Event, not from a Ticket already there, so
+// it says no more than before about whether the e-mail had applied.
+func (s *service) ApplyGuestJoining(ctx context.Context, p authz.Principal, eventID uuid.UUID, g GuestInfo, joinWaitlist bool) (GuestApplication, error) {
 	g = normalizeGuest(g)
 	if g.FirstName == "" || g.LastName == "" || g.Email == "" {
 		return GuestApplication{}, ErrInvalid
@@ -712,17 +776,43 @@ func (s *service) ApplyGuest(ctx context.Context, p authz.Principal, eventID uui
 		return GuestApplication{}, err
 	}
 	trusted := s.guestApplyTrusted(p, ev)
-	applied, err := s.writeGuest(ctx, eventID, g, trusted)
+	a := Admission{Waitlist: joinWaitlist}
+	if operator {
+		a = Admission{Over: true}
+	}
+	applied, err := s.writeGuest(ctx, eventID, g, trusted, a)
 	if err != nil {
 		return GuestApplication{}, err
 	}
 	applied.Trusted = trusted
 	if trusted {
 		applied.Ticket = s.withEvent(ctx, applied.Ticket)
-	} else {
-		applied.Ticket = Ticket{}
+		applied.Waitlisted = applied.Ticket.StatusOf() == StatusWaitlisted
+		return applied, nil
 	}
+	if applied.Result == GuestCreated {
+		applied.Waitlisted = applied.Ticket.StatusOf() == StatusWaitlisted
+	} else if applied.Waitlisted, err = s.untrustedWaitlisted(ctx, eventID, a); err != nil {
+		return GuestApplication{}, err
+	}
+	applied.Ticket = Ticket{}
 	return applied, nil
+}
+
+// untrustedWaitlisted is the answer to an untrusted Guest apply that found
+// the Ticket already there: as a new guest's would be on the Event now,
+// waitlisted or refused when it is full, whatever the Ticket's status.
+func (s *service) untrustedWaitlisted(ctx context.Context, eventID uuid.UUID, a Admission) (bool, error) {
+	store, ok := s.tickets.(CapacityStore)
+	if !ok {
+		return false, nil
+	}
+	c, err := store.Capacity(ctx, eventID)
+	if err != nil {
+		return false, err
+	}
+	status, _, err := admit(c, a)
+	return status == StatusWaitlisted, err
 }
 
 // operatorOf reports whether p is a person who runs ev from the panel: who
@@ -750,17 +840,17 @@ func (s *service) guestApplyTrusted(p authz.Principal, ev event.Event) bool {
 		s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign)
 }
 
-func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo, trusted bool) (GuestApplication, error) {
+func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo, trusted bool, a Admission) (GuestApplication, error) {
 	existing, err := s.tickets.GetByGuestEvent(ctx, g.Email, eventID)
 	if errors.Is(err, ErrNotFound) {
-		created, createErr := s.tickets.Create(ctx, Ticket{
+		created, createErr := s.create(ctx, Ticket{
 			EventID:          eventID,
 			TicketType:       Guest,
 			GuestFirstName:   g.FirstName,
 			GuestLastName:    g.LastName,
 			GuestEmail:       g.Email,
 			GuestPhoneNumber: g.PhoneNumber,
-		})
+		}, a)
 		if createErr == nil {
 			return GuestApplication{Ticket: created, Result: GuestCreated}, nil
 		}
@@ -774,9 +864,16 @@ func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo
 	if err != nil {
 		return GuestApplication{}, err
 	}
+	// A waitlisted guest added from the panel is promoted, as a member is
+	// (applyRegistered).
+	if a.Over && existing.StatusOf() == StatusWaitlisted {
+		if existing, err = s.promoteWaiting(ctx, existing); err != nil {
+			return GuestApplication{}, err
+		}
+	}
 	// A cancelled guest Ticket registered again is reopened: written anew,
 	// as far as the caller and the forms report are concerned.
-	existing, reopened, err := s.reopenIfCancelled(ctx, existing)
+	existing, reopened, err := s.reopenIfCancelled(ctx, existing, a)
 	if err != nil {
 		return GuestApplication{}, err
 	}
