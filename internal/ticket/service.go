@@ -29,7 +29,17 @@ type Service interface {
 	RecordFormResponse(ctx context.Context, p authz.Principal, r FormResponse) (FormResponseResult, error)
 	CanRecordFormResponse(p authz.Principal) bool
 	Mine(ctx context.Context, p authz.Principal) ([]Ticket, error)
+	// MineIncluding is the holder's active Tickets and those of the other
+	// statuses include names (GET /v1/tickets/me?include=…).
+	MineIncluding(ctx context.Context, p authz.Principal, include []Status) ([]Ticket, error)
 	ListByEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]Ticket, error)
+	// ListByEventStatus is the panel's list of the Event's Tickets of the
+	// statuses given, every status for none (GET /v1/events/{id}/tickets).
+	ListByEventStatus(ctx context.Context, p authz.Principal, eventID uuid.UUID, statuses []Status) ([]Ticket, error)
+	// CancelTicket and RestoreTicket are an operator's cancellation of a
+	// Ticket and its taking back (docs/ticket-cancellation.md).
+	CancelTicket(ctx context.Context, p authz.Principal, id uuid.UUID, reason string) (Ticket, error)
+	RestoreTicket(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error)
 	Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error)
 	GetByUserEvent(ctx context.Context, p authz.Principal, userID, eventID uuid.UUID) (Ticket, error)
 	ListQuery(ctx context.Context, p authz.Principal, email string, userID *uuid.UUID) ([]Ticket, error)
@@ -369,6 +379,11 @@ func (s *service) SearchDoorAttendees(
 	if row, found, err := s.doorTicketByCode(ctx, eventID, query); err != nil {
 		return nil, err
 	} else if found {
+		// A Ticket that is not active is no attendee: the code finds
+		// nobody else either.
+		if !row.Ticket.Active() {
+			return []DoorAttendee{}, nil
+		}
 		attendee := DoorAttendee{Name: row.Name, Email: row.Email}
 		if row.Ticket.OwnerID != nil {
 			personID := *row.Ticket.OwnerID
@@ -450,6 +465,9 @@ func (s *service) searchStoredDoorAttendees(
 	}
 	out := make([]DoorAttendee, 0, len(rows))
 	for _, candidate := range rows {
+		if !candidate.Ticket.Active() {
+			continue
+		}
 		row := DoorAttendee{Name: candidate.Name, Email: candidate.Email}
 		if candidate.Ticket.OwnerID != nil {
 			personID := *candidate.Ticket.OwnerID
@@ -475,7 +493,7 @@ func (s *service) searchStoredDoorAttendees(
 		return nil, err
 	}
 	for _, candidate := range tickets {
-		if candidate.Ticket.OwnerID == nil {
+		if candidate.Ticket.OwnerID == nil || !candidate.Ticket.Active() {
 			continue
 		}
 		summary, found := directoryMatches[*candidate.Ticket.OwnerID]
@@ -619,13 +637,23 @@ func (s *service) resolveApplyTarget(ctx context.Context, userID uuid.UUID) erro
 	return err
 }
 
+// applyRegistered writes the member's Ticket on the Event. One already
+// there is ErrConflict, unless it is cancelled: the member registering
+// again reopens it (new link and QR, its mail again; reopenIfCancelled).
 func (s *service) applyRegistered(ctx context.Context, eventID, ownerID uuid.UUID) (Ticket, error) {
-	exists, err := s.tickets.ExistsOwnerEvent(ctx, ownerID, eventID)
-	if err != nil {
+	existing, err := s.tickets.GetByOwnerEvent(ctx, ownerID, eventID)
+	switch {
+	case err == nil:
+		reopened, changed, err := s.reopenIfCancelled(ctx, existing)
+		if err != nil {
+			return Ticket{}, err
+		}
+		if !changed {
+			return Ticket{}, ErrConflict
+		}
+		return s.withEvent(ctx, reopened), nil
+	case !errors.Is(err, ErrNotFound):
 		return Ticket{}, err
-	}
-	if exists {
-		return Ticket{}, ErrConflict
 	}
 	created, err := s.tickets.Create(ctx, Ticket{
 		EventID:    eventID,
@@ -746,6 +774,12 @@ func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo
 	if err != nil {
 		return GuestApplication{}, err
 	}
+	// A cancelled guest Ticket registered again is reopened: written anew,
+	// as far as the caller and the forms report are concerned.
+	existing, reopened, err := s.reopenIfCancelled(ctx, existing)
+	if err != nil {
+		return GuestApplication{}, err
+	}
 	if trusted {
 		existing.GuestFirstName = g.FirstName
 		existing.GuestLastName = g.LastName
@@ -756,6 +790,9 @@ func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo
 		updated, err := s.tickets.Update(ctx, existing)
 		if err != nil {
 			return GuestApplication{}, err
+		}
+		if reopened {
+			return GuestApplication{Ticket: updated, Result: GuestCreated}, nil
 		}
 		return GuestApplication{Ticket: updated, Result: GuestExisting}, nil
 	}
@@ -779,6 +816,9 @@ func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo
 			result = GuestKept
 		}
 	}
+	if reopened {
+		result = GuestCreated
+	}
 	if !filled {
 		return GuestApplication{Ticket: existing, Result: result}, nil
 	}
@@ -789,7 +829,13 @@ func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo
 	return GuestApplication{Ticket: updated, Result: result}, nil
 }
 
+// Mine is the holder's active Tickets: an older client (sky-app) that knows
+// no status sees no cancelled Ticket.
 func (s *service) Mine(ctx context.Context, p authz.Principal) ([]Ticket, error) {
+	return s.MineIncluding(ctx, p, nil)
+}
+
+func (s *service) MineIncluding(ctx context.Context, p authz.Principal, include []Status) ([]Ticket, error) {
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket}, authz.ReadMe) {
 		return nil, ErrForbidden
 	}
@@ -801,6 +847,7 @@ func (s *service) Mine(ctx context.Context, p authz.Principal) ([]Ticket, error)
 	if err != nil {
 		return nil, err
 	}
+	tickets = onlyStatuses(tickets, append([]Status{StatusActive}, include...))
 	return s.withHolderLinks(ctx, s.withFeedbackLinks(ctx, s.withEvents(ctx, tickets))), nil
 }
 
@@ -826,8 +873,10 @@ func (s *service) withHolderLinks(ctx context.Context, tickets []Ticket) []Ticke
 		if ev == nil || ev.Status == event.StatusDraft || s.page.Closed(*ev, now) {
 			continue
 		}
+		// The page tells a cancelled or waitlisted Ticket so; only an
+		// active one has a QR.
 		t.TicketURL = s.page.Link(t.AccessKey)
-		if ev.Status == event.StatusPublished && s.qr != nil {
+		if ev.Status == event.StatusPublished && s.qr != nil && t.Active() {
 			if token, err := s.TicketQR(*t, *ev); err == nil {
 				t.QRToken = token
 			}
@@ -879,6 +928,34 @@ func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uu
 	return s.withEvents(ctx, tickets), nil
 }
 
+func (s *service) ListByEventStatus(ctx context.Context, p authz.Principal, eventID uuid.UUID, statuses []Status) ([]Ticket, error) {
+	if len(statuses) == 1 && statuses[0] == StatusActive {
+		return s.ListByEvent(ctx, p, eventID)
+	}
+	store, err := s.statusStore()
+	if err != nil {
+		return nil, err
+	}
+	ev, err := s.events.Get(ctx, eventID)
+	if err != nil {
+		if errors.Is(err, event.ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if err := s.seen(&p, ev); err != nil {
+		return nil, err
+	}
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Read) {
+		return nil, ErrForbidden
+	}
+	tickets, err := store.ListByEventStatus(ctx, eventID, statuses)
+	if err != nil {
+		return nil, err
+	}
+	return s.withEvents(ctx, tickets), nil
+}
+
 func (s *service) Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error) {
 	t, err := s.tickets.Get(ctx, id)
 	if err != nil {
@@ -897,6 +974,13 @@ func (s *service) GetByUserEvent(ctx context.Context, p authz.Principal, userID,
 	}
 	if err := s.readable(ctx, p, t); err != nil {
 		return Ticket{}, err
+	}
+	// "Is this person registered?": only an active Ticket says yes. sky-app
+	// shows "Kayıtlısın" on a 200 and hides the join button, so a cancelled
+	// (or waitlisted) Ticket answers 404 and the person may register again
+	// (docs/ticket-cancellation.md).
+	if !t.Active() {
+		return Ticket{}, ErrNotFound
 	}
 	return s.withEvent(ctx, t), nil
 }
@@ -955,6 +1039,10 @@ func (s *service) ListQuery(ctx context.Context, p authz.Principal, email string
 	seen := map[uuid.UUID]struct{}{}
 	uniq := make([]Ticket, 0, len(tickets))
 	for _, t := range tickets {
+		// "Who has a Ticket" means an active one.
+		if !t.Active() {
+			continue
+		}
 		if _, ok := seen[t.ID]; ok {
 			continue
 		}
@@ -1061,6 +1149,11 @@ func (s *service) addSessionCheckIn(ctx context.Context, t Ticket, sessionID uui
 	sess, err := s.ticketSession(ctx, t, sessionID)
 	if err != nil {
 		return CheckIn{}, err
+	}
+	// Only an active Ticket opens the door: every way in (scan, SkyPass,
+	// me, resolve, guest, code) comes here.
+	if refused := inactiveErr(t); refused != nil {
+		return CheckIn{}, refused
 	}
 	dup, err := s.tickets.HasCheckIn(ctx, t.ID, sessionID)
 	if err != nil {
@@ -1425,7 +1518,7 @@ func (s *service) ResolveAndCheckIn(
 	if store, ok := s.tickets.(DoorStore); ok {
 		return s.resolveStoredDoorCheckIn(ctx, store, ev, sessionID, target, query)
 	}
-	listed, err := s.tickets.ListByEvent(ctx, ev.ID)
+	listed, err := s.everyTicket(ctx, ev.ID)
 	if err != nil {
 		return DoorCheckIn{}, err
 	}
@@ -1667,4 +1760,14 @@ func (s *service) teamDoorScan(ctx context.Context, ownerTeam string) bool {
 		return false
 	}
 	return strings.EqualFold(g.Attributes["team_door_scan"], "true")
+}
+
+// everyTicket is the Event's Tickets of every status, for the door to say
+// why a cancelled one does not open it; the active ones without a
+// StatusStore.
+func (s *service) everyTicket(ctx context.Context, eventID uuid.UUID) ([]Ticket, error) {
+	if store, ok := s.tickets.(StatusStore); ok {
+		return store.ListByEventStatus(ctx, eventID, nil)
+	}
+	return s.tickets.ListByEvent(ctx, eventID)
 }

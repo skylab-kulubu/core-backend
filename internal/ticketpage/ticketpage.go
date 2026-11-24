@@ -42,6 +42,11 @@ const (
 	StateActive         = "active"
 	StateEventCancelled = "event_cancelled"
 	StateEnded          = "ended"
+	// StateTicketCancelled and StateWaitlisted are a Ticket that is not
+	// active (docs/ticket-cancellation.md): the page shows the Event and
+	// the state, with no QR and no PDF (410).
+	StateTicketCancelled = "ticket_cancelled"
+	StateWaitlisted      = "waitlisted"
 )
 
 // QRSize is the QR PNG's side in pixels.
@@ -78,6 +83,15 @@ type Service struct {
 	slots   chan struct{}
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
+	// Entries reads what the page polls on the Event's day (CheckIns):
+	// core's Postgres store. Nil answers every key 404.
+	Entries EntryStore
+}
+
+// EntryStore reads a Ticket's own check-ins by its key in one query
+// (ticket.PostgresStore).
+type EntryStore interface {
+	PageCheckIns(ctx context.Context, key string) (ticket.PageCheckIns, error)
 }
 
 // New builds the service. render and images may be nil: no PDF, and a PDF
@@ -206,6 +220,10 @@ func (s *Service) open(ctx context.Context, key string) (opened, error) {
 	}
 	state := StateActive
 	switch {
+	case t.StatusOf() == ticket.StatusCancelled:
+		state = StateTicketCancelled
+	case t.StatusOf() == ticket.StatusWaitlisted:
+		state = StateWaitlisted
 	case ev.Status == event.StatusCancelled:
 		state = StateEventCancelled
 	case ev.EndedAt(now):
@@ -264,7 +282,7 @@ func (s *Service) Page(ctx context.Context, key string) (View, error) {
 	if v.MapImageURL != "" {
 		v.MapAttribution, v.MapAttributionURL = event.MapAttribution, event.MapAttributionURL
 	}
-	if o.state != StateEventCancelled {
+	if !noQR(o.state) {
 		token, err := s.token(o)
 		if err != nil {
 			return View{}, err
@@ -274,6 +292,40 @@ func (s *Service) Page(ctx context.Context, key string) (View, error) {
 		v.PDFURL = s.link(key, "/pdf")
 	}
 	return v, nil
+}
+
+// CheckInsView is the JSON of GET /v1/public/tickets/{key}/check-ins: the
+// Ticket's own check-ins, the Session's title and when, oldest first.
+type CheckInsView struct {
+	CheckIns []ticket.PageCheckIn `json:"checkIns"`
+}
+
+// CheckIns is what the ticket page polls while it is open on the Event's
+// day, to greet its holder at the door. The page's own rules, in one query
+// rather than the page's several: 404 for an unknown key, a Ticket without
+// its holder, a draft or archived Event; 410 once the page has closed.
+func (s *Service) CheckIns(ctx context.Context, key string) (CheckInsView, error) {
+	if !ticket.ValidAccessKey(key) || s.Entries == nil {
+		return CheckInsView{}, ErrNotFound
+	}
+	got, err := s.Entries.PageCheckIns(ctx, key)
+	if errors.Is(err, ticket.ErrNotFound) {
+		return CheckInsView{}, ErrNotFound
+	}
+	if err != nil {
+		return CheckInsView{}, err
+	}
+	if !got.Held || got.Event.Status == event.StatusDraft {
+		return CheckInsView{}, ErrNotFound
+	}
+	if s.cfg.Page.Closed(got.Event, s.now()) {
+		return CheckInsView{}, ErrGone
+	}
+	checkIns := got.CheckIns
+	if checkIns == nil {
+		checkIns = []ticket.PageCheckIn{}
+	}
+	return CheckInsView{CheckIns: checkIns}, nil
 }
 
 func (s *Service) token(o opened) (string, error) {
@@ -290,7 +342,7 @@ func (s *Service) QRPNG(ctx context.Context, key string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if o.state == StateEventCancelled {
+	if noQR(o.state) {
 		return nil, ErrGone
 	}
 	token, err := s.token(o)
@@ -307,7 +359,7 @@ func (s *Service) PDF(ctx context.Context, key string) (string, []byte, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	if o.state == StateEventCancelled {
+	if noQR(o.state) {
 		return "", nil, ErrGone
 	}
 	if s.render == nil {
@@ -456,4 +508,10 @@ func LogKey(key string) string {
 
 func ticketQRClaims(t ticket.Ticket, ev event.Event) ticketqr.Claims {
 	return ticketqr.Claims{Ticket: t.ID, Event: ev.ID, Version: t.QRVersion, ExpiresAt: ticket.QRExpiry(t, ev)}
+}
+
+// noQR reports whether a page of state shows no QR and has no PDF: a
+// cancelled Event, a cancelled or waitlisted Ticket.
+func noQR(state string) bool {
+	return state == StateEventCancelled || state == StateTicketCancelled || state == StateWaitlisted
 }

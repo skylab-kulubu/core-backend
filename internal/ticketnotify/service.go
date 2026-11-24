@@ -275,6 +275,11 @@ func (s *Service) deliver(ctx context.Context, q Queued, pdf *bool, report *Repo
 	if err != nil {
 		return 0, err
 	}
+	// A Ticket cancelled (or waitlisted) since it was queued is not ready:
+	// no mail (docs/ticket-cancellation.md).
+	if !t.Active() {
+		return dropped, nil
+	}
 	ev, err := s.config.Events.GetIncludingArchived(ctx, t.EventID)
 	if errors.Is(err, event.ErrNotFound) {
 		return dropped, nil

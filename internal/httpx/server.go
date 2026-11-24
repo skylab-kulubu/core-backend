@@ -458,6 +458,10 @@ func New(deps Deps) *fiber.App {
 		// addresses: a budget of its own, larger.
 		app.Get("/v1/public/tickets/:key/qr.png", perClientLimitOf(trustedProxies, handlers.TicketQRsPerClientMinute), page.QR)
 		app.Get("/v1/public/tickets/:key/pdf", publicTicketLimit, handlers.TicketPDFLimit(), page.PDF)
+		// The page polls its own check-ins on the Event's day: many
+		// holders behind one address at the door, so a large budget per
+		// client and a small one per key.
+		app.Get("/v1/public/tickets/:key/check-ins", perClientLimitOf(trustedProxies, handlers.TicketCheckInsPerClientMinute), handlers.TicketCheckInsLimit(), page.CheckIns)
 	}
 	if pass != nil {
 		app.Get("/v1/skypass/jwks", pass.JWKS)
@@ -823,6 +827,10 @@ func New(deps Deps) *fiber.App {
 	// (docs/ticket-resend.md).
 	app.Post("/v1/tickets/:id/notification", tickets.ResendTicket)
 	app.Post("/v1/tickets/:id/access-key/rotate", tickets.RenewTicketLink)
+	// An operator's cancellation and its taking back
+	// (docs/ticket-cancellation.md).
+	app.Post("/v1/tickets/:id/cancel", tickets.CancelTicket)
+	app.Post("/v1/tickets/:id/restore", tickets.RestoreTicket)
 	app.Get("/v1/tickets", tickets.List)
 	// The forms service's account with ticket:forms reports each answer to its
 	// forms; an accepted answer to an Event's form writes its Ticket

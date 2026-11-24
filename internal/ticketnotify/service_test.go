@@ -395,3 +395,15 @@ func TestResendGoesUnderItsOwnKey(t *testing.T) {
 		t.Fatal("the first mail's key changed")
 	}
 }
+
+// A Ticket cancelled since it was queued is not ready: its mail is dropped
+// (docs/ticket-cancellation.md).
+func TestCancelledTicketIsDropped(t *testing.T) {
+	e := newEnv(t)
+	tk := e.guest("can@example.com")
+	tk.Status = ticket.StatusCancelled
+	e.tickets[tk.ID] = tk
+	if r := e.pass(t); r.Dropped != 1 || r.Sent != 0 || len(e.mail.calls) != 0 {
+		t.Fatalf("report %+v, calls %d", r, len(e.mail.calls))
+	}
+}

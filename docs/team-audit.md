@@ -29,6 +29,8 @@ Keycloak's own admin events show every such change as made by
 | the daily term job | `membership.term.expired` | the term's Group | after: `endsAt`; `target_user_id` is the holder; actor `system` (below) |
 | `POST /v1/tickets/:id/notification` ([ticket-resend.md](ticket-resend.md)) | `ticket.resend` | the Event's team | after: `ticketId`, `eventId`, `resend` (the mail's …:r<n>); no target person |
 | `POST /v1/tickets/:id/access-key/rotate` | `ticket.link.renew` | the Event's team | after: `ticketId`, `eventId`, `resend` (0 without the mail); no target person |
+| `POST /v1/tickets/:id/cancel` ([ticket-cancellation.md](ticket-cancellation.md)) | `ticket.cancel` | the Event's team | after: `ticketId`, `eventId`; never the reason; no target person. A refusal (`checked_in`, `in_competition`) is a `failed` row |
+| `POST /v1/tickets/:id/restore` | `ticket.restore` | the Event's team | after: `ticketId`, `eventId`; no target person |
 | The person card's account writes ([user-accounts.md](user-accounts.md)) | `user.enable`, `user.disable`, `user.password.set`, `user.password.mail`, `user.email.change`, `user.email.verify`, `user.email.mail`, `user.email.primary`, `user.required_actions`, `user.credential.remove`, `user.idp.unlink`, `user.lockout.clear`, `user.profile` | none (empty `group_path`); `target_user_id` is the person | flags and ids only: `enabled`, `temporary`, `generated`, `verified`, `primary` (`school`/`personal`), `requiredActions`, `credentialId`/`credentialType`, `provider`, `fields`. Never an address, a name or a password (migration `20261122190000`) |
 
 Privileged's writes carry `actor_basis` `privileged`. With team delegation
@@ -69,7 +71,7 @@ Group, and stay on their own rows.
 |---|---|
 | `id`, `occurred_at` | the row; when the write began |
 | `actor_id` | the caller's Keycloak subject (`sub`). No name, no e-mail |
-| `actor_basis`, `actor_via_group_id` | `privileged`; or `leader` with the Team whose Leader group grants the change; or, on a `denied` row only, `none` (the caller leads no Team of the Group); or, on a `membership.term.expired` row only, `system`: core's daily job, with the nil subject (`00000000-…`) as `actor_id` and `system:term-expiry` as `client` (migration `20261027140100`) |
+| `actor_basis`, `actor_via_group_id` | `privileged`; or `leader` with the Team whose Leader group grants the change; or, on a `denied` row only, `none` (the caller leads no Team of the Group); or, on a `membership.term.expired` row only, `system`: core's daily job, with the nil subject (`00000000-…`) as `actor_id` and `system:term-expiry` as `client` (migration `20261027140100`); or, on a `ticket.cancel` or `ticket.restore` row only, `event_editor` with the Event's team: a member who edits the Event by the Event policy (GECEKODU) without being Privileged or a Leader (migration `20261124100000`, [ticket-cancellation.md](ticket-cancellation.md)) |
 | `action` | one of the actions above (CHECK) |
 | `group_id`, `group_path` | the target Group's Keycloak id and its path at the time. A `team.create` has no id until Keycloak answers; an `app.*` row for a person has neither (empty path) |
 | `target_user_id` | the person of a member or leader action, as a subject; set exactly for those, and on an `app.*` row exactly when it has no Group (CHECK, migration `20261023120000`) |
@@ -235,7 +237,7 @@ Each item:
 | Field | |
 |---|---|
 | `id`, `occurredAt`, `action`, `outcome`, `errorCode`, `correlationId` | the row's |
-| `actor` | `{id, displayName, basis, viaGroupId, client}`: `basis` is `privileged`, `leader` (with `viaGroupId`, the Team whose Leader group granted it), `none` (a denied row) or `system` (core's job, nil id, `client` `system:term-expiry`); `client` is the token's `azp` |
+| `actor` | `{id, displayName, basis, viaGroupId, client}`: `basis` is `privileged`, `leader` (with `viaGroupId`, the Team whose Leader group granted it), `none` (a denied row), `system` (core's job, nil id, `client` `system:term-expiry`) or `event_editor` (with `viaGroupId`, the Event's team: a Ticket's cancellation or restoration by a member who edits the Event); `client` is the token's `azp` |
 | `target` | `{id, displayName}` of a member, leader, term or person app row; `null` otherwise |
 | `successor` | `{id, displayName}` of a `membership.term.handover` row: `after.successorId`, named; `null` otherwise |
 | `group` | `{id, path, currentPath}`: `path` at the time; `currentPath` the Group's path now while it exists, `null` once it is gone. `null` for an app row about a person |

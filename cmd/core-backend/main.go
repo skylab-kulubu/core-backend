@@ -1028,6 +1028,7 @@ func main() {
 	ticketPage := ticketpage.New(tickets, events, users, ticketQR, ticketPDF,
 		&ticketpage.MediaImages{Media: mediaStore, Blobs: blobs},
 		ticketpage.Config{Page: ticketPageConfig, APIOrigin: os.Getenv("PUBLIC_API_ORIGIN")})
+	ticketPage.Entries = tickets
 	// The Ticket's PDF with its mail (TICKET_PDF_ATTACHMENT): the ticket
 	// page's PDF, drawn by the worker just before each send.
 	ticketPDFAttachment, err := ticketPDFAttachmentOn(os.Getenv)

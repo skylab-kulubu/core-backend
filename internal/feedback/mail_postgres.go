@@ -179,6 +179,7 @@ func takeTarget(ctx context.Context, tx pgx.Tx, t Target, formID uuid.UUID, trig
 // to any Session of the Event ($2 NULL). Guests too (K2).
 const audienceSQL = `
 	SELECT DISTINCT c.ticket_id FROM ticket_checkins c
+	JOIN tickets t ON t.id = c.ticket_id AND t.status = 'active'
 	JOIN sessions s ON s.id = c.session_id
 	JOIN event_days d ON d.id = s.event_day_id
 	WHERE d.event_id = $1 AND ($2::uuid IS NULL OR s.id = $2)`
