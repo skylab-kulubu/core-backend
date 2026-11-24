@@ -10,30 +10,33 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
-// Open and click tracking of News mail (hub ticket iletisim-servisi 16,
+// Open and click tracking (hub ticket iletisim-servisi 16,
 // docs/communication-preferences.md "Tracking"): SkyMail records whether a
-// person opened a News mail and which link they clicked only for the people
-// core allows. The basis is legitimate interest with an opt-out (decision
-// T1): the person turns it off on the Account center, the only way (T8: no
-// mail carries a "stop tracking" link).
+// person opened a mail and which link they clicked. Since ADR-0074's
+// 2026-11-24 addendum (B9) every mail is tracked: a person's objection, a
+// non-Member and a recipient without an account no longer stop it. Only an
+// inactive account (disabled, being erased or erased) and the operator's
+// brake (COMMUNICATION_TRACKING_MODE=opt_in) do.
 
-// ScopeTracking is the tracking preference's row: one per person, on the
-// e-mail channel, with no group and no kind. It is no News category: it
-// never appears in a link, an audience or the items of a PUT.
+// ScopeTracking is the old tracking preference's row: one per person, on the
+// e-mail channel, with no group and no kind. Since B9 no write makes one and
+// no decision reads one; the rows written before are kept. It is no News
+// category: it never appears in a link, an audience or the items of a PUT.
 const ScopeTracking Scope = "tracking"
 
 // Tracking is the tracking preference's category.
 func Tracking() Category { return Category{Scope: ScopeTracking} }
 
-// TrackingMode is what a person without a row gets.
+// TrackingMode is the operator's switch for tracking. It is no personal
+// preference: it holds for everyone alike. The names are the ones the
+// variable took before B9, kept so a deployment's value still reads.
 type TrackingMode string
 
 const (
-	// TrackingOptOut tracks a Member until they turn it off (legitimate
-	// interest, decision T1). The default.
+	// TrackingOptOut tracks every active account. The default.
 	TrackingOptOut TrackingMode = "opt_out"
-	// TrackingOptIn tracks only who turned it on: the brake and the way
-	// back should explicit consent be required.
+	// TrackingOptIn is the brake: core lets SkyMail track no one
+	// (tracking_off), whatever a person ever chose.
 	TrackingOptIn TrackingMode = "opt_in"
 )
 
@@ -52,36 +55,33 @@ func TrackingModeFromEnv(getenv func(string) string) (TrackingMode, error) {
 	return "", fmt.Errorf("%s must be %s or %s", TrackingModeEnv, TrackingOptOut, TrackingOptIn)
 }
 
-// fallback is the value of a person without a row.
-func (m TrackingMode) fallback() bool { return m != TrackingOptIn }
+// TrackingStartupLine is the startup log line of tracking: the mode.
+func TrackingStartupLine(mode TrackingMode) string {
+	if !mode.on() {
+		return fmt.Sprintf("WARNING communication tracking: mode %s (%s): the brake is on, SkyMail may track no one", mode, TrackingModeEnv)
+	}
+	return fmt.Sprintf("communication tracking: mode %s (%s)", mode, TrackingModeEnv)
+}
 
-// TrackingState is the Account center's tracking switch.
+// on reports whether the mode lets anyone be tracked.
+func (m TrackingMode) on() bool { return m != TrackingOptIn }
+
+// TrackingState is the screen's tracking field. Since B9 the Account center
+// has no switch: the field stays for one release so an older Account center
+// still reads the screen, and it tells the truth about the signed-in person
+// (an active account): tracked exactly when the mode is on, whatever their
+// old row says.
 type TrackingState struct {
-	// Enabled is the person's choice, or the mode's default without one.
+	// Enabled is whether the mode tracks anyone.
 	Enabled bool `json:"enabled"`
-	// Effective is whether core lets SkyMail track the person now: enabled
-	// and a Member (the signed-in person is active).
+	// Effective is whether core lets SkyMail track the person now; for the
+	// signed-in person, the same as Enabled.
 	Effective bool         `json:"effective"`
 	Mode      TrackingMode `json:"mode"`
 }
 
-// trackingChoice is the person's tracking row, nil without one.
-func trackingChoice(settings []Setting) *bool {
-	for _, s := range settings {
-		if s.Channel == ChannelEmail && s.Category.Scope == ScopeTracking {
-			on := s.Enabled
-			return &on
-		}
-	}
-	return nil
-}
-
-func trackingState(settings []Setting, mode TrackingMode, member bool) TrackingState {
-	enabled := mode.fallback()
-	if choice := trackingChoice(settings); choice != nil {
-		enabled = *choice
-	}
-	return TrackingState{Enabled: enabled, Effective: enabled && member, Mode: mode}
+func trackingState(mode TrackingMode) TrackingState {
+	return TrackingState{Enabled: mode.on(), Effective: mode.on(), Mode: mode}
 }
 
 // SetTrackingMode sets the mode (TrackingModeFromEnv); a service never set
@@ -96,10 +96,6 @@ func (s *Service) TrackingMode() TrackingMode {
 	return s.trackingMode
 }
 
-// OnTrackingWithdrawn is called after a write that turned tracking off and
-// queued its withdrawal (Withdrawals.Wake).
-func (s *Service) OnTrackingWithdrawn(wake func()) { s.onWithdrawn = wake }
-
 // TrackingResolveRole is core's client role of the service account that may
 // ask whom a send may track: SkyMail's (hub ticket 17). A person's token
 // never may, whatever roles it carries. It follows audience:read: core's
@@ -110,18 +106,15 @@ const TrackingResolveRole = "communication-preferences:read"
 // in batches of 1000).
 const MaxTrackingSubjects = 1000
 
-// TrackingReason is why a person may not be tracked.
+// TrackingReason is why a person may not be tracked. Before B9 core also
+// said preference_off (an objection) and not_member; it no longer does.
 type TrackingReason string
 
 const (
-	// TrackingPreferenceOff: turned off on the Account center, or no row
-	// under TrackingOptIn.
-	TrackingPreferenceOff TrackingReason = "preference_off"
-	// TrackingNotMember: in no /UYELER Group (a graduate, an honorary
-	// member, a guest, a service account, someone Keycloak does not have).
-	TrackingNotMember TrackingReason = "not_member"
 	// TrackingInactive: disabled in Keycloak, or being erased or erased.
 	TrackingInactive TrackingReason = "inactive"
+	// TrackingOff: the operator's brake (TrackingOptIn) is on.
+	TrackingOff TrackingReason = "tracking_off"
 )
 
 // TrackingDecision is one person's answer.
@@ -139,10 +132,13 @@ func (a *Audience) TrackingAvailable() bool {
 }
 
 // ResolveTracking answers, for each subject in order, whether SkyMail may
-// track News mail to them: an active account, a Member (in the /UYELER
-// tree, the audience's Member), and tracking on by their row or, without
-// one, by the mode. The first rule that fails is the reason, in that
-// order. It reads the audience's snapshot of the tree (AudienceSnapshotTTL).
+// track mail to them (B9): an active account, and the mode on. A Member or
+// not, with an objection on record or not, makes no difference. Inactive is
+// the erased subject, an account core holds as being erased or erased, or a
+// club member Keycloak has disabled (the snapshot holds the club's members
+// only: a disabled non-Member is not seen and is allowed). Inactive comes
+// before the brake. It reads the audience's snapshot of the tree
+// (AudienceSnapshotTTL).
 func (a *Audience) ResolveTracking(ctx context.Context, subjects []uuid.UUID) ([]TrackingDecision, error) {
 	if !a.TrackingAvailable() {
 		return nil, ErrDisabled
@@ -170,10 +166,6 @@ func (a *Audience) ResolveTracking(ctx context.Context, subjects []uuid.UUID) ([
 	if err != nil {
 		return nil, err
 	}
-	settings, err := a.prefs.store.ListPeople(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
 	mode := a.prefs.TrackingMode()
 	for _, id := range subjects {
 		decision := TrackingDecision{Subject: id}
@@ -181,10 +173,8 @@ func (a *Audience) ResolveTracking(ctx context.Context, subjects []uuid.UUID) ([
 		switch {
 		case id == user.DeletedSubject || accounts[id].Blocked || (inTree && !person.Enabled):
 			decision.Reason = TrackingInactive
-		case !inTree || person.ServiceAccount || !snap.tree.Membership(snap.paths[id]).Member:
-			decision.Reason = TrackingNotMember
-		case !trackingState(settings[id], mode, true).Enabled:
-			decision.Reason = TrackingPreferenceOff
+		case !mode.on():
+			decision.Reason = TrackingOff
 		default:
 			decision.Allowed = true
 		}

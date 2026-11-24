@@ -724,19 +724,16 @@ func main() {
 	communicationPreferenceStore := commpref.NewPostgresStore(pool)
 	communicationPreferences := commpref.NewService(communicationPreferenceConfig, communicationPreferenceStore, dir, privilegedRoots)
 	// Open and click tracking (docs/communication-preferences.md,
-	// "Tracking"): the mode, and the worker that tells SkyMail of every
-	// person who turns it off. Neither needs COMMUNICATION_PREFERENCE_KEY.
+	// "Tracking"): the operator's mode. It needs no
+	// COMMUNICATION_PREFERENCE_KEY. Since B9 nobody withdraws: the worker
+	// that told SkyMail of withdrawals is not started, and
+	// COMMUNICATION_TRACKING_WITHDRAWAL_URL is not read.
 	trackingMode, err := commpref.TrackingModeFromEnv(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
 	}
 	communicationPreferences.SetTrackingMode(trackingMode)
-	trackingWithdrawals, trackingWithdrawalURLFrom := newTrackingWithdrawals(os.Getenv, base, realm, communicationPreferenceStore)
-	communicationPreferences.OnTrackingWithdrawn(trackingWithdrawals.Wake)
-	for _, line := range commpref.TrackingStartupLines(trackingMode, trackingWithdrawals.Sending(), trackingWithdrawalURLFrom) {
-		log.Print(line)
-	}
-	worker("tracking withdrawals", trackingWithdrawals.Run(workers, log.Printf))
+	log.Print(commpref.TrackingStartupLine(trackingMode))
 	// App preferences (ADR 0081, docs/app-preferences.md). Without a client
 	// map their routes are not served; the erasure step still deletes a
 	// person's rows.
@@ -1255,7 +1252,7 @@ func main() {
 		AppPreferences:            appPreferences,
 		Audience:                  newsAudience,
 		Recipients:                recipients,
-		TrackingWithdrawalMetrics: communicationPreferenceMetrics{trackingWithdrawals, communicationPreferences},
+		TrackingWithdrawalMetrics: communicationPreferenceMetrics{communicationPreferences},
 		Readiness:                 readiness,
 		MediaDecodeMetrics:        decodeBudget,
 		MemoryMetrics:             memory,
@@ -1383,15 +1380,14 @@ func accountErasureStartup(getenv func(string) string) (bool, erasure.Config, er
 }
 
 // optionalErasureMetrics keeps a worker that is off from publishing gauges.
-// communicationPreferenceMetrics is the tracking withdrawals' metrics and
-// the deleted teams cleanup's refused runs.
+// communicationPreferenceMetrics is the deleted teams cleanup's refused
+// runs. The tracking withdrawals' metrics went with their worker (B9).
 type communicationPreferenceMetrics struct {
-	withdrawals *commpref.Withdrawals
 	preferences *commpref.Service
 }
 
 func (m communicationPreferenceMetrics) Prometheus() string {
-	return m.withdrawals.Prometheus() + m.preferences.CleanupPrometheus()
+	return m.preferences.CleanupPrometheus()
 }
 
 func optionalErasureMetrics(gauges *account.ErasureGauges) interface{ Prometheus() string } {
@@ -1446,41 +1442,6 @@ func newSkyMail(base, realm, clientID, clientSecret, skyMailURL string, timeout 
 			HTTP:         client,
 		},
 	}
-}
-
-// newTrackingWithdrawals is the worker that tells SkyMail of tracking
-// withdrawals, with core's own service account (KEYCLOAK_CLIENT_ID, client
-// core) and SkyMail's internal address. Without the address or the client
-// credentials it sends nothing and keeps the queue's gauges. An address
-// that does not read does not stop core either (ACCOUNT_ERASURE_SKYMAIL_URL
-// is read here even while the erasure worker, which checks it for itself,
-// is off): startup warns and the withdrawals wait. It names the variable the
-// address came from.
-func newTrackingWithdrawals(getenv func(string) string, base, realm string, queue commpref.WithdrawalQueue) (*commpref.Withdrawals, string) {
-	address, from, err := commpref.WithdrawalURLFromEnv(getenv)
-	if err != nil {
-		// The error names the variable, never its value.
-		log.Printf("WARNING communication tracking: %v; withdrawals to SkyMail off", err)
-		return commpref.NewWithdrawals(queue, nil), from
-	}
-	clientID := strings.TrimSpace(getenv("KEYCLOAK_CLIENT_ID"))
-	if address == "" || base == "" || realm == "" || clientID == "" || strings.TrimSpace(getenv("KEYCLOAK_CLIENT_SECRET")) == "" {
-		return commpref.NewWithdrawals(queue, nil), from
-	}
-	return commpref.NewWithdrawals(queue, &commpref.SkyMailWithdrawals{
-		BaseURL: address,
-		Tokens: &erasure.ClientCredentials{
-			TokenURL: base + "/realms/" + realm + "/protocol/openid-connect/token",
-			ClientID: clientID,
-			// Read for every token request, never kept (ADR-0050).
-			Secret: func() (string, error) {
-				if secret := strings.TrimSpace(getenv("KEYCLOAK_CLIENT_SECRET")); secret != "" {
-					return secret, nil
-				}
-				return "", errors.New("KEYCLOAK_CLIENT_SECRET is not set")
-			},
-		},
-	}), from
 }
 
 // templateKey reads a SkyMail template key. An unset variable takes the seeded

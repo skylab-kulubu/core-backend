@@ -25,6 +25,7 @@ type trackingResult struct {
 
 // SkyMail's question, as its client sends it: the colon is literal, every
 // sub answered once in order, and the route works without the link key.
+// Since B9 someone in no club Group is tracked too.
 func TestTrackingResolveRoute(t *testing.T) {
 	for _, keyed := range []bool{true, false} {
 		env := newAudienceEnv(t, keyed)
@@ -41,7 +42,7 @@ func TestTrackingResolveRoute(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(answer.Results) != 2 || answer.Results[0].Sub != env.person.String() || !answer.Results[0].Allowed || answer.Results[0].Reason != nil ||
-			answer.Results[1].Sub != stranger.String() || answer.Results[1].Allowed || answer.Results[1].Reason == nil || *answer.Results[1].Reason != "not_member" ||
+			answer.Results[1].Sub != stranger.String() || !answer.Results[1].Allowed || answer.Results[1].Reason != nil ||
 			!strings.Contains(string(got.raw), `"reason":null`) {
 			t.Fatalf("keyed=%v: %s", keyed, got.raw)
 		}
@@ -141,9 +142,10 @@ func TestTrackingResolveRefusesAMalformedQuestion(t *testing.T) {
 	}
 }
 
-// The Account center's switch on the preference routes: the screen carries
-// it; PUT {"tracking":{"enabled":false}} turns it off and queues the
-// withdrawal; it takes true and false only.
+// The old Account center switch on the preference routes (B9): the screen
+// still carries the field, the mode's; PUT {"tracking":{"enabled":false}}
+// answers 200 and writes nothing, queues nothing; it still takes true and
+// false only.
 func TestTrackingSwitchRoute(t *testing.T) {
 	e := newPrefEnv(t, true)
 	got := sendJSON(t, e.app, e.token(t), fiber.MethodGet, "/v1/users/me/communication-preferences", "")
@@ -151,10 +153,10 @@ func TestTrackingSwitchRoute(t *testing.T) {
 		t.Fatalf("screen %d %v", got.status, got.body)
 	}
 	put := sendJSON(t, e.app, e.token(t), fiber.MethodPut, "/v1/users/me/communication-preferences", `{"tracking":{"enabled":false}}`)
-	if tracking, _ := put.body["tracking"].(map[string]any); put.status != fiber.StatusOK || tracking["enabled"] != false || tracking["effective"] != false {
+	if tracking, _ := put.body["tracking"].(map[string]any); put.status != fiber.StatusOK || tracking["enabled"] != true || tracking["effective"] != true {
 		t.Fatalf("off %d %v", put.status, put.body)
 	}
-	if w := e.store.Withdrawals(); len(w) != 1 || w[0].Subject != e.person {
+	if w := e.store.Withdrawals(); len(w) != 0 {
 		t.Fatalf("withdrawals %+v", w)
 	}
 	both := sendJSON(t, e.app, e.token(t), fiber.MethodPut, "/v1/users/me/communication-preferences",
@@ -162,7 +164,7 @@ func TestTrackingSwitchRoute(t *testing.T) {
 	if tracking, _ := both.body["tracking"].(map[string]any); both.status != fiber.StatusOK || tracking["enabled"] != true {
 		t.Fatalf("both %d %v", both.status, both.body)
 	}
-	if rows, _ := e.store.List(context.Background(), e.person); len(rows) != 2 {
+	if rows, _ := e.store.List(context.Background(), e.person); len(rows) != 1 {
 		t.Fatalf("rows %+v", rows)
 	}
 	for _, body := range []string{

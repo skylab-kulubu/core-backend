@@ -17,6 +17,11 @@ import (
 	"github.com/google/uuid"
 )
 
+// Not started since B9 (ADR-0074, 2026-11-24 addendum: every mail is
+// tracked, an objection no longer stops it): core queues no withdrawal and
+// main runs no worker. The code and the queue table stay until the old
+// tracking rows are dealt with; see docs/communication-preferences.md.
+//
 // The withdrawal tells SkyMail that a person turned tracking off (hub ticket
 // 16, SkyMail's ticket 14c): SkyMail closes every tracking token of their
 // mail and deletes their openings and clicks; their old mail's links still
@@ -447,18 +452,4 @@ func (w *Withdrawals) Prometheus() string {
 	}
 	fmt.Fprintf(&out, "# TYPE skylab_tracking_withdrawal_last_success_timestamp_seconds gauge\nskylab_tracking_withdrawal_last_success_timestamp_seconds %d\n", last)
 	return out.String()
-}
-
-// TrackingStartupLines are the startup log lines of tracking: the mode, and
-// whether withdrawals reach SkyMail (and from which variable its address
-// came).
-func TrackingStartupLines(mode TrackingMode, sending bool, urlFrom string) []string {
-	lines := []string{fmt.Sprintf("communication tracking: mode %s (%s)", mode, TrackingModeEnv)}
-	if sending {
-		lines = append(lines, fmt.Sprintf("communication tracking: withdrawals to SkyMail on (address from %s)", urlFrom))
-	} else {
-		lines = append(lines, fmt.Sprintf("WARNING communication tracking: withdrawals to SkyMail off (needs %s or %s, KEYCLOAK_URL, KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID and KEYCLOAK_CLIENT_SECRET); a person who turns tracking off waits in the queue",
-			WithdrawalURLEnv, withdrawalURLFallbackEnv))
-	}
-	return lines
 }

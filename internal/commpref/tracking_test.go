@@ -33,15 +33,16 @@ func TestTrackingModeFromEnv(t *testing.T) {
 	}
 }
 
-// The resolver's table: an active Member is tracked by their row or, without
-// one, by the mode; the first rule that fails names the reason (inactive,
-// then not a Member, then the preference). It needs no link key.
+// The resolver's table (B9): every active account is tracked, a Member or
+// not, with an objection on record or not; only an inactive account and the
+// brake (opt_in) say no, inactive first. It needs no link key.
 func TestResolveTracking(t *testing.T) {
 	f := newAudienceFixture(t, false)
+	// Rows written before B9 change nothing.
 	f.choose("air", Tracking(), false)
 	f.choose("drone", Tracking(), true)
 	f.choose("disabled", Tracking(), true)
-	f.choose("outsider", Tracking(), true)
+	f.choose("outsider", Tracking(), false)
 	asked := []string{"front", "air", "drone", "disabled", "erased", "outsider", "service", "weblabYK"}
 	stranger := uuid.MustParse("00000000-0000-4000-8000-999999999999")
 	subjects := []uuid.UUID{}
@@ -55,12 +56,12 @@ func TestResolveTracking(t *testing.T) {
 		want map[string]TrackingReason // "" allowed
 	}{
 		{TrackingOptOut, map[string]TrackingReason{
-			"front": "", "air": TrackingPreferenceOff, "drone": "", "disabled": TrackingInactive, "erased": TrackingInactive,
-			"outsider": TrackingNotMember, "service": TrackingNotMember, "weblabYK": "",
+			"front": "", "air": "", "drone": "", "disabled": TrackingInactive, "erased": TrackingInactive,
+			"outsider": "", "service": "", "weblabYK": "", "stranger": "",
 		}},
 		{TrackingOptIn, map[string]TrackingReason{
-			"front": TrackingPreferenceOff, "air": TrackingPreferenceOff, "drone": "", "disabled": TrackingInactive, "erased": TrackingInactive,
-			"outsider": TrackingNotMember, "service": TrackingNotMember, "weblabYK": TrackingPreferenceOff,
+			"front": TrackingOff, "air": TrackingOff, "drone": TrackingOff, "disabled": TrackingInactive, "erased": TrackingInactive,
+			"outsider": TrackingOff, "service": TrackingOff, "weblabYK": TrackingOff, "stranger": TrackingOff,
 		}},
 	} {
 		f.prefs.SetTrackingMode(c.mode)
@@ -74,15 +75,13 @@ func TestResolveTracking(t *testing.T) {
 			if d.Subject != subjects[i] {
 				t.Fatalf("%s: order %d %v", c.mode, i, d)
 			}
-			if i == len(asked) {
-				if d.Allowed || d.Reason != TrackingNotMember {
-					t.Fatalf("%s stranger: %+v", c.mode, d)
-				}
-				continue
+			name := "stranger"
+			if i < len(asked) {
+				name = asked[i]
 			}
-			want := c.want[asked[i]]
+			want := c.want[name]
 			if d.Allowed != (want == "") || d.Reason != want {
-				t.Fatalf("%s %s: %+v, want %q", c.mode, asked[i], d, want)
+				t.Fatalf("%s %s: %+v, want %q", c.mode, name, d, want)
 			}
 		}
 	}
@@ -114,42 +113,46 @@ func TestResolveTracking(t *testing.T) {
 	}
 }
 
-// The Account center's switch: the mode's default without a row, the
-// person's choice with one, effective only for a Member. Turning it off
-// queues one withdrawal and wakes the worker; the audit trail keeps every
-// change of value, not a repeat. The switch is never forgotten (null) and
-// only on e-mail.
+// The old Account center switch (B9): the screen's tracking field is the
+// mode's, whatever the person's old row says, Member or not; a PUT of the
+// switch is checked (true or false, e-mail only, once) and then dropped: no
+// row, no audit, no withdrawal, and a News item beside it is still written.
 func TestTrackingSwitch(t *testing.T) {
 	f := newFixture(t)
-	if got := f.mine().Tracking; got != (TrackingState{Enabled: true, Effective: true, Mode: TrackingOptOut}) {
+	on := TrackingState{Enabled: true, Effective: true, Mode: TrackingOptOut}
+	if got := f.mine().Tracking; got != on {
 		t.Fatalf("default %+v", got)
 	}
 	f.svc.SetTrackingMode(TrackingOptIn)
 	if got := f.mine().Tracking; got != (TrackingState{Enabled: false, Effective: false, Mode: TrackingOptIn}) {
-		t.Fatalf("opt_in default %+v", got)
+		t.Fatalf("brake %+v", got)
 	}
 	f.svc.SetTrackingMode(TrackingOptOut)
-	woken := 0
-	f.svc.OnTrackingWithdrawn(func() { woken++ })
+
+	// A row written before B9 is not read.
+	off := false
+	if err := f.store.Apply(context.Background(), f.person, []Change{{Channel: ChannelEmail, Category: Tracking(), Enabled: &off}}, SourceAccountCenter, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.mine().Tracking; got != on {
+		t.Fatalf("old objection %+v", got)
+	}
+	rowsBefore, _ := f.store.List(context.Background(), f.person)
+	auditBefore, _ := f.store.TrackingChanges(context.Background(), f.person)
+	withdrawalsBefore := len(f.store.Withdrawals())
 
 	screen, err := f.update(set(Tracking(), false))
-	if err != nil || screen.Tracking != (TrackingState{Enabled: false, Effective: false, Mode: TrackingOptOut}) || woken != 1 {
-		t.Fatalf("off: %+v %v woken=%d", screen.Tracking, err, woken)
-	}
-	if w := f.store.Withdrawals(); len(w) != 1 || w[0].Subject != f.person || w[0].Attempts != 0 {
-		t.Fatalf("withdrawals %+v", w)
-	}
-	if _, err := f.update(set(Tracking(), false)); err != nil || woken != 2 || len(f.store.Withdrawals()) != 1 {
-		t.Fatalf("off again: %v woken=%d %+v", err, woken, f.store.Withdrawals())
+	if err != nil || screen.Tracking != on || screen.Partial {
+		t.Fatalf("off: %+v %v", screen.Tracking, err)
 	}
 	screen, err = f.update(set(Tracking(), true), set(Club(KindNews), false))
-	if err != nil || !screen.Tracking.Enabled || !screen.Tracking.Effective || woken != 2 || screen.Club.Haber[ChannelEmail].Enabled {
-		t.Fatalf("on: %+v %v woken=%d", screen.Tracking, err, woken)
+	if err != nil || screen.Tracking != on || screen.Club.Haber[ChannelEmail].Enabled {
+		t.Fatalf("on with an item: %+v %v", screen, err)
 	}
+	rows, _ := f.store.List(context.Background(), f.person)
 	audit, _ := f.store.TrackingChanges(context.Background(), f.person)
-	if len(audit) != 2 || audit[0].Enabled || audit[0].Previous != nil || !audit[1].Enabled || audit[1].Previous == nil || *audit[1].Previous ||
-		audit[0].Source != SourceAccountCenter {
-		t.Fatalf("audit %+v", audit)
+	if len(rows) != len(rowsBefore)+1 || len(audit) != len(auditBefore) || len(f.store.Withdrawals()) != withdrawalsBefore {
+		t.Fatalf("the switch wrote: rows %+v audit %+v withdrawals %+v", rows, audit, f.store.Withdrawals())
 	}
 	// The tracking row is no News category: the screen's lists ignore it.
 	if len(screen.Following) != 0 || !screen.Master[ChannelEmail].Enabled {
@@ -171,36 +174,30 @@ func TestTrackingSwitch(t *testing.T) {
 	if _, err := ParseCategory("tracking"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("tracking is a News category: %v", err)
 	}
-
-	// A person being erased gets no row, so no withdrawal either.
-	f.store.MarkInactive(f.person)
-	before := len(f.store.Withdrawals())
-	if _, err := f.update(set(Tracking(), false)); !errors.Is(err, ErrSubjectInactive) {
-		t.Fatalf("inactive: %v", err)
-	}
-	if n, err := f.store.EraseSubject(context.Background(), f.person); err != nil || n == 0 {
-		t.Fatalf("erase %d %v", n, err)
-	}
-	if audit, _ := f.store.TrackingChanges(context.Background(), f.person); len(audit) != 0 || len(f.store.Withdrawals()) > before {
-		t.Fatalf("after erasure: audit %+v withdrawals %+v", audit, f.store.Withdrawals())
-	}
-	if len(f.store.Withdrawals()) != 0 {
-		t.Fatalf("erasure kept the withdrawal: %+v", f.store.Withdrawals())
-	}
 }
 
-// A non-Member may still object; the switch is never effective for them.
+// A non-Member is tracked too (B9): the field says so.
 func TestTrackingSwitchForANonMember(t *testing.T) {
 	f := newFixture(t)
 	if err := f.dir.RemoveMember(context.Background(), "g-front", f.person); err != nil {
 		t.Fatal(err)
 	}
 	f.svc.cached = nil
-	if got := f.mine().Tracking; got != (TrackingState{Enabled: true, Effective: false, Mode: TrackingOptOut}) {
+	want := TrackingState{Enabled: true, Effective: true, Mode: TrackingOptOut}
+	if got := f.mine().Tracking; got != want {
 		t.Fatalf("non-member %+v", got)
 	}
-	if screen, err := f.update(set(Tracking(), false)); err != nil || screen.Tracking.Enabled {
+	if screen, err := f.update(set(Tracking(), false)); err != nil || screen.Tracking != want {
 		t.Fatalf("non-member off: %+v %v", screen.Tracking, err)
+	}
+}
+
+func TestTrackingStartupLine(t *testing.T) {
+	if line := TrackingStartupLine(TrackingOptOut); !strings.Contains(line, "mode opt_out") || strings.Contains(line, "WARNING") {
+		t.Fatalf("on: %s", line)
+	}
+	if line := TrackingStartupLine(TrackingOptIn); !strings.Contains(line, "mode opt_in") || !strings.Contains(line, "WARNING") {
+		t.Fatalf("brake: %s", line)
 	}
 }
 
@@ -425,25 +422,24 @@ func TestWithdrawalURLFromEnv(t *testing.T) {
 			t.Fatalf("%q: %v", bad, err)
 		}
 	}
-	lines := strings.Join(TrackingStartupLines(TrackingOptOut, false, ""), "\n")
-	if !strings.Contains(lines, "mode opt_out") || !strings.Contains(lines, "WARNING") {
-		t.Fatalf("startup lines %s", lines)
-	}
 }
 
-// An objection is written while Keycloak is down: a tracking-only change
-// reads no team, writes the row and the withdrawal, and answers a partial
-// screen. A change with News items still needs the tree.
+// A PUT of the old switch alone while Keycloak is down still answers 200, a
+// partial screen, and writes nothing. A change with News items still needs
+// the tree.
 func TestTrackingSwitchWhileKeycloakIsDown(t *testing.T) {
 	f := newFixture(t)
 	svc := NewService(f.svc.Config(), f.store, failingDirectory{}, nil)
 	screen, err := svc.Update(context.Background(), f.person, []Change{set(Tracking(), false)})
-	if err != nil || !screen.Partial || screen.Tracking != (TrackingState{Enabled: false, Effective: false, Mode: TrackingOptOut}) ||
+	if err != nil || !screen.Partial || screen.Tracking != (TrackingState{Enabled: true, Effective: true, Mode: TrackingOptOut}) ||
 		screen.Teams == nil || screen.Followable == nil || len(screen.Channels) != 1 {
 		t.Fatalf("partial %+v %v", screen, err)
 	}
-	if w := f.store.Withdrawals(); len(w) != 1 || w[0].Subject != f.person {
+	if w := f.store.Withdrawals(); len(w) != 0 {
 		t.Fatalf("withdrawals %+v", w)
+	}
+	if rows, _ := f.store.List(context.Background(), f.person); len(rows) != 0 {
+		t.Fatalf("rows %+v", rows)
 	}
 	if _, err := svc.Update(context.Background(), f.person, []Change{set(Tracking(), true), set(Club(KindNews), false)}); !errors.Is(err, ErrTeamsUnavailable) {
 		t.Fatalf("with an item: %v", err)
