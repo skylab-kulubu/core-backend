@@ -12,8 +12,8 @@ when the alias leads nowhere:
 
 | Alias | Caller prefers `text/html` (a browser) | Anyone else |
 |---|---|---|
-| never existed | `404`, page "Böyle bir adres yok" | `404` problem JSON, as before |
-| its link is disabled, or it is the old spelling of a disabled link | `410`, page "Bağlantı eskimiş" | `404` problem JSON, as before |
+| never existed | `404`, page "Bu sayfa yok" | `404` problem JSON, as before |
+| its link is disabled, or it is the old spelling of a disabled link | `410`, page "Bu bağlantının süresi doldu" | `404` problem JSON, as before |
 
 "Prefers" is `Accept` negotiation over `application/json`,
 `application/problem+json` and `text/html`, with a tie going to JSON: no
@@ -45,7 +45,10 @@ no script and no `style` attribute. The scene's colours are classes in that
 `<style>`, not `var(--…)` in SVG presentation attributes (`fill=`,
 `stroke=`), which Safari does not resolve.
 
-Scenes and copy come from the error page work (`notes/hata-sayfalari` in the
-hub): scene 404-C and 410-B of prototype v5, copy v4 as approved. When the
-skylcn `ErrorScene` is published the page can be checked against it; it does
-not depend on it.
+Scenes come from the error page work (`notes/hata-sayfalari` in the hub),
+prototype v5: 404-A (GECEKODU's desk at 03:47) and 410-A with its labels
+turned to a YıldızJam sign-up link and its counter at zero, so the drawing
+does not contradict the sentence. The 404 copy is v4's as approved; the 410
+sentence ("Etkinlik bitti, bağlantı da onunla kapandı; güncel etkinlikler
+ana sayfada.") is a proposal awaiting approval. When the skylcn `ErrorScene`
+is published the page can be checked against it; it does not depend on it.

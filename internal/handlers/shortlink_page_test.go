@@ -89,11 +89,11 @@ func TestShortLinkMissShowsABrowserAPage(t *testing.T) {
 		status int
 		title  string
 	}{
-		{path: "/v1/go/missing", status: fiber.StatusNotFound, title: "Böyle bir adres yok"},
-		{path: "/v1/go/missing/ig", status: fiber.StatusNotFound, title: "Böyle bir adres yok"},
-		{path: "/v1/go/club", status: fiber.StatusGone, title: "Bağlantı eskimiş"},
-		{path: "/v1/go/kulup2", status: fiber.StatusGone, title: "Bağlantı eskimiş"},
-		{path: "/v1/go/club/wa", status: fiber.StatusGone, title: "Bağlantı eskimiş"},
+		{path: "/v1/go/missing", status: fiber.StatusNotFound, title: "Bu sayfa yok"},
+		{path: "/v1/go/missing/ig", status: fiber.StatusNotFound, title: "Bu sayfa yok"},
+		{path: "/v1/go/club", status: fiber.StatusGone, title: "Bu bağlantının süresi doldu"},
+		{path: "/v1/go/kulup2", status: fiber.StatusGone, title: "Bu bağlantının süresi doldu"},
+		{path: "/v1/go/club/wa", status: fiber.StatusGone, title: "Bu bağlantının süresi doldu"},
 	} {
 		for _, accept := range []string{browserAccept, "text/html"} {
 			resp, body := shortLinkMiss(t, app, test.path, accept)

@@ -18,8 +18,8 @@ import (
 const shortLinkHome = "https://yildizskylab.com"
 
 const shortLinkPageStyle = `
-:root{--bg:#171717;--fg:#f5f5f5;--border:rgb(255 255 255/14%);--ink:#e5e5e5;--soft:#a3a3a3;--faint:#737373;--brand:#e0c8e5;--on-brand:#0a0a0a;--alert:#f87171;--surface:var(--bg);color-scheme:dark}
-@media (prefers-color-scheme: light){:root{--bg:#f6f4f1;--fg:#1c1a18;--border:rgb(0 0 0/14%);--ink:#2b2825;--soft:#6b665f;--faint:#8a847d;--brand:#8f5e98;--on-brand:#fff;--alert:#b91c1c;color-scheme:light}}
+:root{--bg:#171717;--fg:#f5f5f5;--border:rgb(255 255 255/14%);--ink:#e5e5e5;--soft:#a3a3a3;--faint:#737373;--brand:#e0c8e5;--on-brand:#0a0a0a;--warm:#fbbf24;--cool:#93c5fd;--alert:#f87171;--surface:var(--bg);color-scheme:dark}
+@media (prefers-color-scheme: light){:root{--bg:#f6f4f1;--fg:#1c1a18;--border:rgb(0 0 0/14%);--ink:#2b2825;--soft:#6b665f;--faint:#8a847d;--brand:#8f5e98;--on-brand:#fff;--warm:#a44a07;--cool:#1d4ed8;--alert:#b91c1c;color-scheme:light}}
 *{box-sizing:border-box}
 html,body{margin:0}
 body{background:var(--bg);color:var(--fg);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
@@ -30,63 +30,93 @@ main{min-height:100vh;min-height:100dvh;display:flex;flex-direction:column;align
 .scene .f{stroke:var(--faint)}
 .scene .m{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;stroke:none}
 .scene .fill-s{fill:var(--surface)}
+.scene .fi-alert{fill:var(--alert)}
 .scene .fi-brand{fill:var(--brand)}
+.scene .fi-cool{fill:var(--cool)}
 .scene .fi-faint{fill:var(--faint)}
 .scene .fi-ink{fill:var(--ink)}
-.scene .fi-on-brand{fill:var(--on-brand)}
 .scene .fi-soft{fill:var(--soft)}
+.scene .fi-surface{fill:var(--surface)}
+.scene .fi-warm{fill:var(--warm)}
 .scene .st-alert{stroke:var(--alert)}
+.scene .st-brand{stroke:var(--brand)}
+.scene .st-cool{stroke:var(--cool)}
+.scene .st-ink{stroke:var(--ink)}
 .code{margin:12px 0 0;font:400 12px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.14em;color:var(--soft)}
 h1{margin:10px 0 0;font-size:22px;line-height:1.25;font-weight:600;letter-spacing:-.01em;text-wrap:balance}
 p.line{margin:8px 0 0;max-width:34ch;font-size:15px;line-height:1.5;color:var(--soft);text-wrap:pretty}
 .btn{display:inline-flex;align-items:center;min-height:44px;margin-top:18px;padding:0 16px;font-family:inherit;font-size:14px;font-weight:500;line-height:1;color:var(--fg);text-decoration:none;border:1px solid var(--border);background:rgb(127 127 127/8%);border-radius:8px}
 .btn:hover{background:rgb(127 127 127/16%)}
 .btn:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
-.fall{animation:fall 3.6s cubic-bezier(.5,0,.8,.6) infinite}
-@keyframes fall{0%,25%{transform:translate(0,0) rotate(0);opacity:1}100%{transform:translate(10px,70px) rotate(10deg);opacity:0}}
-.snip{animation:snip 3.6s ease-in-out infinite;transform-box:view-box}
-@keyframes snip{0%,18%,30%,100%{transform:scaleX(1)}24%{transform:scaleX(.55)}}
-.sig1,.sig2,.sig3{animation:sig 2.4s steps(1) infinite}
-.sig2{animation-delay:.4s}
-.sig3{animation-delay:.8s}
-@keyframes sig{0%,49%{opacity:1}50%,100%{opacity:.15}}
-.bob{animation:bob 2.6s ease-in-out infinite}
-@keyframes bob{50%{transform:translateY(-3px)}}
-.drop{animation:drop 2.8s cubic-bezier(.3,0,.2,1) infinite}
-@keyframes drop{0%{transform:translateY(-14px);opacity:0}25%{transform:translateY(0);opacity:1}32%{transform:translateY(-3px)}38%,100%{transform:translateY(0)}}
+.selfpivot{transform-box:fill-box;transform-origin:center}
+.tw{animation:tw 3s ease-in-out infinite}
+.blink{animation:blink 1.1s steps(1) infinite}
+.d2{animation-delay:-1.8s}
+@keyframes tw{50%{opacity:.25}}
+@keyframes blink{50%{opacity:0}}
+.scene .glow{fill:var(--cool);fill-opacity:.1;animation:glow 3.4s ease-in-out infinite}
+@keyframes glow{50%{opacity:.35}}
+@media (prefers-color-scheme: light){.scene .glow{fill-opacity:.06}}
+.gk-type{animation:gk-type 5s steps(1) infinite}
+@keyframes gk-type{0%,12%{opacity:0}13%,100%{opacity:1}}
+.fly{animation:fly 4.2s ease-in infinite}
+@keyframes fly{0%,30%{transform:translate(0,0);opacity:1}85%{transform:translate(14px,-26px) rotate(18deg);opacity:0}100%{opacity:0}}
+.puff{animation:puff 2.4s ease-out infinite both}
+@keyframes puff{0%{opacity:0;transform:translateY(3px)}40%{opacity:1}100%{opacity:0;transform:translateY(-9px)}}
+.spin{animation:spin 6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.stamp{animation:stamp 4s cubic-bezier(.3,0,.2,1) infinite}
+@keyframes stamp{0%,10%{transform:scale(1.6);opacity:0}22%,100%{transform:scale(1);opacity:1}}
 @media (prefers-reduced-motion: reduce){.scene *{animation:none!important}}
 `
 
-// The two scenes come from the error page prototype v5 (404-C and 410-B);
-// the copy is v4's, as approved.
-const shortLinkScene404 = `<svg class="scene" viewBox="0 0 240 180" aria-hidden="true" focusable="false"><path class="s" d="M10 150H230"/>
-<rect x="14" y="44" width="122" height="20" rx="10" class="fill-s"/>
-<path class="d s" d="M24 50.5a3 3 0 0 1 4.2 0l1.4 1.4a3 3 0 0 1 0 4.2M27 57.5a3 3 0 0 1 -4.2 0l-1.4 -1.4a3 3 0 0 1 0 -4.2"/>
-<text x="36" y="57" class="m fi-ink" font-size="6.2" text-anchor="start">yildizskylab.com/etk</text>
-<path class="d st-alert" stroke-dasharray="2 2" d="M138 40V68"/>
-<g class="fall"><g transform="rotate(18 168 54)"><path class="fill-s" d="M142 44H178a10 10 0 0 1 0 20H142Z"/><text x="146" y="57" class="m fi-faint" font-size="6.2" text-anchor="start">inlik/43</text></g></g>
-<g transform="translate(138 82)"><g class="snip">
-<path class="fill-s" d="M0 0L-6 -26L0 -6Z"/><path class="fill-s" d="M0 0L6 -26L0 -6Z"/>
-<circle cx="-6" cy="10" r="6" class="fill-s"/><circle cx="6" cy="10" r="6" class="fill-s"/><path class="d" d="M-3 5L0 0L3 5"/></g></g>
-<rect x="22" y="100" width="96" height="34" rx="8" class="fill-s"/><path class="fill-s" d="M34 134l-4 9 12-9"/>
-<text x="30" y="114" class="m fi-ink" font-size="5.6" text-anchor="start">bağlantının sonu</text><text x="30" y="124" class="m fi-ink" font-size="5.6" text-anchor="start">kesilmiş, yeniden at?</text>
-<g class="sig1"><circle class="fi-soft" cx="186" cy="124" r="2" stroke="none"/></g><g class="sig2"><circle class="fi-soft" cx="194" cy="124" r="2" stroke="none"/></g><g class="sig3"><circle class="fi-soft" cx="202" cy="124" r="2" stroke="none"/></g>
-<rect x="174" y="112" width="40" height="24" rx="8" class="d f"/></svg>`
+// The two scenes come from the error page prototype v5: 404-A (GECEKODU's
+// desk at 03:47) and 410-A, its labels turned to YıldızJam's sign-up link so
+// they match the sentence. The 404 copy is v4's as approved; the 410
+// sentence waits for approval.
+const shortLinkScene404 = `<svg class="scene" viewBox="0 0 240 180" aria-hidden="true" focusable="false"><path class="s" d="M10 146H230"/>
+<rect x="14" y="14" width="46" height="36" rx="3" class="fill-s"/><path class="d f" d="M37 14V50M14 32H60"/>
+<circle class="fi-warm" cx="27" cy="24" r="5" stroke="none"/><circle class="fi-surface" cx="29.5" cy="22.4" r="4.4" stroke="none"/><path class="tw fi-warm" d="M50 20.2L50.58 21.42L51.8 22L50.58 22.58L50 23.8L49.42 22.58L48.2 22L49.42 21.42Z" stroke="none"/><path class="tw d2 fi-warm" d="M46 40.6L46.45 41.55L47.4 42L46.45 42.45L46 43.4L45.55 42.45L44.6 42L45.55 41.55Z" stroke="none"/>
+<text x="196" y="19" class="m fi-faint" font-size="5.5" text-anchor="middle" letter-spacing=".8">CUMA GECESİ</text>
+<rect x="168" y="24" width="56" height="24" rx="5" class="fill-s"/>
+<text x="196" y="41" text-anchor="middle" class="m fi-ink" font-size="13" font-weight="700">03<tspan class="blink">:</tspan>47</text>
+<rect x="88" y="64" width="90" height="72" rx="5" class="fill-s"/>
+<rect x="93" y="69" width="80" height="62" rx="2" class="d f"/><rect class="glow" x="93" y="69" width="80" height="62" rx="2" stroke="none"/>
+<text x="98" y="80" class="m fi-soft" font-size="6" text-anchor="start">$ cd sayfa</text>
+<g class="gk-type"><text x="133" y="110" class="m fi-alert" font-size="23" text-anchor="middle" font-weight="700">404</text><text x="133" y="122" class="m fi-soft" font-size="5.4" text-anchor="middle">bulunamadı</text></g>
+<path class="fill-s" d="M80 136H186L193 145H73Z"/><path class="d f" d="M122 140.5H144"/>
+<g class="fly"><g transform="translate(182 60) rotate(14)"><path class="d s fill-s" stroke-dasharray="2 2" d="M0 0H10L14 4V18H0Z"/><path class="d f" d="M3 7h7M3 11h7M3 15h5"/></g></g>
+<g><path class="fill-s" d="M4 146L7 120H69L72 146Z"/>
+<g><circle cx="20" cy="133" r="9.5" class="d s fill-s"/>
+<circle class="fi-warm" cx="15.25" cy="128.44" r="1.9" stroke="none"/>
+<circle class="fi-surface" cx="16.11" cy="127.68" r="1.62" stroke="none"/>
+<path class="fi-warm" d="M20.48 125.4L20.78 126.05L21.43 126.35L20.78 126.65L20.48 127.3L20.17 126.65L19.53 126.35L20.17 126.05Z" stroke="none"/><path class="fi-warm" d="M24.75 127.68L25.05 128.33L25.7 128.63L25.05 128.93L24.75 129.58L24.45 128.93L23.8 128.63L24.45 128.33Z" stroke="none"/><path class="fi-warm" d="M26.27 132.24L26.51 132.76L27.03 133L26.51 133.24L26.27 133.76L26.03 133.24L25.51 133L26.03 132.76Z" stroke="none"/><path class="fi-warm" d="M13.54 131.86L13.78 132.38L14.3 132.62L13.78 132.86L13.54 133.38L13.3 132.86L12.78 132.62L13.3 132.38Z" stroke="none"/>
+<path class="fi-cool st-cool" fill-opacity=".35" stroke-width="0.8" d="M15.63 140.6C15.25 133.95 16.96 129.96 20 129.96C23.04 129.96 24.75 133.95 24.37 140.6"/>
+<ellipse class="fi-surface" cx="20" cy="133.29" rx="2" ry="1.9" stroke="none"/>
+<path class="st-ink" stroke-width="0.8" d="M18.48 133H21.52"/>
+<rect class="fi-surface st-ink" x="16.58" y="136.42" width="6.84" height="3.42" rx="0.38" stroke-width="0.8"/></g><text x="33" y="132.5" class="m fi-ink" font-size="6.2" text-anchor="start" font-weight="700">GECEKODU</text><text x="33" y="140" class="m fi-faint" font-size="4.3" text-anchor="start">19:00 → 07:00</text></g>
+<g transform="translate(208 146)"><path class="d s" d="M-11 0.6a11 2.4 0 0 0 22 0"/><path class="d f" d="M-11 0.6a11 2 0 0 1 22 0"/>
+<path class="fi-alert" d="M-5.2 -16Q-4.8 -10.5 -2.7 -8Q-4.9 -4.8 -3.6 -1H3.6Q4.9 -4.8 2.7 -8Q4.8 -10.5 5.2 -16Z" fill-opacity=".5" stroke="none"/>
+<path stroke-width="1.5" d="M-6 -19Q-5.4 -11 -2.8 -8Q-5.6 -4.6 -3.8 -0.6H3.8Q5.6 -4.6 2.8 -8Q5.4 -11 6 -19"/>
+<path class="d f" d="M2 -23L-1 -9"/><g class="d s"><path class="puff" d="M-2.5 -22q-2.5-3 0-6t0-6"/><path class="puff d2" d="M3 -23q-2.5-3 0-6t0-6"/></g></g></svg>`
 
 const shortLinkScene410 = `<svg class="scene" viewBox="0 0 240 180" aria-hidden="true" focusable="false"><path class="s" d="M10 150H230"/>
-<g transform="rotate(-4 70 96)"><rect x="24" y="70" width="92" height="60" rx="2" class="fill-s"/><path class="d" d="M24 71L70 106L116 71"/></g>
-<path class="d f" d="M24 66L52 66M24 66L24 92M24 66L44 84M24 66L50 75M24 66L35 90M32 66Q30 72 24 74M40 66Q37 78 24 82M48 66Q44 84 24 89"/>
-<path class="d" d="M86 20V60"/><g class="bob"><circle class="fi-ink" cx="86" cy="62" r="3.4" stroke="none"/><path class="d" d="M80 59l3 2M80 65l3-2M92 59l-3 2M92 65l-3-2"/></g>
-<text x="70" y="146" class="m fi-faint" font-size="5.2" text-anchor="middle">bekleme: çok</text>
-<circle class="fi-faint" cx="40" cy="138" r=".9" stroke="none"/><circle class="fi-faint" cx="104" cy="136" r="1.1" stroke="none"/><circle class="fi-faint" cx="118" cy="128" r=".8" stroke="none"/>
-<g class="drop"><rect x="156" y="82" width="60" height="40" rx="2" class="fill-s"/><path class="d" d="M156 83L186 106L216 83"/><rect class="fi-brand" x="196" y="74" width="26" height="12" rx="6" stroke="none"/><text x="209" y="82.4" class="m fi-on-brand" font-size="5.6" text-anchor="middle" font-weight="700">yeni</text></g></svg>`
+<rect x="12" y="40" width="132" height="76" rx="6" class="fill-s"/>
+<path class="d s" d="M24 52.5a3.4 3.4 0 0 1 4.8 0l1.6 1.6a3.4 3.4 0 0 1 0 4.8M27.4 60.5a3.4 3.4 0 0 1 -4.8 0l-1.6 -1.6a3.4 3.4 0 0 1 0 -4.8"/>
+<text x="38" y="58" class="m fi-ink" font-size="5.6" text-anchor="start">YıldızJam kayıt bağlantısı</text>
+<text x="22" y="74" class="m fi-faint" font-size="5" text-anchor="start">jam sayacı: 00:00:00</text><rect x="22" y="79" width="112" height="7" rx="3.5" class="d"/>
+<g class="stamp"><g transform="rotate(-7 78 102)"><rect x="34" y="92" width="88" height="20" rx="3" class="fill-s st-alert" stroke-width="1.6"/><text x="78" y="105.5" class="m fi-alert" font-size="7.4" text-anchor="middle" font-weight="700">SÜRESİ DOLDU</text></g></g>
+<g class="spin selfpivot"><path class="d st-brand" d="M174 78A10 10 0 1 1 167 68.5"/><path class="d st-brand" d="M165 64l3 4.5-5 1.5"/></g>
+<rect x="190" y="60" width="40" height="34" rx="5" class="fill-s st-brand" stroke-width="1.4"/>
+<text x="210" y="74" class="m fi-brand" font-size="6" text-anchor="middle" font-weight="700">güncel</text><rect class="fi-brand" x="196" y="81" width="28" height="5" rx="2.5" stroke="none"/>
+<text x="168" y="106" class="m fi-brand" font-size="4.8" text-anchor="middle">ana sayfa</text></svg>`
 
 var (
 	shortLinkPageCSP = "default-src 'none'; style-src 'sha256-" + shortLinkStyleHash() + "'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-	shortLinkPage404 = shortLinkPage("404", "Böyle bir adres yok",
-		"Bağlantı kopyalanırken sonu kesilmiş olabilir; gönderenden yeniden iste.", shortLinkScene404)
-	shortLinkPage410 = shortLinkPage("410", "Bağlantı eskimiş",
-		"Bu bağlantı fazla beklemiş, artık geçerli değil; işlemi baştan başlat, yenisi gelsin.", shortLinkScene410)
+	shortLinkPage404 = shortLinkPage("404", "Bu sayfa yok",
+		"GECEKODU'nda sabaha karşı yazılmış, sonra kaybolmuş; adresi bir kontrol et.", shortLinkScene404)
+	shortLinkPage410 = shortLinkPage("410", "Bu bağlantının süresi doldu",
+		"Etkinlik bitti, bağlantı da onunla kapandı; güncel etkinlikler ana sayfada.", shortLinkScene410)
 )
 
 func shortLinkStyleHash() string {
