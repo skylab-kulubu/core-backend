@@ -59,7 +59,7 @@ func TestCertificateHTTP_VerifyPDFAndCheckInIssue(t *testing.T) {
 	sessions := make([]event.Session, 8)
 	for i := 0; i < 8; i++ {
 		sess, err := events.CreateSession(ctx, event.Session{
-			EventDayID: day.ID, Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION",
+			EventDayID: day.ID, Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION", CertificateCounted: true,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -115,12 +115,23 @@ func TestCertificateHTTP_VerifyPDFAndCheckInIssue(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("verify %d %s", resp.StatusCode, body)
 	}
+	body, _ := io.ReadAll(resp.Body)
 	var got certificate.Certificate
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+	if err := json.Unmarshal(body, &got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Serial != serial || got.OwnerTeam != "ARTLAB" {
 		t.Fatalf("got %+v", got)
+	}
+	// The immediate issue keeps the attendance too: 6 of 8 Sessions, none
+	// with times. The public answer names no e-mail, User or Ticket.
+	if !strings.Contains(string(body), `"attendance":{"attended":6,"total":8,"programMinutes":0}`) {
+		t.Fatalf("verify attendance %s", body)
+	}
+	for _, forbidden := range []string{"ada@example.com", "recipientEmail", "ownerId", "ticketId", tk.ID.String(), ownerID.String()} {
+		if strings.Contains(string(body), forbidden) {
+			t.Fatalf("verify leaks %q: %s", forbidden, body)
+		}
 	}
 
 	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/certificates/verify/"+serial+"/pdf", nil))

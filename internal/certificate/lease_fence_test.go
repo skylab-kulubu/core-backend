@@ -64,7 +64,7 @@ func newFenceFixture(t *testing.T) fenceFixture {
 		t.Fatal(err)
 	}
 	day, _ := f.events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Gün"})
-	session, _ := f.events.CreateSession(ctx, event.Session{EventDayID: day.ID, Title: "Oturum", SpeakerName: "Ada", SessionType: "PRESENTATION"})
+	session, _ := f.events.CreateSession(ctx, event.Session{EventDayID: day.ID, Title: "Oturum", CertificateCounted: true, SpeakerName: "Ada", SessionType: "PRESENTATION"})
 	ownerID := uuid.New()
 	if _, _, err := f.users.Upsert(ctx, user.User{ID: ownerID, Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace"}); err != nil {
 		t.Fatal(err)

@@ -123,10 +123,13 @@ type SessionCertificateFlags struct {
 // the rule (none, once or count; ratio is refused), the count rule's
 // threshold (null for the default; ignored by the other rules) and the marks
 // of the Sessions it lists. A Session it does not list keeps its marks.
+// AutoFinalize turns the automatic attendance finalization on or off; nil
+// keeps it.
 type CertificateRuleInput struct {
-	Rule     string
-	MinCount *int
-	Sessions []SessionCertificateFlags
+	Rule         string
+	MinCount     *int
+	Sessions     []SessionCertificateFlags
+	AutoFinalize *bool
 }
 
 // CertificateRuleSession is one of the Event's current Sessions as the rule
@@ -146,9 +149,12 @@ type CertificateRuleSession struct {
 
 // CertificateRule is GET /v1/events/{id}/certificate-rule: the rule, its
 // threshold as stored (MinCount) and as it applies now (EffectiveMin, over
-// CountedTotal, the live counted Sessions), and the Sessions.
+// CountedTotal, the live counted Sessions), the Event's automatic
+// finalization switch (AutoFinalize, Event.AttendanceAutoFinalize), and the
+// Sessions.
 type CertificateRule struct {
 	Rule         string                   `json:"rule"`
+	AutoFinalize bool                     `json:"autoFinalize"`
 	Ratio        *float64                 `json:"ratio,omitempty"`
 	MinCount     *int                     `json:"minCount"`
 	EffectiveMin int                      `json:"effectiveMin"`
@@ -184,7 +190,7 @@ func (s *service) certificateRule(ctx context.Context, e Event) (CertificateRule
 	}
 	out := CertificateRule{
 		Rule: attendanceRule(e.AttendanceRule), Ratio: e.AttendanceRatio, MinCount: e.AttendanceMinCount,
-		Sessions: []CertificateRuleSession{},
+		AutoFinalize: e.AttendanceAutoFinalize, Sessions: []CertificateRuleSession{},
 	}
 	for _, day := range days {
 		sessions, err := s.store.ListSessions(ctx, day.ID)
@@ -240,7 +246,7 @@ func (s *service) SetCertificateRule(ctx context.Context, p authz.Principal, eve
 		}
 		seen[f.ID] = true
 	}
-	if err := s.store.SetCertificateRule(ctx, e.ID, rule, in.MinCount, in.Sessions); err != nil {
+	if err := s.store.SetCertificateRule(ctx, e.ID, rule, in.MinCount, in.AutoFinalize, in.Sessions); err != nil {
 		return CertificateRule{}, err
 	}
 	written, err := s.store.Get(ctx, e.ID)

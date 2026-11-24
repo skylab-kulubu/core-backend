@@ -42,8 +42,11 @@ type Patch struct {
 	AttendanceRatio optional.Field[*float64]        `json:"attendanceRatio"`
 	// AttendanceMinCount is the count rule's threshold, null for the
 	// default (docs/certificate-rule.md).
-	AttendanceMinCount optional.Field[*int]        `json:"attendanceMinCount"`
-	DoorStaffIDs       optional.Field[[]uuid.UUID] `json:"doorStaffIds"`
+	AttendanceMinCount optional.Field[*int] `json:"attendanceMinCount"`
+	// AttendanceAutoFinalize turns the automatic attendance finalization
+	// on or off (null is ErrInvalid; docs/certificate-rule.md).
+	AttendanceAutoFinalize optional.Field[bool]        `json:"attendanceAutoFinalize"`
+	DoorStaffIDs           optional.Field[[]uuid.UUID] `json:"doorStaffIds"`
 	// RegistrationClosed closes or opens applying by hand (null is
 	// ErrInvalid); RegistrationClosesAt sets the deadline, null clears it
 	// (ticket 12).
@@ -91,7 +94,7 @@ func (p Patch) apply(existing Event) (Event, error) {
 	e.LocationLat = p.LocationLat.Or(existing.LocationLat)
 	e.LocationLng = p.LocationLng.Or(existing.LocationLng)
 	e.LocationAddress = p.LocationAddress.Or(existing.LocationAddress)
-	if p.Ranked.Null || p.RegistrationClosed.Null || p.FeedbackMode.Null || p.FeedbackAutoSend.Null {
+	if p.Ranked.Null || p.RegistrationClosed.Null || p.FeedbackMode.Null || p.FeedbackAutoSend.Null || p.AttendanceAutoFinalize.Null {
 		return Event{}, ErrInvalid
 	}
 	if e.FeedbackMode = p.FeedbackMode.Or(existing.FeedbackMode); !e.FeedbackMode.Valid() {
@@ -116,6 +119,7 @@ func (p Patch) apply(existing Event) (Event, error) {
 	e.AttendanceRule = p.AttendanceRule.Or(existing.AttendanceRule)
 	e.AttendanceRatio = p.AttendanceRatio.Or(existing.AttendanceRatio)
 	e.AttendanceMinCount = p.AttendanceMinCount.Or(existing.AttendanceMinCount)
+	e.AttendanceAutoFinalize = p.AttendanceAutoFinalize.Or(existing.AttendanceAutoFinalize)
 	if p.DoorStaffIDs.Set {
 		e.DoorStaffIDs = append([]uuid.UUID{}, p.DoorStaffIDs.Value...)
 	}

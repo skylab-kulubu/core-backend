@@ -2,7 +2,7 @@
 
 Sertifika × oturum katılımı (spec `.scratch/sertifika-oturum/SPEC.md` in the hub; Yusuf's decisions of 2026-11-23). An Event's certificate rule reads "at least M of the N counted Sessions": the organizer picks which Sessions count, which are required, and M.
 
-This page is ticket 01: the data, the rule endpoints and the pure decision. Eligibility itself still counts every live Session and none is required until ticket 02 moves it to one query over the marks.
+Tickets 01 (the data, the rule endpoints, the pure decision), 02 (eligibility over the marks in a fixed number of queries, the attendance list, the manual issue's justification) and 03 (automatic finalization, early manual finalization, rescan).
 
 ## Kinds
 
@@ -52,3 +52,74 @@ On every Session JSON:
 One transaction: the rule, the threshold, and the listed Sessions' marks, all or nothing. A Session it does not list keeps its marks. `400` for `ratio` or an unknown rule, `minCount` below 1, a Session listed twice, one without both marks, required without counted, and a Session that is not a current Session of the Event on a current day (another Event's, archived). It answers what `GET` answers.
 
 `POST /v1/events` and `PATCH /v1/events/{id}` take `attendanceMinCount` too (null for the default); the Event JSON leaves it out when there is none.
+
+## Eligibility
+
+`certificate.AttendanceStore.EventAttendance` reads an Event's attendance in two queries, however many Tickets it has: the live Sessions with their marks, then every Ticket with its counted check-ins (`GROUP BY ticket_id`), its missing required Sessions, its name, its active and latest revoked certificate and its latest job (`LEFT JOIN`s). The Summary, attendance finalization, the manual issue and the list all decide from it with `certificate.Eligible`; no read per Ticket is left. A store without the query (the memory stores of the tests) reads the program once per Event from the other stores.
+
+A Session written straight to a store (`event.Session{}`, past the service's defaults) is **not counted**: the Postgres store writes the mark it is given. Test fixtures that expect a Session to count set `CertificateCounted: true`; `TestUncountedFixtureIssuesNothing` keeps the trap visible.
+
+## Attendance list
+
+`GET /v1/events/{id}/certificates/attendance`, for whoever may read the Summary (`certificate:read` or the template workspace's read). No e-mail; the name is the Guest's on the Ticket, the account's for a member (as the certificate would name them). In order of name, no paging.
+
+```json
+{"countedTotal": 8, "effectiveMin": 6, "rule": "count",
+ "required": [{"id": "…", "title": "Açılış"}],
+ "rows": [{"ticketId": "…", "name": "Ayşe Yılmaz", "ticketType": "REGISTERED", "attended": 6,
+   "missingRequired": [{"id": "…", "title": "Açılış"}], "status": "below",
+   "certificate": {"serial": "…", "issuedAt": "…", "revokedAt": "…"} }]}
+```
+
+- `attended` counts check-ins on live counted Sessions only; `missingRequired` lists live required Sessions without a check-in, in the program's order (a cancelled or archived required Session drops out).
+- `status`, first that holds: `issued` (an active certificate) > `queued` (its latest job is queued or running) > `failed` (its latest job failed) > `revoked` (only a revoked certificate) > `eligible` > `below`.
+- `certificate` is the active certificate, else the latest revoked one (with `revokedAt`), else null.
+
+`GET /v1/events/{id}/certificates/summary` adds `countedTotal`, `effectiveMin` and `belowCount` (the Tickets whose status is `below`).
+
+## Manual issue and its justification
+
+`POST /v1/events/{id}/certificates/issue` takes `{"ticketId": "…", "justification": "…"}`. The justification is trimmed; up to 500 characters.
+
+- A Ticket the rule does not make eligible needs one: without it (or blank) `400` with `code: "justification_required"`.
+- An eligible Ticket needs none; one given is kept all the same.
+- Over 500 characters: `400` with `code: "justification_too_long"`.
+- `202` with the batch, as before.
+
+The batch (`certificate_batches.justification`, migration `20261124000000`) is the manual issue's audit record: who asked (`requestedBy`), when (`createdAt`) and why (`justification`). `GET /v1/certificate-batches/{id}` and `GET /v1/events/{id}/certificate-batches` answer it; only who reads the certificate workspace sees it, never the public verification. Rolling the migration back drops the text written since.
+
+## Automatic attendance finalization
+
+An hour (`certificate.AutoFinalizeDelay`) after an Event's **last live Session** ends, core closes its attendance by itself, as `POST …/certificates/finalize` does, and queues the eligible Tickets' certificates; the issuance worker issues them and sends the `core.certificate` mail as before.
+
+- A Session's end is its end time, else its day's end, else the Event's end (the feedback mail's expression). Every live Session counts, counted or not.
+- **Due** when the Event is published and not archived, its rule is not `none`, its switch `attendanceAutoFinalize` is on, its attendance is not closed, it has a live Session, and that end + 1 h is past but no more than 7 days ago (`AutoFinalizeWindow`). An older Event is left to its organizer.
+- `certificate.MaintainAutoFinalize` runs a pass every minute (worker `certificate auto finalize`). A pass takes a transaction-scoped advisory lock; another replica's pass that finds it taken skips. The state row's key (`certificate_event_state.event_id`) closes an Event once: of two passes, or of a pass and the organizer's manual finalization, the second writes nothing and queues nothing.
+- The system closes it: `attendance_finalized_by` and the batch's `requested_by` are null, `finalized_source` is `auto` (a manual one is `manual`).
+- An Event that fails (its template cannot be resolved, a database error) is skipped, logged with its id and the failure's class, and counted in `core_certificate_auto_finalize_errors_total`; the next pass tries it again. `core_certificate_auto_finalized_total` counts the Events closed. Both are on `/v1/metrics`.
+- **The publisher's mail** (S6): who published the Event (`published_by`) gets `core.certificate-auto-finalized` (`SKYMAIL_CERTIFICATE_AUTO_FINALIZED_TEMPLATE_KEY`; empty turns it off) with `FirstName`, `EventName`, `EventId`, `CertificateCount` (the certificates queued) and `OwnerTeam`. It goes by key to `/v1/mail_tasks/single` like the certificate mail: a refusal is logged, never retried, and never stops the finalization. No mail when no publisher is known or the account is gone.
+
+**The switch.** The panel reads and writes it on the rule endpoint: `GET /v1/events/{id}/certificate-rule` answers `autoFinalize`, and `PUT` takes `autoFinalize` (left out or `null` keeps it), in the same transaction as the rule. It is `attendanceAutoFinalize` on the Event JSON too: `POST /v1/events` takes it (none is `true`); `PATCH`/`PUT /v1/events/{id}` turn it on or off (`null` is `400`). A copy has it on. Migration `20261124010000` turns it off on every Event that had ended when it ran (by its dates, or by its last live Session's end) and whose attendance was not closed (S3): old Events are not closed by the clock.
+
+**Early manual finalization** (K7, S4). `POST /v1/events/{id}/certificates/finalize` opens when the Event has ended or is undated, as before, **or** its last live Session has ended, without waiting the hour. A running Session still answers `409`; a draft or a cancelled Event refuses it with its reason, as before.
+
+**Summary.** `GET …/certificates/summary` adds `autoFinalizeAt` (last live Session's end + 1 h, while the rule issues, the switch is on, the Event is published and its attendance open, and that time is within the window) and, once closed, `finalizedSource` (`manual` or `auto`).
+
+## Rescan
+
+`POST /v1/events/{id}/certificates/rescan` ("Uygunları yeniden tara", K8), for whoever may issue (`certificate:issue`; else `403`).
+
+- `409` while the attendance is open; a draft or cancelled Event refuses it with its reason.
+- Queues, with `reason: "rescan"` in one batch, the Tickets eligible now that have **never had a certificate**: not one with an active certificate, not one whose certificate was revoked (a revocation is deliberate), not one whose latest job is queued or running.
+- `202` with `{"queued": N, "batch": {…}}`; with no one, no batch is opened: `200` with `{"queued": 0}`.
+
+## Attendance snapshot and the public verification
+
+A certificate keeps the attendance it was issued on (`certificates.attended_count`, `counted_total`, `program_minutes`, migration `20261124020000`), read with the rule's own attendance query at the moment it is written, on the queued path and on the immediate (`LegacyImmediate`) one:
+
+- `attended_count`: the Ticket's check-ins on live **counted** Sessions; `counted_total`: N then.
+- `program_minutes`: the sum of `end_time − start_time` (whole minutes) of the counted Sessions it attended. A Session without both times adds 0; one that ends before it starts adds 0. A non-counted Session adds nothing, to either number.
+- A certificate given by hand below the rule carries its real count (S5). A reissue takes the attendance anew; the replaced row keeps its own.
+- The three are NULL together or all set (`>= 0`; `certificates_attendance_snapshot_check`). A certificate issued before the migration keeps NULL: nothing is filled in afterwards (S2).
+
+`GET /v1/public/certificates/{serial}` and `GET /v1/certificates/verify/{serial}` add `"attendance": {"attended": 6, "total": 8, "programMinutes": 540}` (a revoked certificate too); without a snapshot the field is absent. It names no Session, check-in time, manual issue or justification. The PDF, its template fields and `/v1/certificates/me` do not change. Rolling the migration back drops the snapshots taken since.

@@ -900,6 +900,9 @@ func main() {
 		}
 		sky.TemplateKey = templateKey(os.LookupEnv, "SKYMAIL_WELCOME_TEMPLATE_KEY", mail.DefaultWelcomeTemplateKey)
 		sky.CertificateTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_CERTIFICATE_TEMPLATE_KEY", mail.DefaultCertificateTemplateKey)
+		// The publisher's mail when an Event's attendance closes by itself
+		// (docs/certificate-rule.md); an empty key turns it off.
+		sky.CertificateAutoFinalizedTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_CERTIFICATE_AUTO_FINALIZED_TEMPLATE_KEY", mail.DefaultCertificateAutoFinalizedTemplateKey)
 		membershipTemplateKeys(sky, os.LookupEnv)
 		if raw := os.Getenv("SKYMAIL_WELCOME_TEMPLATE_ID"); raw != "" {
 			tid, err := uuid.Parse(raw)
@@ -1045,6 +1048,14 @@ func main() {
 	worker("certificate issuance worker", certificate.MaintainIssuance(workers, certSvc, 2*time.Second, 10, func(err error) {
 		log.Printf("certificate issuance worker: %v", err)
 	}))
+	// Automatic attendance finalization (docs/certificate-rule.md): every
+	// minute, the Events whose last live Session ended an hour ago close
+	// their attendance and queue their certificates. One replica plans at a
+	// time (an advisory lock).
+	worker("certificate auto finalize", certificate.MaintainAutoFinalize(workers, certSvc, time.Minute, func(err error) {
+		log.Printf("certificate auto finalize: %v", err)
+	}))
+	certificateMetrics, _ := certSvc.(interface{ Prometheus() string })
 	var lists mail.Lists
 	mailSnapshots := eventmail.NewPostgresSnapshotStore(pool)
 	if sky != nil {
@@ -1236,6 +1247,7 @@ func main() {
 		MediaDecodeMetrics:        decodeBudget,
 		MemoryMetrics:             memory,
 		EventMapMetrics:           eventMapMetrics,
+		CertificateMetrics:        certificateMetrics,
 		MapRegions:                &mapregion.Service{Store: mapRegions, Authz: az, Address: media.ConfiguredAddresses().Object},
 	})
 

@@ -32,6 +32,20 @@ func (h *CertificateHandler) Summary(c fiber.Ctx) error {
 	return c.JSON(result)
 }
 
+// Attendance is the certificate workspace's list of who attended how much
+// (docs/certificate-rule.md): for whoever may read the Summary, no e-mail.
+func (h *CertificateHandler) Attendance(c fiber.Ctx) error {
+	p, eventID, err := certificateEventCaller(c)
+	if err != nil {
+		return certError(c, err)
+	}
+	result, err := h.svc.Attendance(c.Context(), p, eventID)
+	if err != nil {
+		return certError(c, err)
+	}
+	return c.JSON(result)
+}
+
 func (h *CertificateHandler) Finalize(c fiber.Ctx) error {
 	p, eventID, err := certificateEventCaller(c)
 	if err != nil {
@@ -40,6 +54,24 @@ func (h *CertificateHandler) Finalize(c fiber.Ctx) error {
 	result, err := h.svc.Finalize(c.Context(), p, eventID)
 	if err != nil {
 		return certError(c, err)
+	}
+	return c.Status(fiber.StatusAccepted).JSON(result)
+}
+
+// Rescan queues who became eligible after the attendance closed
+// (docs/certificate-rule.md): 202 with the batch, 200 with queued 0 and no
+// batch when there is no one.
+func (h *CertificateHandler) Rescan(c fiber.Ctx) error {
+	p, eventID, err := certificateEventCaller(c)
+	if err != nil {
+		return certError(c, err)
+	}
+	result, err := h.svc.Rescan(c.Context(), p, eventID)
+	if err != nil {
+		return certError(c, err)
+	}
+	if result.Batch == nil {
+		return c.JSON(result)
 	}
 	return c.Status(fiber.StatusAccepted).JSON(result)
 }

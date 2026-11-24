@@ -49,6 +49,10 @@ A revoked item has `status: "revoked"` and `revokedAt`. Its `pdfUrl` is omitted;
 - `Paylaş` uses `share.title`, `share.text`, and `share.url`. Share the verification URL, not the PDF URL.
 - A revoked certificate can open the verification page but has no PDF action.
 
+## Verification page attendance (2026-11-24)
+
+The public verification (`GET /v1/public/certificates/{serial}`, opened through `verifyUrl`) may carry an optional `attendance: {attended, total, programMinutes}`; the website shows it. `/v1/certificates/me` does not change and mobile needs no change. If mobile ever reads the verification JSON, the field is optional: older certificates and older core omit it.
+
 ## Deliberately absent fields
 
 Mobile receives no template, layout, Canva/Figma source, recipient email, Ticket id, batch/job data, role information, or internal storage key. It must not call admin certificate endpoints.
