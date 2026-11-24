@@ -43,8 +43,9 @@ const (
 	// guestPerson is a person's token (the Event hub). Only an operator of
 	// the Event is answered; anybody else gets 403 (ticket.Service).
 	guestPerson
-	// guestService is a service account's token. Only the forms product's
-	// with ticket:forms is answered; any other gets 403 (ticket.Service).
+	// guestService is a service account's token: always 403
+	// (ticket.Service), the forms service's too, which reports its answers
+	// instead.
 	guestService
 	guestCallerCount
 )
@@ -73,7 +74,8 @@ var guestOutcomeNames = [guestOutcomeCount]string{
 // GuestApplyMetrics counts Guest apply requests by caller class and outcome.
 // Every label value is fixed; nobody and no Event is named.
 type GuestApplyMetrics struct {
-	counts [guestCallerCount][guestOutcomeCount]atomic.Uint64
+	counts   [guestCallerCount][guestOutcomeCount]atomic.Uint64
+	dailyCap atomic.Uint64
 }
 
 func NewGuestApplyMetrics() *GuestApplyMetrics { return &GuestApplyMetrics{} }
@@ -108,6 +110,8 @@ func (m *GuestApplyMetrics) Prometheus() string {
 		out.WriteString("# TYPE " + name + " counter\n")
 		out.WriteString(name + " " + strconv.FormatUint(totals[caller], 10) + "\n")
 	}
+	out.WriteString("# TYPE skylab_guest_apply_daily_cap_total counter\n")
+	out.WriteString("skylab_guest_apply_daily_cap_total " + strconv.FormatUint(m.dailyCap.Load(), 10) + "\n")
 	return out.String()
 }
 
@@ -121,6 +125,10 @@ type GuestApplyLimits struct {
 	// enough that one token cannot write guests without end.
 	PerSubject       int
 	PerSubjectWindow time.Duration
+	// PerSubjectDay answered applications (2xx) per day for each subject:
+	// the ceiling on what one operator's token, stolen or misused, can
+	// write in a day. A refused or failed request does not count.
+	PerSubjectDay int
 }
 
 // DefaultGuestApplyLimits are the production budgets (docs/guest-apply.md).
@@ -128,8 +136,12 @@ func DefaultGuestApplyLimits() GuestApplyLimits {
 	return GuestApplyLimits{
 		PerSubject:       60,
 		PerSubjectWindow: 10 * time.Minute,
+		PerSubjectDay:    300,
 	}
 }
+
+// guestApplyDay is the daily ceiling's window.
+const guestApplyDay = 24 * time.Hour
 
 // GuestApply holds what the Guest apply route does around the handler:
 // classify the caller, hide the route from token-less internet callers,
@@ -147,6 +159,9 @@ func NewGuestApply(proxies clientip.Ranges, metrics *GuestApplyMetrics, limits G
 	defaults := DefaultGuestApplyLimits()
 	if limits.PerSubject <= 0 || limits.PerSubjectWindow <= 0 {
 		limits.PerSubject, limits.PerSubjectWindow = defaults.PerSubject, defaults.PerSubjectWindow
+	}
+	if limits.PerSubjectDay <= 0 {
+		limits.PerSubjectDay = defaults.PerSubjectDay
 	}
 	return &GuestApply{proxies: proxies, metrics: metrics, limits: limits, logger: logger}
 }
@@ -223,21 +238,28 @@ func guestOutcomeOf(c fiber.Ctx, status int) guestOutcome {
 	}
 }
 
-// HideFromEdge answers a bare 404 to a request without a usable token that
-// is not internal (anonymous_public), before the body is read: the route is
-// not there for the internet (docs/guest-apply.md). The same answer as the
-// internal routes' guard (middlewares.InternalRouteGuard). It runs after the
-// optional bearer, so the panel's call with an operator's token, which comes
-// through the edge, goes on.
+// HideFromEdge answers a request without a usable token that is not internal
+// (anonymous_public) before the body is read (docs/guest-apply.md): a token
+// it could not verify (invalid, expired) gets 401, as on every route behind
+// Bearer, so the panel fetches a new one and sends the request again; no
+// token at all gets a bare 404, the internal routes' answer
+// (middlewares.InternalRouteGuard): the route is not there for the
+// internet. It runs after the optional bearer, so the panel's call with an
+// operator's token, which comes through the edge, goes on.
 func (g *GuestApply) HideFromEdge(c fiber.Ctx) error {
-	if g.caller(c) == guestAnonymousPublic {
-		c.Set(fiber.HeaderCacheControl, "no-store")
-		return c.SendStatus(fiber.StatusNotFound)
+	if g.caller(c) != guestAnonymousPublic {
+		return c.Next()
 	}
-	return c.Next()
+	if rejected, _ := c.Locals(middlewares.LocalsBearerRejected).(bool); rejected {
+		return fiber.ErrUnauthorized
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.SendStatus(fiber.StatusNotFound)
 }
 
-// Limits are the route's budgets: each token subject (person and service).
+// Limits are the route's budgets for each token subject (person and
+// service), in order: the ten-minute one, then the daily ceiling. A request
+// the first refuses does not count against the second.
 func (g *GuestApply) Limits() []fiber.Handler {
 	perSubject := limiter.New(limiter.Config{
 		Max:        g.limits.PerSubject,
@@ -252,7 +274,28 @@ func (g *GuestApply) Limits() []fiber.Handler {
 		},
 		LimitReached: guestApplyRateLimited,
 	})
-	return []fiber.Handler{perSubject}
+	perSubjectDay := limiter.New(limiter.Config{
+		Max:        g.limits.PerSubjectDay,
+		Expiration: guestApplyDay,
+		Next: func(c fiber.Ctx) bool {
+			class := g.caller(c)
+			return class != guestPerson && class != guestService
+		},
+		KeyGenerator: func(c fiber.Ctx) string {
+			ident, _ := c.Locals(authn.LocalsIdentity).(authn.Identity)
+			return ident.ID.String()
+		},
+		SkipFailedRequests: true,
+		// Its X-RateLimit-* headers are set before the ten-minute budget's,
+		// which overwrite them; its Retry-After stays on a refusal.
+		LimitReached: func(c fiber.Ctx) error {
+			if g.metrics != nil {
+				g.metrics.dailyCap.Add(1)
+			}
+			return guestApplyRateLimited(c)
+		},
+	})
+	return []fiber.Handler{perSubject, perSubjectDay}
 }
 
 // guestApplyRateLimited answers 429.

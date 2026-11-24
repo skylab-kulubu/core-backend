@@ -732,10 +732,10 @@ func normalizeGuest(g GuestInfo) GuestInfo {
 // ApplyGuest writes the guest Ticket of g's e-mail on the Event, or finds the
 // one already there (docs/guest-apply.md).
 //
-// A token holder must be trusted (guestApplyTrusted), else ErrForbidden:
-// with sign-up open a person's token costs no more than an e-mail address,
-// and a guest Ticket takes a place and mails a stranger. A trusted caller
-// gets the Ticket back and may change an existing guest's name or phone
+// A token holder must be an operator of the Event (guestApplyTrusted), else
+// ErrForbidden, a service account too: with sign-up open a person's token
+// costs no more than an e-mail address, and a guest Ticket takes a place and
+// mails a stranger. An operator gets the Ticket back and may change an existing guest's name or phone
 // number. The token-less internal hop (the route answers it only off the
 // edge) gets the zero Ticket and may only fill a detail the stored Ticket
 // lacks: whoever knows a guest's e-mail and a public Event id must not read
@@ -830,14 +830,11 @@ func (s *service) operatorOf(p authz.Principal, ev event.Event) bool {
 }
 
 // guestApplyTrusted reports whether p may write a guest with a token, see the
-// Ticket a Guest apply wrote and change an existing guest's details: the
-// forms service with ticket:forms (the role that lets it report its answers,
-// CanRecordFormResponse), or an operator of the Event (operatorOf). The
-// Event hub's "Katılımcı ekle" is offered to exactly those people.
+// Ticket a Guest apply wrote and change an existing guest's details: an
+// operator of the Event (operatorOf), the people the Event hub offers
+// "Katılımcı ekle" to. No service account: the forms service reports its
+// answers instead (docs/form-response-tickets.md).
 func (s *service) guestApplyTrusted(p authz.Principal, ev event.Event) bool {
-	if p.Product != "" {
-		return s.CanRecordFormResponse(p)
-	}
 	return s.operatorOf(p, ev)
 }
 

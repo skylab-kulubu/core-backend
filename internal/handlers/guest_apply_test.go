@@ -8,12 +8,16 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
+	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/event"
@@ -214,5 +218,70 @@ func TestGuestApplyHidesTheRouteFromTheEdge(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// One operator's token writes at most PerSubjectDay guests a day, whatever
+// the ten-minute budget allows: a refused or failed request does not count,
+// the ceiling's refusal is the usual 429 and is counted on its own.
+func TestGuestApplyCapsEachOperatorPerDay(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics := NewGuestApplyMetrics()
+	guest := NewGuestApply(clientip.Ranges{}, metrics, GuestApplyLimits{PerSubject: 100, PerSubjectWindow: time.Minute, PerSubjectDay: 3}, nil)
+	h := NewTicketHandler(ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy())))
+	app := fiber.New(fiber.Config{ErrorHandler: ErrorHandler})
+	operator := authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/YK"}}
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals(authn.LocalsIdentity, operator)
+		return c.Next()
+	})
+	route := []any{guest.HideFromEdge}
+	for _, limit := range guest.Limits() {
+		route = append(route, limit)
+	}
+	app.Post("/v1/events/:eventId/applications/guest", guest.Observe, append(route, h.ApplyGuest)...)
+
+	send := func(body string) *http.Response {
+		req := httptest.NewRequest(fiber.MethodPost, "/v1/events/"+ev.ID.String()+"/applications/guest", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Forwarded-For", "203.0.113.7")
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	if got := send(`{"firstName":"Ada"}`).StatusCode; got != fiber.StatusBadRequest {
+		t.Fatalf("bad body: %d", got)
+	}
+	for i := range 3 {
+		if got := send(`{"firstName":"Ada","lastName":"Lovelace","email":"ada` + strconv.Itoa(i) + `@example.com"}`).StatusCode; got != fiber.StatusCreated {
+			t.Fatalf("guest %d: %d", i, got)
+		}
+	}
+	refused := send(`{"firstName":"Ada","lastName":"Lovelace","email":"one-more@example.com"}`)
+	raw, _ := io.ReadAll(refused.Body)
+	retry, err := strconv.Atoi(refused.Header.Get(fiber.HeaderRetryAfter))
+	if refused.StatusCode != fiber.StatusTooManyRequests || !strings.Contains(string(raw), `"guest_apply_rate_limited"`) ||
+		err != nil || retry <= int(time.Minute.Seconds()) || retry > int((24*time.Hour).Seconds()) {
+		t.Fatalf("over the daily ceiling: %d %v %s", refused.StatusCode, refused.Header, raw)
+	}
+	text := metrics.Prometheus()
+	for _, line := range []string{
+		"skylab_guest_apply_daily_cap_total 1",
+		`skylab_guest_apply_requests_total{caller="person",outcome="created"} 3`,
+		`skylab_guest_apply_requests_total{caller="person",outcome="rate_limited"} 1`,
+	} {
+		if !strings.Contains(text, line+"\n") {
+			t.Fatalf("metrics lack %q:\n%s", line, text)
+		}
+	}
+	if DefaultGuestApplyLimits().PerSubjectDay != 300 {
+		t.Fatalf("production ceiling %d, want 300", DefaultGuestApplyLimits().PerSubjectDay)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
@@ -152,12 +153,12 @@ func assertForbidden(t *testing.T, who string, got guestAnswer) {
 	}
 }
 
-// The callers read on 2026-11-24: the Event hub (an operator's token
-// through the edge, reads the Ticket) and the forms service with
-// ticket:forms on the internal network (it no longer calls the route; it
-// reports its answers instead, docs/form-response-tickets.md). The internet
-// without a token does not find the route; a token holder who is neither is
-// refused before anything is written.
+// The caller read on 2026-11-24: the Event hub (an operator's token through
+// the edge, reads the Ticket). The forms service no longer calls the route
+// (it reports its answers, docs/form-response-tickets.md). The internet
+// without a token does not find the route, a token it cannot verify is 401,
+// and a token holder who is not an operator is refused before anything is
+// written.
 func TestGuestApplyAnswersEachCallerClass(t *testing.T) {
 	t.Parallel()
 	e := newGuestApplyEnv(t)
@@ -171,27 +172,18 @@ func TestGuestApplyAnswersEachCallerClass(t *testing.T) {
 
 	assertHidden(t, "internet", e.apply(t, "", publicClient, guest("Mallory", "ADA@example.com", "999")))
 	assertHidden(t, "internet, new e-mail", e.apply(t, "", publicClient, guest("Mallory", "mallory@example.com", "")))
-	assertHidden(t, "invalid token through the edge", e.apply(t, "not-a-jwt", publicClient, guest("Mallory", "ada@example.com", "")))
 	assertHidden(t, "private visitor through the edge", e.apply(t, "", "10.0.1.7", guest("Mallory", "mallory@example.com", "")))
 	member := groupToken(t, e.keys, memberSub, "/UYELER/ARGE/GAMELAB")
 	assertForbidden(t, "person without Event rights", e.apply(t, member, publicClient, guest("Mallory", "ada@example.com", "")))
 	assertForbidden(t, "person without Event rights, new e-mail", e.apply(t, member, publicClient, guest("Mallory", "mallory@example.com", "")))
+	assertForbidden(t, "forms with ticket:forms", e.apply(t, serviceToken(t, e.keys, "forms", "ticket:forms"), "", guest("Mallory", "ada@example.com", "")))
 	assertForbidden(t, "forms without ticket:forms", e.apply(t, serviceToken(t, e.keys, "forms"), "", guest("Mallory", "mallory@example.com", "")))
 	assertForbidden(t, "service account of no product", e.apply(t, serviceToken(t, e.keys, "some-other-client", "ticket:forms"), "", guest("Mallory", "mallory@example.com", "")))
 	assertApplied(t, "internal hop", e.apply(t, "", "", guest("Ada", "ada@example.com", "")))
 
-	forms := e.apply(t, serviceToken(t, e.keys, "forms", "ticket:forms"), "", guest("Augusta", "ada@example.com", ""))
-	if forms.status != fiber.StatusCreated || forms.body["guestFirstName"] != "Augusta" || forms.body["guestPhoneNumber"] != "555" {
-		t.Fatalf("forms service token: status %d body %v", forms.status, forms.body)
-	}
-	created := e.apply(t, serviceToken(t, e.keys, "forms", "ticket:forms"), "", guest("Grace", "grace@example.com", ""))
-	if created.status != fiber.StatusCreated || created.body["guestEmail"] != "grace@example.com" || created.body["id"] == nil {
-		t.Fatalf("forms service token, new e-mail: status %d body %v", created.status, created.body)
-	}
-
 	got := e.apply(t, leader, publicClient, guest("Augusta", "ada@example.com", ""))
 	if got.status != fiber.StatusCreated || got.body["guestFirstName"] != "Augusta" || got.body["guestPhoneNumber"] != "555" {
-		t.Fatalf("the refused callers changed the guest: %v", got.body)
+		t.Fatalf("operator's update: %v", got.body)
 	}
 	// Nobody refused wrote mallory's Ticket: the operator's is a new one
 	// (counted created below).
@@ -202,17 +194,15 @@ func TestGuestApplyAnswersEachCallerClass(t *testing.T) {
 	text := e.metrics(t)
 	for _, line := range []string{
 		`skylab_guest_apply_requests_total{caller="person",outcome="created"} 2`,
-		`skylab_guest_apply_requests_total{caller="anonymous_public",outcome="not_found"} 4`,
+		`skylab_guest_apply_requests_total{caller="anonymous_public",outcome="not_found"} 3`,
 		`skylab_guest_apply_requests_total{caller="person",outcome="refused"} 2`,
-		`skylab_guest_apply_requests_total{caller="service",outcome="refused"} 2`,
+		`skylab_guest_apply_requests_total{caller="service",outcome="refused"} 3`,
 		`skylab_guest_apply_requests_total{caller="anonymous_internal",outcome="existing"} 1`,
-		`skylab_guest_apply_requests_total{caller="service",outcome="existing"} 1`,
-		`skylab_guest_apply_requests_total{caller="service",outcome="created"} 1`,
 		`skylab_guest_apply_requests_total{caller="person",outcome="existing"} 1`,
-		"skylab_guest_apply_anonymous_public_total 4",
+		"skylab_guest_apply_anonymous_public_total 3",
 		"skylab_guest_apply_anonymous_internal_total 1",
 		"skylab_guest_apply_person_total 5",
-		"skylab_guest_apply_service_total 4",
+		"skylab_guest_apply_service_total 3",
 	} {
 		if !strings.Contains(text, line+"\n") {
 			t.Fatalf("metrics lack %q:\n%s", line, text)
@@ -220,30 +210,66 @@ func TestGuestApplyAnswersEachCallerClass(t *testing.T) {
 	}
 }
 
-// A valid token is not an unlimited licence: an operator's or the forms
-// service's token must not write guest Tickets without end. The budget is
-// wide enough for an operator adding guests by hand.
+// From the edge the route is decided before the body is read: no token is
+// 404 whatever the body (a broken one, a consents field), and a token it
+// cannot verify (expired, malformed, signed by nobody it knows) is 401, as
+// on every route behind Bearer, so the panel fetches a new token and sends
+// the request again.
+func TestGuestApplyFromTheEdgeIsDecidedBeforeTheBody(t *testing.T) {
+	t.Parallel()
+	e := newGuestApplyEnv(t)
+	for who, body := range map[string]string{
+		"broken body":    `{"firstName":`,
+		"no fields":      `{}`,
+		"consents field": `{"firstName":"Ada","lastName":"Lovelace","email":"ada@example.com","consents":["event_invitations"]}`,
+		"bad consents":   `{"firstName":"Ada","lastName":"Lovelace","email":"ada@localhost","consents":["nope"]}`,
+	} {
+		assertHidden(t, who, e.apply(t, "", publicClient, body))
+	}
+
+	expired := e.keys.Token(t, jwt.MapClaims{
+		"sub": leaderSub, "email": leaderSub + "@example.com", "groups": []string{"/UYELER/ARGE/WEBLAB/LIDERLER"},
+		"exp": time.Now().Add(-time.Minute).Unix(),
+	})
+	for who, token := range map[string]string{"expired": expired, "malformed": "not-a-jwt"} {
+		got := e.apply(t, token, publicClient, `{"firstName":`)
+		if got.status != fiber.StatusUnauthorized || got.body["code"] != nil {
+			t.Fatalf("%s token through the edge: status %d body %v", who, got.status, got.body)
+		}
+	}
+	// The same expired token on the internal network stays anonymous.
+	assertApplied(t, "expired token, internal hop", e.apply(t, expired, "", guest("Ada", "hop@example.com", "")))
+
+	text := e.metrics(t)
+	for _, line := range []string{
+		`skylab_guest_apply_requests_total{caller="anonymous_public",outcome="not_found"} 4`,
+		`skylab_guest_apply_requests_total{caller="anonymous_public",outcome="refused"} 2`,
+		`skylab_guest_apply_requests_total{caller="anonymous_internal",outcome="created"} 1`,
+	} {
+		if !strings.Contains(text, line+"\n") {
+			t.Fatalf("metrics lack %q:\n%s", line, text)
+		}
+	}
+}
+
+// A valid token is not an unlimited licence: an operator's token must not
+// write guest Tickets without end. The budget is wide enough for an operator
+// adding guests by hand; another operator keeps their own.
 func TestGuestApplyLimitsEachTokenSubject(t *testing.T) {
 	t.Parallel()
 	e := newGuestApplyEnv(t)
 	limits := handlers.DefaultGuestApplyLimits()
 	leader := groupToken(t, e.keys, leaderSub, "/UYELER/ARGE/WEBLAB/LIDERLER")
-	forms := serviceToken(t, e.keys, "forms", "ticket:forms")
 
 	for i := range limits.PerSubject {
 		if got := e.apply(t, leader, publicClient, guest("Ada", fmt.Sprintf("m%d@example.com", i), "")); got.status != fiber.StatusCreated {
 			t.Fatalf("leader %d: status %d body %v", i, got.status, got.body)
 		}
-		if got := e.apply(t, forms, "", guest("Ada", fmt.Sprintf("f%d@example.com", i), "")); got.status != fiber.StatusCreated {
-			t.Fatalf("forms %d: status %d body %v", i, got.status, got.body)
-		}
 	}
-	for who, token := range map[string]string{"leader": leader, "forms": forms} {
-		refused := e.apply(t, token, "", guest("Ada", "one-more-"+who+"@example.com", ""))
-		if refused.status != fiber.StatusTooManyRequests || refused.body["code"] != "guest_apply_rate_limited" ||
-			refused.header.Get(fiber.HeaderRetryAfter) == "" {
-			t.Fatalf("%s over the budget: status %d header %v body %v", who, refused.status, refused.header, refused.body)
-		}
+	refused := e.apply(t, leader, publicClient, guest("Ada", "one-more@example.com", ""))
+	if refused.status != fiber.StatusTooManyRequests || refused.body["code"] != "guest_apply_rate_limited" ||
+		refused.header.Get(fiber.HeaderRetryAfter) == "" {
+		t.Fatalf("over the budget: status %d header %v body %v", refused.status, refused.header, refused.body)
 	}
 	yk := groupToken(t, e.keys, ykSub, "/UYELER/YK")
 	if got := e.apply(t, yk, publicClient, guest("Ada", "yk@example.com", "")); got.status != fiber.StatusCreated {
@@ -254,7 +280,7 @@ func TestGuestApplyLimitsEachTokenSubject(t *testing.T) {
 	text := e.metrics(t)
 	for _, line := range []string{
 		`skylab_guest_apply_requests_total{caller="person",outcome="rate_limited"} 1`,
-		`skylab_guest_apply_requests_total{caller="service",outcome="rate_limited"} 1`,
+		"skylab_guest_apply_daily_cap_total 0",
 	} {
 		if !strings.Contains(text, line+"\n") {
 			t.Fatalf("metrics lack %q:\n%s", line, text)

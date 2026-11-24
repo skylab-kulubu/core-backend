@@ -27,8 +27,9 @@ import (
 // routesAheadOfBearer are the routes served before Bearer on purpose: they
 // take no sign-in, or carry a permission of their own (a key or signed
 // token in the path or link, the self-delete bearer, Guest apply's
-// optional token: an operator's or forms' token, or none on the internal
-// network, while the edge without a token gets 404, guest_apply_test.go).
+// optional token: an operator's, or none on the internal network, while
+// the edge answers 404 without a token and 401 to a token it cannot verify,
+// guest_apply_test.go).
 // Every other route reads the token through Bearer. A
 // route that needs the caller does not belong here: registered ahead of
 // Bearer it answers 401 to every token (/v1/map-regions did).
