@@ -95,13 +95,13 @@ about them.
   resolved address of every open as `media_read_link_opens.client_ip`, kept a
   year, and is rate limited on it like the certificate routes (see
   [`media-lifecycle.md`](media-lifecycle.md#access-log)).
-- Guest apply (`POST /v1/events/{eventId}/applications/guest`) limits
-  token-less requests that are not internal, per address. Internal is a
-  private address (the overlay network) or a trusted proxy that sent no
-  `X-Forwarded-For` from a peer that is not trusted: a proxy whose name did
-  not resolve still writes one, so its requests (the internet's) stay
-  public and limited. The address decides neither what the
-  caller sees nor what it may change ([`guest-apply.md`](guest-apply.md)).
+- Guest apply (`POST /v1/events/{eventId}/applications/guest`) answers
+  `404` to a token-less request that is not internal. Internal is a request
+  with no forwarding header from a private address (the overlay network) or
+  a trusted proxy: anything through Traefik carries one, and a proxy whose
+  name did not resolve still writes one, so its requests (the internet's)
+  stay public. The address decides neither what the caller sees nor what it
+  may change ([`guest-apply.md`](guest-apply.md)).
 
 Fiber believes no forwarded header (`TrustProxy` off, no `ProxyHeader`):
 `c.IP()` is the socket's address, and only this resolution reads the chain.

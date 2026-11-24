@@ -174,7 +174,11 @@ type View struct {
 	QRURL             string `json:"qrUrl"`
 	PDFURL            string `json:"pdfUrl"`
 	State             string `json:"state"`
-	Theme             Theme  `json:"theme"`
+	// Cancellable is whether the holder may cancel the Ticket from the page
+	// now (POST …/cancel, ticket.HolderCancellable): an active Ticket until
+	// its Event starts, a waitlisted one until it ends.
+	Cancellable bool  `json:"cancellable"`
+	Theme       Theme `json:"theme"`
 }
 
 // opened is a Ticket the key opened, with its Event and holder.
@@ -282,6 +286,15 @@ func (s *Service) Page(ctx context.Context, key string) (View, error) {
 	if v.MapImageURL != "" {
 		v.MapAttribution, v.MapAttributionURL = event.MapAttribution, event.MapAttributionURL
 	}
+	// The button only where it works: not on a Ticket with a check-in or of
+	// a Competition's Entrant, which the route refuses (409).
+	if ticket.HolderCancellable(ev, o.ticket, s.now()) {
+		blocked, err := ticket.CancelBlocked(ctx, s.tickets, o.ticket.ID)
+		if err != nil {
+			return View{}, err
+		}
+		v.Cancellable = !blocked
+	}
 	if !noQR(o.state) {
 		token, err := s.token(o)
 		if err != nil {
@@ -292,6 +305,29 @@ func (s *Service) Page(ctx context.Context, key string) (View, error) {
 		v.PDFURL = s.link(key, "/pdf")
 	}
 	return v, nil
+}
+
+// CancelView is the JSON of POST /v1/public/tickets/{key}/cancel: the
+// page's new state, and nothing of the person.
+type CancelView struct {
+	State string `json:"state"`
+}
+
+// Cancel is the holder cancelling the Ticket key opens
+// (kontenjan-iptal-hatirlatma 03): the key is the holder's right, as it is
+// to read it (ADR 0082). The page's own rules first (404, 410), then the
+// holder's (ticket.HolderCancel): ticket.ErrCancelClosed once too late,
+// ticket.ErrTicketCheckedIn, ticket.ErrTicketInCompetition. A Ticket
+// already cancelled answers as a new cancellation does.
+func (s *Service) Cancel(ctx context.Context, key string) (CancelView, error) {
+	o, err := s.open(ctx, key)
+	if err != nil {
+		return CancelView{}, err
+	}
+	if _, err := ticket.HolderCancel(ctx, s.tickets, s.events, o.ticket, s.now()); err != nil {
+		return CancelView{}, err
+	}
+	return CancelView{State: StateTicketCancelled}, nil
 }
 
 // CheckInsView is the JSON of GET /v1/public/tickets/{key}/check-ins: the

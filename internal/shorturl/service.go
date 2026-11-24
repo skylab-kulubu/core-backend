@@ -58,6 +58,12 @@ func (s *service) Lookup(ctx context.Context, alias string) (URL, error) {
 
 func (s *service) Redirect(ctx context.Context, alias string, hit Hit) (URL, error) {
 	u, err := s.Lookup(ctx, alias)
+	if errors.Is(err, ErrNotFound) {
+		// Only a miss asks again; a failed check keeps the plain 404.
+		if disabled, derr := s.store.AliasDisabled(ctx, alias); derr == nil && disabled {
+			return URL{}, ErrGone
+		}
+	}
 	if err != nil {
 		return URL{}, err
 	}

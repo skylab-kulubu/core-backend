@@ -49,6 +49,11 @@ type Service interface {
 	// CancelTicket and RestoreTicket are an operator's cancellation of a
 	// Ticket and its taking back (docs/ticket-cancellation.md).
 	CancelTicket(ctx context.Context, p authz.Principal, id uuid.UUID, reason string) (Ticket, error)
+	// CancelTicketTelling is POST /v1/tickets/{id}/cancel: the Ticket's
+	// holder cancels it themselves (kontenjan-iptal-hatirlatma 03; reason
+	// and notify are not theirs to give, the holder is always told), an
+	// operator as CancelTicket does, telling the holder when notify.
+	CancelTicketTelling(ctx context.Context, p authz.Principal, id uuid.UUID, reason string, notify bool) (Ticket, error)
 	RestoreTicket(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error)
 	Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error)
 	GetByUserEvent(ctx context.Context, p authz.Principal, userID, eventID uuid.UUID) (Ticket, error)
@@ -87,6 +92,22 @@ type Service interface {
 	// gönder" and "Bağlantıyı yenile" (docs/ticket-resend.md).
 	ResendTicket(ctx context.Context, p authz.Principal, id uuid.UUID, requestKey string) (Resend, error)
 	RenewTicketLink(ctx context.Context, p authz.Principal, id uuid.UUID, notify bool, requestKey string) (Ticket, Resend, error)
+	EventDoor
+}
+
+// EventDoor is the Event's door without a Session: Venue entry
+// (docs/venue-entry.md). The writes ask what the Session door asks, in the
+// same order, before any code is read.
+type EventDoor interface {
+	// AuthorizeEventDoor answers whether p may write entries at the Event's
+	// door now: ErrNotFound, an *EventClosedError, or ErrForbidden.
+	AuthorizeEventDoor(ctx context.Context, p authz.Principal, eventID uuid.UUID) error
+	EnterTicketQR(ctx context.Context, p authz.Principal, eventID uuid.UUID, token string) (DoorEntry, error)
+	EnterUser(ctx context.Context, p authz.Principal, eventID, userID uuid.UUID) (DoorEntry, error)
+	ResolveEntry(ctx context.Context, p authz.Principal, eventID uuid.UUID, target DoorCheckInTarget) (DoorEntry, error)
+	UndoEntry(ctx context.Context, p authz.Principal, eventID, entryID uuid.UUID) error
+	EntrySummary(ctx context.Context, p authz.Principal, eventID uuid.UUID) (EntrySummary, error)
+	ListEntries(ctx context.Context, p authz.Principal, eventID uuid.UUID, date string) ([]DoorEntry, error)
 }
 
 type TeamReader interface {
@@ -130,6 +151,9 @@ type service struct {
 	// scans counts Ticket QR scans (a *DoorScanMetrics extra); nil counts
 	// none.
 	scans *DoorScanMetrics
+	// clock is now for the venue day and the Event's door (a Clock
+	// extra); time.Now without one.
+	clock Clock
 	// page is the ticket page's settings (a PageConfig extra): the
 	// holder's own list links each Ticket's page.
 	page PageConfig
@@ -172,6 +196,9 @@ func NewService(tickets Store, events event.Store, az authz.Authorizer, extras .
 		}
 		if v, ok := extra.(*DoorScanMetrics); ok && v != nil {
 			s.scans = v
+		}
+		if v, ok := extra.(Clock); ok && v != nil {
+			s.clock = v
 		}
 		if v, ok := extra.(PageConfig); ok {
 			s.page = v
@@ -732,12 +759,14 @@ func normalizeGuest(g GuestInfo) GuestInfo {
 // ApplyGuest writes the guest Ticket of g's e-mail on the Event, or finds the
 // one already there (docs/guest-apply.md).
 //
-// Only a trusted caller (guestApplyTrusted) gets the Ticket back and may
-// change an existing guest's name or phone number. Anybody else, the
-// token-less forms hop included, gets the zero Ticket and may only fill a
-// detail the stored Ticket lacks: the route is public, and whoever knows a
-// guest's e-mail and a public Event id must not read the guest's phone number
-// or rename them.
+// A token holder must be an operator of the Event (guestApplyTrusted), else
+// ErrForbidden, a service account too: with sign-up open a person's token
+// costs no more than an e-mail address, and a guest Ticket takes a place and
+// mails a stranger. An operator gets the Ticket back and may change an existing guest's name or phone
+// number. The token-less internal hop (the route answers it only off the
+// edge) gets the zero Ticket and may only fill a detail the stored Ticket
+// lacks: whoever knows a guest's e-mail and a public Event id must not read
+// the guest's phone number or rename them.
 func (s *service) ApplyGuest(ctx context.Context, p authz.Principal, eventID uuid.UUID, g GuestInfo) (GuestApplication, error) {
 	return s.ApplyGuestJoining(ctx, p, eventID, g, false)
 }
@@ -772,10 +801,13 @@ func (s *service) ApplyGuestJoining(ctx context.Context, p authz.Principal, even
 			return GuestApplication{}, ErrForbidden
 		}
 	}
+	trusted := s.guestApplyTrusted(p, ev)
+	if p.ID != "" && !trusted {
+		return GuestApplication{}, ErrForbidden
+	}
 	if err := s.openForRegistration(&p, ev, operator); err != nil {
 		return GuestApplication{}, err
 	}
-	trusted := s.guestApplyTrusted(p, ev)
 	a := Admission{Waitlist: joinWaitlist}
 	if operator {
 		a = Admission{Over: true}
@@ -824,20 +856,13 @@ func (s *service) operatorOf(p authz.Principal, ev event.Event) bool {
 			s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign))
 }
 
-// guestApplyTrusted reports whether p may see the Ticket a Guest apply wrote
-// and change an existing guest's details: a product's service identity, or an
-// operator of the Event, that is a person who may update the Event or assign
-// its Tickets (Privileged included). The Event hub's "Katılımcı ekle" is
-// offered to exactly those people.
+// guestApplyTrusted reports whether p may write a guest with a token, see the
+// Ticket a Guest apply wrote and change an existing guest's details: an
+// operator of the Event (operatorOf), the people the Event hub offers
+// "Katılımcı ekle" to. No service account: the forms service reports its
+// answers instead (docs/form-response-tickets.md).
 func (s *service) guestApplyTrusted(p authz.Principal, ev event.Event) bool {
-	if p.Product != "" {
-		return true
-	}
-	if p.ID == "" {
-		return false
-	}
-	return s.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: ev.OwnerTeam}, authz.Update) ||
-		s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign)
+	return s.operatorOf(p, ev)
 }
 
 func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo, trusted bool, a Admission) (GuestApplication, error) {
@@ -945,7 +970,48 @@ func (s *service) MineIncluding(ctx context.Context, p authz.Principal, include 
 		return nil, err
 	}
 	tickets = onlyStatuses(tickets, append([]Status{StatusActive}, include...))
-	return s.withHolderLinks(ctx, s.withFeedbackLinks(ctx, s.withEvents(ctx, tickets))), nil
+	return s.withCancellable(ctx, s.withHolderLinks(ctx, s.withFeedbackLinks(ctx, s.withEvents(ctx, tickets)))), nil
+}
+
+// withCancellable says on each of the holder's Tickets whether they may
+// cancel it now (HolderMayCancel), the check-ins and Entrants read in one
+// query for all of them. When those cannot be read the Tickets say false
+// (the button hides; the route still decides), and a log line naming
+// nobody says so.
+func (s *service) withCancellable(ctx context.Context, tickets []Ticket) []Ticket {
+	if len(tickets) == 0 {
+		return tickets
+	}
+	blocked := map[uuid.UUID]bool{}
+	unread := false
+	if store, ok := s.tickets.(CancelBlockStore); ok {
+		ids := make([]uuid.UUID, len(tickets))
+		for i, t := range tickets {
+			ids[i] = t.ID
+		}
+		got, err := store.CancelBlocked(ctx, ids)
+		if err != nil {
+			s.logger.Printf("tickets: cancellation blocks not read, %d tickets answered not cancellable: %v", len(tickets), err)
+			unread = true
+		} else {
+			blocked = got
+		}
+	}
+	now := time.Now()
+	events := map[uuid.UUID]*event.Event{}
+	for i := range tickets {
+		t := &tickets[i]
+		ev, seen := events[t.EventID]
+		if !seen {
+			if got, err := s.events.Get(ctx, t.EventID); err == nil {
+				ev = &got
+			}
+			events[t.EventID] = ev
+		}
+		may := !unread && ev != nil && HolderMayCancel(*ev, *t, now, blocked[t.ID])
+		t.Cancellable = &may
+	}
+	return tickets
 }
 
 // withHolderLinks gives the holder's own Tickets their ticket page
@@ -1189,7 +1255,15 @@ func hasLeaderGroup(p authz.Principal) bool {
 	return authz.IsAnyLeader(p, authz.DefaultPolicy().LeaderSubgroups)
 }
 
+// CheckIn is the door's check-in of a Ticket it picked (the desk): the
+// Check-in, and the day's Venue entry (desk) when the Ticket has none.
 func (s *service) CheckIn(ctx context.Context, p authz.Principal, ticketID, sessionID uuid.UUID) (CheckIn, error) {
+	return s.checkIn(ctx, p, ticketID, sessionID, false)
+}
+
+// checkIn: scan is a credential the door scanned (Ticket QR, SkyPass,
+// Wallet, card), which the Event's entry mode decides.
+func (s *service) checkIn(ctx context.Context, p authz.Principal, ticketID, sessionID uuid.UUID, scan bool) (CheckIn, error) {
 	t, err := s.tickets.Get(ctx, ticketID)
 	if err != nil {
 		return CheckIn{}, err
@@ -1207,7 +1281,17 @@ func (s *service) CheckIn(ctx context.Context, p authz.Principal, ticketID, sess
 	if !s.canUseDoor(ctx, p, ev) {
 		return CheckIn{}, ErrForbidden
 	}
-	return s.addSessionCheckIn(ctx, t, sessionID)
+	if scan {
+		// A scan at the door: in the venue mode the day's Venue entry
+		// alone, else the Check-in and the day's entry if none yet
+		// (docs/venue-entry.md).
+		how := staffEntry(EntryScan, p)
+		if venueMode(ev) {
+			return s.enterAtSession(ctx, t, sessionID, how)
+		}
+		return s.addSessionCheckIn(ctx, t, sessionID, how)
+	}
+	return s.addSessionCheckIn(ctx, t, sessionID, staffEntry(EntryDesk, p))
 }
 
 // eventOf is the current Event id names.
@@ -1222,28 +1306,38 @@ func (s *service) eventOf(ctx context.Context, id uuid.UUID) (event.Event, error
 // ticketSession is the Session sessionID names, of t's Event: ErrNotFound
 // for no such Session (or Day), ErrInvalid for one of another Event.
 func (s *service) ticketSession(ctx context.Context, t Ticket, sessionID uuid.UUID) (event.Session, error) {
+	sess, _, err := s.ticketSessionDay(ctx, t, sessionID)
+	return sess, err
+}
+
+// ticketSessionDay is ticketSession with the Session's EventDay.
+func (s *service) ticketSessionDay(ctx context.Context, t Ticket, sessionID uuid.UUID) (event.Session, event.Day, error) {
 	sess, err := s.events.GetSession(ctx, sessionID)
 	if err != nil {
 		if errors.Is(err, event.ErrNotFound) {
-			return event.Session{}, ErrNotFound
+			return event.Session{}, event.Day{}, ErrNotFound
 		}
-		return event.Session{}, err
+		return event.Session{}, event.Day{}, err
 	}
 	day, err := s.events.GetDay(ctx, sess.EventDayID)
 	if err != nil {
 		if errors.Is(err, event.ErrNotFound) {
-			return event.Session{}, ErrNotFound
+			return event.Session{}, event.Day{}, ErrNotFound
 		}
-		return event.Session{}, err
+		return event.Session{}, event.Day{}, err
 	}
 	if day.EventID != t.EventID {
-		return event.Session{}, ErrInvalid
+		return event.Session{}, event.Day{}, ErrInvalid
 	}
-	return sess, nil
+	return sess, day, nil
 }
 
-func (s *service) addSessionCheckIn(ctx context.Context, t Ticket, sessionID uuid.UUID) (CheckIn, error) {
-	sess, err := s.ticketSession(ctx, t, sessionID)
+// addSessionCheckIn is the one door every Session Check-in goes through:
+// the Check-in, and in the same write the day's Venue entry the way how
+// says when the Ticket has none that day (docs/venue-entry.md). Nobody is
+// refused for not having been scanned at the door.
+func (s *service) addSessionCheckIn(ctx context.Context, t Ticket, sessionID uuid.UUID, how entryBy) (CheckIn, error) {
+	sess, day, err := s.ticketSessionDay(ctx, t, sessionID)
 	if err != nil {
 		return CheckIn{}, err
 	}
@@ -1259,7 +1353,21 @@ func (s *service) addSessionCheckIn(ctx context.Context, t Ticket, sessionID uui
 	if dup {
 		return CheckIn{}, ErrConflict
 	}
-	return s.tickets.AddCheckIn(ctx, CheckIn{TicketID: t.ID, SessionID: sessionID, EventDayID: sess.EventDayID})
+	entry, err := s.venueEntryFor(ctx, t, day, sess, how)
+	if err != nil {
+		return CheckIn{}, err
+	}
+	ci, err := s.tickets.AddCheckIn(ctx, CheckIn{
+		TicketID: t.ID, SessionID: sessionID, EventDayID: sess.EventDayID, Entry: entry,
+	})
+	if err != nil {
+		return CheckIn{}, err
+	}
+	if ci.EntryWritten {
+		s.scans.recordEntry(how.source)
+	}
+	ci.Kind = KindCheckIn
+	return ci, nil
 }
 
 func (s *service) ticketEventID(ctx context.Context, sessionID uuid.UUID) (uuid.UUID, error) {
@@ -1325,7 +1433,7 @@ func (s *service) checkInMe(ctx context.Context, p authz.Principal, sessionID uu
 	t, err := s.tickets.GetByOwnerEvent(ctx, ownerID, eventID)
 	if err == nil {
 		var ci CheckIn
-		ci, err = s.addSessionCheckIn(ctx, t, sessionID)
+		ci, err = s.addSessionCheckIn(ctx, t, sessionID, selfEntry)
 		if err == nil {
 			return ci, nil
 		}
@@ -1389,7 +1497,7 @@ func (s *service) checkInGuestTicket(ctx context.Context, sessionID, eventID uui
 	}
 	for _, t := range listed {
 		if t.EventID == eventID {
-			return s.addSessionCheckIn(ctx, t, sessionID)
+			return s.addSessionCheckIn(ctx, t, sessionID, selfEntry)
 		}
 	}
 	return CheckIn{}, ErrNotFound
@@ -1491,7 +1599,7 @@ func (s *service) CheckInUser(ctx context.Context, p authz.Principal, sessionID,
 	if err != nil {
 		return CheckIn{}, err
 	}
-	return s.CheckIn(ctx, p, t.ID, sessionID)
+	return s.checkIn(ctx, p, t.ID, sessionID, true)
 }
 
 func normalizedDoorValue(value string) string {
@@ -1591,33 +1699,44 @@ func (s *service) ResolveAndCheckIn(
 	if err != nil {
 		return DoorCheckIn{}, err
 	}
+	t, name, err := s.findDoorTicket(ctx, ev, target)
+	if err != nil {
+		return DoorCheckIn{}, err
+	}
+	ci, err := s.addSessionCheckIn(ctx, t, sessionID, staffEntry(EntryDesk, p))
+	if err != nil {
+		return DoorCheckIn{}, err
+	}
+	return DoorCheckIn{
+		ID: ci.ID, TicketID: ci.TicketID, SessionID: ci.SessionID, EventDayID: ci.EventDayID,
+		PersonName: name, CreatedAt: ci.CreatedAt, Kind: KindCheckIn,
+	}, nil
+}
+
+// findDoorTicket is the one Ticket of ev the desk's target names, with the
+// name the door shows: ErrInvalid for no target, ErrNotFound for none,
+// ErrAmbiguous for more than one. A Ticket's code first, then the person,
+// the name and e-mail (docs/ticket-qr.md).
+func (s *service) findDoorTicket(ctx context.Context, ev event.Event, target DoorCheckInTarget) (Ticket, string, error) {
 	query := normalizedDoorValue(target.Query)
 	if target.PersonID == nil && query == "" {
-		return DoorCheckIn{}, ErrInvalid
+		return Ticket{}, "", ErrInvalid
 	}
-	// A Ticket's code first, then the name and e-mail (docs/ticket-qr.md).
 	if target.PersonID == nil {
 		row, found, err := s.doorTicketByCode(ctx, ev.ID, target.Query)
 		if err != nil {
-			return DoorCheckIn{}, err
+			return Ticket{}, "", err
 		}
 		if found {
-			ci, err := s.addSessionCheckIn(ctx, row.Ticket, sessionID)
-			if err != nil {
-				return DoorCheckIn{}, err
-			}
-			return DoorCheckIn{
-				ID: ci.ID, TicketID: ci.TicketID, SessionID: ci.SessionID, EventDayID: ci.EventDayID,
-				PersonName: row.Name, CreatedAt: ci.CreatedAt,
-			}, nil
+			return row.Ticket, row.Name, nil
 		}
 	}
 	if store, ok := s.tickets.(DoorStore); ok {
-		return s.resolveStoredDoorCheckIn(ctx, store, ev, sessionID, target, query)
+		return s.findStoredDoorTicket(ctx, store, ev, target, query)
 	}
 	listed, err := s.everyTicket(ctx, ev.ID)
 	if err != nil {
-		return DoorCheckIn{}, err
+		return Ticket{}, "", err
 	}
 	type match struct {
 		ticket Ticket
@@ -1667,29 +1786,21 @@ func (s *service) ResolveAndCheckIn(
 		}
 	}
 	if len(matches) == 0 {
-		return DoorCheckIn{}, ErrNotFound
+		return Ticket{}, "", ErrNotFound
 	}
 	if len(matches) > 1 {
-		return DoorCheckIn{}, ErrAmbiguous
+		return Ticket{}, "", ErrAmbiguous
 	}
-	ci, err := s.addSessionCheckIn(ctx, matches[0].ticket, sessionID)
-	if err != nil {
-		return DoorCheckIn{}, err
-	}
-	return DoorCheckIn{
-		ID: ci.ID, TicketID: ci.TicketID, SessionID: ci.SessionID, EventDayID: ci.EventDayID,
-		PersonName: matches[0].name, CreatedAt: ci.CreatedAt,
-	}, nil
+	return matches[0].ticket, matches[0].name, nil
 }
 
-func (s *service) resolveStoredDoorCheckIn(
+func (s *service) findStoredDoorTicket(
 	ctx context.Context,
 	store DoorStore,
 	ev event.Event,
-	sessionID uuid.UUID,
 	target DoorCheckInTarget,
 	query string,
-) (DoorCheckIn, error) {
+) (Ticket, string, error) {
 	var rows []DoorTicketIdentity
 	var err error
 	if target.PersonID != nil {
@@ -1698,7 +1809,7 @@ func (s *service) resolveStoredDoorCheckIn(
 		rows, err = store.SearchDoorTickets(ctx, ev.ID, query, true, 2)
 	}
 	if err != nil {
-		return DoorCheckIn{}, err
+		return Ticket{}, "", err
 	}
 	if len(rows) == 0 && target.PersonID == nil && s.directory != nil {
 		people, _ := s.directory.SearchUsers(ctx, target.Query, assignableUserLimit)
@@ -1719,7 +1830,7 @@ func (s *service) resolveStoredDoorCheckIn(
 		}
 		rows, err = store.DoorTicketsByOwners(ctx, ev.ID, ownerIDs)
 		if err != nil {
-			return DoorCheckIn{}, err
+			return Ticket{}, "", err
 		}
 		for i := range rows {
 			if rows[i].Ticket.OwnerID == nil {
@@ -1750,19 +1861,12 @@ func (s *service) resolveStoredDoorCheckIn(
 		})
 	}
 	if len(rows) == 0 {
-		return DoorCheckIn{}, ErrNotFound
+		return Ticket{}, "", ErrNotFound
 	}
 	if len(rows) > 1 {
-		return DoorCheckIn{}, ErrAmbiguous
+		return Ticket{}, "", ErrAmbiguous
 	}
-	ci, err := s.addSessionCheckIn(ctx, rows[0].Ticket, sessionID)
-	if err != nil {
-		return DoorCheckIn{}, err
-	}
-	return DoorCheckIn{
-		ID: ci.ID, TicketID: ci.TicketID, SessionID: ci.SessionID, EventDayID: ci.EventDayID,
-		PersonName: rows[0].Name, CreatedAt: ci.CreatedAt,
-	}, nil
+	return rows[0].Ticket, rows[0].Name, nil
 }
 
 func (s *service) DoorActivity(
@@ -1774,8 +1878,72 @@ func (s *service) DoorActivity(
 	if err != nil {
 		return DoorActivity{}, err
 	}
+	activity, err := s.sessionActivity(ctx, ev, sessionID)
+	if err != nil || !venueMode(ev) {
+		return activity, err
+	}
+	return s.withDayEntries(ctx, ev, sessionID, activity)
+}
+
+// doorActivityLimit is how many of the latest the door activity lists.
+const doorActivityLimit = 20
+
+// withDayEntries adds the day's Venue entries to a Session's door activity
+// in the venue mode (kind entry), where the door's scans write them: the
+// door shows who came in today (docs/venue-entry.md). An entry is listed
+// with the Session asked for, so the door's undo by id finds it.
+func (s *service) withDayEntries(ctx context.Context, ev event.Event, sessionID uuid.UUID, activity DoorActivity) (DoorActivity, error) {
+	sess, day, err := s.ticketSessionDay(ctx, Ticket{EventID: ev.ID}, sessionID)
+	if err != nil {
+		return DoorActivity{}, err
+	}
+	date, err := s.sessionEntryDate(ctx, ev.ID, day, sess)
+	if err != nil {
+		return DoorActivity{}, err
+	}
+	entries, err := s.namedEntries(ctx, ev.ID, date)
+	if err != nil {
+		return DoorActivity{}, err
+	}
+	for _, e := range entries {
+		activity.Items = append(activity.Items, DoorCheckIn{
+			ID: e.ID, TicketID: e.TicketID, SessionID: sessionID, EventDayID: day.ID,
+			PersonName: e.Name, CreatedAt: e.CreatedAt, Kind: KindEntry,
+		})
+	}
+	activity.Total += len(entries)
+	sort.SliceStable(activity.Items, func(i, j int) bool {
+		return activity.Items[i].CreatedAt.After(activity.Items[j].CreatedAt)
+	})
+	if len(activity.Items) > doorActivityLimit {
+		activity.Items = activity.Items[:doorActivityLimit]
+	}
+	return activity, nil
+}
+
+// namedEntries are the Event's Venue entries on date, each with the name
+// the door shows; a name the store did not know is the Ticket's.
+func (s *service) namedEntries(ctx context.Context, eventID uuid.UUID, date string) ([]DoorEntry, error) {
+	entries, err := s.tickets.VenueEntriesOn(ctx, eventID, date)
+	if err != nil {
+		return nil, err
+	}
+	for i := range entries {
+		if entries[i].Name != "" {
+			continue
+		}
+		if t, err := s.tickets.Get(ctx, entries[i].TicketID); err == nil {
+			entries[i].Name, _, _ = s.localDoorTicketIdentity(ctx, t)
+		}
+	}
+	return entries, nil
+}
+
+// sessionActivity is the Session's latest check-ins (kind check_in) and
+// how many it has.
+func (s *service) sessionActivity(ctx context.Context, ev event.Event, sessionID uuid.UUID) (DoorActivity, error) {
 	if store, ok := s.tickets.(DoorStore); ok {
-		return store.DoorSessionActivity(ctx, sessionID, 20)
+		return store.DoorSessionActivity(ctx, sessionID, doorActivityLimit)
 	}
 	listed, err := s.tickets.ListByEvent(ctx, ev.ID)
 	if err != nil {
@@ -1798,8 +1966,8 @@ func (s *service) DoorActivity(
 		return pending[i].checkIn.CreatedAt.After(pending[j].checkIn.CreatedAt)
 	})
 	total := len(pending)
-	if len(pending) > 20 {
-		pending = pending[:20]
+	if len(pending) > doorActivityLimit {
+		pending = pending[:doorActivityLimit]
 	}
 	items := make([]DoorCheckIn, 0, len(pending))
 	for _, item := range pending {
@@ -1807,7 +1975,7 @@ func (s *service) DoorActivity(
 		ci := item.checkIn
 		items = append(items, DoorCheckIn{
 			ID: ci.ID, TicketID: ci.TicketID, SessionID: ci.SessionID, EventDayID: ci.EventDayID,
-			PersonName: name, CreatedAt: ci.CreatedAt,
+			PersonName: name, CreatedAt: ci.CreatedAt, Kind: KindCheckIn,
 		})
 	}
 	return DoorActivity{Total: total, Items: items}, nil

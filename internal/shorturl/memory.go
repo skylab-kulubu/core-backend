@@ -36,6 +36,20 @@ func (s *MemoryStore) GetByRetiredAlias(_ context.Context, alias string) (URL, e
 	return u, nil
 }
 
+func (s *MemoryStore) AliasDisabled(_ context.Context, alias string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if u, err := s.findAliasLocked(alias, uuid.Nil, true); err == nil && u.DisabledAt != nil {
+		return true, nil
+	}
+	if urlID, ok := s.retired[alias]; ok {
+		if u, ok := s.byID[urlID]; ok && u.DisabledAt != nil {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *MemoryStore) GetByForm(_ context.Context, formID uuid.UUID) (URL, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

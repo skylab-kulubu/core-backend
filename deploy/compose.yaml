@@ -71,6 +71,8 @@ services:
       RABBITMQ_VHOST: ${RABBITMQ_VHOST:-}
       RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-}
+      EVENTS_FORMS_ENABLED: ${EVENTS_FORMS_ENABLED:-}
+      FORMS_INTERNAL_URL: ${FORMS_INTERNAL_URL:-}
       # Membership mail (docs/team-membership-mail.md): unset takes the
       # seeded key, an empty value turns that kind off.
       SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY: ${SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY-club.team-membership}
@@ -98,6 +100,10 @@ services:
       TICKET_STATUS_MAIL: ${TICKET_STATUS_MAIL:-off}
       # A published Event's new time or place (docs/event-updated-notification.md).
       EVENT_UPDATED_NOTIFICATION: ${EVENT_UPDATED_NOTIFICATION:-off}
+      # The reminder the day before an Event (docs/event-reminder.md).
+      EVENT_REMINDER_NOTIFICATION: ${EVENT_REMINDER_NOTIFICATION:-off}
+      SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY: ${SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY-event.reminder}
+      EVENT_REMINDER_PER_MINUTE: ${EVENT_REMINDER_PER_MINUTE:-20}
       GOTENBERG_URL: ${GOTENBERG_URL:-http://gotenberg:3000}
       PUBLIC_API_ORIGIN: ${PUBLIC_API_ORIGIN:-}
       PUBLIC_VERIFY_ORIGIN: ${PUBLIC_VERIFY_ORIGIN:-https://skyl.app/c}

@@ -183,14 +183,14 @@ func TestRolesModeDecidesFromTheRole(t *testing.T) {
 	}
 
 	// Guest apply trusts an operator of the Event: the role's holder gets the
-	// Ticket back, the YK member without roles the anonymous answer.
+	// Ticket back, the YK member without roles is refused (no operator).
 	guest := `{"firstName":"Ada","lastName":"Lovelace","email":"ada@example.test"}`
 	trusted := sendJSON(t, e.app, e.token(t, nil, authz.RoleEventManage), fiber.MethodPost, "/v1/events/"+eventID+"/applications/guest", guest)
 	if trusted.status != fiber.StatusCreated || trusted.body["id"] == nil {
 		t.Errorf("guest apply as event:manage: %d %v", trusted.status, trusted.body)
 	}
 	untrusted := sendJSON(t, e.app, e.token(t, []string{"/UYELER/YK"}), fiber.MethodPost, "/v1/events/"+eventID+"/applications/guest", guest)
-	if untrusted.status != fiber.StatusCreated || untrusted.body["id"] != nil || untrusted.body["status"] != "applied" {
+	if untrusted.status != fiber.StatusForbidden {
 		t.Errorf("guest apply as YK without roles: %d %v", untrusted.status, untrusted.body)
 	}
 

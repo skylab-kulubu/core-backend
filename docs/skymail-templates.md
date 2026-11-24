@@ -90,6 +90,13 @@ off until `TICKET_CREATED_NOTIFICATION=on`. See
 location tells its Ticket holders, the changes of 15 minutes gathered in one
 Notification. See [event-updated-notification.md](event-updated-notification.md).
 
+`event.reminder` too, off until `EVENT_REMINDER_NOTIFICATION=on`: at 18:00
+Istanbul time the day before a published Event starts, everyone holding an
+active Ticket of it is reminded once, one mail per address, at most
+`EVENT_REMINDER_PER_MINUTE` (20) mails a minute.
+`SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY` addresses it (unset: the key above;
+empty: off). See [event-reminder.md](event-reminder.md).
+
 A ninth, `club.management-term`, rides a queue of its own the same way: the
 warning 14 days and 1 day before a YK, DK or Team Leader membership's term
 ends (to the holder and those over them), the list of terms marked expired

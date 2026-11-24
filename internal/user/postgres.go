@@ -578,10 +578,14 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		WHERE owner_id = $1 AND status = 'waitlisted'`,
 		// The Ticket stays, anonymous: its page and Ticket QR stop working
 		// (no access key, a new QR version; docs/ticket-access-key-and-code.md).
-		// The operator's cancellation reason may name the person: it goes too.
-		`UPDATE tickets SET owner_id = NULL, access_key = NULL, qr_version = qr_version + 1, cancel_reason = NULL WHERE owner_id = $1`,
+		// The operator's cancellation reason may name the person: it goes too,
+		// as does the forms answer the Ticket came from (Forms' id of it).
+		`UPDATE tickets SET owner_id = NULL, access_key = NULL, qr_version = qr_version + 1, cancel_reason = NULL, form_response_id = NULL WHERE owner_id = $1`,
 		`UPDATE certificates SET owner_id = NULL, recipient_email = '' WHERE owner_id = $1`,
 		`DELETE FROM event_door_staff WHERE user_id = $1`,
+		// Venue entries stay with their Tickets (docs/venue-entry.md); the
+		// door staff who wrote one is forgotten.
+		`UPDATE venue_entries SET by_user_id = NULL WHERE by_user_id = $1`,
 		`UPDATE urls SET created_by = NULL WHERE created_by = $1`,
 		`UPDATE url_hits
 		SET user_id = NULL, ip = '', user_agent = '', referer = '',
@@ -735,7 +739,7 @@ func clearGuestData(ctx context.Context, tx pgx.Tx, addresses []string, at time.
 	if _, err := tx.Exec(ctx, `
 		UPDATE tickets
 		SET guest_first_name = '', guest_last_name = '', guest_email = '', guest_phone_number = '', updated_at = $2,
-			access_key = NULL, qr_version = qr_version + 1, cancel_reason = NULL
+			access_key = NULL, qr_version = qr_version + 1, cancel_reason = NULL, form_response_id = NULL
 		WHERE owner_id IS NULL AND guest_email <> '' AND lower(btrim(guest_email)) = ANY($1)
 	`, emails, at); err != nil {
 		return err

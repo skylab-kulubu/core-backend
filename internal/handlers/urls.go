@@ -121,6 +121,12 @@ func (h *URLHandler) redirect(c fiber.Ctx, channel shorturl.UTM) error {
 		UTM:       utm,
 		UserID:    userID,
 	})
+	if errors.Is(err, shorturl.ErrNotFound) {
+		c.Vary(fiber.HeaderAccept)
+		if wantsShortLinkPage(c) {
+			return shortLinkMissPage(c, errors.Is(err, shorturl.ErrGone))
+		}
+	}
 	if err != nil {
 		return urlError(c, err)
 	}

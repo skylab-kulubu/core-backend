@@ -25,11 +25,13 @@ func ticketPDFAttachmentOn(getenv func(string) string) (bool, error) {
 	return onOff(getenv, "TICKET_PDF_ATTACHMENT")
 }
 
-// ticketStatusMailOn reads TICKET_STATUS_MAIL (docs/event-capacity.md): on,
-// the waiting list's mails go ("Bekleme listesindesin", "Yer açıldı");
-// unset or off, none does, and a Ticket promoted off the list gets the new
-// Ticket's mail while that is on. It needs SkyMail's templates
-// (event.waitlist-joined, event.waitlist-promoted) seeded first.
+// ticketStatusMailOn reads TICKET_STATUS_MAIL (docs/event-capacity.md,
+// docs/ticket-status-mail.md): on, the waiting list's mails go ("Bekleme
+// listesindesin", "Yer açıldı") and the cancellation's ("Biletin iptal
+// edildi"); unset or off, none does, and a Ticket promoted off the list
+// gets the new Ticket's mail while that is on. It needs SkyMail's templates
+// (event.waitlist-joined, event.waitlist-promoted, event.ticket-cancelled)
+// seeded first.
 func ticketStatusMailOn(getenv func(string) string) (bool, error) {
 	return onOff(getenv, "TICKET_STATUS_MAIL")
 }
@@ -80,7 +82,7 @@ func startTicketCreatedNotification(ctx context.Context, on, statusOn bool, stor
 	store.NotifyStatus(statusOn)
 	events.NotifyTicketStatus(statusOn)
 	if statusOn {
-		logf("ticket status mail: on (%s, %s)", mail.WaitlistJoinedType, mail.WaitlistPromotedType)
+		logf("ticket status mail: on (%s, %s, %s)", mail.WaitlistJoinedType, mail.WaitlistPromotedType, mail.TicketCancelledType)
 	} else {
 		logf("ticket status mail: off (TICKET_STATUS_MAIL is not on)")
 	}

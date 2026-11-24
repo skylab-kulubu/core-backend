@@ -64,6 +64,16 @@ func (s *PostgresStore) GetByRetiredAlias(ctx context.Context, alias string) (UR
 	return u, mapURLErr(err)
 }
 
+func (s *PostgresStore) AliasDisabled(ctx context.Context, alias string) (bool, error) {
+	var disabled bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM urls WHERE alias = $1 AND disabled_at IS NOT NULL)
+		    OR EXISTS (
+		        SELECT 1 FROM url_retired_aliases r JOIN urls u ON u.id = r.url_id
+		        WHERE r.alias = $1 AND u.disabled_at IS NOT NULL)`, alias).Scan(&disabled)
+	return disabled, err
+}
+
 func (s *PostgresStore) GetByForm(ctx context.Context, formID uuid.UUID) (URL, error) {
 	u, err := scanURL(s.pool.QueryRow(ctx, `SELECT `+urlCols+` FROM urls WHERE form_id = $1 AND disabled_at IS NULL`, formID))
 	return u, mapURLErr(err)
