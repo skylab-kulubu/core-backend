@@ -215,6 +215,22 @@ func (s *MemoryStore) CancelTelling(ctx context.Context, id uuid.UUID, by Cancel
 	return s.withCheckInsLocked(t), true, nil
 }
 
+// CancelBlocked is the database's, by the check-ins alone (the memory
+// store keeps no Competitions).
+func (s *MemoryStore) CancelBlocked(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[uuid.UUID]bool{}
+	for _, id := range ids {
+		for _, c := range s.checkIns {
+			if c.TicketID == id {
+				out[id] = true
+			}
+		}
+	}
+	return out, nil
+}
+
 // FormResponseTickets is the database's.
 func (s *MemoryStore) FormResponseTickets(_ context.Context, responseID uuid.UUID) ([]Ticket, error) {
 	s.mu.Lock()

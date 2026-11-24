@@ -132,8 +132,11 @@ ticket page with its key, `POST /v1/public/tickets/{key}/cancel`
 - No Team audit row: the person acts on their own Ticket. The log line is
   `ticket_cancelled_by_holder` (the member's route: the request, the Ticket
   and the Event; the page's: the request only).
-- `GET /v1/public/tickets/{key}` says `cancellable`, so the page shows the
-  button only while it works.
+- `GET /v1/public/tickets/{key}` and each Ticket of `GET /v1/tickets/me`
+  say `cancellable`, so the page, Hesap Merkezi and sky-app show the button
+  only while it works: the rule above, and neither a check-in nor a current
+  Entrant (read in one query for the whole list). No other answer carries
+  it.
 
 ## `POST /v1/tickets/{id}/restore`
 

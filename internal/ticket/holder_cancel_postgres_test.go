@@ -111,3 +111,44 @@ func TestFormResponseIDOnPostgres(t *testing.T) {
 		t.Fatalf("after the panel's restore %+v %v", found, err)
 	}
 }
+
+// CancelBlocked reads Cancel's refusals for many Tickets at once: a
+// current Entrant's Ticket and a checked-in one are blocked; a withdrawn
+// Entrant's and a Ticket without either are not.
+func TestCancelBlockedOnPostgres(t *testing.T) {
+	e := newResendEnv(t)
+	ctx := context.Background()
+	compID, entrantID := uuid.New(), uuid.New()
+	for _, step := range []struct {
+		q    string
+		args []any
+	}{
+		{`INSERT INTO competitions (id, event_id, name) VALUES ($1, $2, 'Yarışma')`, []any{compID, e.ev.ID}},
+		{`INSERT INTO competition_entrants (id, competition_id) VALUES ($1, $2)`, []any{entrantID, compID}},
+		{`INSERT INTO competition_entrant_members (entrant_id, competition_id, ticket_id) VALUES ($1, $2, $3)`, []any{entrantID, compID, e.guest.ID}},
+	} {
+		if _, err := e.pool.Exec(ctx, step.q, step.args...); err != nil {
+			t.Fatalf("%s: %v", step.q, err)
+		}
+	}
+	other := uuid.New()
+	blocked, err := e.store.CancelBlocked(ctx, []uuid.UUID{e.guest.ID, other})
+	if err != nil || !blocked[e.guest.ID] || blocked[other] || len(blocked) != 1 {
+		t.Fatalf("entrant %v %v", blocked, err)
+	}
+	if _, err := e.pool.Exec(ctx, `UPDATE competition_entrants SET status = 'withdrawn' WHERE id = $1`, entrantID); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, err := e.store.CancelBlocked(ctx, []uuid.UUID{e.guest.ID}); err != nil || blocked[e.guest.ID] {
+		t.Fatalf("withdrawn %v %v", blocked, err)
+	}
+	if _, err := e.store.AddCheckIn(ctx, ticket.CheckIn{TicketID: e.guest.ID, SessionID: e.sess.ID, EventDayID: e.sess.EventDayID}); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, err := e.store.CancelBlocked(ctx, []uuid.UUID{e.guest.ID}); err != nil || !blocked[e.guest.ID] {
+		t.Fatalf("checked in %v %v", blocked, err)
+	}
+	if blocked, err := e.store.CancelBlocked(ctx, nil); err != nil || len(blocked) != 0 {
+		t.Fatalf("none %v %v", blocked, err)
+	}
+}

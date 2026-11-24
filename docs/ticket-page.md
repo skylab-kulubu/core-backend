@@ -92,7 +92,8 @@ for many people at once. A key that is not 26 characters of `A`–`Z` and
 - `cancellable`: whether the holder may cancel the Ticket from the page now
   (`POST …/cancel` below): an active Ticket until the Event starts, a
   waitlisted one until it ends ("Listeden çık"); never a cancelled Ticket,
-  nor one of a cancelled Event. An Event with no date never starts. The
+  one of a cancelled Event, one with a check-in or one of a Competition's
+  current Entrant (the route would answer `409`). An Event with no date never starts. The
   site shows "Biletimi iptal et" only while it is `true`.
 
 `404` (with nothing about anyone): an unknown or malformed key, a draft

@@ -54,6 +54,41 @@ type FormResponseStore interface {
 	FormResponseTickets(ctx context.Context, responseID uuid.UUID) ([]Ticket, error)
 }
 
+// CancelBlockStore reads which of the Tickets ids no cancellation may
+// touch (PostgresStore, MemoryStore): one with a check-in, or of a
+// Competition's current Entrant, as Cancel refuses them
+// (ErrTicketCheckedIn, ErrTicketInCompetition). Only the blocked ones are
+// in the answer.
+type CancelBlockStore interface {
+	CancelBlocked(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error)
+}
+
+// HolderMayCancel is HolderCancellable for a Ticket that no cancellation
+// may touch (blocked: CancelBlockStore) too: what the ticket page's and the
+// holder's list's cancellable say, so the button shows only where it works.
+func HolderMayCancel(ev event.Event, t Ticket, now time.Time, blocked bool) bool {
+	return !blocked && HolderCancellable(ev, t, now)
+}
+
+// cancelBlocked reads CancelBlockStore for one Ticket; a store that keeps
+// no such thing blocks nothing.
+func cancelBlocked(ctx context.Context, tickets any, id uuid.UUID) (bool, error) {
+	store, ok := tickets.(CancelBlockStore)
+	if !ok {
+		return false, nil
+	}
+	blocked, err := store.CancelBlocked(ctx, []uuid.UUID{id})
+	if err != nil {
+		return false, err
+	}
+	return blocked[id], nil
+}
+
+// CancelBlocked is cancelBlocked for the ticket page.
+func CancelBlocked(ctx context.Context, tickets Store, id uuid.UUID) (bool, error) {
+	return cancelBlocked(ctx, tickets, id)
+}
+
 // HolderCancellable reports whether t's holder may cancel it themselves at
 // now (kontenjan-iptal-hatirlatma 03; Yusuf, 2026-11-24): an active Ticket
 // until its Event starts, a waitlisted one (leaving the list) until the

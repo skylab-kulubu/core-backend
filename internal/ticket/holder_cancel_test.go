@@ -177,3 +177,45 @@ func TestHolderCancelPromotesTheWaitingList(t *testing.T) {
 		t.Fatalf("statuses %v", s)
 	}
 }
+
+// The holder's own list says cancellable on each Ticket: an active one
+// before the Event starts yes; one with a check-in, or cancelled, no.
+func TestMineSaysCancellable(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	e := newCancelEnv(t)
+	cancellable := func(include ...ticket.Status) map[uuid.UUID]*bool {
+		t.Helper()
+		mine, err := e.svc.MineIncluding(ctx, e.holder, include)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[uuid.UUID]*bool{}
+		for _, tk := range mine {
+			out[tk.ID] = tk.Cancellable
+		}
+		return out
+	}
+	if got := cancellable()[e.member.ID]; got == nil || !*got {
+		t.Fatalf("active: %v", got)
+	}
+	if _, err := e.store.AddCheckIn(ctx, ticket.CheckIn{TicketID: e.member.ID, SessionID: e.sess.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if got := cancellable()[e.member.ID]; got == nil || *got {
+		t.Fatalf("checked in: %v", got)
+	}
+
+	f := newCancelEnv(t)
+	if _, err := f.svc.CancelTicketTelling(ctx, f.holder, f.member.ID, "", false); err != nil {
+		t.Fatal(err)
+	}
+	mine, err := f.svc.MineIncluding(ctx, f.holder, []ticket.Status{ticket.StatusCancelled})
+	if err != nil || len(mine) != 1 || mine[0].Cancellable == nil || *mine[0].Cancellable {
+		t.Fatalf("cancelled: %+v %v", mine, err)
+	}
+	// Only the holder's list carries it.
+	if got, err := f.svc.Get(ctx, weblabLead, f.guest.ID); err != nil || got.Cancellable != nil {
+		t.Fatalf("another answer: %+v %v", got.Cancellable, err)
+	}
+}

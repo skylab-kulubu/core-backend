@@ -279,13 +279,21 @@ func (s *Service) Page(ctx context.Context, key string) (View, error) {
 		MapImageURL:   media.ConfiguredAddresses().Object(ev.MapImageURL),
 		OwnerTeam:     ev.OwnerTeam, OrganizerName: organizer.Name(ev.OwnerTeam), EventStatus: string(ev.Status),
 		HolderName: o.holder, Code: o.ticket.Code, State: o.state,
-		Cancellable:   ticket.HolderCancellable(ev, o.ticket, s.now()),
 		Theme:         Theme{Key: th.Key, Accent: Accent(ev)},
 		CoverImageURL: media.ConfiguredAddresses().Object(ev.CoverImageURL),
 		CoverColors:   append([]string{}, ev.CoverColors...),
 	}
 	if v.MapImageURL != "" {
 		v.MapAttribution, v.MapAttributionURL = event.MapAttribution, event.MapAttributionURL
+	}
+	// The button only where it works: not on a Ticket with a check-in or of
+	// a Competition's Entrant, which the route refuses (409).
+	if ticket.HolderCancellable(ev, o.ticket, s.now()) {
+		blocked, err := ticket.CancelBlocked(ctx, s.tickets, o.ticket.ID)
+		if err != nil {
+			return View{}, err
+		}
+		v.Cancellable = !blocked
 	}
 	if !noQR(o.state) {
 		token, err := s.token(o)

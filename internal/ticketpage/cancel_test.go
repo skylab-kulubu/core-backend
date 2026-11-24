@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/ticketpage"
 )
@@ -91,5 +92,24 @@ func TestPageCancelUnknownKey(t *testing.T) {
 	}
 	if _, err := f.svc.Cancel(t.Context(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ"); !errors.Is(err, ticketpage.ErrNotFound) {
 		t.Fatalf("unknown: %v", err)
+	}
+}
+
+// A Ticket with a check-in is not cancellable on the page (the route would
+// answer 409 ticket_checked_in): the button does not show.
+func TestPageNotCancellableAfterACheckIn(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	ctx := t.Context()
+	g := f.guest("elif@example.com")
+	if _, err := f.store.AddCheckIn(ctx, ticket.CheckIn{TicketID: g.ID, SessionID: uuid.New()}); err != nil {
+		t.Fatal(err)
+	}
+	view, err := f.svc.Page(ctx, g.AccessKey)
+	if err != nil || view.Cancellable {
+		t.Fatalf("checked in: %+v %v", view, err)
+	}
+	if _, err := f.svc.Cancel(ctx, g.AccessKey); !errors.Is(err, ticket.ErrTicketCheckedIn) {
+		t.Fatalf("cancel: %v", err)
 	}
 }

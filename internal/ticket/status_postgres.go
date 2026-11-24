@@ -91,6 +91,33 @@ func (s *PostgresStore) CancelTelling(ctx context.Context, id uuid.UUID, by Canc
 	return got, changed, nil
 }
 
+// CancelBlocked is CancelBlockStore's: the Tickets of ids with a check-in
+// or of a Competition's current Entrant, in one query (Cancel's test).
+func (s *PostgresStore) CancelBlocked(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
+	out := map[uuid.UUID]bool{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT ticket_id FROM ticket_checkins WHERE ticket_id = ANY($1)
+		UNION
+		SELECT m.ticket_id FROM competition_entrant_members m
+		JOIN competition_entrants e ON e.id = m.entrant_id
+		WHERE m.ticket_id = ANY($1) AND e.status = 'active'`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
 // FormResponseTickets are the Tickets the forms answer responseID wrote or
 // reopened, of any status.
 func (s *PostgresStore) FormResponseTickets(ctx context.Context, responseID uuid.UUID) ([]Ticket, error) {
