@@ -451,3 +451,37 @@ func TestADayLateIsExpired(t *testing.T) {
 		t.Fatalf("%v %+v", err, report)
 	}
 }
+
+// The welcome carries the organizer's note as it is, and cut at its web
+// addresses for the template to link them (trailing punctuation left out);
+// without a note both are empty and the section is not in the mail.
+func TestWelcomeCarriesTheAttendeeNote(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t, event.RuleNone)
+	e.program(0)
+	e.welcome(e.member)
+	if _, err := e.svc.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.mail.sent[0].vars; got["AttendeeNote"] != "" || asJSON(t, got["AttendeeNoteParts"]) != "[]" {
+		t.Fatalf("no note: %v %s", got["AttendeeNote"], asJSON(t, got["AttendeeNoteParts"]))
+	}
+
+	note := "Wi-Fi: SKYLAB\nTarif: https://example.test/yol?a=1. Sonra D-001"
+	e.ev.AttendeeNote = &note
+	if _, err := e.events.Update(ctx, e.ev); err != nil {
+		t.Fatal(err)
+	}
+	e.welcome(e.guest)
+	if _, err := e.svc.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := e.mail.sent[1].vars
+	if got["AttendeeNote"] != note {
+		t.Fatalf("note %q", got["AttendeeNote"])
+	}
+	want := `[{"Text":"Wi-Fi: SKYLAB\nTarif: ","Url":""},{"Text":"https://example.test/yol?a=1","Url":"https://example.test/yol?a=1"},{"Text":". Sonra D-001","Url":""}]`
+	if parts := asJSON(t, got["AttendeeNoteParts"]); parts != want {
+		t.Fatalf("parts %s", parts)
+	}
+}

@@ -1897,15 +1897,20 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM information_schema.columns
 			WHERE table_schema = 'public' AND table_name = 'form_pull_watermarks' AND column_name = 'last_backfill_at'
 		  )`,
-	// The door's mails (docs/attendance-mail.md): the Event's two switches,
+	// The door's mails (docs/attendance-mail.md): the Event's two switches
+	// and its attendee note with its check,
 	// the queue's kind check and its two one-a-day/one-a-Session keys.
 	20261125203000: `
 		SELECT 1
 		WHERE (
 			SELECT count(*) FROM information_schema.columns
 			WHERE table_schema = 'public' AND table_name = 'events'
-			  AND column_name IN ('attendance_welcome_mail', 'attendance_recorded_mail')
-		) = 2
+			  AND column_name IN ('attendance_welcome_mail', 'attendance_recorded_mail', 'attendee_note')
+		) = 3
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events') AND conname = 'events_attendee_note_check' AND convalidated
+		)
 		AND EXISTS (
 			SELECT 1 FROM pg_constraint
 			WHERE conrelid = to_regclass('public.attendance_mails') AND conname = 'attendance_mails_kind_check' AND convalidated

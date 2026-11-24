@@ -48,6 +48,13 @@ func TestAttendanceMailsMigration(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT attendance_welcome_mail, attendance_recorded_mail FROM events WHERE id = $1`, eventID).Scan(&welcome, &recorded); err != nil || !welcome || !recorded {
 		t.Fatalf("the release before's Event: %v %v %v", welcome, recorded, err)
 	}
+	var note string
+	if err := pool.QueryRow(ctx, `SELECT attendee_note FROM events WHERE id = $1`, eventID).Scan(&note); err != nil || note != "" {
+		t.Fatalf("the release before's note: %q %v", note, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE events SET attendee_note = repeat('a', 1001) WHERE id = $1`, eventID); err == nil {
+		t.Error("a note of 1001 characters was taken")
+	}
 	insert := `INSERT INTO attendance_mails (id, kind, ticket_id, event_id, entry_date, session_id, next_attempt_at) VALUES (gen_random_uuid(), $1, $2, $3, '2031-03-14', $4, now())`
 	if _, err := pool.Exec(ctx, insert, "welcome", ticketID, eventID, sessionID); err == nil {
 		t.Error("a welcome with a Session was taken")

@@ -155,12 +155,25 @@ func TestStoreQueuesWithTheScan(t *testing.T) {
 
 	off := false
 	e.ev.AttendanceWelcomeMail = &off
+	note := "Wi-Fi: SKYLAB\nParola: ornek"
+	e.ev.AttendeeNote = &note
 	if _, err := e.events.Update(ctx, e.ev); err != nil {
 		t.Fatal(err)
 	}
 	e.checkIn(t, e.guest, e.talk)
 	if got := e.rows(t, e.guest); len(got) != 1 || got[0].kind != attendancemail.KindRecorded {
 		t.Fatalf("welcome switched off: %+v", got)
+	}
+	if got, _ := e.events.Get(ctx, e.ev.ID); got.AttendeeNote == nil || *got.AttendeeNote != note {
+		t.Fatalf("note %v", got.AttendeeNote)
+	}
+	// A write that leaves the note keeps it.
+	e.ev.AttendeeNote = nil
+	if _, err := e.events.Update(ctx, e.ev); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := e.events.GetIncludingArchived(ctx, e.ev.ID); got.AttendeeNote == nil || *got.AttendeeNote != note {
+		t.Fatalf("kept note %v", got.AttendeeNote)
 	}
 	if got, _ := e.events.Get(ctx, e.ev.ID); got.AttendanceWelcomeMail == nil || *got.AttendanceWelcomeMail || got.AttendanceRecordedMail == nil || !*got.AttendanceRecordedMail {
 		t.Fatalf("switches %v %v", got.AttendanceWelcomeMail, got.AttendanceRecordedMail)

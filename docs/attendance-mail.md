@@ -18,9 +18,30 @@ unsubscribe header. A member gets a Notification (`POST /v1/notifications`:
 inbox + e-mail) under an Idempotency-Key; a guest the template by address
 (`POST /v1/mail_tasks/single`).
 
-The day-end summary (`event.attendance-day-summary`, ticket 06) and the
-organizer's venue note (`attendeeNote`, ticket 03) are not in core yet: the
-welcome sends `AttendeeNote` empty.
+The day-end summary (`event.attendance-day-summary`, ticket 06) is not in
+core yet.
+
+## The attendee note
+
+`attendeeNote` (ticket 03; Yusuf, 2026-11-24 S3) is the organizer's note for
+whoever enters: the venue's Wi-Fi, the way to the room. Plain text, at most
+1000 characters (`events.attendee_note`, a database check too), trimmed, line
+breaks kept; a control character other than a line break or a tab, or a
+longer text, is `400 event_attendee_note_invalid`.
+
+- `POST /v1/events` and `PUT /v1/events/{id}` take it (left out keeps it);
+  `PATCH` writes it, `null` or `""` clears it. A copy does not take it (the
+  Wi-Fi changes).
+- **Only who may edit the Event reads it**: their Event answer carries
+  `attendeeNote` (`""` for none). Every other answer, the public ones, the
+  lists, the door's and sky-app's, leaves the key out: the stored field never
+  goes into JSON by itself (`Event.AttendeeNote` is `json:"-"`; `ProjectFor`
+  copies it for an editor).
+- It goes in the welcome mail alone (`AttendeeNote`, a sensitive variable in
+  SkyMail), with `AttendeeNoteParts`: the same text cut at its `http(s)://`
+  addresses (`[{Text, Url}]`, trailing punctuation left out) for the template
+  to link them. Empty, the template leaves the section out. Logs and metrics
+  never carry it.
 
 ## Switches
 
@@ -91,7 +112,8 @@ and over (`MissedRequired`).
 **Welcome:** `FirstName`, `EventName`, `EventId`, `OwnerTeam`, `DayLabel`
 ("14 Mart Cuma"; "2. gün · 15 Mart Cumartesi" on an Event of several days),
 `Program` (`[{Time, Title}]`, the day's live Sessions, "10:00–10:45"),
-`AttendeeNote` (empty for now), `CertificateLine` ("Sertifika için 16 oturumdan
+`AttendeeNote` (the organizer's note, empty for none), `AttendeeNoteParts`
+(`[{Text, Url}]`, the note cut at its web addresses), `CertificateLine` ("Sertifika için 16 oturumdan
 en az 12 tanesine katılmalısın. Zorunlu: Açılış, Final."; empty without a
 rule), `Recorded` (`[{Title}]`, the receipts that went along), `Attended`,
 `CountedTotal`, `MinRequired`, `MissingRequired`, `MissedRequired`.

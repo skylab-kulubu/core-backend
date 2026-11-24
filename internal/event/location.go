@@ -60,3 +60,27 @@ func normalizeLocation(e Event) (Event, error) {
 func (e Event) HasPoint() bool {
 	return e.LocationLat != nil && e.LocationLng != nil
 }
+
+// AttendeeNoteMax bounds an Event's attendee note, in characters (the
+// database's check says the same).
+const AttendeeNoteMax = 1000
+
+// ErrAttendeeNoteInvalid is an attendee note that cannot be stored: over
+// AttendeeNoteMax characters, or holding control characters other than a
+// line break or a tab (docs/attendance-mail.md).
+var ErrAttendeeNoteInvalid = fmt.Errorf("event: invalid attendee note: %w", ErrInvalid)
+
+// normalizeAttendeeNote writes e's attendee note the way it is stored:
+// trimmed, line breaks as \n. Nil (a write that leaves it) stays nil.
+func normalizeAttendeeNote(e Event) (Event, error) {
+	if e.AttendeeNote == nil {
+		return e, nil
+	}
+	note := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(*e.AttendeeNote, "\r\n", "\n"), "\r", "\n"))
+	if utf8.RuneCountInString(note) > AttendeeNoteMax || !utf8.ValidString(note) ||
+		strings.IndexFunc(note, func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\t' }) >= 0 {
+		return Event{}, ErrAttendeeNoteInvalid
+	}
+	e.AttendeeNote = &note
+	return e, nil
+}

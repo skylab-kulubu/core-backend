@@ -1,6 +1,7 @@
 package attendancemail
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -113,9 +114,15 @@ func (s *Service) vars(kind string, ev event.Event, firstName string, rows []Mai
 	label, program := s.day(date, p)
 	vars["DayLabel"] = label
 	vars["Program"] = program
-	// The organizer's venue note (Wi-Fi, the room) is not in core yet:
-	// always empty until it is (kapi-postalari 03).
-	vars["AttendeeNote"] = ""
+	// The organizer's note (Wi-Fi, the room): empty leaves the section out
+	// of the mail. AttendeeNoteParts is the same text cut at its web
+	// addresses, for the template to make them links.
+	note := ""
+	if ev.AttendeeNote != nil {
+		note = *ev.AttendeeNote
+	}
+	vars["AttendeeNote"] = note
+	vars["AttendeeNoteParts"] = noteParts(note)
 	vars["CertificateLine"] = certificateLine(c)
 	vars["Recorded"] = sessions
 	return vars
@@ -184,4 +191,38 @@ func (s *Service) span(start, end *time.Time) string {
 		out += "–" + end.In(s.location).Format("15:04")
 	}
 	return out
+}
+
+// notePart is a piece of the attendee note: text, and its address when the
+// piece is a web address (the template writes it as a link).
+type notePart struct {
+	Text string `json:"Text"`
+	URL  string `json:"Url"`
+}
+
+// webAddress is an http(s) address in plain text, up to the next space or
+// quote; trailing punctuation is not part of it.
+var webAddress = regexp.MustCompile(`https?://[^\s<>"']+`)
+
+// noteParts cuts note at its web addresses: [] for an empty note.
+func noteParts(note string) []notePart {
+	parts := []notePart{}
+	rest := note
+	for {
+		loc := webAddress.FindStringIndex(rest)
+		if loc == nil {
+			break
+		}
+		address := strings.TrimRight(rest[loc[0]:loc[1]], ".,;:!?)]}")
+		end := loc[0] + len(address)
+		if loc[0] > 0 {
+			parts = append(parts, notePart{Text: rest[:loc[0]]})
+		}
+		parts = append(parts, notePart{Text: address, URL: address})
+		rest = rest[end:]
+	}
+	if rest != "" {
+		parts = append(parts, notePart{Text: rest})
+	}
+	return parts
 }

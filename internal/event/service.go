@@ -146,6 +146,15 @@ func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
 		in.DoorStaffIDs = nil
 	}
 	in.TicketCount, in.WaitlistCount = nil, nil
+	// The attendee note (the venue's Wi-Fi) only to who may edit the Event.
+	in.AttendeeNoteView = nil
+	if p != nil && s.authz.Allow(*p, resource(in.OwnerTeam), authz.Update) {
+		note := ""
+		if in.AttendeeNote != nil {
+			note = *in.AttendeeNote
+		}
+		in.AttendeeNoteView = &note
+	}
 	if p == nil || !s.authz.Allow(*p, resource(in.OwnerTeam), authz.Update) {
 		in.Files = servableItems(in.Files)
 		in.Videos = servableItems(in.Videos)
@@ -275,6 +284,9 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (_ Ev
 	if in, err = normalizeLocation(in); err != nil {
 		return Event{}, err
 	}
+	if in, err = normalizeAttendeeNote(in); err != nil {
+		return Event{}, err
+	}
 	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() || !validEntryMode(in.EntryMode) {
 		return Event{}, ErrInvalid
 	}
@@ -356,6 +368,9 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 		return Event{}, err
 	}
 	if in, err = normalizeLocation(in); err != nil {
+		return Event{}, err
+	}
+	if in, err = normalizeAttendeeNote(in); err != nil {
 		return Event{}, err
 	}
 	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() || !validEntryMode(in.EntryMode) {

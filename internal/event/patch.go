@@ -39,6 +39,8 @@ type Patch struct {
 	// mails on or off (null is ErrInvalid; docs/attendance-mail.md).
 	AttendanceWelcomeMail  optional.Field[bool] `json:"attendanceWelcomeMail"`
 	AttendanceRecordedMail optional.Field[bool] `json:"attendanceRecordedMail"`
+	// AttendeeNote writes the organizer's note; null or "" clears it.
+	AttendeeNote optional.Field[string] `json:"attendeeNote"`
 	// EntryMode sets the door's mode: per_session or venue, null for
 	// automatic (docs/venue-entry.md); any other value is ErrInvalid.
 	EntryMode       optional.Field[*EntryMode] `json:"entryMode"`
@@ -135,6 +137,10 @@ func (p Patch) apply(existing Event) (Event, error) {
 	if p.AttendanceRecordedMail.Set {
 		on := p.AttendanceRecordedMail.Value
 		e.AttendanceRecordedMail = &on
+	}
+	if p.AttendeeNote.Set || p.AttendeeNote.Null {
+		note := p.AttendeeNote.Value
+		e.AttendeeNote = &note
 	}
 	e.StartDate = p.StartDate.Or(existing.StartDate)
 	e.EndDate = p.EndDate.Or(existing.EndDate)

@@ -6,6 +6,10 @@
 --     organizer's switch for each mail on the Event, on by default (Yusuf,
 --     2026-11-24 S1/S2). The person cannot turn them off: they are
 --     transactional mails of their own scan.
+--   * events.attendee_note: the organizer's note for whoever enters (the
+--     venue's Wi-Fi, the way to the room), plain text up to 1000
+--     characters, empty for none. Only the welcome mail and who may edit
+--     the Event read it: never a public answer (Yusuf, 2026-11-24 S3).
 --   * attendance_mails: the queue, ids only. While ATTENDANCE_MAIL is on, a
 --     welcome row is written in the statement that writes the day's Venue
 --     entry, a recorded row in the one that writes the Check-in, due two
@@ -23,6 +27,10 @@ SET LOCAL lock_timeout = '5s';
 ALTER TABLE events ADD COLUMN IF NOT EXISTS attendance_welcome_mail BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE events ADD COLUMN IF NOT EXISTS attendance_recorded_mail BOOLEAN NOT NULL DEFAULT true;
 COMMENT ON COLUMN events.attendance_welcome_mail IS 'Whether the door''s welcome mail goes for the Event (docs/attendance-mail.md).';
+ALTER TABLE events ADD COLUMN IF NOT EXISTS attendee_note TEXT NOT NULL DEFAULT '';
+ALTER TABLE events DROP CONSTRAINT IF EXISTS events_attendee_note_check;
+ALTER TABLE events ADD CONSTRAINT events_attendee_note_check CHECK (char_length(attendee_note) <= 1000);
+COMMENT ON COLUMN events.attendee_note IS 'The organizer''s note for whoever enters (Wi-Fi, the room): the welcome mail and the editors alone read it.';
 COMMENT ON COLUMN events.attendance_recorded_mail IS 'Whether the door''s attendance receipt goes for the Event (docs/attendance-mail.md).';
 
 CREATE TABLE IF NOT EXISTS attendance_mails (
