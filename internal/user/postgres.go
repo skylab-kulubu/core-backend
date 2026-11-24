@@ -570,6 +570,12 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		`DELETE FROM feedback_invites WHERE ticket_id IN (SELECT id FROM tickets WHERE owner_id = $1)`,
 		// The Tickets' Notifications not sent yet (docs/ticket-created-notification.md).
 		`DELETE FROM ticket_notifications WHERE ticket_id IN (SELECT id FROM tickets WHERE owner_id = $1)`,
+		// A place on a waiting list goes with the person (KVKK): the
+		// waitlisted Ticket is cancelled before it loses its owner, so no
+		// promotion gives a place to nobody (docs/event-capacity.md).
+		`UPDATE tickets SET status = 'cancelled', status_changed_at = now(), waitlisted_at = NULL,
+			cancelled_at = now(), cancelled_by = 'holder', updated_at = now()
+		WHERE owner_id = $1 AND status = 'waitlisted'`,
 		// The Ticket stays, anonymous: its page and Ticket QR stop working
 		// (no access key, a new QR version; docs/ticket-access-key-and-code.md).
 		// The operator's cancellation reason may name the person: it goes too.
@@ -716,6 +722,15 @@ func clearGuestData(ctx context.Context, tx pgx.Tx, addresses []string, at time.
 		`, emails); err != nil {
 			return err
 		}
+	}
+	// A guest's place on a waiting list goes with the guest, as a
+	// member's (eraseAccount).
+	if _, err := tx.Exec(ctx, `
+		UPDATE tickets SET status = 'cancelled', status_changed_at = $2, waitlisted_at = NULL,
+			cancelled_at = $2, cancelled_by = 'holder', updated_at = $2
+		WHERE owner_id IS NULL AND status = 'waitlisted' AND guest_email <> '' AND lower(btrim(guest_email)) = ANY($1)
+	`, emails, at); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE tickets

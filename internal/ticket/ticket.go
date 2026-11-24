@@ -178,7 +178,11 @@ type Ticket struct {
 	CancelledAt     *time.Time  `json:"cancelledAt,omitempty"`
 	CancelledBy     CancelledBy `json:"cancelledBy,omitempty"`
 	CancelReason    string      `json:"cancelReason,omitempty"`
-	CheckIns        []CheckIn   `json:"checkIns"`
+	// OverCapacity is set on the answer of an operator's write that made
+	// the Ticket active past its Event's capacity (docs/event-capacity.md),
+	// for the panel's warning. Never stored.
+	OverCapacity bool      `json:"overCapacity,omitempty"`
+	CheckIns     []CheckIn `json:"checkIns"`
 	// Feedback are the holder's own feedback links (ticket 12): only the
 	// holder's own tickets answer (`GET /v1/tickets/me`) carries them, and
 	// only when there is one (docs/event-feedback.md).
@@ -221,6 +225,11 @@ type GuestApplication struct {
 	// Ticket is the guest Ticket as stored, for a Trusted caller. Anybody
 	// else gets the zero Ticket: not even its id.
 	Ticket Ticket
+	// Waitlisted is the answer's "waitlisted" (docs/event-capacity.md): the
+	// Ticket's status for a Trusted caller; for anybody else what a new
+	// guest would get on the Event now, so the answer does not tell whether
+	// the e-mail had applied.
+	Waitlisted bool
 }
 
 // Active reports whether t is an active Ticket: the only one that opens the

@@ -34,10 +34,27 @@ type Event struct {
 	FormURL           string          `json:"formUrl,omitempty"`
 	FormAlias         string          `json:"formAlias,omitempty"`
 	ExtraFormURLs     []EventFormLink `json:"extraFormUrls"`
-	Capacity          int             `json:"capacity"`
-	StartDate         *time.Time      `json:"startDate,omitempty"`
-	EndDate           *time.Time      `json:"endDate,omitempty"`
-	Linkedin          string          `json:"linkedin,omitempty"`
+	// Capacity bounds the Event's active Tickets, 0 for no bound
+	// (docs/event-capacity.md).
+	Capacity int `json:"capacity"`
+	// WaitlistEnabled puts a registration on the Event's waiting list once
+	// its active Tickets fill Capacity; off, a full Event takes nobody new
+	// but who an operator adds. Nil on a write keeps the stored one (on for
+	// a new Event); the store always answers it. Waitlist reads it.
+	WaitlistEnabled *bool `json:"waitlistEnabled"`
+	// Full is derived by the store: Capacity > 0 and the active Tickets
+	// fill it. Anyone who sees the Event sees it.
+	Full bool `json:"full"`
+	// TicketCount and WaitlistCount are the Event's active and waitlisted
+	// Tickets: only to who may edit it (ProjectFor), left out otherwise.
+	TicketCount   *int `json:"ticketCount,omitempty"`
+	WaitlistCount *int `json:"waitlistCount,omitempty"`
+	// ticketCount and waitlistCount are the counts as the store read them,
+	// which ProjectFor answers to an editor alone.
+	ticketCount, waitlistCount int
+	StartDate                  *time.Time `json:"startDate,omitempty"`
+	EndDate                    *time.Time `json:"endDate,omitempty"`
+	Linkedin                   string     `json:"linkedin,omitempty"`
 	// Active is derived (ADR 0066): published and not ended (ActiveAt).
 	// The store answers it; a write never sets it.
 	Active bool `json:"active"`

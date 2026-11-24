@@ -228,6 +228,7 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 			LocationAddress:      source.LocationAddress,
 			OwnerTeam:            team,
 			Capacity:             source.Capacity,
+			WaitlistEnabled:      source.WaitlistEnabled,
 			StartDate:            &start,
 			EndDate:              shift.At(source.EndDate),
 			Status:               StatusDraft,

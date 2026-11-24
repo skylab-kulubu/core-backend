@@ -41,6 +41,8 @@ that no Event lists: it writes nothing for it, and the report's log line
 | `204` | done; stop sending the report. A report to a current Event's feedback form is `204` too, whatever its status and whoever answered: no Ticket is written (logged as `outcome: feedback`) |
 | `200` `{"outcome": "event_cancelled"}` | done, and no Ticket was written: every Event that lists the form is cancelled ([event-cancel.md](event-cancel.md)); stop sending the report |
 | `200` `{"outcome": "event_ended"}` | done, and no Ticket was written: every Event that lists the form and is not cancelled has ended (below); stop sending the report |
+| `200` `{"outcome": "waitlisted"}` | done: every Event of the form that took the answer is full, and the answer is on the waiting list of at least one ([event-capacity.md](event-capacity.md)); core tells the person (while `TICKET_STATUS_MAIL` is on); stop sending the report |
+| `200` `{"outcome": "event_full"}` | done, and no Ticket was written: every Event of the form is full with its waiting list off; stop sending the report |
 | `200` `{"outcome": "registration_closed"}` | done, and no Ticket was written: the report said when the answer was sent (`submittedAt`), and by then every Event of the form not cancelled had closed applying ([event-registration-closure.md](event-registration-closure.md)); stop sending the report |
 | `400` | a malformed report: a form id or body core cannot read, an unknown `status`, a zero `userId`, or a `guest` with an e-mail but without a first name or last name; sending it again will not help |
 | `401` | no valid token |
@@ -116,7 +118,7 @@ status (`0` when the report ended before they were read). More than one is a
 form shared before the one-place rule; such a form is left as it is and the
 line is how it shows.
 `outcome` is `recorded`, `not_accepted`, `no_respondent`, `not_listed`,
-`event_cancelled`, `event_ended`, `registration_closed`, `person_unavailable`, `invalid` or `failed`. The line never carries the
+`event_cancelled`, `event_ended`, `registration_closed`, `waitlisted`, `event_full`, `person_unavailable`, `invalid` or `failed`. The line never carries the
 `userId`, a name or an e-mail.
 
 ## Setup

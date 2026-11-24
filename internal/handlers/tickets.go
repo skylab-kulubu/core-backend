@@ -30,6 +30,16 @@ type guestBody struct {
 	LastName    string `json:"lastName"`
 	Email       string `json:"email"`
 	PhoneNumber string `json:"phoneNumber"`
+	// JoinWaitlist asks for the waiting list of a full Event
+	// (docs/event-capacity.md); without it a full Event is 409 event_full.
+	JoinWaitlist bool `json:"joinWaitlist"`
+}
+
+// applyBody is Member apply's optional body: joinWaitlist as Guest apply's.
+// A client that sends none (sky-app before the waiting list) is refused a
+// full Event, never put on its list unasked.
+type applyBody struct {
+	JoinWaitlist bool `json:"joinWaitlist"`
 }
 
 func ticketError(c fiber.Ctx, err error) error {
@@ -44,6 +54,13 @@ func ticketError(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusConflict, "Conflict", "ticket_cancelled")
 	case errors.Is(err, ticket.ErrTicketWaitlisted):
 		return problemCode(c, fiber.StatusConflict, "Conflict", "ticket_waitlisted")
+	case errors.Is(err, ticket.ErrEventFull):
+		// The Event is full (docs/event-capacity.md): waitlistEnabled tells
+		// the client whether it may offer the waiting list.
+		var full *ticket.EventFullError
+		enabled := errors.As(err, &full) && full.WaitlistEnabled
+		return problemWithFields(c, fiber.StatusConflict, "Conflict", "Conflict", "event_full",
+			fiber.Map{"waitlistEnabled": enabled})
 	case errors.Is(err, ticket.ErrConflict):
 		return problemCode(c, fiber.StatusConflict, "Conflict", eventStatusCode(err))
 	case errors.Is(err, ticket.ErrAmbiguous):
@@ -80,7 +97,13 @@ func (h *TicketHandler) Apply(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	created, err := h.svc.Apply(c.Context(), p, eventID)
+	var body applyBody
+	if raw := c.Body(); len(bytes.TrimSpace(raw)) > 0 {
+		if err := json.Unmarshal(raw, &body); err != nil {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+	}
+	created, err := h.svc.ApplyJoining(c.Context(), p, eventID, body.JoinWaitlist)
 	if err != nil {
 		return ticketError(c, err)
 	}
@@ -170,15 +193,21 @@ func (h *TicketHandler) ApplyGuest(c fiber.Ctx) error {
 	if err := c.Bind().Body(&body); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	applied, err := h.svc.ApplyGuest(c.Context(), optionalCaller(c), eventID, ticket.GuestInfo{
+	applied, err := h.svc.ApplyGuestJoining(c.Context(), optionalCaller(c), eventID, ticket.GuestInfo{
 		FirstName: body.FirstName, LastName: body.LastName, Email: body.Email, PhoneNumber: body.PhoneNumber,
-	})
+	}, body.JoinWaitlist)
 	if err != nil {
 		return ticketError(c, err)
 	}
 	c.Locals(localsGuestApplyResult, applied.Result)
 	if !applied.Trusted {
-		return c.Status(fiber.StatusCreated).JSON(guestApplied{Status: "applied"})
+		// "waitlisted" on a full Event's waiting list, from the Event, never
+		// from a Ticket already there (docs/event-capacity.md).
+		status := "applied"
+		if applied.Waitlisted {
+			status = "waitlisted"
+		}
+		return c.Status(fiber.StatusCreated).JSON(guestApplied{Status: status})
 	}
 	return c.Status(fiber.StatusCreated).JSON(applied.Ticket)
 }
@@ -206,7 +235,10 @@ type formResponseBody struct {
 // forms service sent, closed to applications by then (ticket 12), or ended
 // (ADR 0069, addendum of 2026-11-22), is 200 with {"outcome":
 // "event_cancelled"}, {"outcome": "registration_closed"} or {"outcome":
-// "event_ended"}: still a 2xx, which the forms service takes as done. A caller who may not
+// "event_ended"}: still a 2xx, which the forms service takes as done. An
+// accepted answer to a full Event is 200 {"outcome": "waitlisted"} (on its
+// waiting list) or {"outcome": "event_full"} (waiting list off; no Ticket;
+// docs/event-capacity.md). A caller who may not
 // report is refused before the request is read, so a malformed request from
 // them is 403 too.
 func (h *TicketHandler) RecordFormResponse(c fiber.Ctx) error {
@@ -242,7 +274,8 @@ func (h *TicketHandler) RecordFormResponse(c fiber.Ctx) error {
 		return ticketError(c, err)
 	}
 	switch result.Outcome {
-	case ticket.FormResponseEventCancelled, ticket.FormResponseRegistrationClosed, ticket.FormResponseEventEnded:
+	case ticket.FormResponseEventCancelled, ticket.FormResponseRegistrationClosed, ticket.FormResponseEventEnded,
+		ticket.FormResponseWaitlisted, ticket.FormResponseEventFull:
 		return c.JSON(fiber.Map{"outcome": result.Outcome})
 	default:
 		return c.SendStatus(fiber.StatusNoContent)

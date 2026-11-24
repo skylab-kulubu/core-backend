@@ -94,6 +94,27 @@ func (h *TicketHandler) RestoreTicket(c fiber.Ctx) error {
 	return c.JSON(restored)
 }
 
+// PromoteTicket is POST /v1/tickets/{id}/promote: an operator moves a
+// waitlisted Ticket to active ("Öne al", docs/event-capacity.md), past the
+// capacity if it must (overCapacity in the answer). An active Ticket
+// answers 200 as it is; a cancelled one is 409 ticket_cancelled.
+func (h *TicketHandler) PromoteTicket(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	promoted, err := h.svc.PromoteTicket(auditContext(c, p), p, id)
+	if err != nil {
+		return cancelError(c, err)
+	}
+	h.logStatus(c, "ticket_promoted", promoted)
+	return c.JSON(promoted)
+}
+
 // logStatus writes one line per cancellation or restoration: the request,
 // the Ticket and its Event, never who did it (the Team audit record keeps
 // that), whose Ticket it is or the reason.

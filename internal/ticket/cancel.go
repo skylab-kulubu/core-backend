@@ -141,16 +141,26 @@ func (s *service) RestoreTicket(ctx context.Context, p authz.Principal, id uuid.
 
 // reopenIfCancelled reopens t when it is cancelled, for its holder
 // registering again (Member apply, Apply-for-other, Guest apply, the forms
-// report): reopened reports it. A Ticket of any other status is left.
-func (s *service) reopenIfCancelled(ctx context.Context, t Ticket) (Ticket, bool, error) {
+// report), under the Event's capacity (a): reopened reports it. A Ticket of
+// any other status is left.
+func (s *service) reopenIfCancelled(ctx context.Context, t Ticket, a Admission) (Ticket, bool, error) {
 	if t.StatusOf() != StatusCancelled {
 		return t, false, nil
 	}
-	store, err := s.statusStore()
-	if err != nil {
-		return Ticket{}, false, err
+	var (
+		reopened Ticket
+		changed  bool
+		err      error
+	)
+	if store, ok := s.tickets.(CapacityStore); ok {
+		reopened, changed, err = store.ReopenAdmitted(ctx, t.ID, a)
+	} else {
+		var store StatusStore
+		if store, err = s.statusStore(); err != nil {
+			return Ticket{}, false, err
+		}
+		reopened, changed, err = store.Reopen(ctx, t.ID)
 	}
-	reopened, changed, err := store.Reopen(ctx, t.ID)
 	if err != nil {
 		return Ticket{}, false, err
 	}
@@ -160,6 +170,44 @@ func (s *service) reopenIfCancelled(ctx context.Context, t Ticket) (Ticket, bool
 		return reopened, false, nil
 	}
 	return reopened, true, nil
+}
+
+// PromoteTicket is an operator's "Öne al" (docs/event-capacity.md): the
+// waitlisted Ticket is active, past the capacity if it must
+// (Ticket.OverCapacity), and its mail goes. Until the Event ends, never on
+// a cancelled Event; an active Ticket is answered as it is, a cancelled one
+// is ErrTicketCancelled (restore it instead).
+func (s *service) PromoteTicket(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error) {
+	store, err := s.capacityStore()
+	if err != nil {
+		return Ticket{}, err
+	}
+	t, ev, err := s.operatedTicket(ctx, p, id)
+	if err != nil {
+		return Ticket{}, err
+	}
+	switch t.StatusOf() {
+	case StatusActive:
+		return s.withEvent(ctx, t), nil
+	case StatusCancelled:
+		return Ticket{}, ErrTicketCancelled
+	}
+	if ev.Status == event.StatusCancelled {
+		return Ticket{}, ErrEventCancelled
+	}
+	if ev.EndedAt(time.Now()) {
+		return Ticket{}, ErrEventEnded
+	}
+	record, err := s.beginOperatorAudit(ctx, p, ev, teamaudit.ActionTicketPromote, id)
+	if err != nil {
+		return Ticket{}, err
+	}
+	promoted, _, err := store.Promote(ctx, id)
+	s.finishTicketAudit(ctx, record, err, 0)
+	if err != nil {
+		return Ticket{}, err
+	}
+	return s.withEvent(ctx, promoted), nil
 }
 
 // onlyStatuses keeps the Tickets of the statuses given.
