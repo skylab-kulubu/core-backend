@@ -85,10 +85,9 @@ func newFormsClient(getenv func(string) string, base, realm string) (*formsfeed.
 }
 
 // formsEventsRecorder is core.forms' recorder, or nil when the switch is
-// off. On, it needs Forms' internal address and core's service account (a
-// guest's Ticket is written from the single answer read): without them core
-// stops, naming what is missing.
-func formsEventsRecorder(getenv func(string) string, base, realm string, rec *formsfeed.Recorder) *formsfeed.Recorder {
+// off. On, it needs Forms' client (a guest's Ticket is written from the
+// single answer read): without it core stops, naming what is missing.
+func formsEventsRecorder(getenv func(string) string, client *formsfeed.Client, rec *formsfeed.Recorder) *formsfeed.Recorder {
 	on, err := formsEventsEnabled(getenv)
 	if err != nil {
 		log.Fatal(err)
@@ -96,13 +95,55 @@ func formsEventsRecorder(getenv func(string) string, base, realm string, rec *fo
 	if !on {
 		return nil
 	}
-	client, _, err := newFormsClient(getenv, base, realm)
-	if err != nil {
-		log.Fatal(err)
-	}
 	if client == nil {
 		log.Fatalf("%s=true needs Forms' internal address (%s or ACCOUNT_ERASURE_FORMS_URL), KEYCLOAK_URL, KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID and KEYCLOAK_CLIENT_SECRET", formsEventsEnv, formsfeed.URLEnv)
 	}
-	rec.Forms = client
 	return rec
+}
+
+// formsClientFromEnv is newFormsClient for startup: an address that does
+// not read warns and leaves Forms' reads off (the pulls, and core.forms,
+// which then stops core if it is on), as the tracking withdrawals do.
+func formsClientFromEnv(getenv func(string) string, base, realm string) *formsfeed.Client {
+	client, from, err := newFormsClient(getenv, base, realm)
+	if err != nil {
+		// The error names the variable, never its value.
+		log.Printf("WARNING forms reads: %v; pulls from Forms off", err)
+		return nil
+	}
+	if client == nil {
+		log.Printf("forms reads: off (no Forms internal address or no core service account); backfill answers 503 forms_pull_off")
+		return nil
+	}
+	log.Printf("forms reads: on, Forms' address from %s; daily catch-up and backfill pulls run", from)
+	return client
+}
+
+// formsMetrics is the answers' counters (events and pulls share one
+// recorder) and the pulls'.
+type formsMetrics struct {
+	recorder *formsfeed.Recorder
+	puller   *formsfeed.Puller
+}
+
+func (m formsMetrics) Prometheus() string {
+	out := ""
+	if m.recorder != nil {
+		out += m.recorder.Prometheus()
+	}
+	if m.puller != nil {
+		out += m.puller.Prometheus()
+	}
+	return out
+}
+
+// joinedMetrics prints each in turn.
+type joinedMetrics []interface{ Prometheus() string }
+
+func (j joinedMetrics) Prometheus() string {
+	out := ""
+	for _, m := range j {
+		out += m.Prometheus()
+	}
+	return out
 }

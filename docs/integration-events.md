@@ -35,7 +35,7 @@ connected.
 | `RABBITMQ_USERNAME` | none | Core's user, `core_a` or `core_b` (the rotation alternates them). Required when on. |
 | `RABBITMQ_PASSWORD` | none | Its password. Required when on. |
 | `EVENTS_FORMS_ENABLED` | `false` | `true` reads `core.forms` too, while `EVENTS_ENABLED=true`. Off, its events wait in the queue. Any other value stops core. On, it needs `FORMS_INTERNAL_URL` and core's service account (below), else core stops naming what is missing. |
-| `FORMS_INTERNAL_URL` | `ACCOUNT_ERASURE_FORMS_URL` | Forms' address on the internal network, for the single answer read of `core.forms` (and the pull, rabbitmq-olaylar 18). Unset: the Erasure command's Forms address. |
+| `FORMS_INTERNAL_URL` | `ACCOUNT_ERASURE_FORMS_URL` | Forms' address on the internal network, for the single answer read of `core.forms` and the pulls ([form-pulls.md](form-pulls.md)). Unset: the Erasure command's Forms address. |
 
 `EVENTS_FORMS_ENABLED` is a switch of its own (Yusuf, 2026-11-24; the SPEC
 had proposed no new variable): production runs `EVENTS_ENABLED=true` for
@@ -289,8 +289,8 @@ finds nothing (`404`: the answer was deleted, or Forms has no such route
 yet). Transient (1, 5, 30 seconds, then the DLQ): Forms down, `401`,
 `403` (core's account lacks the role: the realm's fix makes the next try
 go; `skylab_forms_answer_reads_total{result="forbidden"}`), `429`, `5xx`,
-the database. The daily pull (rabbitmq-olaylar 18) catches what an event
-missed.
+the database. The daily catch-up pull ([form-pulls.md](form-pulls.md))
+catches what an event missed.
 
 Each answer writes one line, `"event":"form_response"`, as the HTTP
 report's: `via` (`event`), `event_id`, `form_id`, `response_id`, `status`,
@@ -342,7 +342,7 @@ outcome: processed, duplicate or unrelated), `events_retry`,
 - `skylab_events_dlq_total{queue,reason="invalid_envelope|permanent|retries_exhausted|handler_panic"}`
 - `skylab_events_records_deleted_total`, `skylab_events_record_cleanup_failures_total`
 - `skylab_keycloak_users_deleted_outside_erasure_total` (with the consumer on)
-- with `core.forms` on: `skylab_forms_answers_total{via,outcome}`,
+- with `core.forms` on, or the pulls ([form-pulls.md](form-pulls.md)): `skylab_forms_answers_total{via,outcome}`,
   `skylab_forms_answer_reads_total{result="ok|not_found|forbidden|invalid|failed|off"}`,
   `skylab_forms_form_states_total{outcome="processed|stale|failed"}`
 
