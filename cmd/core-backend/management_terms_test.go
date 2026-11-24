@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -73,6 +75,65 @@ func TestManagementTermsCommandApplyNeedsTheMode(t *testing.T) {
 	if code := runManagementTerms(nil, func(k string) string { return map[string]string{"MANAGEMENT_TERMS_MODE": "on"}[k] }, &out); code != 2 {
 		t.Fatalf("a bad mode: exit %d", code)
 	}
+	out.Reset()
+	if code := runManagementTerms(nil, func(k string) string { return map[string]string{"MANAGEMENT_TERMS_AUTO_REMOVE": "yes"}[k] }, &out); code != 2 ||
+		!strings.Contains(out.String(), "MANAGEMENT_TERMS_AUTO_REMOVE") {
+		t.Fatalf("a bad removal: exit %d\n%s", code, out.String())
+	}
+}
+
+// The removal's lines: none named while off, the count of those due in a
+// dry run (the command takes nobody out), those taken out in apply.
+func TestManagementTermsCommandPrintsTheRemoval(t *testing.T) {
+	t.Parallel()
+	for removal, want := range map[membershipterm.Mode][2]string{
+		"":                        {"removal (MANAGEMENT_TERMS_AUTO_REMOVE)", "off"},
+		membershipterm.ModeDryRun: {"holders due to be taken out (30 days past the end; the schedule does it)", "4"},
+		membershipterm.ModeApply:  {"holders taken out (30 days past the end)", "4"},
+	} {
+		runner := &termsRunner{run: membershipterm.Run{Removal: removal, Removed: 4, Status: "ok"}}
+		var out bytes.Buffer
+		if code := managementTermsCommand(context.Background(), runner, membershipterm.ModeDryRun, &out); code != 0 {
+			t.Fatalf("%q: exit %d", removal, code)
+		}
+		found := false
+		for _, line := range strings.Split(out.String(), "\n") {
+			if strings.HasPrefix(line, want[0]) && strings.HasSuffix(strings.TrimSpace(line), want[1]) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%q: no line %q … %q\n%s", removal, want[0], want[1], out.String())
+		}
+	}
+}
+
+// MANAGEMENT_TERMS_AUTO_REMOVE: off unless it says dry-run or apply; any
+// other value stops core.
+func TestManagementTermsAutoRemoveFromEnv(t *testing.T) {
+	t.Parallel()
+	for raw, want := range map[string]membershipterm.Mode{"": membershipterm.ModeOff, "off": membershipterm.ModeOff, " dry-run ": membershipterm.ModeDryRun, "apply": membershipterm.ModeApply} {
+		got, err := membershipterm.AutoRemoveFromEnv(func(k string) string { return map[string]string{"MANAGEMENT_TERMS_AUTO_REMOVE": raw}[k] })
+		if err != nil || got != want {
+			t.Fatalf("%q: %s %v", raw, got, err)
+		}
+	}
+	if _, err := membershipterm.AutoRemoveFromEnv(func(string) string { return "on" }); err == nil {
+		t.Fatal("on was taken")
+	}
+	deps := managementTermsDeps{dir: identity.NewMemory(), seasons: season.NewMemoryStore(), users: user.NewMemoryStore(), audit: teamaudit.NewMemory()}
+	var logged []string
+	terms, err := startManagementTerms(context.Background(), func(k string) string {
+		return map[string]string{"MANAGEMENT_TERMS_MODE": "dry-run", "MANAGEMENT_TERMS_AUTO_REMOVE": "apply"}[k]
+	}, deps, func(string, <-chan struct{}) {}, func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) })
+	if err != nil || terms.AutoRemove() != membershipterm.ModeApply {
+		t.Fatalf("started %v %v", terms, err)
+	}
+	if !slices.ContainsFunc(logged, func(line string) bool {
+		return strings.Contains(line, "WARN MANAGEMENT_TERMS_AUTO_REMOVE=apply takes nobody out")
+	}) {
+		t.Fatalf("log %v", logged)
+	}
 }
 
 // SKYMAIL_MANAGEMENT_TERM_TEMPLATE_KEY: unset takes the seeded key, empty
@@ -96,7 +157,7 @@ func TestManagementTermsNotifyOnlyInApply(t *testing.T) {
 	t.Parallel()
 	deps := managementTermsDeps{dir: identity.NewMemory(), seasons: season.NewMemoryStore(), users: user.NewMemoryStore(), audit: teamaudit.NewMemory()}
 	for mode, want := range map[membershipterm.Mode]bool{membershipterm.ModeOff: false, membershipterm.ModeDryRun: false, membershipterm.ModeApply: true} {
-		terms, err := newManagementTerms(mode, false, deps, t.Logf)
+		terms, err := newManagementTerms(mode, membershipterm.ModeOff, false, deps, t.Logf)
 		if err != nil {
 			t.Fatal(err)
 		}

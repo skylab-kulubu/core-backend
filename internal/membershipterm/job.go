@@ -69,9 +69,10 @@ type membership struct {
 // ends the terms whose membership is gone, dates the undated terms when an
 // active season has an end, warns of the terms 14 days and 1 day from
 // their end, marks those past their end expired (recorded, and listed to
-// ADMIN) and, once a week, tells ADMIN how many expired terms are still in
-// their Groups. Nobody is taken out of a Group. A dry run counts all this
-// and writes nothing but its own record.
+// ADMIN), takes the holders of terms RemoveAfter past their end out of
+// their Groups (with AutoRemove apply; counts them with dry-run) and, once
+// a week, tells ADMIN how many expired terms are still in their Groups. A
+// dry run counts all this and writes nothing but its own record.
 //
 // A step that fails does not stop the others; the run then ends failed and
 // is tried again at the next check. ErrLocked when another run holds the
@@ -113,7 +114,9 @@ func (s *Service) Run(ctx context.Context, opts RunOptions) (Run, error) {
 	if !found {
 		s.logf("management terms: WARN no single active season with an end ahead; terms found without one stay undated")
 	}
+	reconciled := true
 	if err := s.reconcile(ctx, &run, apply, def, found); err != nil {
+		reconciled = false
 		fail("reconcile", err)
 	}
 	terms, err := s.config.Store.Open(ctx)
@@ -131,6 +134,9 @@ func (s *Service) Run(ctx context.Context, opts RunOptions) (Run, error) {
 		if err := s.expire(ctx, &run, apply, terms, rosters); err != nil {
 			fail("expire", err)
 		}
+		if err := s.remove(ctx, &run, apply, reconciled, terms); err != nil {
+			fail("remove", err)
+		}
 		if err := s.weekly(ctx, &run, apply, rosters); err != nil {
 			fail("weekly", err)
 		}
@@ -144,8 +150,8 @@ func (s *Service) Run(ctx context.Context, opts RunOptions) (Run, error) {
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	ferr := s.config.Store.FinishRun(finishCtx, run)
-	s.logf("management_terms_run id=%s mode=%s trigger=%s status=%s season=%t backfilled=%d dated=%d ended=%d warned_14d=%d warned_1d=%d expired=%d mails=%d weekly=%s",
-		run.ID, run.Mode, run.Trigger, run.Status, run.SeasonFound, run.Backfilled, run.Dated, run.Ended, run.Warned14d, run.Warned1d, run.Expired, run.Mails, run.Weekly)
+	s.logf("management_terms_run id=%s mode=%s trigger=%s status=%s season=%t backfilled=%d dated=%d ended=%d warned_14d=%d warned_1d=%d expired=%d removal=%s removed=%d mails=%d weekly=%s",
+		run.ID, run.Mode, run.Trigger, run.Status, run.SeasonFound, run.Backfilled, run.Dated, run.Ended, run.Warned14d, run.Warned1d, run.Expired, run.Removal, run.Removed, run.Mails, run.Weekly)
 	if len(failures) > 0 {
 		return run, errors.Join(fmt.Errorf("management terms: %v failed", failures), ferr)
 	}
@@ -357,7 +363,8 @@ func (s *Service) warn(ctx context.Context, run *Run, apply bool, terms []Term, 
 
 // expire marks the terms past their end expired: each is recorded
 // (membership.term.expired, by the system) and the day's list goes to
-// ADMIN. Nobody is taken out of a Group, and Keycloak is not written.
+// ADMIN. Nobody is taken out of a Group here (remove does that 30 days on),
+// and Keycloak is not written.
 func (s *Service) expire(ctx context.Context, run *Run, apply bool, terms []Term, rosters map[string][]uuid.UUID) error {
 	now := s.now()
 	var due []Term
@@ -416,6 +423,86 @@ func (s *Service) expire(ctx context.Context, run *Run, apply bool, terms []Term
 	run.Expired = len(marked)
 	if len(marked) > 0 {
 		run.Mails += len(admins)
+	}
+	return failed
+}
+
+// remove takes the holders of the terms due (Term.RemovalDue: marked
+// expired, RemoveAfter past the end and the mark) out of their Groups
+// (ADR-0078 karar 3, Yusuf 2026-11-24): through identity's system removal,
+// one at a time, each recorded as member.remove by the system
+// (teamaudit.SystemTermRemoval), mailed to the holder and, for a
+// Privileged Group, noticed to ADMIN and that root (the member route's
+// removal mail and privilege notice); the term ends. It runs only with
+// AutoRemove apply, in an apply run, with a system writer; otherwise it
+// counts (AutoRemove dry-run, a dry run, or the command run by hand, which
+// has no writer) or does nothing (off).
+//
+// A run whose Keycloak read failed takes nobody out: the terms may not say
+// what Keycloak says. A term is read again just before its removal, so one
+// extended or ended meanwhile stays. A holder already gone from the Group
+// only has the term ended. A removal that fails is tried again at the
+// next run.
+func (s *Service) remove(ctx context.Context, run *Run, apply, reconciled bool, terms []Term) error {
+	run.Removal = s.config.AutoRemove
+	if run.Removal == ModeOff {
+		return nil
+	}
+	remover, writes := s.config.Memberships.(SystemMemberships)
+	if !apply || !writes {
+		run.Removal = ModeDryRun
+	}
+	now := s.now()
+	var due []Term
+	for _, t := range terms {
+		if _, ok := s.config.Rules.ScopeOf(t.GroupPath); ok && t.RemovalDue(now) {
+			due = append(due, t)
+		}
+	}
+	if run.Removal != ModeApply {
+		run.Removed = len(due)
+		return nil
+	}
+	if !reconciled {
+		if len(due) > 0 {
+			s.logf("management terms: removal held this run: Keycloak's Groups could not be read whole")
+		}
+		return nil
+	}
+	var failed error
+	for _, t := range due {
+		current, err := s.config.Store.Get(ctx, t.ID)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			failed = err
+			continue
+		}
+		if !current.RemovalDue(s.now()) || current.UserID != t.UserID || current.GroupID != t.GroupID {
+			// Extended, handed over or ended since the run read it.
+			continue
+		}
+		err = remover.RemoveMemberAsSystem(ctx, teamaudit.SystemTermRemoval, t.GroupID.String(), t.UserID)
+		switch {
+		case errors.Is(err, identity.ErrNotFound):
+			// Gone from the Group (or the Group gone) meanwhile: only the
+			// term ends, as the next reconcile would end it.
+			if _, err := s.config.Store.End(ctx, t.UserID, t.GroupID, s.now()); err != nil {
+				failed = err
+			}
+			continue
+		case err != nil:
+			s.logf("management terms: a holder's removal failed (%s); tried again at the next run", errorCode(err))
+			failed = err
+			continue
+		}
+		// The removal's own notice ended the term (MembershipChanged);
+		// ended here too when it could not.
+		if _, err := s.config.Store.End(ctx, t.UserID, t.GroupID, s.now()); err != nil {
+			failed = err
+		}
+		run.Removed++
 	}
 	return failed
 }

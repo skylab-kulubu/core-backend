@@ -626,6 +626,43 @@ func (s *service) RemoveMember(ctx context.Context, p authz.Principal, groupRef 
 	return s.dir.RemoveMember(ctx, g.ID, userID)
 }
 
+// RemoveMemberAsSystem takes userID out of the Group groupRef for one of
+// core's own jobs, client naming it (teamaudit.SystemTermRemoval: the
+// management term job, 30 days after a term's end; ADR-0078 karar 3,
+// 2026-11-24). No person decides, so nothing is authorized; the write is
+// recorded with the system basis and client (teamaudit.BasisSystem), and
+// the notifiers hear of it as of a member route's removal, with no actor
+// (the membership mail, the privilege notice, the term's end). Only a
+// direct membership is removed: a person not directly in the Group is
+// ErrNotFound and nothing is written. A Group that grants Keycloak's admin
+// console is refused as on the route.
+func (s *service) RemoveMemberAsSystem(ctx context.Context, client, groupRef string, userID uuid.UUID) error {
+	g, err := s.dir.GetGroup(ctx, groupRef)
+	if err != nil {
+		return err
+	}
+	members, err := s.dir.Members(ctx, g.ID)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(members, func(p Person) bool { return p.ID == userID }) {
+		return ErrNotFound
+	}
+	if err := s.notKeycloakAdminGroup(ctx, g.ID); err != nil {
+		return err
+	}
+	// Forgotten even when the write fails: it may have reached Keycloak.
+	defer s.forgetGroups(userID)
+	ctx = teamaudit.WithActor(ctx, teamaudit.Actor{Basis: teamaudit.BasisSystem, Client: client})
+	if err := s.dir.RemoveMember(ctx, g.ID, userID); err != nil {
+		return err
+	}
+	if s.membership != nil && s.membership.Notifies(g) {
+		s.membership.MembershipChanged(ctx, MembershipChange{UserID: userID, Group: g, Added: false})
+	}
+	return nil
+}
+
 // forgetGroups drops what core remembers of userID's Groups: for Group
 // overage tokens and for team delegation. A SharedGroupCache carries it to
 // the other core processes.

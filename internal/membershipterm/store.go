@@ -114,6 +114,11 @@ type Run struct {
 	Warned14d  int
 	Warned1d   int
 	Expired    int
+	// Removal is how the run treated the holders due to leave their
+	// Group (Term.RemovalDue): off, counted (dry-run) or taken out
+	// (apply). Removed are those taken out, or counted.
+	Removal Mode
+	Removed int
 	// Mails are the mails queued (would be, in a dry run).
 	Mails  int
 	Weekly Weekly
@@ -128,7 +133,11 @@ type Counts struct {
 	// ExpiredInGroup are open terms past their end: the person is still in
 	// the Group (as last seen by the daily job).
 	ExpiredInGroup int
-	LastSuccess    *time.Time
-	LastRunFailed  bool
-	SeasonFound    bool
+	// RemovalDue are open terms whose holder is due to leave the Group
+	// (Term.RemovalDue): what the removal takes out at its next run, or
+	// would, while it is off or a dry run.
+	RemovalDue    int
+	LastSuccess   *time.Time
+	LastRunFailed bool
+	SeasonFound   bool
 }

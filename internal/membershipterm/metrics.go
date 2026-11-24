@@ -38,6 +38,18 @@ func (s *Service) Prometheus() string {
 		}
 		fmt.Fprintf(&out, "skylab_management_terms_mode{mode=%q} %d\n", m, value)
 	}
+	out.WriteString("# TYPE skylab_management_terms_auto_remove_mode gauge\n")
+	removal := ModeOff
+	if s != nil {
+		removal = s.config.AutoRemove
+	}
+	for _, m := range []Mode{ModeOff, ModeDryRun, ModeApply} {
+		value := 0
+		if m == removal {
+			value = 1
+		}
+		fmt.Fprintf(&out, "skylab_management_terms_auto_remove_mode{mode=%q} %d\n", m, value)
+	}
 	if s == nil || mode == ModeOff {
 		return out.String()
 	}
@@ -61,6 +73,8 @@ func (s *Service) Prometheus() string {
 	gauge("skylab_management_terms_expiring", int64(c.Expiring))
 	// The ticket's metric: expired terms whose holder is still in the Group.
 	gauge("skylab_management_terms_expired_in_group", int64(c.ExpiredInGroup))
+	// Of those, the holders due to leave their Group (30 days past the end).
+	gauge("skylab_management_terms_removal_due", int64(c.RemovalDue))
 	var last int64
 	if c.LastSuccess != nil {
 		last = c.LastSuccess.Unix()

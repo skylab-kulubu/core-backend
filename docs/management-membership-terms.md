@@ -7,16 +7,20 @@ command: `core-backend management-terms`; routes:
 `/v1/management-memberships` (the panel's handover and extend screen,
 ticket 12).
 
-**The end is only marked** (Yusuf, 2026-10-12 22:15). Core never takes
-anyone out of a Group by itself and never writes Keycloak for a term:
+**At the end the term is marked; 30 days later its holder leaves the
+Group** (Yusuf, 2026-10-12 22:15; ADR-0078 karar 3 changed 2026-11-24):
 
 - 14 days and 1 day before the end, the holder and those over them are
   warned by mail;
 - when the end passes, core writes `expired_at`, records it in the Team
   audit record and sends ADMIN the day's list;
-- the person keeps the Group, and its rights, until someone removes them
-  from the panel (the handover, or the expired term's removal below);
-- once a week ADMIN hears how many expired terms are still in their Groups.
+- the person keeps the Group, and its rights, for 30 days more: time to
+  extend or hand over from the panel, or to remove them there sooner (the
+  handover, or the expired term's removal below);
+- once a week ADMIN hears how many expired terms are still in their Groups;
+- 30 days after the end core takes the holder out of the Group itself
+  ([Removal](#removal)), behind its own switch, `MANAGEMENT_TERMS_AUTO_REMOVE`
+  (off by default). Off, nobody is taken out, as before.
 
 ## Which memberships
 
@@ -93,8 +97,10 @@ A run, in order:
    marked to every member of ADMIN, then finishes the rows `ok` (`failed`
    `unchanged` for a term extended or ended in between). A row that cannot
    be opened leaves its term unmarked until the next run: no record, no
-   mark. **Nothing is written to Keycloak.**
-5. **Weekly summary** (`MANAGEMENT_TERMS_WEEKLY_SUMMARY`, on by default):
+   mark. Nothing is written to Keycloak.
+5. **Removal** (`MANAGEMENT_TERMS_AUTO_REMOVE`; [below](#removal)): the
+   holders of terms 30 days past their end leave their Groups.
+6. **Weekly summary** (`MANAGEMENT_TERMS_WEEKLY_SUMMARY`, on by default):
    when the last apply run that queued it (even a run that failed
    elsewhere), or that ended `ok` finding none to send, is a week old, the
    count of expired terms still open, by Group, goes to every member of
@@ -115,6 +121,48 @@ again at the next check.
 Each person gets one mail per warning (one in ADMIN and YK gets one). The
 rosters are read at the run; a roster that cannot be read leaves that
 warning, or the expiry, for the next run.
+
+## Removal
+
+ADR-0078 karar 3 (Yusuf, 2026-11-24): an expired management membership
+leaves 30 days after its end, whichever management membership it is (YK,
+DK, their Groups, a Team's `LIDERLER` or `KOORDINATORLER`). The 30 days are
+for an extension or a handover.
+
+A term is **due** when it is open, marked expired, and 30 days
+(`membershipterm.RemoveAfter`) have passed since both its end and its mark.
+Counting from the mark too gives a term marked late (the terms turned on
+after its end, a run that failed for days) its 30 days all the same; in the
+ordinary case the mark comes within the hour after the end.
+
+With `MANAGEMENT_TERMS_AUTO_REMOVE=apply`, in an apply run, the daily job
+takes each due holder out, one at a time:
+
+1. it reads the term again: one extended, handed over or ended since the
+   run read it stays;
+2. it removes the holder's **direct** membership of the term's Group
+   through identity's system removal (`RemoveMemberAsSystem`): no person
+   decides, so nothing is authorized; Keycloak's admin-console Groups are
+   refused as on the member route. The Team audit record gets a
+   `member.remove` row with actor `system`, the nil subject and client
+   `system:term-removal` ([team-audit.md](team-audit.md)); a row that
+   cannot be opened stops that removal (no record, no change);
+3. the member route's removal mail goes to the holder
+   ([team-membership-mail.md](team-membership-mail.md)) and, for a
+   Privileged Group, the privilege notice to ADMIN and that root
+   ([privilege-change-mail.md](privilege-change-mail.md), ADR-0080), both
+   without an actor's name;
+4. the term ends (`ended_at`).
+
+A holder already gone from the Group only has the term ended. A run whose
+Keycloak read failed (the reconcile step) takes nobody out: the terms may
+not say what Keycloak says. A removal that fails is logged and tried again
+at the next run; the run ends `failed` (`remove_failed`).
+
+With `dry-run` the job only counts the due holders (the run's `removal`
+and `removed`, the command's line). The command run by hand never takes
+anyone out, even with `--apply`: it has no membership writer and counts.
+Off, nothing is counted and nobody leaves.
 
 ## Routes
 
@@ -192,6 +240,7 @@ A table of its own: an older core never reads it.
 | Variable | Values |
 |---|---|
 | `MANAGEMENT_TERMS_MODE` | `off` (or unset; default): nothing is read, written or sent, the routes are not served, the capabilities answer `[]`. `dry-run`: the daily job counts what apply would write and send (its record says so) and writes nothing else. `apply`: everything above. Any other value stops core |
+| `MANAGEMENT_TERMS_AUTO_REMOVE` | `off` (or unset; default): nobody is taken out. `dry-run`: the daily job counts the holders due to leave ([Removal](#removal)). `apply`: it takes them out, when `MANAGEMENT_TERMS_MODE` is `apply` too (otherwise it only counts, and core logs a warning at start). Any other value stops core |
 | `MANAGEMENT_TERMS_WEEKLY_SUMMARY` | `on` (or unset) or `off` |
 | `SKYMAIL_MANAGEMENT_TERM_TEMPLATE_KEY` | the template key; empty turns the mails off (rows are still queued and dropped at their turn as `skipped_kind_off`) |
 
@@ -207,7 +256,9 @@ core-backend management-terms --apply   # one run now; needs MANAGEMENT_TERMS_MO
 It takes the schedule's lock, records the run (`triggered_by=cli`) and
 prints counts only: whether an active season with an end ahead was found,
 terms it would add (the backfill) or added, undated terms dated, terms
-ended, warnings, terms marked, mails queued, the weekly summary. Exit codes:
+ended, warnings, terms marked, the removal's mode and the holders due to
+leave (the command takes nobody out; the schedule does), mails queued, the
+weekly summary. Exit codes:
 0 done, 1 the run failed, 2 usage or configuration, 3 another run holds the
 lock. A run by hand does not stand in for the schedule's day.
 
@@ -220,6 +271,8 @@ tables once an hour (every replica reports the same).
 |---|---|
 | `skylab_management_terms_mode{mode}` | 1 for the configured mode |
 | `skylab_management_terms_expired_in_group` | expired terms still open: the holder is still in the Group (as the daily job last saw it) |
+| `skylab_management_terms_removal_due` | of those, the terms due to leave ([Removal](#removal)): what the removal takes out at its next run, or would while it is off or a dry run |
+| `skylab_management_terms_auto_remove_mode{mode}` | 1 for the removal's configured mode |
 | `skylab_management_terms_open`, `_undated`, `_expiring` | open terms; those without an end; those within 14 days of it |
 | `skylab_management_terms_active_season` | 1 when the last scheduled ok run found an active season with an end ahead |
 | `skylab_management_terms_last_success_timestamp_seconds`, `skylab_management_terms_last_run_failed` | the schedule's runs |
@@ -235,7 +288,9 @@ tables once an hour (every replica reports the same).
   scope, the end, the source, and when it started, was warned, was marked
   and ended. One open term per person and Group (a partial unique index).
 - `management_term_mails`: the queue above. `management_term_runs`: one row
-  per run, counts only.
+  per run, counts only; `removal` (`off`, `dry-run`, `apply`) and `removed`
+  since migration `20261126101700`, which also lets the Team audit record's
+  system basis write `member.remove`.
 - **Account erasure** (`anonymize_core`) deletes the person's terms and the
   mails that go to them or name them, and forgets them as the one who
   granted a term. The Team audit rows stay, as all of them do.
@@ -266,15 +321,23 @@ tables once an hour (every replica reports the same).
 5. `MANAGEMENT_TERMS_MODE=apply` and redeploy. The first run writes the
    terms (`source` `backfill`) with the season's end; the routes open for
    the panel (ticket 12).
+6. The removal: `MANAGEMENT_TERMS_AUTO_REMOVE=dry-run` and redeploy; read
+   `skylab_management_terms_removal_due` and the runs' `removed` (none is
+   due before 30 June 2027 for 2026–2027). Then `apply` and redeploy, at
+   the latest before the first terms come due.
 
 ## Rollback
 
-`MANAGEMENT_TERMS_MODE=off` (or `dry-run`) and redeploy: no mail, no mark,
-no route; the terms stay as they are and the next apply carries on. An
+`MANAGEMENT_TERMS_AUTO_REMOVE=off` and redeploy: nobody more is taken out;
+those taken out stay out (add them back from the panel; each removal's
+`member.remove` row names them). `MANAGEMENT_TERMS_MODE=off` (or
+`dry-run`) and redeploy: no mail, no mark, no route, no removal; the terms
+stay as they are and the next apply carries on. An
 older core reads none of these tables; the down migrations drop them
 (`20261027140000`) and put the audit checks back without the term actions
-(`20261027140100`, `NOT VALID`: rows already written stay). Keycloak needs
-nothing: core never took anyone out.
+(`20261027140100`, `NOT VALID`: rows already written stay); the removal's
+down (`20261126101700`) drops the runs' two columns and leaves the audit
+check wide, so its rows stay.
 
 ## Compared with other products
 
@@ -292,13 +355,17 @@ What matches, and every deviation (benchmarked as the club decided,
   Enterprise editions), tells 72 hours before and then removes the member.
 - **Okta** has time-bound access requests and admin roles, revoked at the
   end.
-- **Deviation 1 (the end is only marked, Yusuf 2026-10-12 22:15):** at the
-  end, access stays: the term is marked expired, recorded and listed to
-  ADMIN, and someone removes the person from the panel. Every product
-  looked at removes the access by itself. Consequence: an expired member
-  keeps the Group's rights until removed; the panel's mark, the day's list,
-  the weekly summary and `skylab_management_terms_expired_in_group` keep
-  that visible.
+- **Deviation 1 (30 days' grace, Yusuf 2026-10-12 22:15 and
+  2026-11-24):** at the end, access stays for 30 days: the term is marked
+  expired, recorded and listed to ADMIN; then core removes the membership
+  by itself. Every product looked at removes the access at the end.
+  Consequence: an expired member keeps the Group's rights for 30 days (or
+  until removed sooner); the panel's mark, the day's list, the weekly
+  summary and `skylab_management_terms_expired_in_group` keep that
+  visible. **Matches:** the removal itself is automatic and recorded, as
+  in PIM, Google and Okta; behind a switch off by default with a dry run
+  first (a safe rollout, as Entra's access reviews' "auto apply" is a
+  setting the owner turns on).
 - **Deviation 2:** the term runs to a fixed date, the season's end, not for
   a duration from the moment it was granted (PIM's and Okta's durations).
 - **Deviation 3:** two warnings, 14 days and 1 day before (Google: one, 72
