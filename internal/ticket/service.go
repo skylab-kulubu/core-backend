@@ -737,12 +737,14 @@ func normalizeGuest(g GuestInfo) GuestInfo {
 // ApplyGuest writes the guest Ticket of g's e-mail on the Event, or finds the
 // one already there (docs/guest-apply.md).
 //
-// Only a trusted caller (guestApplyTrusted) gets the Ticket back and may
-// change an existing guest's name or phone number. Anybody else, the
-// token-less forms hop included, gets the zero Ticket and may only fill a
-// detail the stored Ticket lacks: the route is public, and whoever knows a
-// guest's e-mail and a public Event id must not read the guest's phone number
-// or rename them.
+// A token holder must be an operator of the Event (guestApplyTrusted), else
+// ErrForbidden, a service account too: with sign-up open a person's token
+// costs no more than an e-mail address, and a guest Ticket takes a place and
+// mails a stranger. An operator gets the Ticket back and may change an existing guest's name or phone
+// number. The token-less internal hop (the route answers it only off the
+// edge) gets the zero Ticket and may only fill a detail the stored Ticket
+// lacks: whoever knows a guest's e-mail and a public Event id must not read
+// the guest's phone number or rename them.
 func (s *service) ApplyGuest(ctx context.Context, p authz.Principal, eventID uuid.UUID, g GuestInfo) (GuestApplication, error) {
 	return s.ApplyGuestJoining(ctx, p, eventID, g, false)
 }
@@ -777,10 +779,13 @@ func (s *service) ApplyGuestJoining(ctx context.Context, p authz.Principal, even
 			return GuestApplication{}, ErrForbidden
 		}
 	}
+	trusted := s.guestApplyTrusted(p, ev)
+	if p.ID != "" && !trusted {
+		return GuestApplication{}, ErrForbidden
+	}
 	if err := s.openForRegistration(&p, ev, operator); err != nil {
 		return GuestApplication{}, err
 	}
-	trusted := s.guestApplyTrusted(p, ev)
 	a := Admission{Waitlist: joinWaitlist}
 	if operator {
 		a = Admission{Over: true}
@@ -829,20 +834,13 @@ func (s *service) operatorOf(p authz.Principal, ev event.Event) bool {
 			s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign))
 }
 
-// guestApplyTrusted reports whether p may see the Ticket a Guest apply wrote
-// and change an existing guest's details: a product's service identity, or an
-// operator of the Event, that is a person who may update the Event or assign
-// its Tickets (Privileged included). The Event hub's "Katılımcı ekle" is
-// offered to exactly those people.
+// guestApplyTrusted reports whether p may write a guest with a token, see the
+// Ticket a Guest apply wrote and change an existing guest's details: an
+// operator of the Event (operatorOf), the people the Event hub offers
+// "Katılımcı ekle" to. No service account: the forms service reports its
+// answers instead (docs/form-response-tickets.md).
 func (s *service) guestApplyTrusted(p authz.Principal, ev event.Event) bool {
-	if p.Product != "" {
-		return true
-	}
-	if p.ID == "" {
-		return false
-	}
-	return s.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: ev.OwnerTeam}, authz.Update) ||
-		s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign)
+	return s.operatorOf(p, ev)
 }
 
 func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo, trusted bool, a Admission) (GuestApplication, error) {

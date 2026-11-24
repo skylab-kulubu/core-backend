@@ -181,9 +181,10 @@ type guestApplied struct {
 	Status string `json:"status"`
 }
 
-// ApplyGuest is Guest apply (docs/guest-apply.md). The route takes a token
-// but does not require one: an operator of the Event and a product's service
-// identity get the Ticket, as before; anybody else gets guestApplied.
+// ApplyGuest is Guest apply (docs/guest-apply.md). A token holder reaches it
+// only as an operator of the Event (anybody else is refused by the service)
+// and gets the Ticket; the token-less internal hop gets guestApplied. The
+// edge without a token never reaches it (GuestApply.HideFromEdge).
 func (h *TicketHandler) ApplyGuest(c fiber.Ctx) error {
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {
