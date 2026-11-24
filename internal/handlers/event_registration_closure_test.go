@@ -138,8 +138,9 @@ func TestRegistrationClosureRefusesSelfApplyOnly(t *testing.T) {
 				t.Errorf("%s %s: %d %v, want %d %s", tc.name, who, status, body, wantStatus, wantCode)
 			}
 		}
-		// A member's own guest application is refused like any other.
-		if status, body := sendEventJSON(t, member, fiber.MethodPost, path+"/applications/guest", closureGuestBody("uye-misafir@example.com")); status != wantStatus || (wantCode != "" && body["code"] != wantCode) {
+		// A member who runs nothing writes no guest, open or closed: rights
+		// before state (docs/guest-apply.md).
+		if status, body := sendEventJSON(t, member, fiber.MethodPost, path+"/applications/guest", closureGuestBody("uye-misafir@example.com")); status != fiber.StatusForbidden {
 			t.Errorf("%s member's guest: %d %v", tc.name, status, body)
 		}
 		// The closure stops a person's own application only: the editor's

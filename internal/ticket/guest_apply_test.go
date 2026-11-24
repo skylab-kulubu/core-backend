@@ -2,6 +2,7 @@ package ticket_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -16,7 +17,7 @@ var (
 	weblabLead  = authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
 	yk          = authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
 	otherMember = authz.Principal{ID: "member", Groups: []string{"/UYELER/ARGE/GAMELAB"}}
-	formsHop    = authz.Principal{ID: "forms-sa", Product: authz.ProductForms}
+	formsHop    = authz.Principal{ID: "forms-sa", ServiceAccount: true, Product: authz.ProductForms, Roles: []string{"ticket:forms"}}
 )
 
 func storedGuest(t *testing.T, svc ticket.Service, ev event.Event, email string) ticket.Ticket {
@@ -181,7 +182,11 @@ func TestApplyGuestOperatorSeesAndUpdatesTheTicket(t *testing.T) {
 	}
 }
 
-func TestApplyGuestPersonWithoutEventRightsIsTreatedLikeAnonymous(t *testing.T) {
+// A token is not enough: with sign-up open anybody holds one. Only an
+// operator of the Event writes a guest with a token; anybody else is refused
+// before anything is written, a new e-mail or one already there. The forms
+// service too, with ticket:forms: it reports its answers instead.
+func TestApplyGuestRefusesATokenHolderWhoIsNotTrusted(t *testing.T) {
 	t.Parallel()
 	events, svc := setup(t)
 	ctx := context.Background()
@@ -192,38 +197,26 @@ func TestApplyGuestPersonWithoutEventRightsIsTreatedLikeAnonymous(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	applied, err := svc.ApplyGuest(ctx, otherMember, ev.ID, ticket.GuestInfo{
-		FirstName: "Mallory", LastName: "Renamed", Email: "ada@example.com",
-	})
+	for name, p := range map[string]authz.Principal{
+		"person without Event rights":       otherMember,
+		"forms with ticket:forms":           formsHop,
+		"forms without ticket:forms":        {ID: "forms-sa", ServiceAccount: true, Product: authz.ProductForms},
+		"another product with ticket:forms": {ID: "cms-sa", ServiceAccount: true, Product: authz.ProductCMS, Roles: []string{"ticket:forms"}},
+		"service account of no product":     {ID: "other-sa", ServiceAccount: true, Roles: []string{"ticket:forms"}},
+	} {
+		for _, email := range []string{"ada@example.com", "mallory@example.com"} {
+			if _, err := svc.ApplyGuest(ctx, p, ev.ID, ticket.GuestInfo{
+				FirstName: "Mallory", LastName: "Renamed", Email: email,
+			}); !errors.Is(err, ticket.ErrForbidden) {
+				t.Fatalf("%s, %s: err %v", name, email, err)
+			}
+		}
+	}
+	listed, err := svc.ListByEvent(ctx, yk, ev.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if applied.Result != ticket.GuestKept || applied.Trusted || applied.Ticket.GuestPhoneNumber != "" {
-		t.Fatalf("applied %+v", applied)
-	}
-	if got := storedGuest(t, svc, ev, "ada@example.com"); got.GuestFirstName != "Ada" {
-		t.Fatalf("renamed: %+v", got)
-	}
-}
-
-func TestApplyGuestProductServiceIdentityIsTrusted(t *testing.T) {
-	t.Parallel()
-	events, svc := setup(t)
-	ctx := context.Background()
-	ev := seedEvent(t, events, "WEBLAB")
-	if _, err := svc.ApplyGuest(ctx, anonymous, ev.ID, ticket.GuestInfo{
-		FirstName: "Ada", LastName: "Lovelace", Email: "ada@example.com",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	applied, err := svc.ApplyGuest(ctx, formsHop, ev.ID, ticket.GuestInfo{
-		FirstName: "Augusta", LastName: "Byron", Email: "ada@example.com",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if applied.Result != ticket.GuestExisting || !applied.Trusted || applied.Ticket.GuestFirstName != "Augusta" {
-		t.Fatalf("applied %+v", applied)
+	if len(listed) != 1 || listed[0].GuestFirstName != "Ada" {
+		t.Fatalf("tickets %+v", listed)
 	}
 }

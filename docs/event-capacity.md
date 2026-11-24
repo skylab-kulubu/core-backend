@@ -28,8 +28,8 @@ refused), never two active.
 |---|---|---|---|
 | Member apply `POST /v1/events/{id}/applications/me` with `{"joinWaitlist": true}` | `201` active | `201` `status: "waitlisted"` | `409 event_full` |
 | Member apply without the body (sky-app before the list) | `201` active | `409 event_full` | `409 event_full` |
-| Public Guest apply with `"joinWaitlist": true` | `201 {"status":"applied"}` | `201 {"status":"waitlisted"}` | `409 event_full` |
-| Public Guest apply without it | `201 {"status":"applied"}` | `409 event_full` | `409 event_full` |
+| Guest apply without a token (the internal hop; the edge answers it `404`, [guest-apply.md](guest-apply.md)) with `"joinWaitlist": true` | `201 {"status":"applied"}` | `201 {"status":"waitlisted"}` | `409 event_full` |
+| Guest apply without a token, without it | `201 {"status":"applied"}` | `409 event_full` | `409 event_full` |
 | Apply-for-other, the panel's guest ("Katılımcı ekle") | `201` active | `201` active, `overCapacity: true` | same |
 | Forms report, accepted | Ticket, `204` | waitlisted Ticket, `200 {"outcome":"waitlisted"}` | no Ticket, `200 {"outcome":"event_full"}` |
 
@@ -41,7 +41,7 @@ refused), never two active.
   there (`waitlisted`).
 - The panel adding a person who waits (Apply-for-other, the panel's guest)
   promotes them, past the capacity if it must (`overCapacity: true`).
-- The public Guest apply's answer is told from the Event, not from a Ticket
+- The token-less Guest apply's answer is told from the Event, not from a Ticket
   the e-mail already holds ([guest-apply.md](guest-apply.md)): an e-mail
   that applied before gets what a new one would, so the answer still does
   not tell whether it had applied.

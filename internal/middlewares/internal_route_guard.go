@@ -19,7 +19,7 @@ const InternalRoutePrefix = "/internal"
 // same guard as SkyMail's, docs/account-erasure-command.md).
 func InternalRouteGuard() fiber.Handler {
 	return func(c fiber.Ctx) error {
-		if cameThroughIngress(c) {
+		if CameThroughIngress(c) {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			return c.SendStatus(fiber.StatusNotFound)
 		}
@@ -27,7 +27,10 @@ func InternalRouteGuard() fiber.Handler {
 	}
 }
 
-func cameThroughIngress(c fiber.Ctx) bool {
+// CameThroughIngress reports whether the request came through the public
+// ingress: Traefik adds forwarding headers to everything it passes on, and a
+// service calling core over the internal network sends none.
+func CameThroughIngress(c fiber.Ctx) bool {
 	for name := range c.GetReqHeaders() {
 		name = strings.ToLower(name)
 		if strings.HasPrefix(name, "x-forwarded-") || name == "forwarded" || name == "x-real-ip" {
