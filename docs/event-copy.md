@@ -11,6 +11,8 @@ ADR 0066 and its 2026-10-19 addendum (e-skylab), ticket 06. A copy takes the sou
   "startDate": "2027-03-14T19:00:00+03:00",
   "includeDoorStaff": false,
   "includeCompetitions": false,
+  "includeExternalRegistration": false,
+  "includeAttendeeNote": false,
   "ownerTeam": "ALGOLAB"
 }
 ```
@@ -46,6 +48,9 @@ Who: whoever may see the source (a draft: who may edit it, ADR 0066) and create 
 | Days, Sessions | the current ones | archived ones are not; a Session is never cancelled in the copy, and has no feedback form (its `feedbackAutoSend` comes along); Sessions get new ids, so old Session QR codes do not check anyone in to the copy |
 | Door staff | only with `includeDoorStaff`, and only those whose accounts are active | left out (`doorStaff`) when the caller may not assign them (`event:manage`) |
 | Competitions and their stages | only with `includeCompetitions`; the current ones, each a `draft` with its name, description and entrant mode; stages with position, name, strategy, config and config version, dates moved | left out (`competitions`) when the caller may not manage Competitions in the team; never copied: entrants, members, submissions, adjustments, results, cancel reasons, archived Competitions |
+| External registration link (`externalRegistrationUrl`; [attendee-import.md](attendee-import.md)) | only with `includeExternalRegistration` (the panel asks; an older client sends neither and copies neither) | |
+| Attendee note | only with `includeAttendeeNote` | left out (`attendeeNote`) when the caller may not read it on the source (who may edit the Event, or read its Tickets) |
+| The door's mail switches (`attendanceWelcomeMail`, `attendanceRecordedMail`) and entry mode | yes | |
 | LinkedIn link, gallery, files, videos, mail list | no | |
 | Application and extra forms, their short links | no | |
 | Feedback mode (`feedbackMode`), `feedbackAutoSend` | yes | the feedback form and its alias are not copied (one place per form; [event-feedback.md](event-feedback.md)) |
@@ -54,7 +59,7 @@ Who: whoever may see the source (a draft: who may edit it, ADR 0066) and create 
 | Status | always `draft` (publish it with `POST …/publish`) | |
 | `copiedFromEventId` | the source | |
 
-A part is named in `skipped` only when the source has it: `doorStaff` and `competitions` only when asked for.
+A part is named in `skipped` only when the source has it: `doorStaff`, `competitions` and `attendeeNote` only when asked for.
 
 ## Dates
 

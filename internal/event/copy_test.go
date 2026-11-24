@@ -411,3 +411,72 @@ func TestCopyIntoAnotherTeam(t *testing.T) {
 		t.Fatalf("yk: %+v %v", got, err)
 	}
 }
+
+// The external registration link and the attendee note come along only when
+// asked for (an older client asks for neither); the note only for who may
+// read it on the source.
+func TestCopyExternalRegistrationAndAttendeeNote(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := event.NewMemoryStore()
+	svc := event.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()))
+	note := "Wi-Fi: SKYLAB"
+	source, err := store.Create(ctx, event.Event{
+		Name: "Gecekodu 2026", Location: "YTÜ", OwnerTeam: "WEBLAB", StartDate: stamp("2026-03-14T19:00:00+03:00"),
+		ExternalRegistrationURL: "https://forms.office.com/r/abc", AttendeeNote: &note, Status: event.StatusPublished,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	noteOf := func(e event.Event) string {
+		if e.AttendeeNote == nil {
+			return ""
+		}
+		return *e.AttendeeNote
+	}
+
+	got, _, err := svc.Copy(ctx, copyLeader, source.ID, copyIn("Eski istemci", "2027-03-13T19:00:00+03:00"))
+	if err != nil || got.Event.ExternalRegistrationURL != "" || noteOf(got.Event) != "" || len(got.Skipped) != 0 {
+		t.Fatalf("not asked: %q %q %v %v", got.Event.ExternalRegistrationURL, noteOf(got.Event), got.Skipped, err)
+	}
+
+	in := copyIn("İkisi de", "2027-03-13T19:00:00+03:00")
+	in.IncludeExternalRegistration, in.IncludeAttendeeNote = true, true
+	got, _, err = svc.Copy(ctx, copyLeader, source.ID, in)
+	if err != nil || got.Event.ExternalRegistrationURL != "https://forms.office.com/r/abc" || noteOf(got.Event) != note || len(got.Skipped) != 0 {
+		t.Fatalf("both: %q %q %v %v", got.Event.ExternalRegistrationURL, noteOf(got.Event), got.Skipped, err)
+	}
+
+	in = copyIn("Yalnız bağlantı", "2027-03-13T19:00:00+03:00")
+	in.IncludeExternalRegistration = true
+	got, _, err = svc.Copy(ctx, copyLeader, source.ID, in)
+	if err != nil || got.Event.ExternalRegistrationURL != "https://forms.office.com/r/abc" || noteOf(got.Event) != "" {
+		t.Fatalf("link only: %q %q %v", got.Event.ExternalRegistrationURL, noteOf(got.Event), err)
+	}
+
+	// A team where a member creates Events but does not edit them: the
+	// member copies, the note is left out and named.
+	policy := authz.DefaultPolicy()
+	policy.EventPermissions["WEBLAB"] = map[authz.Action][]authz.Level{
+		authz.Create: {authz.LevelLeader, authz.LevelMember},
+		authz.Update: {authz.LevelLeader},
+		authz.Delete: {authz.LevelLeader},
+	}
+	narrow := event.NewService(store, authz.NewAuthorizer(policy))
+	in = copyIn("Üye", "2027-03-13T19:00:00+03:00")
+	in.IncludeExternalRegistration, in.IncludeAttendeeNote = true, true
+	got, _, err = narrow.Copy(ctx, copyMember, source.ID, in)
+	if err != nil || noteOf(got.Event) != "" || !slices.Equal(got.Skipped, []string{event.SkippedAttendeeNote}) ||
+		got.Event.ExternalRegistrationURL != "https://forms.office.com/r/abc" {
+		t.Fatalf("member: %q %v %v", noteOf(got.Event), got.Skipped, err)
+	}
+
+	// A source without them: nothing to copy, nothing named.
+	bare := copySource(t, store)
+	in = copyIn("Boş", "2027-03-13T19:00:00+03:00")
+	in.IncludeExternalRegistration, in.IncludeAttendeeNote = true, true
+	got, _, err = narrow.Copy(ctx, copyMember, bare.ID, in)
+	if err != nil || got.Event.ExternalRegistrationURL != "" || noteOf(got.Event) != "" || slices.Contains(got.Skipped, event.SkippedAttendeeNote) {
+		t.Fatalf("bare: %q %q %v %v", got.Event.ExternalRegistrationURL, noteOf(got.Event), got.Skipped, err)
+	}
+}

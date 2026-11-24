@@ -130,6 +130,13 @@ func resource(ownerTeam string) authz.Resource {
 	return authz.Resource{Type: authz.TypeEvent, OwnerTeam: ownerTeam}
 }
 
+// readsAttendeeNote reports whether p may read the attendee note of an Event
+// of ownerTeam: who may edit it, and who reads its Tickets.
+func (s *service) readsAttendeeNote(p authz.Principal, ownerTeam string) bool {
+	return s.authz.Allow(p, resource(ownerTeam), authz.Update) ||
+		s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ownerTeam}, authz.Read)
+}
+
 func (s *service) CanAssign(p authz.Principal, ownerTeam string) bool {
 	return s.authz.Allow(p, resource(ownerTeam), authz.Assign)
 }
@@ -149,8 +156,7 @@ func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
 	// The attendee note (the venue's Wi-Fi) only to who may edit the Event,
 	// and to who reads its Tickets (DK; Yusuf, 2026-11-25), read-only.
 	in.AttendeeNoteView = nil
-	if p != nil && (s.authz.Allow(*p, resource(in.OwnerTeam), authz.Update) ||
-		s.authz.Allow(*p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: in.OwnerTeam}, authz.Read)) {
+	if p != nil && s.readsAttendeeNote(*p, in.OwnerTeam) {
 		note := ""
 		if in.AttendeeNote != nil {
 			note = *in.AttendeeNote
