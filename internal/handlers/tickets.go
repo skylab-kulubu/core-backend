@@ -40,6 +40,10 @@ func ticketError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusForbidden, "Forbidden")
 	case errors.Is(err, ticket.ErrNotFound):
 		return problem(c, fiber.StatusNotFound, "Not Found")
+	case errors.Is(err, ticket.ErrTicketCancelled):
+		return problemCode(c, fiber.StatusConflict, "Conflict", "ticket_cancelled")
+	case errors.Is(err, ticket.ErrTicketWaitlisted):
+		return problemCode(c, fiber.StatusConflict, "Conflict", "ticket_waitlisted")
 	case errors.Is(err, ticket.ErrConflict):
 		return problemCode(c, fiber.StatusConflict, "Conflict", eventStatusCode(err))
 	case errors.Is(err, ticket.ErrAmbiguous):
@@ -320,7 +324,11 @@ func (h *TicketHandler) Mine(c fiber.Ctx) error {
 	if err != nil {
 		return ticketError(c, err)
 	}
-	tickets, err := h.svc.Mine(c.Context(), p)
+	include, ok := statusList(c.Query("include"))
+	if !ok {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	tickets, err := h.svc.MineIncluding(c.Context(), p, include)
 	if err != nil {
 		return ticketError(c, err)
 	}
@@ -336,7 +344,19 @@ func (h *TicketHandler) ListByEvent(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	tickets, err := h.svc.ListByEvent(c.Context(), p, eventID)
+	// ?status=active (the default), waitlisted, cancelled or all.
+	var statuses []ticket.Status
+	switch raw := strings.TrimSpace(c.Query("status")); raw {
+	case "", string(ticket.StatusActive):
+		statuses = []ticket.Status{ticket.StatusActive}
+	case "all":
+	default:
+		if !ticket.ValidStatus(ticket.Status(raw)) {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+		statuses = []ticket.Status{ticket.Status(raw)}
+	}
+	tickets, err := h.svc.ListByEventStatus(c.Context(), p, eventID, statuses)
 	if err != nil {
 		return ticketError(c, err)
 	}

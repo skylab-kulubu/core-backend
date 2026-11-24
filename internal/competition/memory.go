@@ -164,6 +164,9 @@ func (s *MemoryStore) Tickets(ctx context.Context, ids []uuid.UUID) ([]TicketRef
 		if err != nil {
 			return nil, err
 		}
+		if !t.Active() {
+			continue
+		}
 		out = append(out, TicketRef{ID: t.ID, EventID: t.EventID})
 	}
 	return out, nil

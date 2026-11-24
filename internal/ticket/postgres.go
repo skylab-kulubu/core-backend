@@ -35,8 +35,12 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool, newAccessKey: NewAccessKey, newCode: NewCode}
 }
 
-const ticketCols = `id, event_id, ticket_type, owner_id, guest_first_name, guest_last_name, guest_email, guest_phone_number, access_key, code, qr_version, created_at, updated_at`
-const doorTicketCols = `t.id, t.event_id, t.ticket_type, t.owner_id`
+const ticketCols = `id, event_id, ticket_type, owner_id, guest_first_name, guest_last_name, guest_email, guest_phone_number, access_key, code, qr_version, created_at, updated_at,
+	status, status_changed_at, waitlisted_at, cancelled_at, cancelled_by, cancel_reason`
+
+// doorTicketCols carry the Ticket's status: the door finds a cancelled
+// Ticket to say so (409 ticket_cancelled), its lists leave it out.
+const doorTicketCols = `t.id, t.event_id, t.ticket_type, t.owner_id, t.status`
 
 const doorNameSQL = `CASE
 	WHEN t.ticket_type = 'GUEST' THEN COALESCE(
@@ -175,8 +179,24 @@ func (s *PostgresStore) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]T
 	return out, rows.Err()
 }
 
+// ListByEvent is the Event's active Tickets: every reader that means "the
+// Event's Tickets" (mails, certificates, the door's fallback, counts) reads
+// these. ListByEventStatus reads the others.
 func (s *PostgresStore) ListByEvent(ctx context.Context, eventID uuid.UUID) ([]Ticket, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+ticketCols+` FROM tickets WHERE event_id = $1 ORDER BY created_at`, eventID)
+	return s.ListByEventStatus(ctx, eventID, []Status{StatusActive})
+}
+
+// ListByEventStatus is the Event's Tickets of the statuses given (every
+// status for none), oldest first.
+func (s *PostgresStore) ListByEventStatus(ctx context.Context, eventID uuid.UUID, statuses []Status) ([]Ticket, error) {
+	names := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		names = append(names, string(status))
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+ticketCols+` FROM tickets
+		WHERE event_id = $1 AND (cardinality($2::text[]) = 0 OR status = ANY($2))
+		ORDER BY created_at`, eventID, names)
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +373,7 @@ func scanDoorTicketIdentities(rows pgx.Rows) ([]DoorTicketIdentity, error) {
 	for rows.Next() {
 		var row DoorTicketIdentity
 		if err := rows.Scan(
-			&row.Ticket.ID, &row.Ticket.EventID, &row.Ticket.TicketType, &row.Ticket.OwnerID,
+			&row.Ticket.ID, &row.Ticket.EventID, &row.Ticket.TicketType, &row.Ticket.OwnerID, &row.Ticket.Status,
 			&row.Name, &row.Email, &row.Found,
 		); err != nil {
 			return nil, err
@@ -467,12 +487,24 @@ func (s *PostgresStore) AddCheckIn(ctx context.Context, c CheckIn) (CheckIn, err
 	if c.ID == uuid.Nil {
 		c.ID = uuid.New()
 	}
+	// Only an active Ticket takes a check-in: a cancellation committed
+	// since the caller read the Ticket is refused here too.
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO ticket_checkins (id, ticket_id, event_day_id, session_id)
-		VALUES ($1, $2, $3, $4)
+		SELECT $1, t.id, $3, $4 FROM tickets t WHERE t.id = $2 AND t.status = 'active'
 		RETURNING id, ticket_id, event_day_id, session_id, created_at
 	`, c.ID, c.TicketID, c.EventDayID, c.SessionID).Scan(&c.ID, &c.TicketID, &c.EventDayID, &c.SessionID, &c.CreatedAt)
 	if isUnique(err) {
+		return CheckIn{}, ErrConflict
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		status, serr := s.statusOf(ctx, c.TicketID)
+		if serr != nil {
+			return CheckIn{}, serr
+		}
+		if refused := statusErr(status); refused != nil {
+			return CheckIn{}, refused
+		}
 		return CheckIn{}, ErrConflict
 	}
 	return c, err
@@ -552,15 +584,22 @@ func scanTicket(row rowScanner) (Ticket, error) {
 	var t Ticket
 	var created, updated time.Time
 	var code string
-	var accessKey *string
+	var accessKey, cancelledBy, cancelReason *string
 	err := row.Scan(
 		&t.ID, &t.EventID, &t.TicketType, &t.OwnerID,
 		&t.GuestFirstName, &t.GuestLastName, &t.GuestEmail, &t.GuestPhoneNumber,
 		&accessKey, &code, &t.QRVersion,
 		&created, &updated,
+		&t.Status, &t.StatusChangedAt, &t.WaitlistedAt, &t.CancelledAt, &cancelledBy, &cancelReason,
 	)
 	if accessKey != nil {
 		t.AccessKey = *accessKey
+	}
+	if cancelledBy != nil {
+		t.CancelledBy = CancelledBy(*cancelledBy)
+	}
+	if cancelReason != nil {
+		t.CancelReason = *cancelReason
 	}
 	t.Code = FormatCode(code)
 	t.CreatedAt = created

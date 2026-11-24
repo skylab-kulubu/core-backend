@@ -329,6 +329,9 @@ func (s *service) Issue(ctx context.Context, p authz.Principal, eventID, ticketI
 	if t.EventID != eventID {
 		return Certificate{}, ErrInvalid
 	}
+	if !t.Active() {
+		return Certificate{}, ErrNotFound
+	}
 	return s.materializeLegacy(ctx, ev, t)
 }
 

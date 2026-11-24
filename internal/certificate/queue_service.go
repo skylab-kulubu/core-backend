@@ -190,6 +190,11 @@ func (s *service) QueueManual(ctx context.Context, p authz.Principal, eventID, t
 	if item.EventID != eventID {
 		return Batch{}, ErrInvalid
 	}
+	// A cancelled (or waitlisted) Ticket gets no certificate, with a
+	// justification neither (docs/ticket-cancellation.md).
+	if !item.Active() {
+		return Batch{}, ErrNotFound
+	}
 	if err := issuable(ev); err != nil {
 		return Batch{}, err
 	}
@@ -365,6 +370,10 @@ func (s *service) processJob(ctx context.Context, job Job) error {
 	item, err := s.tickets.Get(ctx, job.TicketID)
 	if err != nil {
 		return mapTicketError(err)
+	}
+	// Cancelled since it was queued: as a Ticket that is gone.
+	if !item.Active() {
+		return ErrNotFound
 	}
 	created, err := s.materializeVersion(ctx, ev, item, version, batch, job, replaceSerial)
 	if err != nil {

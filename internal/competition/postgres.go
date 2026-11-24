@@ -266,7 +266,8 @@ func (s *PostgresStore) Restore(ctx context.Context, id uuid.UUID) error {
 }
 
 func (s *PostgresStore) Tickets(ctx context.Context, ids []uuid.UUID) ([]TicketRef, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, event_id FROM tickets WHERE id = ANY($1)`, ids)
+	// Only an active Ticket becomes an Entrant (docs/ticket-cancellation.md).
+	rows, err := s.pool.Query(ctx, `SELECT id, event_id FROM tickets WHERE id = ANY($1) AND status = 'active'`, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -366,7 +367,7 @@ func (s *PostgresStore) Candidates(ctx context.Context, competitionID, eventID u
 				WHERE m.ticket_id = t.id AND e.competition_id = $2)
 		FROM tickets t
 		LEFT JOIN users u ON u.id = t.owner_id
-		WHERE t.event_id = $1
+		WHERE t.event_id = $1 AND t.status = 'active'
 		ORDER BY t.created_at, t.id`, eventID, competitionID)
 	if err != nil {
 		return nil, err

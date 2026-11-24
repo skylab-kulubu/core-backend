@@ -42,6 +42,11 @@ const (
 	StateActive         = "active"
 	StateEventCancelled = "event_cancelled"
 	StateEnded          = "ended"
+	// StateTicketCancelled and StateWaitlisted are a Ticket that is not
+	// active (docs/ticket-cancellation.md): the page shows the Event and
+	// the state, with no QR and no PDF (410).
+	StateTicketCancelled = "ticket_cancelled"
+	StateWaitlisted      = "waitlisted"
 )
 
 // QRSize is the QR PNG's side in pixels.
@@ -206,6 +211,10 @@ func (s *Service) open(ctx context.Context, key string) (opened, error) {
 	}
 	state := StateActive
 	switch {
+	case t.StatusOf() == ticket.StatusCancelled:
+		state = StateTicketCancelled
+	case t.StatusOf() == ticket.StatusWaitlisted:
+		state = StateWaitlisted
 	case ev.Status == event.StatusCancelled:
 		state = StateEventCancelled
 	case ev.EndedAt(now):
@@ -264,7 +273,7 @@ func (s *Service) Page(ctx context.Context, key string) (View, error) {
 	if v.MapImageURL != "" {
 		v.MapAttribution, v.MapAttributionURL = event.MapAttribution, event.MapAttributionURL
 	}
-	if o.state != StateEventCancelled {
+	if !noQR(o.state) {
 		token, err := s.token(o)
 		if err != nil {
 			return View{}, err
@@ -290,7 +299,7 @@ func (s *Service) QRPNG(ctx context.Context, key string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if o.state == StateEventCancelled {
+	if noQR(o.state) {
 		return nil, ErrGone
 	}
 	token, err := s.token(o)
@@ -307,7 +316,7 @@ func (s *Service) PDF(ctx context.Context, key string) (string, []byte, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	if o.state == StateEventCancelled {
+	if noQR(o.state) {
 		return "", nil, ErrGone
 	}
 	if s.render == nil {
@@ -456,4 +465,10 @@ func LogKey(key string) string {
 
 func ticketQRClaims(t ticket.Ticket, ev event.Event) ticketqr.Claims {
 	return ticketqr.Claims{Ticket: t.ID, Event: ev.ID, Version: t.QRVersion, ExpiresAt: ticket.QRExpiry(t, ev)}
+}
+
+// noQR reports whether a page of state shows no QR and has no PDF: a
+// cancelled Event, a cancelled or waitlisted Ticket.
+func noQR(state string) bool {
+	return state == StateEventCancelled || state == StateTicketCancelled || state == StateWaitlisted
 }

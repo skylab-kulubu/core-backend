@@ -118,7 +118,7 @@ func (s *service) doorTicketByCode(ctx context.Context, eventID uuid.UUID, query
 		}
 		return row, err == nil, err
 	}
-	listed, err := s.tickets.ListByEvent(ctx, eventID)
+	listed, err := s.everyTicket(ctx, eventID)
 	if err != nil {
 		return DoorTicketIdentity{}, false, err
 	}

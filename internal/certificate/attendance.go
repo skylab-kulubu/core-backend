@@ -253,6 +253,10 @@ func (m memoryAttendance) EventAttendance(ctx context.Context, eventID uuid.UUID
 		jobs = reader.latestJobs(eventID)
 	}
 	for _, t := range tickets {
+		// Active Tickets only, as the database's (docs/ticket-cancellation.md).
+		if !t.Active() {
+			continue
+		}
 		row := TicketAttendance{TicketID: t.ID, TicketType: t.TicketType, MissingRequired: []uuid.UUID{}, Job: jobs[t.ID]}
 		row.Name = m.name(ctx, t)
 		seen := map[uuid.UUID]bool{}

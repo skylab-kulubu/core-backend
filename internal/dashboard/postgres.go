@@ -30,7 +30,7 @@ func (s *PostgresStore) TicketCounts(ctx context.Context, eventIDs []uuid.UUID) 
 		       count(*) FILTER (WHERE t.ticket_type <> $2),
 		       count(*) FILTER (WHERE EXISTS (SELECT 1 FROM ticket_checkins c WHERE c.ticket_id = t.id))
 		FROM tickets t
-		WHERE t.event_id = ANY($1)
+		WHERE t.event_id = ANY($1) AND t.status = 'active'
 		GROUP BY t.event_id
 	`, eventIDs, ticket.Registered)
 	if err != nil {
@@ -53,7 +53,7 @@ func (s *PostgresStore) DailyApplications(ctx context.Context, eventIDs []uuid.U
 	rows, err := s.pool.Query(ctx, `
 		SELECT t.event_id, to_char(t.created_at AT TIME ZONE $3, 'YYYY-MM-DD') AS day, count(*)
 		FROM tickets t
-		WHERE t.event_id = ANY($1) AND t.created_at >= $2
+		WHERE t.event_id = ANY($1) AND t.created_at >= $2 AND t.status = 'active'
 		GROUP BY t.event_id, day
 	`, eventIDs, since, loc.String())
 	if err != nil {
