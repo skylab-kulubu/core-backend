@@ -5,6 +5,8 @@
 -- sign-up runs on another product's form (Microsoft Forms and the like):
 -- an https address, '' for none. The site's "Kayıt ol" opens it. The check
 -- repeats what core checks before it writes (event.ValidExternalRegistrationURL).
+SET LOCAL lock_timeout = '5s';
+
 ALTER TABLE events ADD COLUMN IF NOT EXISTS external_registration_url TEXT NOT NULL DEFAULT '';
 ALTER TABLE events DROP CONSTRAINT IF EXISTS events_external_registration_url_check;
 ALTER TABLE events ADD CONSTRAINT events_external_registration_url_check CHECK (
