@@ -15,6 +15,9 @@ type Store interface {
 	GetByAlias(ctx context.Context, alias string) (URL, error)
 	// GetByRetiredAlias finds the active link an alias was renamed away from.
 	GetByRetiredAlias(ctx context.Context, alias string) (URL, error)
+	// AliasDisabled reports whether alias, spelled exactly, names a disabled
+	// link or was retired from one.
+	AliasDisabled(ctx context.Context, alias string) (bool, error)
 	GetByForm(ctx context.Context, formID uuid.UUID) (URL, error)
 	ListByCreator(ctx context.Context, userID uuid.UUID) ([]URL, error)
 	ListByCreatorLifecycle(ctx context.Context, userID uuid.UUID, visibility lifecycle.Visibility) ([]URL, error)
