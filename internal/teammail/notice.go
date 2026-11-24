@@ -62,7 +62,10 @@ type Notice struct {
 	RolesRemoved []string
 	// MemberCount is how many people are in the Group's tree when the
 	// change was read for its recipients (roles_changed).
-	MemberCount   *int
+	MemberCount *int
+	// Console marks a change made in Keycloak's console
+	// (docs/console-audit.md): the mail names the console as where.
+	Console       bool
 	OccurredAt    time.Time
 	NextAttemptAt time.Time
 	Attempts      int
@@ -293,6 +296,14 @@ func (s *Service) noticeVars(ctx context.Context, n Notice) map[string]string {
 	if n.ActorID != nil {
 		vars["ActorName"] = s.people.DisplayName(ctx, *n.ActorID)
 	}
+	if n.Console {
+		// A master realm account has no name in core: the console alone.
+		if vars["ActorName"] == "" {
+			vars["ActorName"] = consoleActor
+		} else {
+			vars["ActorName"] += " (" + consoleActor + ")"
+		}
+	}
 	switch n.Event {
 	case NoticeRolesChanged:
 		if adminRole(n.RolesAdded, n.RolesRemoved) {
@@ -309,6 +320,9 @@ func (s *Service) noticeVars(ctx context.Context, n Notice) map[string]string {
 	}
 	return vars
 }
+
+// consoleActor is how the mail names a change made in Keycloak's console.
+const consoleActor = "Keycloak konsolu"
 
 // dateTimeLayout is when a notice's change happened, in Europe/Istanbul.
 const dateTimeLayout = "02.01.2006 15:04"
