@@ -263,6 +263,19 @@ answers both ways and compares the Tickets. During the overlap with the HTTP
 report (at most one to two days, Yusuf 2026-11-24) the rule is safe to
 repeat: the second way finds the Ticket there.
 
+**Not one transaction (a deviation on purpose).** The event's record in
+`consumed_events` and its version in `forms_record_versions` are written in
+the delivery's transaction, but the Ticket rule writes the Tickets (and
+queues their mail) through its own store, in transactions of its own: the
+idempotent consumer pattern's "the message id in the same transaction as
+the business change" does not hold here. What closes the gap is the rule
+being safe to repeat: when the Tickets are written and the delivery's
+transaction then fails (a lost connection, a crash before the ack), the
+broker hands the event over again and the rule finds the Tickets there,
+writing nothing and mailing nobody a second time. Moving the rule into the
+consumer's transaction would have split it from the HTTP report's, which
+is the one thing both ways must share.
+
 **Claim check.** An event never carries a guest's name or e-mail (ADR-0071
 karar 11). For an accepted answer to an application form (a current Event's
 application or extra form) core reads the answer from Forms when the event
