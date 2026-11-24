@@ -61,6 +61,10 @@ func TestExternalRegistrationImportMigration(t *testing.T) {
 	if _, err := pool.Exec(ctx, editorRow, uuid.New()); err != nil {
 		t.Fatalf("an event_editor ticket.import row: %v", err)
 	}
+	previewRow := strings.Replace(editorRow, "'ticket.import'", "'ticket.import.preview'", 1)
+	if _, err := pool.Exec(ctx, previewRow, uuid.New()); err != nil {
+		t.Fatalf("an event_editor ticket.import.preview row: %v", err)
+	}
 
 	// Again over itself: recorded, nothing changes.
 	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE version = `+externalRegistrationVersion); err != nil {
@@ -84,7 +88,7 @@ func TestExternalRegistrationImportMigration(t *testing.T) {
 	}
 	// The row the import wrote stays.
 	var kept int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM team_audit_records WHERE action = 'ticket.import'`).Scan(&kept); err != nil || kept != 1 {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM team_audit_records WHERE action LIKE 'ticket.import%'`).Scan(&kept); err != nil || kept != 2 {
 		t.Fatalf("audit rows after down: %d %v", kept, err)
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE version = `+externalRegistrationVersion); err != nil {

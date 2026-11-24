@@ -12,8 +12,9 @@ ALTER TABLE events ADD CONSTRAINT events_external_registration_url_check CHECK (
     OR (external_registration_url LIKE 'https://_%' AND char_length(external_registration_url) <= 2048));
 
 -- An operator's import of a list of attendees is one audit row
--- (ticket.import): the Event's team, the Event and the counts, never a name
--- or an e-mail address. An Event's editor may make it, as a cancellation.
+-- (ticket.import), its preview another (ticket.import.preview): the Event's
+-- team, the Event and the counts, never a name or an e-mail address. An
+-- Event's editor may make them, as a cancellation.
 ALTER TABLE team_audit_records DROP CONSTRAINT IF EXISTS team_audit_records_action_check;
 ALTER TABLE team_audit_records ADD CONSTRAINT team_audit_records_action_check CHECK (action IN (
     'member.add', 'member.remove', 'leader.add', 'leader.remove',
@@ -21,7 +22,7 @@ ALTER TABLE team_audit_records ADD CONSTRAINT team_audit_records_action_check CH
     'group.roles', 'group.attributes', 'app.assign', 'app.unassign',
     'membership.term.extend', 'membership.term.handover', 'membership.term.expired',
     'ticket.resend', 'ticket.link.renew', 'ticket.cancel', 'ticket.restore', 'ticket.promote',
-    'ticket.import',
+    'ticket.import', 'ticket.import.preview',
     'user.enable', 'user.disable', 'user.password.set', 'user.password.mail',
     'user.email.change', 'user.email.verify', 'user.email.mail', 'user.email.primary',
     'user.required_actions', 'user.credential.remove', 'user.idp.unlink',
@@ -36,4 +37,4 @@ ALTER TABLE team_audit_records ADD CONSTRAINT team_audit_records_actor_basis_che
         AND actor_id = '00000000-0000-0000-0000-000000000000'
         AND action = 'membership.term.expired')
     OR (actor_basis = 'event_editor' AND actor_via_group_id IS NOT NULL
-        AND action IN ('ticket.cancel', 'ticket.restore', 'ticket.promote', 'ticket.import')));
+        AND action IN ('ticket.cancel', 'ticket.restore', 'ticket.promote', 'ticket.import', 'ticket.import.preview')));

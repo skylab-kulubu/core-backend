@@ -1913,12 +1913,12 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		AND EXISTS (
 			SELECT 1 FROM pg_constraint
 			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
-			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.import%'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.import.preview%'
 		)
 		AND EXISTS (
 			SELECT 1 FROM pg_constraint
 			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
-			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.import%'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.import.preview%'
 		)`,
 }
 

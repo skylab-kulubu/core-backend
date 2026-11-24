@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
@@ -66,6 +67,13 @@ const (
 	ImportProblemLastName  = "missing_last_name"
 	ImportProblemEmail     = "invalid_email"
 	ImportProblemNameLong  = "name_too_long"
+	// ImportProblemCharacters is a row with a control character (NUL
+	// included) or a byte that was not UTF-8 (a Windows-1254 CSV) in its
+	// name or address.
+	ImportProblemCharacters = "invalid_characters"
+	// ImportProblemRejected is a row the database refused to store (a
+	// value it does not take): that row alone is left out.
+	ImportProblemRejected = "rejected"
 	// ImportProblemAccount is an account that was there at the preview
 	// and is gone at the import.
 	ImportProblemAccount = "account_unavailable"
@@ -171,9 +179,21 @@ type ImportMatcher interface {
 
 // PreviewImport reads the list and says what importing it would do, writing
 // nothing.
+//
+// The preview is recorded too (ticket.import.preview): who read which
+// Event's list and its counts, never a row. A row that cannot be opened
+// stops it, as every audited action.
 func (s *service) PreviewImport(ctx context.Context, p authz.Principal, eventID uuid.UUID, in ImportInput) (ImportReport, error) {
-	_, report, err := s.planImport(ctx, p, eventID, in)
-	return report, err
+	ev, report, err := s.planImport(ctx, p, eventID, in)
+	if err != nil {
+		return ImportReport{}, err
+	}
+	record, err := s.beginTicketAuditBasis(ctx, p, ev, teamaudit.ActionTicketImportPreview, uuid.Nil, s.privilegedOperator(p), true)
+	if err != nil {
+		return ImportReport{}, err
+	}
+	s.finishImportAudit(ctx, record, nil, report.Summary, in.SendMail)
+	return report, nil
 }
 
 // ImportAttendees writes the list's Tickets: each new row under the Event's
@@ -196,6 +216,7 @@ func (s *service) ImportAttendees(ctx context.Context, p authz.Principal, eventI
 	}
 	admission := Admission{Waitlist: !in.PastCapacity, Over: in.PastCapacity, Quiet: !in.SendMail}
 	var failed error
+	done := len(report.Rows)
 	for i := range report.Rows {
 		row := &report.Rows[i]
 		switch row.Outcome {
@@ -228,8 +249,11 @@ func (s *service) ImportAttendees(ctx context.Context, p authz.Principal, eventI
 		case errors.Is(err, ErrNotFound) && row.ownerID != nil:
 			// The account went away since the list was read.
 			row.Outcome, row.Problem = ImportInvalid, ImportProblemAccount
+		case rowRefused(err):
+			// A value the database does not take: this row alone.
+			row.Outcome, row.Problem = ImportInvalid, ImportProblemRejected
 		default:
-			failed = err
+			failed, done = err, i
 		}
 		if failed != nil {
 			break
@@ -237,7 +261,11 @@ func (s *service) ImportAttendees(ctx context.Context, p authz.Principal, eventI
 	}
 	report.Imported = failed == nil
 	report.Summary = summarize(report.Rows)
-	s.finishImportAudit(ctx, record, failed, report.Summary, in.SendMail)
+	// On a failure the audit row counts what was done: the rows before the
+	// one that failed, none planned after it.
+	counts := summarize(report.Rows[:done])
+	counts.Rows = len(report.Rows)
+	s.finishImportAudit(ctx, record, failed, counts, in.SendMail)
 	if failed != nil {
 		return ImportReport{}, failed
 	}
@@ -288,6 +316,9 @@ func (s *service) planImport(ctx context.Context, p authz.Principal, eventID uui
 	for i, l := range lines {
 		row := ImportRow{Line: l.line, FirstName: l.firstName, LastName: l.lastName, Email: l.email}
 		for _, name := range l.sessions {
+			if badCharacters(name) {
+				continue
+			}
 			if sess, ok := sessions.find(name); ok {
 				row.Sessions = append(row.Sessions, sess)
 			} else {
@@ -295,6 +326,8 @@ func (s *service) planImport(ctx context.Context, p authz.Principal, eventID uui
 			}
 		}
 		switch {
+		case badCharacters(l.firstName) || badCharacters(l.lastName) || badCharacters(l.email):
+			row.Outcome, row.Problem = ImportInvalid, ImportProblemCharacters
 		case !validImportEmail(l.email):
 			row.Outcome, row.Problem = ImportInvalid, ImportProblemEmail
 		case l.firstName == "":
@@ -518,11 +551,19 @@ func (s *service) finishImportAudit(ctx context.Context, record *auditRecord, er
 	}
 	after := record.after
 	after.Import = &teamaudit.ImportCounts{
-		Rows: sum.Rows, Created: sum.Active, Waitlisted: sum.Waitlisted, Members: sum.Members,
+		Rows: sum.Rows, Created: sum.Active, Waitlisted: sum.Waitlisted, Members: sum.Members, Guests: sum.Guests,
 		Existing: sum.Existing, Full: sum.Full, Invalid: sum.Invalid, Duplicates: sum.Duplicates,
 		Mail: mail,
 	}
 	if ferr := s.audit.Finish(ctx, record.id, outcome, code, &after); ferr != nil {
 		s.logger.Printf("tickets: audit record %s stays pending", record.id)
 	}
+}
+
+// rowRefused reports whether err is the database refusing one row's values
+// (a data exception, class 22: a byte sequence it does not take, a value
+// too long), not the database failing.
+func rowRefused(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && strings.HasPrefix(pg.Code, "22")
 }

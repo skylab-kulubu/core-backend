@@ -53,6 +53,42 @@ func TestParseImportShapes(t *testing.T) {
 			want: []importLine{{line: 2, firstName: "Ayşe Nur", lastName: "Yılmaz", email: "ayse@example.com"}},
 		},
 		{
+			name: "microsoft forms export in English: the form's first and last name questions",
+			text: "ID,Start time,Completion time,Email,Name,First name,Last name,E-mail address\n" +
+				"1,1/1/25 10:00,1/1/25 10:02,anonymous,anonymous,Grace,Hopper,grace@example.com\n",
+			delimiter: "comma", header: true,
+			want: []importLine{{line: 2, firstName: "Grace", lastName: "Hopper", email: "grace@example.com"}},
+		},
+		{
+			name: "microsoft forms export in Turkish: the respondent's Ad and E-posta give way to the questions",
+			text: "Kimlik;Başlangıç saati;Tamamlanma saati;E-posta;Ad;Adınız;Soyadınız;E-posta adresiniz\n" +
+				"1;25.11.2026 10:00;25.11.2026 10:02;ogrenci@std.yildiz.edu.tr;Öğrenci Hesabı;Ayşe;Yılmaz;ayse@example.com\n",
+			delimiter: "semicolon", header: true,
+			want: []importLine{{line: 2, firstName: "Ayşe", lastName: "Yılmaz", email: "ayse@example.com"}},
+		},
+		{
+			name: "microsoft forms export in Turkish without questions: the respondent's Ad is a full name",
+			text: "Kimlik;Başlangıç saati;Tamamlanma saati;E-posta;Ad;Hangi oturum?\n" +
+				"1;25.11.2026 10:00;25.11.2026 10:02;ayse@std.yildiz.edu.tr;Ayşe Nur Yılmaz;x\n",
+			delimiter: "semicolon", header: true,
+			want: []importLine{{line: 2, firstName: "Ayşe Nur", lastName: "Yılmaz", email: "ayse@std.yildiz.edu.tr"}},
+		},
+		{
+			name:      "microsoft forms export in English without questions",
+			text:      "ID,Start time,Completion time,Email,Name\n1,a,b,ada@example.com,Ada Lovelace\n",
+			delimiter: "comma", header: true,
+			want: []importLine{{line: 2, firstName: "Ada", lastName: "Lovelace", email: "ada@example.com"}},
+		},
+		{
+			name:      "a byte that is not UTF-8 stays in its row",
+			text:      "ad;soyad;eposta\nAy\xfee;Kaya;ayse@example.com\nAli;Veli;ali@example.com\n",
+			delimiter: "semicolon", header: true,
+			want: []importLine{
+				{line: 2, firstName: "Ay\uFFFDe", lastName: "Kaya", email: "ayse@example.com"},
+				{line: 3, firstName: "Ali", lastName: "Veli", email: "ali@example.com"},
+			},
+		},
+		{
 			name:      "quoted cells and extra blanks",
 			text:      "first name,last name,email\n\"  Ada  \",\"Love lace\",\" ada@example.com \"\n",
 			delimiter: "comma", header: true,
@@ -94,7 +130,6 @@ func TestParseImportRefusals(t *testing.T) {
 		{"too many rows", many, ErrImportTooManyRows},
 		{"too large", strings.Repeat("x", MaxImportBytes+1), ErrImportTooLarge},
 		{"no e-mail column", "ad,soyad\nAli,Veli\n", ErrImportNoEmail},
-		{"not utf-8", "ad,soyad,eposta\n\xff,b,c@example.com\n", ErrImportUnreadable},
 	} {
 		if _, _, err := parseImport(tc.text); !errors.Is(err, tc.want) {
 			t.Errorf("%s: %v", tc.name, err)
@@ -103,6 +138,15 @@ func TestParseImportRefusals(t *testing.T) {
 	// Exactly the limit is taken.
 	if rows, _, err := parseImport("ad,soyad,eposta\n" + strings.Repeat("a,b,c@example.com\n", MaxImportRows)); err != nil || len(rows) != MaxImportRows {
 		t.Fatalf("%d rows, %v", len(rows), err)
+	}
+}
+
+func TestBadCharacters(t *testing.T) {
+	t.Parallel()
+	for s, want := range map[string]bool{"Ayşe": false, "Nul\x00": true, "Bell\a": true, "Ay\uFFFDe": true, "": false} {
+		if got := badCharacters(s); got != want {
+			t.Errorf("%q: %v", s, got)
+		}
 	}
 }
 

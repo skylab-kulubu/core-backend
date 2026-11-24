@@ -54,8 +54,15 @@ Turkish) or a comma. With a header, the columns are found by name, Turkish
 or English, case and Turkish letters ignored: `Ad`/`First name`,
 `Soyad`/`Last name`, `Ad Soyad`/`Name` (split at its last blank),
 `E-posta`/`Email`, `Oturum`/`Session`; other columns are ignored.
-Microsoft Forms' own respondent columns (`Email`, `Name`: the signed-in
-respondent or "anonymous") give way to the form's questions. Without a
+A Microsoft Forms export is told by its first columns (Microsoft's "Check
+and share your form results": the first five are the response's id, its
+start and completion times, and the respondent's name and e-mail; in
+English `ID`, `Start time`, `Completion time`, `Email`, `Name`, in Turkish
+`Kimlik`, `Başlangıç saati`, `Tamamlanma saati`, `E-posta`, `Ad`). Those
+respondent columns are blank or "anonymous" unless the form records who
+answered, so the form's own name and e-mail questions win over them; only
+a form that asks neither is read from them, and its `Name`/`Ad` is then a
+full name, never a first name. Without a
 header, the column holding an address is the e-mail and the others, in
 order, the first name, the last name and the Session. Blank lines are
 skipped. Addresses are kept in lower case.
@@ -63,13 +70,16 @@ skipped. Addresses are kept in lower case.
 **Limits:** at most 2 MiB of text (`413 import_too_large`) and 1000 rows,
 the header left out (`413 import_too_many_rows`). An empty list is `400
 import_empty`, one without an e-mail column `400 import_no_email_column`, one
-the CSV reader cannot read (not UTF-8) `400 import_unreadable`.
+the CSV reader cannot read `400 import_unreadable`. Bytes that are not
+UTF-8 (a CSV Excel saved in Windows-1254) do not stop the list: they become
+U+FFFD and their rows are `invalid` (`invalid_characters`). The panel reads
+a file as UTF-8 and, failing that, as Windows-1254 before it sends it.
 
 **Each row** gets one outcome:
 
 | Outcome | When |
 |---|---|
-| `invalid` | `problem`: `invalid_email`, `missing_first_name`, `missing_last_name`, `name_too_long` (over 100 characters); at the import also `account_unavailable` (the account went away since the preview) |
+| `invalid` | `problem`: `invalid_characters` (a control character, NUL included, or U+FFFD in the name or address), `invalid_email`, `missing_first_name`, `missing_last_name`, `name_too_long` (over 100 characters); at the import also `account_unavailable` (the account went away since the preview) and `rejected` (the database refused that row's values: that row alone is left out) |
 | `duplicate` | the e-mail is on an earlier row; the first one wins |
 | `existing` | the person already holds a Ticket on the Event, as a guest or through their account; `ticketStatus` says `active`, `waitlisted` or `cancelled`. It is left as it is: a cancelled Ticket is not reopened (the operator restores it by hand) |
 | `active` | a Ticket written active; `overCapacity` when past the capacity |
@@ -117,12 +127,14 @@ The list is read once per request and dropped with the answer: no file is
 stored, no row is logged, and the preview writes nothing. What stays is
 the Tickets the import wrote (as any guest Ticket, under the retention
 rules of [retention-sweep.md](retention-sweep.md)), one log line of counts
-(`attendees_imported`: the request id, the Event and the counts) and one
-Team audit row `ticket.import` ([team-audit.md](team-audit.md)): who, the
-Event's team, the Event and the counts, never a name or an address. A row
-that cannot be opened stops the import before it writes (`503
-audit_unavailable`).
+(`attendees_imported`: the request id, the Event and the counts) and a
+Team audit row for each preview (`ticket.import.preview`) and each import
+(`ticket.import`) ([team-audit.md](team-audit.md)): who, the Event's team,
+the Event and the counts (members and guests among them), never a name or
+an address. A row that cannot be opened stops the preview or the import
+before it writes (`503 audit_unavailable`).
 
-A database error midway stops the import: the rows written so far stay,
-the audit row says `failed` with the counts so far, and the same list
-again writes the rest.
+A database error midway (other than one row's refused value) stops the
+import: the rows written so far stay, the audit row says `failed` and
+counts only what was done before the failing row, and the same list again
+writes the rest.

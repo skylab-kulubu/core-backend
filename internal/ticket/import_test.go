@@ -103,8 +103,9 @@ func TestImportPreviewThenImportThenAgain(t *testing.T) {
 	if listed, _ := e.svc.ListByEvent(context.Background(), yk, e.ev.ID); len(listed) != 0 {
 		t.Fatalf("the preview wrote %d tickets", len(listed))
 	}
-	if len(e.audit.Rows()) != 0 {
-		t.Fatal("the preview wrote an audit row")
+	if rows := e.audit.Rows(); len(rows) != 1 || rows[0].Action != teamaudit.ActionTicketImportPreview ||
+		rows[0].After.Import == nil || rows[0].After.Import.Created != 3 || rows[0].After.Import.Members != 1 || rows[0].After.Import.Guests != 2 {
+		t.Fatalf("the preview's audit row: %+v", rows)
 	}
 
 	done, err := e.svc.ImportAttendees(importAs(importLead), importLead, e.ev.ID, in)
@@ -143,10 +144,10 @@ func TestImportPreviewThenImportThenAgain(t *testing.T) {
 	}
 
 	rows := e.audit.Rows()
-	if len(rows) != 2 {
+	if len(rows) != 3 {
 		t.Fatalf("%d audit rows", len(rows))
 	}
-	first := rows[0]
+	first := rows[1]
 	if first.Action != teamaudit.ActionTicketImport || first.Outcome != teamaudit.OutcomeOK || first.After == nil ||
 		first.After.EventID != e.ev.ID.String() || first.After.TicketID != "" || first.After.Import == nil ||
 		first.After.Import.Created != 3 || first.After.Import.Members != 1 || !first.After.Import.Mail ||
@@ -279,5 +280,62 @@ func TestImportLeavesExistingTickets(t *testing.T) {
 	}
 	if report.Rows[0].TicketStatus != ticket.StatusActive || report.Rows[1].TicketStatus != ticket.StatusCancelled {
 		t.Fatalf("%+v", report.Rows)
+	}
+}
+
+// A row with a NUL, a control character or a byte that was not UTF-8 (a
+// Windows-1254 CSV) is invalid; the others are imported.
+func TestImportBadCharactersRow(t *testing.T) {
+	t.Parallel()
+	e := newImportEnv(t, 0, true)
+	list := "ad,soyad,eposta\nAda,Lovelace,ada@example.com\nNul\x00l,X,nul@example.com\nAy\xfee,Y\xfdlmaz,ayse@example.com\nBell\a,Z,bell@example.com\n"
+	report, err := e.svc.ImportAttendees(importAs(importLead), importLead, e.ev.ID, ticket.ImportInput{Text: list})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := outcomes(report.Rows); got != "active,invalid:invalid_characters,invalid:invalid_characters,invalid:invalid_characters" {
+		t.Fatalf("%s", got)
+	}
+}
+
+// failingStore fails the second Ticket it is asked to write, as a database
+// that went away midway.
+type failingStore struct {
+	*ticket.MemoryStore
+	calls int
+}
+
+func (f *failingStore) CreateAdmitted(ctx context.Context, t ticket.Ticket, a ticket.Admission) (ticket.Ticket, error) {
+	f.calls++
+	if f.calls == 2 {
+		return ticket.Ticket{}, errors.New("connection lost")
+	}
+	return f.MemoryStore.CreateAdmitted(ctx, t, a)
+}
+
+// An import that fails midway counts in its audit row only what it wrote.
+func TestImportFailureCountsWrittenRowsOnly(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := identity.NewMemory()
+	dir.PutGroup(identity.Group{ID: uuid.NewString(), Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"})
+	events := event.NewMemoryStore()
+	mem := ticket.NewMemoryStore()
+	mem.UseEvents(events)
+	store := &failingStore{MemoryStore: mem}
+	audit := teamaudit.NewMemory()
+	svc := ticket.NewService(store, events, authz.NewAuthorizer(authz.DefaultPolicy()), user.NewMemoryStore(), dir, audit)
+	ev, err := events.Create(ctx, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := "ad,soyad,eposta\nA,A,a@example.com\nB,B,b@example.com\nC,C,c@example.com\n"
+	if _, err := svc.ImportAttendees(importAs(importLead), importLead, ev.ID, ticket.ImportInput{Text: list}); err == nil {
+		t.Fatal("the failure was not answered")
+	}
+	rows := audit.Rows()
+	if len(rows) != 1 || rows[0].Outcome != teamaudit.OutcomeFailed || rows[0].After.Import == nil ||
+		rows[0].After.Import.Created != 1 || rows[0].After.Import.Rows != 3 {
+		t.Fatalf("audit %+v %+v", rows, rows[0].After.Import)
 	}
 }

@@ -83,6 +83,9 @@ const (
 	// without a Ticket: the Event's team, the Event and the import's
 	// counts (State.Import), never a name or an e-mail address.
 	ActionTicketImport Action = "ticket.import"
+	// ActionTicketImportPreview is the import's preview, recorded as
+	// ActionTicketImport: what the list would do, nothing written.
+	ActionTicketImportPreview Action = "ticket.import.preview"
 	// The user.* actions are a person's account changed from the panel's
 	// person card (docs/user-accounts.md): the target is the person
 	// (TargetUserID), with no Group (GroupID and GroupPath empty). before
@@ -119,7 +122,7 @@ var Actions = []Action{
 	ActionGroupRoles, ActionGroupAttributes, ActionAppAssign, ActionAppUnassign,
 	ActionTermExtend, ActionTermHandover, ActionTermExpired,
 	ActionTicketResend, ActionTicketLinkRenew, ActionTicketCancel, ActionTicketRestore, ActionTicketPromote,
-	ActionTicketImport,
+	ActionTicketImport, ActionTicketImportPreview,
 	ActionUserEnable, ActionUserDisable, ActionUserPasswordSet, ActionUserPasswordMail,
 	ActionUserEmailChange, ActionUserEmailVerify, ActionUserEmailMail, ActionUserEmailPrimary,
 	ActionUserRequiredActions, ActionUserCredentialRemove, ActionUserIdentityUnlink,
@@ -338,10 +341,12 @@ type ImportCounts struct {
 	// Rows are the list's rows, the header left out.
 	Rows int `json:"rows"`
 	// Created are the Tickets written active, Waitlisted those written on
-	// the waiting list; Members of them went to an account holder.
+	// the waiting list (on a preview: that would be); Members of them went
+	// to an account holder, Guests to nobody's account.
 	Created    int `json:"created"`
 	Waitlisted int `json:"waitlisted"`
 	Members    int `json:"members"`
+	Guests     int `json:"guests"`
 	// Existing already had a Ticket on the Event (cancelled ones
 	// included); Full found the Event full with its waiting list off.
 	Existing int `json:"existing"`
@@ -478,7 +483,7 @@ func (r Record) normalize() (Record, string) {
 	case BasisEventEditor:
 		if _, err := uuid.Parse(r.Actor.ViaGroupID); err != nil ||
 			(r.Action != ActionTicketCancel && r.Action != ActionTicketRestore && r.Action != ActionTicketPromote &&
-				r.Action != ActionTicketImport) {
+				r.Action != ActionTicketImport && r.Action != ActionTicketImportPreview) {
 			return r, "invalid_basis"
 		}
 	default:

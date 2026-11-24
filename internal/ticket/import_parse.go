@@ -43,7 +43,8 @@ var (
 	// (400 import_no_email_column).
 	ErrImportNoEmail = errors.New("ticket: no e-mail column in the import list")
 	// ErrImportUnreadable is a list the CSV reader cannot read (400
-	// import_unreadable).
+	// import_unreadable). Bytes that are not UTF-8 are not: they make
+	// their rows invalid (badCharacters).
 	ErrImportUnreadable = errors.New("ticket: the import list cannot be read")
 )
 
@@ -177,9 +178,9 @@ func parseImport(text string) ([]importLine, ImportColumns, error) {
 	if len(text) > MaxImportBytes {
 		return nil, ImportColumns{}, ErrImportTooLarge
 	}
-	if !utf8.ValidString(text) {
-		return nil, ImportColumns{}, ErrImportUnreadable
-	}
+	// Bytes that are not UTF-8 (a CSV Excel saved in Windows-1254) become
+	// U+FFFD: the rows they are in are invalid, the others are read.
+	text = strings.ToValidUTF8(text, string(utf8.RuneError))
 	text = strings.TrimPrefix(text, "\ufeff")
 	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
 	delim := detectDelimiter(strings.TrimLeft(text, "\n"))
@@ -229,24 +230,39 @@ func parseImport(text string) ([]importLine, ImportColumns, error) {
 			candidates[kind] = append(candidates[kind], i)
 		}
 	}
-	// Microsoft Forms' own respondent columns ("Email", "Name": the
-	// signed-in respondent, or "anonymous") come before the form's
-	// questions; a question of the form wins over them.
-	for kind, at := range candidates {
-		generic := func(i int) bool {
-			f := foldHeader(header[i])
-			return f == "email" || f == "name"
-		}
-		slices.SortStableFunc(at, func(a, b int) int {
-			switch {
-			case generic(a) && !generic(b):
-				return 1
-			case !generic(a) && generic(b):
-				return -1
+	// A Microsoft Forms export begins with five columns of its own: the
+	// response's id, its start and completion times, and the respondent's
+	// e-mail and name (blank or "anonymous" unless the form records them;
+	// Microsoft's documentation gives their contents, not their labels: an
+	// English export says "ID", "Start time", "Completion time", "Email",
+	// "Name", a Turkish one "Kimlik", "Başlangıç saati", "Tamamlanma
+	// saati", "E-posta", "Ad"). The form's own questions come after them and
+	// win: the respondent's columns are read only when the form asks no
+	// such question, and its name column is a full name then, never a
+	// first name.
+	if msFormsExport(header) {
+		respEmail, respName := -1, -1
+		for i := 1; i < msFormsColumns; i++ {
+			switch headerNames[foldHeader(header[i])] {
+			case colEmail:
+				respEmail = i
+			case colFirst, colLast, colFull:
+				respName = i
 			}
-			return 0
-		})
-		candidates[kind] = at
+		}
+		for kind, at := range candidates {
+			if own := slices.DeleteFunc(slices.Clone(at), func(i int) bool { return i < msFormsColumns }); len(own) > 0 {
+				candidates[kind] = own
+			} else {
+				delete(candidates, kind)
+			}
+		}
+		if len(candidates[colFirst]) == 0 && len(candidates[colLast]) == 0 && len(candidates[colFull]) == 0 && respName >= 0 {
+			candidates[colFull] = []int{respName}
+		}
+		if len(candidates[colEmail]) == 0 && respEmail >= 0 {
+			candidates[colEmail] = []int{respEmail}
+		}
 	}
 	data := records
 	if len(candidates[colEmail]) > 0 || len(candidates[colFirst]) > 0 || len(candidates[colFull]) > 0 {
@@ -345,6 +361,26 @@ func parseImport(text string) ([]importLine, ImportColumns, error) {
 	return out, cols, nil
 }
 
+// msFormsColumns is how many columns a Microsoft Forms export starts with
+// (Microsoft's "Check and share your form results": the respondent's id,
+// the start and completion times, and the respondent's name and e-mail).
+const msFormsColumns = 5
+
+// msFormsExport reports whether header is a Microsoft Forms export's: its
+// first column is the response's id ("ID", "Kimlik") and the next two its
+// times.
+func msFormsExport(header []string) bool {
+	if len(header) < msFormsColumns {
+		return false
+	}
+	switch foldHeader(header[0]) {
+	case "id", "kimlik", "yanitlayankimligi":
+	default:
+		return false
+	}
+	return strings.Contains(foldHeader(header[1]), "saat") || strings.Contains(foldHeader(header[1]), "time")
+}
+
 // splitFullName splits "Ayşe Nur Yılmaz" at its last blank: the last word is
 // the last name, the rest the first.
 func splitFullName(full string) (string, string) {
@@ -358,6 +394,15 @@ func splitFullName(full string) (string, string) {
 
 func collapseSpaces(s string) string {
 	return strings.Join(strings.FieldsFunc(s, unicode.IsSpace), " ")
+}
+
+// badCharacters reports whether s holds a character no name or address
+// carries: a control character (NUL included) or U+FFFD, what a byte that
+// was not UTF-8 became.
+func badCharacters(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool {
+		return r == utf8.RuneError || unicode.IsControl(r)
+	})
 }
 
 // validImportEmail reports whether address can hold a Ticket: one plain
