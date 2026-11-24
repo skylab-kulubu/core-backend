@@ -3,10 +3,12 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +16,8 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
+	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/event"
@@ -37,32 +41,39 @@ func (b *lockedBuffer) String() string {
 	return b.buf.String()
 }
 
-func TestGuestApplyLogsTheClassAndOutcomeButNoPersonalData(t *testing.T) {
-	t.Parallel()
+// guestApplyApp is the Guest apply route as httpx wires it, without the
+// optional bearer: every request here is token-less.
+func guestApplyApp(t *testing.T, proxies clientip.Ranges, logs *lockedBuffer, metrics *GuestApplyMetrics) (*fiber.App, string) {
+	t.Helper()
 	events := event.NewMemoryStore()
 	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	guest := NewGuestApply(proxies, metrics, DefaultGuestApplyLimits(), log.New(logs, "", 0))
+	h := NewTicketHandler(ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy())))
+	app := fiber.New()
+	app.Use(requestid.New())
+	route := []any{guest.HideFromEdge}
+	for _, limit := range guest.Limits() {
+		route = append(route, limit)
+	}
+	app.Post("/v1/events/:eventId/applications/guest", guest.Observe, append(route, h.ApplyGuest)...)
+	return app, "/v1/events/" + ev.ID.String() + "/applications/guest"
+}
+
+func TestGuestApplyLogsTheClassAndOutcomeButNoPersonalData(t *testing.T) {
+	t.Parallel()
 	proxies, err := clientip.ParseRanges("0.0.0.0/32")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var logs lockedBuffer
 	metrics := NewGuestApplyMetrics()
-	guest := NewGuestApply(proxies, metrics, GuestApplyLimits{PerClient: 1, PerClientWindow: time.Minute, PerGuest: 5, PerGuestWindow: time.Minute},
-		log.New(&logs, "", 0))
-	h := NewTicketHandler(ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy())))
-	app := fiber.New()
-	app.Use(requestid.New())
-	route := []any{}
-	for _, limit := range guest.Limits() {
-		route = append(route, limit)
-	}
-	app.Post("/v1/events/:eventId/applications/guest", guest.Observe, append(route, h.ApplyGuest)...)
+	app, path := guestApplyApp(t, proxies, &logs, metrics)
 
 	send := func(forwardedFor, body string) int {
-		req := httptest.NewRequest(fiber.MethodPost, "/v1/events/"+ev.ID.String()+"/applications/guest", strings.NewReader(body))
+		req := httptest.NewRequest(fiber.MethodPost, path, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		if forwardedFor != "" {
 			req.Header.Set("X-Forwarded-For", forwardedFor)
@@ -79,8 +90,7 @@ func TestGuestApplyLogsTheClassAndOutcomeButNoPersonalData(t *testing.T) {
 		status             int
 	}{
 		{"", body, fiber.StatusCreated},
-		{"203.0.113.7", body, fiber.StatusCreated},
-		{"203.0.113.7", body, fiber.StatusTooManyRequests},
+		{"203.0.113.7", body, fiber.StatusNotFound},
 		{"", `{"firstName":"Ada"}`, fiber.StatusBadRequest},
 	} {
 		if got := send(step.forwardedFor, step.body); got != step.status {
@@ -91,15 +101,14 @@ func TestGuestApplyLogsTheClassAndOutcomeButNoPersonalData(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
 	want := []struct{ caller, outcome string }{
 		{"anonymous_internal", "created"},
-		{"anonymous_public", "existing"},
-		{"anonymous_public", "rate_limited"},
+		{"anonymous_public", "not_found"},
 		{"anonymous_internal", "invalid"},
 	}
 	if len(lines) != len(want) {
 		t.Fatalf("log lines %q", lines)
 	}
 	for i, line := range lines {
-		for _, secret := range []string{"ada@example.com", "Ada", "Lovelace", "5551234", "203.0.113.7", ev.ID.String()} {
+		for _, secret := range []string{"ada@example.com", "Ada", "Lovelace", "5551234", "203.0.113.7", path[len("/v1/events/"):][:36]} {
 			if strings.Contains(withoutCorrelationID(t, line), secret) {
 				t.Fatalf("log line %q carries %q", line, secret)
 			}
@@ -121,10 +130,10 @@ func TestGuestApplyLogsTheClassAndOutcomeButNoPersonalData(t *testing.T) {
 	for _, line := range []string{
 		"# TYPE skylab_guest_apply_requests_total counter",
 		`skylab_guest_apply_requests_total{caller="anonymous_internal",outcome="created"} 1`,
-		`skylab_guest_apply_requests_total{caller="anonymous_public",outcome="rate_limited"} 1`,
+		`skylab_guest_apply_requests_total{caller="anonymous_public",outcome="not_found"} 1`,
 		`skylab_guest_apply_requests_total{caller="service",outcome="created"} 0`,
 		"skylab_guest_apply_anonymous_internal_total 2",
-		"skylab_guest_apply_anonymous_public_total 2",
+		"skylab_guest_apply_anonymous_public_total 1",
 		"skylab_guest_apply_person_total 0",
 	} {
 		if !strings.Contains(text, line+"\n") {
@@ -133,100 +142,146 @@ func TestGuestApplyLogsTheClassAndOutcomeButNoPersonalData(t *testing.T) {
 	}
 }
 
-func TestParseGuestApplyLimitMode(t *testing.T) {
+// A token-less request that came through the public ingress is answered a
+// bare 404 before anything is read or written, whatever address it names:
+// Traefik (a trusted proxy) adds a forwarding header to everything it passes
+// on, a private visitor's address included, and a proxy whose name did not
+// resolve (a private peer that is not trusted) still writes one. Only a
+// private caller that sends none (the internal hop) reaches the handler. The
+// app listens on the loopback, so the peer is a real private address.
+func TestGuestApplyHidesTheRouteFromTheEdge(t *testing.T) {
 	t.Parallel()
-	for raw, want := range map[string]GuestApplyLimitMode{
-		"": GuestApplyLimitEnforce, " enforce ": GuestApplyLimitEnforce, "observe": GuestApplyLimitObserve,
+	for name, ranges := range map[string]string{
+		"trusted proxy":    "127.0.0.1/32",
+		"unresolved proxy": "dokploy-traefik", // never looked up here: as if it did not resolve
 	} {
-		got, err := ParseGuestApplyLimitMode(raw)
-		if err != nil || got != want {
-			t.Fatalf("%q: %v %v, want %v", raw, got, err, want)
-		}
-	}
-	for _, raw := range []string{"off", "Enforce", "log"} {
-		if _, err := ParseGuestApplyLimitMode(raw); err == nil {
-			t.Fatalf("%q accepted", raw)
-		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			proxies, err := clientip.ParseRanges(ranges)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var logs lockedBuffer
+			app, path := guestApplyApp(t, proxies, &logs, NewGuestApplyMetrics())
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			go func() { _ = app.Listener(listener, fiber.ListenConfig{DisableStartupMessage: true}) }()
+			t.Cleanup(func() { _ = app.Shutdown() })
+
+			send := func(header, value, email string) (int, http.Header, string) {
+				body := `{"firstName":"Ada","lastName":"Lovelace","email":"` + email + `"}`
+				req, err := http.NewRequestWithContext(t.Context(), fiber.MethodPost, "http://"+listener.Addr().String()+path, strings.NewReader(body))
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.Header.Set("Content-Type", "application/json")
+				if header != "" {
+					req.Header.Set(header, value)
+				}
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resp.Body.Close()
+				raw, _ := io.ReadAll(resp.Body)
+				return resp.StatusCode, resp.Header, string(raw)
+			}
+			for _, step := range []struct{ header, value string }{
+				{"X-Forwarded-For", "203.0.113.7"},
+				{"X-Forwarded-For", "10.0.1.7"},
+				{"X-Real-Ip", "10.0.1.7"},
+				{"X-Forwarded-Proto", "https"},
+				{"Forwarded", "for=203.0.113.7"},
+			} {
+				status, header, body := send(step.header, step.value, "edge@example.com")
+				if status != fiber.StatusNotFound || body != "Not Found" || header.Get(fiber.HeaderCacheControl) != "no-store" {
+					t.Fatalf("%s: %d %q %v", step.header, status, body, header)
+				}
+			}
+			if status, _, body := send("", "", "hop@example.com"); status != fiber.StatusCreated {
+				t.Fatalf("internal hop: %d %s", status, body)
+			}
+			lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+			want := []string{"anonymous_public", "anonymous_public", "anonymous_public", "anonymous_public", "anonymous_public", "anonymous_internal"}
+			if len(lines) != len(want) {
+				t.Fatalf("log lines %q", lines)
+			}
+			for i, line := range lines {
+				var entry map[string]any
+				if err := json.Unmarshal([]byte(line), &entry); err != nil {
+					t.Fatalf("log line %q: %v", line, err)
+				}
+				if entry["caller"] != want[i] {
+					t.Fatalf("request %d counted %v, want %s", i, entry["caller"], want[i])
+				}
+			}
+		})
 	}
 }
 
-// A proxy whose name did not resolve is a private peer that is not trusted,
-// and it still writes the visitor in X-Forwarded-For: its requests are the
-// internet's and get the public limits, never the internal hop's. A private
-// caller that names nobody (the forms hop) stays internal. The app listens
-// on the loopback, so the peer is a real private address.
-func TestGuestApplyHeaderFromAnUntrustedPeerIsPublic(t *testing.T) {
+// One operator's token writes at most PerSubjectDay guests a day, whatever
+// the ten-minute budget allows: a refused or failed request does not count,
+// the ceiling's refusal is the usual 429 and is counted on its own.
+func TestGuestApplyCapsEachOperatorPerDay(t *testing.T) {
 	t.Parallel()
 	events := event.NewMemoryStore()
 	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// dokploy-traefik is never looked up here: as if it did not resolve.
-	proxies, err := clientip.ParseRanges("dokploy-traefik")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var logs lockedBuffer
-	guest := NewGuestApply(proxies, NewGuestApplyMetrics(), GuestApplyLimits{PerClient: 1, PerClientWindow: time.Minute, PerGuest: 5, PerGuestWindow: time.Minute},
-		log.New(&logs, "", 0))
+	metrics := NewGuestApplyMetrics()
+	guest := NewGuestApply(clientip.Ranges{}, metrics, GuestApplyLimits{PerSubject: 100, PerSubjectWindow: time.Minute, PerSubjectDay: 3}, nil)
 	h := NewTicketHandler(ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy())))
-	app := fiber.New()
-	app.Use(requestid.New())
-	route := []any{}
+	app := fiber.New(fiber.Config{ErrorHandler: ErrorHandler})
+	operator := authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/YK"}}
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals(authn.LocalsIdentity, operator)
+		return c.Next()
+	})
+	route := []any{guest.HideFromEdge}
 	for _, limit := range guest.Limits() {
 		route = append(route, limit)
 	}
 	app.Post("/v1/events/:eventId/applications/guest", guest.Observe, append(route, h.ApplyGuest)...)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() { _ = app.Listener(listener, fiber.ListenConfig{DisableStartupMessage: true}) }()
-	t.Cleanup(func() { _ = app.Shutdown() })
 
-	send := func(forwardedFor, email string) int {
-		body := `{"firstName":"Ada","lastName":"Lovelace","email":"` + email + `","phoneNumber":"5551234"}`
-		req, err := http.NewRequestWithContext(t.Context(), fiber.MethodPost, "http://"+listener.Addr().String()+"/v1/events/"+ev.ID.String()+"/applications/guest", strings.NewReader(body))
-		if err != nil {
-			t.Fatal(err)
-		}
+	send := func(body string) *http.Response {
+		req := httptest.NewRequest(fiber.MethodPost, "/v1/events/"+ev.ID.String()+"/applications/guest", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
-		if forwardedFor != "" {
-			req.Header.Set("X-Forwarded-For", forwardedFor)
-		}
-		resp, err := http.DefaultClient.Do(req)
+		req.Header.Set("X-Forwarded-For", "203.0.113.7")
+		resp, err := app.Test(req)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_ = resp.Body.Close()
-		return resp.StatusCode
+		return resp
 	}
-	for i, step := range []struct {
-		forwardedFor, email string
-		status              int
-	}{
-		{"203.0.113.7", "ada@example.com", fiber.StatusCreated},
-		{"198.51.100.9", "bob@example.com", fiber.StatusTooManyRequests},
-		{"", "carol@example.com", fiber.StatusCreated},
-		{"", "dan@example.com", fiber.StatusCreated},
+	if got := send(`{"firstName":"Ada"}`).StatusCode; got != fiber.StatusBadRequest {
+		t.Fatalf("bad body: %d", got)
+	}
+	for i := range 3 {
+		if got := send(`{"firstName":"Ada","lastName":"Lovelace","email":"ada` + strconv.Itoa(i) + `@example.com"}`).StatusCode; got != fiber.StatusCreated {
+			t.Fatalf("guest %d: %d", i, got)
+		}
+	}
+	refused := send(`{"firstName":"Ada","lastName":"Lovelace","email":"one-more@example.com"}`)
+	raw, _ := io.ReadAll(refused.Body)
+	retry, err := strconv.Atoi(refused.Header.Get(fiber.HeaderRetryAfter))
+	if refused.StatusCode != fiber.StatusTooManyRequests || !strings.Contains(string(raw), `"guest_apply_rate_limited"`) ||
+		err != nil || retry <= int(time.Minute.Seconds()) || retry > int((24*time.Hour).Seconds()) {
+		t.Fatalf("over the daily ceiling: %d %v %s", refused.StatusCode, refused.Header, raw)
+	}
+	text := metrics.Prometheus()
+	for _, line := range []string{
+		"skylab_guest_apply_daily_cap_total 1",
+		`skylab_guest_apply_requests_total{caller="person",outcome="created"} 3`,
+		`skylab_guest_apply_requests_total{caller="person",outcome="rate_limited"} 1`,
 	} {
-		if got := send(step.forwardedFor, step.email); got != step.status {
-			t.Fatalf("step %d: status %d want %d", i, got, step.status)
+		if !strings.Contains(text, line+"\n") {
+			t.Fatalf("metrics lack %q:\n%s", line, text)
 		}
 	}
-	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
-	want := []string{"anonymous_public", "anonymous_public", "anonymous_internal", "anonymous_internal"}
-	if len(lines) != len(want) {
-		t.Fatalf("log lines %q", lines)
-	}
-	for i, line := range lines {
-		var entry map[string]any
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			t.Fatalf("log line %q: %v", line, err)
-		}
-		if entry["caller"] != want[i] {
-			t.Fatalf("request %d counted %v, want %s", i, entry["caller"], want[i])
-		}
+	if DefaultGuestApplyLimits().PerSubjectDay != 300 {
+		t.Fatalf("production ceiling %d, want 300", DefaultGuestApplyLimits().PerSubjectDay)
 	}
 }

@@ -389,7 +389,9 @@ func TestRestoreRenewsTheLinkAndQR(t *testing.T) {
 
 // Registering again reopens a cancelled Ticket on all four ways in (Member
 // apply, Apply-for-other, Guest apply, the forms report): active, a new
-// key, the next QR version. Only an active Ticket is "already there".
+// key, the next QR version. Only an active Ticket is "already there". The
+// forms report reopens only what Forms' own decline cancelled; an
+// operator's cancellation stands (form_response_reopen_postgres_test.go).
 func TestRegisteringAgainReopensACancelledTicket(t *testing.T) {
 	ctx := context.Background()
 	check := func(t *testing.T, e *cancelEnv, id uuid.UUID, before ticket.Ticket) {
@@ -451,10 +453,30 @@ func TestRegisteringAgainReopensACancelledTicket(t *testing.T) {
 		before, _ := e.store.Get(ctx, written[0].ID)
 		e.cancel(t, before.ID)
 		result, err := e.svc.RecordFormResponse(ctx, formsService, acceptedGuest(formID, "Ada", "Lovelace", "ada@example.com"))
-		if err != nil || result.TicketsWritten != 1 {
-			t.Fatalf("report again %+v %v", result, err)
+		if err != nil || result.TicketsWritten != 0 {
+			t.Fatalf("report after an operator's cancellation %+v %v", result, err)
 		}
-		check(t, e, before.ID, before)
+		if got, _ := e.store.Get(ctx, before.ID); got.StatusOf() != ticket.StatusCancelled {
+			t.Fatalf("an operator's cancellation was undone: %+v", got)
+		}
+		// Forms' own decline of another answer, then its acceptance:
+		// reopened.
+		answer := acceptedGuest(formID, "Grace", "Hopper", "grace@example.com")
+		if _, err := e.svc.RecordFormResponse(ctx, formsService, answer); err != nil {
+			t.Fatal(err)
+		}
+		other := storedGuest(t, e.svc, ev, "grace@example.com")
+		otherBefore, _ := e.store.Get(ctx, other.ID)
+		answer.Status = ticket.FormResponseDeclined
+		if result, err := e.svc.RecordFormResponse(ctx, formsService, answer); err != nil || result.Outcome != ticket.FormResponseCancelled {
+			t.Fatalf("decline %+v %v", result, err)
+		}
+		answer.Status = ticket.FormResponseAccepted
+		result, err = e.svc.RecordFormResponse(ctx, formsService, answer)
+		if err != nil || result.TicketsWritten != 1 {
+			t.Fatalf("report after Forms' decline %+v %v", result, err)
+		}
+		check(t, e, other.ID, otherBefore)
 	})
 }
 

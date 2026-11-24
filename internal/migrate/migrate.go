@@ -1833,6 +1833,22 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
 			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.promote%'
 		)`,
+	// A Ticket's cancellation mail and the forms answer it came from
+	// (docs/ticket-status-mail.md, docs/form-response-tickets.md): the
+	// queued mail's kind check that takes cancelled, the Ticket's answer
+	// and its index.
+	20261124130000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.ticket_notifications') AND conname = 'ticket_notifications_kind_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%cancelled%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'tickets' AND column_name = 'form_response_id'
+		)
+		AND to_regclass('public.tickets_form_response_idx') IS NOT NULL`,
 	// The reminder the day before an Event (docs/event-reminder.md): its two
 	// tables and the queue's three indexes.
 	20261124140000: `
@@ -1842,6 +1858,33 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND to_regclass('public.event_reminder_mails_due_idx') IS NOT NULL
 		  AND to_regclass('public.event_reminder_mails_event_idx') IS NOT NULL
 		  AND to_regclass('public.event_reminder_mails_attempted_idx') IS NOT NULL`,
+	// The door's mode and Venue entry (docs/venue-entry.md): the Event's
+	// entry_mode with its check, the venue_entries table with its one entry
+	// a day, its source check, its two indexes and its writer's guard.
+	20261124150000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'entry_mode'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events') AND conname = 'events_entry_mode_check' AND convalidated
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.venue_entries') AND conname = 'venue_entries_ticket_day_key' AND contype = 'u'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.venue_entries') AND conname = 'venue_entries_source_check' AND convalidated
+		)
+		AND to_regclass('public.venue_entries_event_day_idx') IS NOT NULL
+		AND to_regclass('public.venue_entries_check_in_idx') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.venue_entries') AND tgname = 'venue_entries_require_active_writer' AND NOT tgisinternal
+		)`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

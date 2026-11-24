@@ -273,7 +273,7 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (_ Ev
 	if in, err = normalizeLocation(in); err != nil {
 		return Event{}, err
 	}
-	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() {
+	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() || !validEntryMode(in.EntryMode) {
 		return Event{}, ErrInvalid
 	}
 	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Create) {
@@ -356,7 +356,7 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 	if in, err = normalizeLocation(in); err != nil {
 		return Event{}, err
 	}
-	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() {
+	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() || !validEntryMode(in.EntryMode) {
 		return Event{}, ErrInvalid
 	}
 	in.ID = existing.ID

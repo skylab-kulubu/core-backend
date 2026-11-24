@@ -67,7 +67,7 @@ type Queued struct {
 	Resend int
 	// Kind is the mail (docs/event-capacity.md): KindCreated ("Biletin
 	// hazır", every row before the waiting list, and the empty kind),
-	// KindWaitlisted or KindPromoted.
+	// KindWaitlisted, KindPromoted or KindCancelled.
 	Kind string
 }
 
@@ -76,6 +76,8 @@ const (
 	KindCreated    = "created"
 	KindWaitlisted = "waitlisted"
 	KindPromoted   = "promoted"
+	// KindCancelled is "Biletin iptal edildi" (docs/ticket-status-mail.md).
+	KindCancelled = "cancelled"
 )
 
 // Queue keeps the Tickets waiting (PostgresQueue: ticket_notifications).
@@ -94,9 +96,9 @@ type Mailer interface {
 	TicketCreated(ctx context.Context, idempotencyKey string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time, attachments []mail.Attachment) error
 }
 
-// StatusMailer posts the waiting list's mails (mail.SkyMail): typ is
-// mail.WaitlistJoinedType or mail.WaitlistPromotedType. A Mailer that is
-// not one drops those rows.
+// StatusMailer posts the waiting list's and the cancellation's mails
+// (mail.SkyMail): typ is mail.WaitlistJoinedType, mail.WaitlistPromotedType
+// or mail.TicketCancelledType. A Mailer that is not one drops those rows.
 type StatusMailer interface {
 	TicketStatus(ctx context.Context, typ, idempotencyKey string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time, attachments []mail.Attachment) error
 }
@@ -304,6 +306,13 @@ func (s *Service) deliver(ctx context.Context, q Queued, pdf *bool, report *Repo
 	// only while the Ticket still waits (docs/event-capacity.md).
 	typ := mail.TicketCreatedType
 	switch q.Kind {
+	case KindCancelled:
+		// "Biletin iptal edildi" goes only while the Ticket is still
+		// cancelled: restored or registered again since, it is not news.
+		typ = mail.TicketCancelledType
+		if t.StatusOf() != ticket.StatusCancelled {
+			return dropped, nil
+		}
 	case KindWaitlisted:
 		typ = mail.WaitlistJoinedType
 		if t.StatusOf() != ticket.StatusWaitlisted {
@@ -344,8 +353,9 @@ func (s *Service) deliver(ctx context.Context, q Queued, pdf *bool, report *Repo
 		return dropped, nil
 	}
 	var attachments []mail.Attachment
-	// The waiting list's mail carries no ticket: no PDF.
-	if s.config.PDF != nil && q.Kind != KindWaitlisted {
+	// The waiting list's and the cancellation's mails carry no ticket: no
+	// PDF.
+	if s.config.PDF != nil && q.Kind != KindWaitlisted && q.Kind != KindCancelled {
 		attachments, err = s.attachment(ctx, t, ev, pdf)
 		if err != nil {
 			return 0, err
@@ -360,8 +370,11 @@ func (s *Service) deliver(ctx context.Context, q Queued, pdf *bool, report *Repo
 	}
 	if typ != mail.TicketCreatedType {
 		key = StatusKey(typ, t.ID, t.QRVersion)
-		if q.Kind == KindWaitlisted {
+		switch q.Kind {
+		case KindWaitlisted:
 			vars = waitlistedVars(vars)
+		case KindCancelled:
+			vars = cancelledVars(vars, t)
 		}
 		send = func(attachments []mail.Attachment) error {
 			return status.TicketStatus(ctx, typ, key, holder, vars, source, ev.EndDate, attachments)
@@ -484,6 +497,23 @@ func waitlistedVars(vars map[string]string) map[string]string {
 	out := make(map[string]string, 6)
 	for _, name := range []string{"EventId", "EventName", "EventDate", "OwnerTeam", "Venue", "TicketUrl"} {
 		out[name] = vars[name]
+	}
+	return out
+}
+
+// cancelledVars are event.ticket-cancelled's variables (skymail-frontend
+// #179): the Event's, CancelledBy (holder or operator) and Reason, the
+// operator's reason (empty for the holder, or when none was given), all of
+// them always. No link, QR or code: a cancelled Ticket opens nothing.
+func cancelledVars(vars map[string]string, t ticket.Ticket) map[string]string {
+	out := make(map[string]string, 6)
+	for _, name := range []string{"EventId", "EventName", "EventDate", "OwnerTeam"} {
+		out[name] = vars[name]
+	}
+	out["CancelledBy"] = string(t.CancelledBy)
+	out["Reason"] = ""
+	if t.CancelledBy == ticket.CancelledByOperator {
+		out["Reason"] = t.CancelReason
 	}
 	return out
 }

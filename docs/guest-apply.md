@@ -24,77 +24,79 @@ be recorded for a passing reason turns the `201` into `503`
 (`consent_not_recorded`); sending the application again finds the Ticket and
 records it.
 
-The route is public (`api.` sends it to core) and takes a token without
-requiring one. Event ids are public, so anybody may call it with any e-mail.
-What a caller gets back therefore depends on who the token says they are,
-never on where the request came from.
+The route is served on `api.`, but not to the internet without a token. A
+request without a token that came through the public ingress (Traefik adds
+`X-Forwarded-*` or `X-Real-Ip` to everything it passes on), or whose address
+is not internal, is answered a bare `404` with `Cache-Control: no-store`
+before its body is read (a broken body or a `consents` field changes
+nothing): the same answer as the internal routes' guard
+(`middlewares.InternalRouteGuard`, ADR-0016). A token core cannot verify
+(invalid, expired) gets `401` there instead, as on every route behind
+Bearer, so the panel fetches a new token and sends the request again. Event
+ids are public, and with Kontenjan a token-less caller could fill an Event
+with made-up addresses and mail each of them (OWASP OAT-021, Denial of
+Inventory).
+
+A token is not enough either: with sign-up open anybody can hold one. A
+token holder must be an operator of the Event (who may update it or assign
+its Tickets, Privileged included: the people the panel offers "Katılımcı
+ekle" to). Anybody else, a member who runs nothing or any service account
+(the forms service's too, `ticket:forms` or not: it reports its answers
+instead, [form-response-tickets.md](form-response-tickets.md)), gets `403`
+before anything is written. On a draft who may not see it still gets `404`
+first ([event-drafts.md](event-drafts.md)).
 
 ## Callers
 
-Read on 2026-10-03 (`origin/main` and `origin/production` of every repository
+Read on 2026-11-24 (`origin/main` and `origin/production` of every repository
 that calls core):
 
 | Caller | Path | Token | Reads from the answer |
 |---|---|---|---|
-| forms-backend (`CoreGuestApply`), a guest's form answer | internal network, `Services__Users__BaseUrl` (see **Where forms comes from**) | none | the status code only: 2xx or 409 is success, anything else is "Başvuru kaydedilemedi" and the answer is not saved |
-| core-frontend Event hub, "Katılımcı ekle" → "Misafir kaydı yaz" | browser → `api.` | the operator's | nothing: the page reloads the roster |
+| core-frontend Event hub, "Katılımcı ekle" → "Misafir kaydı yaz" | browser → `api.` (through the edge) | the operator's | nothing: the page reloads the roster |
 
-sky-app, the site and the other products do not call it.
+forms-backend no longer calls it: since `refactor!: drop event knowledge from
+forms` (2026-10-07, in its production since) it reports every answer to
+`POST /v1/forms/{formId}/responses` with its service token
+([form-response-tickets.md](form-response-tickets.md)), over
+`Integrations__SkylabCore__BaseUrl`, core's internal address. sky-app, the
+site and the other products do not call it. The archived superadmin copies
+send the operator's token like the Event hub.
 
-The forms row goes away with the Forms version that reports its answers to
-`POST /v1/forms/{formId}/responses`: core then writes a form answer's Ticket
-itself ([form-response-tickets.md](form-response-tickets.md)).
+### The internal hop
 
-### Where forms comes from
-
-The forms hop must reach core on the internal network, or it is counted
-`anonymous_public` and every guest's form answer shares one address budget.
-Checked on the production server on 2026-10-03:
-
-- forms `Services__Users__BaseUrl` names core's internal Swarm service on
-  port 8080, not a public host;
-- the `dokploy-network` subnet is `10.0.1.0/24`, a private range.
-
-So the hop is `anonymous_internal`: its address is private. Until 2026-11-22
-the test was "inside `TRUSTED_PROXY_RANGES`" (then `10.0.1.0/24`); it is now
-any private or loopback address (or a trusted proxy), so narrowing the proxy
-list to Traefik and the site does not move the forms hop. Check the two again
-whenever one of them changes (a new forms deployment, a recreated network);
-`skylab_guest_apply_anonymous_internal_total` rising with each form answer,
-and `anonymous_public` not, shows it from outside.
+A request without a token from a private address that sends no forwarding
+header is still answered: the old forms hop, which called this route on the
+internal network without a token. No caller is known today;
+`skylab_guest_apply_anonymous_internal_total` shows whether one appears. Its
+answer is the untrusted one below, and any container on the overlay network
+can make it, so the address is never a reason to show or change anything.
+Once that counter has stayed unchanged for seven days (the log lines cover
+restarts), the hop can be refused too.
 
 ## Caller classes
 
 Every request is put in one class before anything else:
 
-| Class | Request |
-|---|---|
-| `anonymous_public` | no usable token, and not internal: the resolved client address ([client-ip-trust.md](client-ip-trust.md)) is public (the internet through the edge proxy), or a peer that is not a trusted proxy sent `X-Forwarded-For` (a proxy whose name did not resolve) |
-| `anonymous_internal` | no usable token, from a private address (the overlay network) or a trusted proxy, with no `X-Forwarded-For` from an untrusted peer: today the forms hop |
-| `person` | a person's valid token |
-| `service` | a service account's valid token. Only a service account whose client `MEDIA_SERVICE_CLIENTS` maps to a product is trusted (below); any other is counted here and answered like an anonymous caller |
+| Class | Request | Answer |
+|---|---|---|
+| `anonymous_public` | no usable token, and either it carries a forwarding header (it came through the edge) or its resolved address ([client-ip-trust.md](client-ip-trust.md)) is not internal | `404`, nothing read |
+| `anonymous_internal` | no usable token, no forwarding header, from a private address (the overlay network) or a trusted proxy | the untrusted answer |
+| `person` | a person's valid token | an operator of the Event: the trusted answer; anybody else `403` |
+| `service` | a service account's valid token | `403`, whatever its roles |
 
-An invalid or expired token is ignored, not refused: the request is
-anonymous. A valid token meets the account access gate and the Group overage
-step as on every other route, so a blocked account's token gets `401` and a
-Group overage token gets `503` while Keycloak is unreachable.
-
-The class decides only the rate limits and the counters below. The address is
-never a reason to show or change anything: `anonymous_internal` is treated
-exactly like `anonymous_public` apart from the limits, because any container
-on the overlay network can look internal.
+An invalid or expired token leaves the request anonymous: from the edge it
+is `401` (counted `anonymous_public`, `refused`), on the internal network
+the internal hop's answer. A valid token meets the account
+access gate and the Group overage step as on every other route, so a blocked
+account's token gets `401` and a Group overage token gets `503` while
+Keycloak is unreachable.
 
 ## What the caller gets
 
-A caller is **trusted** when it is a product's service identity (a service
-account whose client `MEDIA_SERVICE_CLIENTS` maps to a product) or an
-operator of the Event: a person who may update the Event or assign its
-Tickets, Privileged included. The Event hub offers "Katılımcı ekle" to exactly
-those people.
-
-| | Trusted | Anybody else |
+| | An operator of the Event | The internal hop |
 |---|---|---|
-| Answer | `201` and the Ticket, as before | `201` and `{"status":"applied"}`, the same for a new guest and an existing one: no id, name, e-mail, phone number or check-ins |
+| Answer | `201` and the Ticket | `201` and `{"status":"applied"}`, the same for a new guest and an existing one: no id, name, e-mail, phone number or check-ins |
 | New e-mail on the Event | Ticket written | Ticket written |
 | E-mail already has a guest Ticket | name and e-mail written; phone number written when sent | only a detail the Ticket lacks is filled; a different name or phone number is ignored and the stored one kept |
 
@@ -102,54 +104,40 @@ Two applications for one new e-mail at the same moment (a double submit)
 write one Ticket: the one that loses the race finds the other's and is
 answered as for an existing guest.
 
-The forms hop is not trusted, and neither are the form reports that replace it
-([form-response-tickets.md](form-response-tickets.md)), so a guest who sends
-the form again with another name keeps the first name. An operator can correct
-it from the Event hub.
+The form reports ([form-response-tickets.md](form-response-tickets.md)) are
+not trusted either, so a guest who sends the form again with another name
+keeps the first name. An operator can correct it from the Event hub.
 
 Errors: `400` for a body without the required fields, `404` for an unknown
-Event, `429` (below), for every caller. A token holder can also get `401` (a
-blocked account) or `503` (Group overage while Keycloak is unreachable, or the
-account access gate unavailable).
+Event, `429` (below), for every caller that reaches the handler. A token
+holder can also get `401` (a blocked account), `403` (not trusted, above) or
+`503` (Group overage while Keycloak is unreachable, or the account access
+gate unavailable).
 
 ## Rate limits
 
-Three fixed-window budgets, kept in the process's memory:
+Two fixed-window budgets for each token subject (a valid token's `sub`),
+kept in the process's memory:
 
-| Budget | Applies to | Size | When it runs out |
-|---|---|---|---|
-| each token subject | `person` and `service` (a valid token's `sub`) | 60 per 10 minutes | 429 |
-| each client address | `anonymous_public` | 20 per 10 minutes | 429 by default; see the switch below |
-| each Event and e-mail, from any address | `anonymous_public` | 5 per hour | 429, always |
+| Budget | Size | Counts |
+|---|---|---|
+| ten minutes | 60 per 10 minutes | every request of the subject |
+| daily ceiling | 300 per 24 hours | answered applications (2xx) only: a `403`, `400` or `409` does not use it |
 
-The subject budget is wide enough for an operator adding guests by hand and
-keeps a member's token from writing fake guests without end. The Event and
-e-mail key is a SHA-256 digest of the Event id and the normalized e-mail; the
-e-mail itself is not kept.
+The first is wide enough for an operator adding guests by hand; the second
+caps what one operator's token, stolen or misused, can write in a day. A
+request the first refuses does not count against the second. Each process
+keeps its own count, so with several core replicas the ceiling is per
+replica.
 
 A refused request gets `429`, `application/problem+json` with code
 `guest_apply_rate_limited`, and `Retry-After` (also as `retryAfterSeconds`).
-The body is the same for every budget, `Retry-After` is not: the subject and
-address budgets give the seconds left in their window, the Event and e-mail
-budget gives the whole window (3600), and sends no `X-RateLimit-*` headers,
-which would tell a caller how many requests others sent for an e-mail.
 
-The forms hop (`anonymous_internal`) is not limited: every guest's form
-answer goes through it, and a `429` there loses the answer.
-
-**`GUEST_APPLY_PUBLIC_IP_LIMIT_MODE`** sets the address budget:
-`enforce` (the default, also when unset) refuses with 429; `observe` lets the
-request through and counts it on
-`skylab_guest_apply_public_ip_would_limit_total` (and `"would_limit":true` in
-its log line). Any other value stops startup; the effective mode is in the
-startup log (`guest apply per-address limit: …`). `observe` is the emergency
-switch should a legitimate caller turn out to share one public address, for
-example the forms hop reaching core through the edge after a configuration
-change: set it in Dokploy and deploy, then fix the path and set it back.
-
-An address on the overlay network can write any `X-Forwarded-For`
-([client-ip-trust.md](client-ip-trust.md)), so the address budget does not
-hold against a caller inside it; it is for the internet path.
+The internal hop (`anonymous_internal`) is not limited, as before (it was the
+forms hop, where a `429` lost a form answer). The address and e-mail budgets that limited
+`anonymous_public`, and their switch `GUEST_APPLY_PUBLIC_IP_LIMIT_MODE`, are
+gone with that class's access: a request they limited is now answered `404`
+before any budget. The variable is no longer read.
 
 ## Counters and log
 
@@ -158,35 +146,18 @@ hold against a caller inside it; it is for the internet path.
 - `skylab_guest_apply_requests_total{caller, outcome}`: `caller` is one of the
   four classes, `outcome` one of `created`, `existing` (the Ticket was there;
   what the caller may write was written), `kept` (the Ticket was there and a
-  detail the caller may not change was ignored), `invalid`, `not_found`,
-  `refused` (401/403), `rate_limited`, `failed`. Every pair is rendered, zero
+  detail the caller may not change was ignored), `invalid`, `not_found`
+  (an unknown Event, and an `anonymous_public` request without a token: the
+  edge's `404`), `refused` (401/403), `rate_limited`, `failed`. Every pair is rendered, zero
   included; nothing else is ever a label value.
 - `skylab_guest_apply_anonymous_public_total`,
   `skylab_guest_apply_anonymous_internal_total`,
   `skylab_guest_apply_person_total`, `skylab_guest_apply_service_total`: the
   same requests by class alone.
-- `skylab_guest_apply_public_ip_would_limit_total`: requests the address
-  budget would have refused while it observes (0 while it enforces).
+- `skylab_guest_apply_daily_cap_total`: requests the daily ceiling refused
+  (also counted `rate_limited` above).
 
 The counters start at zero when the process starts. Each request also writes
 one JSON log line:
-`{"event":"guest_apply","correlation_id":…,"caller":…,"outcome":…,"status":…}`,
-with `"would_limit":true` when the observing address budget would have refused
-the request. It never carries an e-mail, a name, a phone number, an address or the Event.
-
-## From log to enforce
-
-1. **Now:** no request is refused for want of a token; the counters show who
-   calls.
-2. **Forms leaves:** forms reports its answers to
-   `POST /v1/forms/{formId}/responses` with its service token and the
-   `ticket:forms` role instead of calling this route
-   ([form-response-tickets.md](form-response-tickets.md)), so
-   `anonymous_internal` stops counting form answers.
-3. **Enforce:** a setting makes a request without a token `401` and a person
-   who is not an operator `403`.
-   It is switched on in sandbox first, then in production once
-   `skylab_guest_apply_anonymous_public_total` and
-   `skylab_guest_apply_anonymous_internal_total` have stayed unchanged for
-   seven days (the log lines cover restarts). Switching it off again is the
-   way back.
+`{"event":"guest_apply","correlation_id":…,"caller":…,"outcome":…,"status":…}`.
+It never carries an e-mail, a name, a phone number, an address or the Event.
