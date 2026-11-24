@@ -34,7 +34,10 @@ type Patch struct {
 	Capacity        optional.Field[int]             `json:"capacity"`
 	// WaitlistEnabled turns the waiting list on or off (null is ErrInvalid;
 	// docs/event-capacity.md).
-	WaitlistEnabled optional.Field[bool]       `json:"waitlistEnabled"`
+	WaitlistEnabled optional.Field[bool] `json:"waitlistEnabled"`
+	// EntryMode sets the door's mode: per_session or venue, null for
+	// automatic (docs/venue-entry.md); any other value is ErrInvalid.
+	EntryMode       optional.Field[*EntryMode] `json:"entryMode"`
 	StartDate       optional.Field[*time.Time] `json:"startDate"`
 	EndDate         optional.Field[*time.Time] `json:"endDate"`
 	Linkedin        optional.Field[string]     `json:"linkedin"`
@@ -113,6 +116,9 @@ func (p Patch) apply(existing Event) (Event, error) {
 		e.ExtraFormURLs = append([]EventFormLink{}, p.ExtraFormURLs.Value...)
 	}
 	e.Capacity = p.Capacity.Or(existing.Capacity)
+	if e.EntryMode = p.EntryMode.Or(existing.EntryMode); !validEntryMode(e.EntryMode) {
+		return Event{}, ErrInvalid
+	}
 	if p.WaitlistEnabled.Set {
 		on := p.WaitlistEnabled.Value
 		e.WaitlistEnabled = &on

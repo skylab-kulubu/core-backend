@@ -11,6 +11,8 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/limiter"
+	"github.com/gofiber/fiber/v3/middleware/requestid"
+	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/ticketpage"
 )
 
@@ -101,6 +103,14 @@ func (h *TicketPageHandler) ticketPageError(c fiber.Ctx, route string, err error
 		return problem(c, fiber.StatusNotFound, "Not Found")
 	case errors.Is(err, ticketpage.ErrGone):
 		return problemCode(c, fiber.StatusGone, "Gone", "ticket_page_closed")
+	case errors.Is(err, ticket.ErrCancelClosed):
+		return problemCode(c, fiber.StatusConflict, "Conflict", "ticket_cancel_closed")
+	case errors.Is(err, ticket.ErrTicketCheckedIn):
+		return problemCode(c, fiber.StatusConflict, "Conflict", "ticket_checked_in")
+	case errors.Is(err, ticket.ErrTicketInCompetition):
+		return problemCode(c, fiber.StatusConflict, "Conflict", "ticket_in_competition")
+	case errors.Is(err, ticket.ErrNotFound):
+		return problem(c, fiber.StatusNotFound, "Not Found")
 	case errors.Is(err, ticketpage.ErrUnavailable):
 		if !errors.Is(err, context.Canceled) {
 			h.logger.Printf("ticket page: %s %s: %v", route, ticketpage.LogKey(c.Params("key")), err)
@@ -120,6 +130,23 @@ func (h *TicketPageHandler) Page(c fiber.Ctx) error {
 	if err != nil {
 		return h.ticketPageError(c, "page", err)
 	}
+	return c.JSON(view)
+}
+
+// TicketCancelsPerClientMinute is the cancel route's budget a minute per
+// client address (kontenjan-iptal-hatirlatma 03).
+const TicketCancelsPerClientMinute = 10
+
+// Cancel is POST /v1/public/tickets/{key}/cancel: no body; 200
+// {"state":"ticket_cancelled"}, again for a Ticket already cancelled. The
+// log line names the request alone: never the key, the Ticket or a person.
+func (h *TicketPageHandler) Cancel(c fiber.Ctx) error {
+	ticketPageHeaders(c)
+	view, err := h.svc.Cancel(c.Context(), c.Params("key"))
+	if err != nil {
+		return h.ticketPageError(c, "cancel", err)
+	}
+	h.logger.Printf(`{"event":"ticket_cancelled_by_holder","route":"ticket_page","correlation_id":%q}`, requestid.FromContext(c))
 	return c.JSON(view)
 }
 

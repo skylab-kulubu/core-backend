@@ -48,6 +48,30 @@ type Store interface {
 	// GetByAccessKey is the Ticket the ticket page's key opens
 	// (docs/ticket-page.md): ErrNotFound when none has it.
 	GetByAccessKey(ctx context.Context, key string) (Ticket, error)
+	VenueEntryStore
+}
+
+// VenueEntryStore keeps the Venue entries (docs/venue-entry.md). AddCheckIn
+// writes the day's entry of a check-in that carries one, and RemoveCheckIn
+// and RemoveCheckInByID take back the entry the check-in wrote, unless the
+// Ticket has another check-in that day (which then holds it).
+type VenueEntryStore interface {
+	// AddVenueEntry writes e when its Ticket is active and has no entry on
+	// e.EntryDate: ErrConflict when it has one, the door's refusal when the
+	// Ticket is cancelled or waitlisted.
+	AddVenueEntry(ctx context.Context, e VenueEntry) (VenueEntry, error)
+	// VenueEntryByID is the entry with id: ErrNotFound when none.
+	VenueEntryByID(ctx context.Context, id uuid.UUID) (VenueEntry, error)
+	// RemoveVenueEntry deletes the entry with id; false when none has it.
+	// The day's check-ins stay.
+	RemoveVenueEntry(ctx context.Context, id uuid.UUID) (bool, error)
+	// VenueEntriesOn are the Event's entries on date (YYYY-MM-DD), newest
+	// first, each with the name the door shows (a member's is left empty
+	// where the store does not know it).
+	VenueEntriesOn(ctx context.Context, eventID uuid.UUID, date string) ([]DoorEntry, error)
+	// VenueEntryDays counts the Event's entries by day and source, the
+	// days in order.
+	VenueEntryDays(ctx context.Context, eventID uuid.UUID) ([]EntryDay, error)
 }
 
 type DoorStore interface {

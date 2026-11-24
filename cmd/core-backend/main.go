@@ -36,8 +36,10 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
+	"github.com/skylab-kulubu/core-backend/internal/eventreminder"
 	"github.com/skylab-kulubu/core-backend/internal/eventupdatenotify"
 	"github.com/skylab-kulubu/core-backend/internal/feedback"
+	"github.com/skylab-kulubu/core-backend/internal/formsfeed"
 	"github.com/skylab-kulubu/core-backend/internal/googlewallet"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/health"
@@ -141,11 +143,6 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("trusted proxy ranges: %s", trustedProxies)
-	guestApplyIPLimit, err := handlers.ParseGuestApplyLimitMode(os.Getenv(handlers.GuestApplyLimitModeEnv))
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("guest apply per-address limit: %s", guestApplyIPLimit)
 
 	// SIGTERM (Docker's stop) and SIGINT end signals; serve then shuts
 	// down in order (serve.go). A signal during startup is acted on once
@@ -1049,6 +1046,14 @@ func main() {
 	}
 	worker("ticket notification", startTicketCreatedNotification(workers, ticketNotificationOn, ticketStatusMail, tickets, ticketnotify.NewPostgresQueue(pool), events, users, sky,
 		ticketPageConfig, os.Getenv("PUBLIC_API_ORIGIN"), ticketMailPDF, log.Printf))
+	// The reminder the day before an Event (docs/event-reminder.md):
+	// SkyMail tells its Ticket holders by inbox and e-mail.
+	eventReminder, err := eventReminderFromEnv(os.Getenv, os.LookupEnv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	worker("event reminder", startEventReminder(workers, eventReminder, eventreminder.NewPostgresQueue(pool), events, tickets, users, sky,
+		ticketPageConfig, os.Getenv("PUBLIC_API_ORIGIN"), log.Printf))
 	var eventMapMetrics interface{ Prometheus() string }
 	mapRegions := mapregion.NewPostgresStore(pool)
 	if mapWorker := startEventMaps(workers, worker, render, publicBlobs, mediaStore, mediaPurposes, decodeBudget, mapRegions); mapWorker != nil {
@@ -1107,7 +1112,34 @@ func main() {
 		keycloakEventHandling.erase = erasePreferencesIn
 		keycloakEventHandling.wakeTeams = communicationPreferences.WakeTeamCleanup
 	}
-	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, keycloakEventHandling)
+	// core.forms' events (docs/integration-events.md "core.forms"), with
+	// EVENTS_FORMS_ENABLED=true: the HTTP report's Ticket rule, the feedback
+	// invites, the feedback forms' state.
+	// Forms' internal reads (FORMS_INTERNAL_URL, core's service account):
+	// the single answer read of core.forms and the pulls
+	// (docs/form-pulls.md). Events and pulls share one recorder.
+	formsClient := formsClientFromEnv(os.Getenv, base, realm)
+	formsRecorder := &formsfeed.Recorder{
+		Events: events, Record: formsRecordFunc(ticketSvc), States: feedbackInvites.ReportFormState, Logf: log.Printf,
+	}
+	if formsClient != nil {
+		formsRecorder.Forms = formsClient
+	}
+	formsEvents := formsEventsRecorder(os.Getenv, formsClient, formsRecorder)
+	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, keycloakEventHandling, formsEvents)
+	formPulls := formsfeed.NewPostgresPulls(pool)
+	// The pulls share core.forms' switch (EVENTS_FORMS_ENABLED, the one
+	// switch of Forms' integration), whether or not the broker is on.
+	var formPuller *formsfeed.Puller
+	if formsEvents != nil {
+		formPuller = &formsfeed.Puller{Queue: formPulls, Forms: formsClient, Recorder: formsRecorder, Events: events, DB: pool, Logf: log.Printf}
+		worker("form pulls", formPuller.Run(workers))
+	}
+	formBackfills := &formsfeed.Backfills{Events: events, Authz: az, Queue: formPulls, On: formPuller != nil}
+	formsCounters := formsMetrics{puller: formPuller}
+	if formsEvents != nil {
+		formsCounters.recorder = formsRecorder
+	}
 	worker("integration events", eventsStopped)
 	urlSvc := shorturl.NewService(urlStore, az)
 	githubActivity := githubActivityFromEnv(os.Getenv, az, log.Printf)
@@ -1217,6 +1249,7 @@ func main() {
 		FeedbackInvites:        feedbackInvites,
 		FeedbackSender:         feedbackInvites,
 		FeedbackReminders:      feedbackInvites,
+		FormBackfills:          formBackfills,
 		Certificates:           certSvc,
 		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),
 		SkyPassWalletMetrics:   wallet,
@@ -1231,7 +1264,7 @@ func main() {
 		ManagementTerms:        terms,
 		TeamDelegationMetrics:  delegationMetrics,
 		RetentionMetrics:       retentionMetrics,
-		EventsMetrics:          eventsMetrics,
+		EventsMetrics:          joinedMetrics{eventsMetrics, formsCounters},
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,
 		ParseSelfDeleteSudo:    parseSelfDeleteSudo,
@@ -1253,7 +1286,6 @@ func main() {
 		TicketQR:                  ticketQR,
 		TicketPage:                ticketPage,
 		DoorScanMetrics:           doorScans,
-		GuestApplyPublicIPLimit:   guestApplyIPLimit,
 		Dashboard:                 dashboardSvc,
 		GithubActivity:            githubActivity,
 		Consents:                  consents,
