@@ -63,15 +63,16 @@ func (s *PostgresStore) Copy(ctx context.Context, plan CopyPlan) (Event, []strin
 			attendance_rule, attendance_ratio, status, copied_from_event_id,
 			registration_closes_at, feedback_mode, feedback_auto_send,
 			location_lat, location_lng, location_address, attendance_min_count, attendance_auto_finalize,
-			waitlist_enabled, entry_mode
+			waitlist_enabled, entry_mode, attendance_welcome_mail, attendance_recorded_mail
 		) VALUES ($2, $3, $4, $5, $6, $7, $1, $8, $9, $10, `+copySeasonSQL+`,
-			$11, $12, 'draft', $13, $14, $15, $16, $17, $18, $19, $20, $21, COALESCE($22::boolean, true), $23)
+			$11, $12, 'draft', $13, $14, $15, $16, $17, $18, $19, $20, $21, COALESCE($22::boolean, true), $23,
+			COALESCE($24::boolean, true), COALESCE($25::boolean, true))
 		ON CONFLICT (id) DO NOTHING`,
 		e.StartDate, e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.Capacity,
 		e.EndDate, e.Ranked, e.PrizeInfo, attendanceRule(e.AttendanceRule), e.AttendanceRatio,
 		plan.Source, e.RegistrationClosesAt, string(feedbackMode(e.FeedbackMode)), e.FeedbackAutoSend,
 		e.LocationLat, e.LocationLng, e.LocationAddress, e.AttendanceMinCount, e.AttendanceAutoFinalize,
-		e.WaitlistEnabled, e.EntryMode)
+		e.WaitlistEnabled, e.EntryMode, e.AttendanceWelcomeMail, e.AttendanceRecordedMail)
 	if err != nil {
 		return Event{}, nil, err
 	}

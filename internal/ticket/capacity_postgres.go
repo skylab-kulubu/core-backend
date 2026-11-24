@@ -58,7 +58,7 @@ func lockStatus(ctx context.Context, tx pgx.Tx, id uuid.UUID) (Status, error) {
 // on), else ErrEventFull. The Ticket's mail is queued in the same
 // transaction: "Biletin hazır" for an active one while the Notifications
 // are on, "Bekleme listesindesin" for a waitlisted one while the status
-// mails are.
+// mails are; none with a.Quiet.
 func (s *PostgresStore) CreateAdmitted(ctx context.Context, t Ticket, a Admission) (Ticket, error) {
 	if t.ID == uuid.Nil {
 		t.ID = uuid.New()
@@ -86,6 +86,8 @@ func (s *PostgresStore) CreateAdmitted(ctx context.Context, t Ticket, a Admissio
 		}
 		got.OverCapacity = over
 		switch {
+		case a.Quiet:
+			// An import whose mail is off: no mail now.
 		case status == StatusActive && s.notifyCreated.Load():
 			_, err = tx.Exec(ctx, `INSERT INTO ticket_notifications (ticket_id) VALUES ($1)`, got.ID)
 		case status == StatusWaitlisted:
