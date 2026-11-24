@@ -200,6 +200,31 @@ func TestEventUpdatedPostsItsTypeToAMemberAndItsTemplateToAGuest(t *testing.T) {
 	}
 }
 
+func TestEventReminderPostsTheGivenTypeToAMemberAndItsTemplateToAGuest(t *testing.T) {
+	srv, got := notificationServer(t, http.StatusCreated, `{}`)
+	sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok")}
+	sub := uuid.New()
+	vars := map[string]string{"EventName": "Gece", "StartsAt": "25.11.2026 10:00"}
+	source := NotificationSource{Kind: "event", Ref: "e"}
+	if err := sky.EventReminder(context.Background(), EventReminderType, "core:event.reminder:e:1:t", TicketHolder{Sub: sub}, vars, source, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := sky.EventReminder(context.Background(), "club.reminder", "unused", TicketHolder{Email: "can@example.com", FullName: "Can Er"}, vars, source, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(*got) != 2 {
+		t.Fatalf("requests %d", len(*got))
+	}
+	member, guest := (*got)[0], (*got)[1]
+	if member.path != "/v1/notifications" || member.key != "core:event.reminder:e:1:t" || member.body["type"] != EventReminderType {
+		t.Fatalf("member request %+v", member)
+	}
+	if guest.path != "/v1/mail_tasks/single" || guest.body["template_key"] != "club.reminder" ||
+		guest.body["recipient_email"] != "can@example.com" || guest.key != "" {
+		t.Fatalf("guest request %+v", guest)
+	}
+}
+
 // A type not seeded yet is SkyMail's 422 notification.type_unknown: the
 // Notification waits in core's queue and passes once the seed has run.
 // Another 422 is SkyMail refusing the body itself.

@@ -15,6 +15,17 @@ draft or an ended one too: binding it to a second is `409 form_in_use`
 A form two Events listed before that rule stays on both until one lets it
 go; its answers write the Tickets of those of them still open (below).
 
+Two ways in, one rule: the HTTP report below, and Forms' `core.forms`
+events (`forms.response.created` and `forms.response.status_changed`, with
+`EVENTS_FORMS_ENABLED=true`; [integration-events.md](integration-events.md#coreforms-forms-events)),
+which carry no guest's name or e-mail (core reads them from Forms) and the
+invite code as the `davet` hidden field. A third, the pull from Forms'
+list (an organizer's backfill and the daily catch-up,
+[form-pulls.md](form-pulls.md)), takes the same rule. All end in
+`ticket.Service.RecordFormResponse`; what this page says of an answer holds
+for each. The HTTP report goes when Forms stops sending it, after at most
+one to two days of both (hub ticket R16).
+
 ## Endpoint
 
 `POST /v1/forms/{formId}/responses` needs the forms service account

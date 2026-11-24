@@ -40,10 +40,17 @@ const TicketCancelledType = "event.ticket-cancelled"
 // docs/event-updated-notification.md).
 const EventUpdatedType = "event.updated"
 
+// EventReminderType is the Notification type (and the e-mail template key)
+// of the reminder the day before an Event (docs/event-reminder.md): the
+// default of SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY, and the type the
+// Idempotency-Key names whatever key is set.
+const EventReminderType = "event.reminder"
+
 const (
 	kindTicketCreated = "ticket_created"
 	kindEventUpdated  = "event_updated"
 	kindTicketStatus  = "ticket_status"
+	kindEventReminder = "event_reminder"
 )
 
 // Notification is one POST /v1/notifications (SkyMail docs/notifications.md):
@@ -115,7 +122,7 @@ type NotificationSource struct {
 // notification waits in core's queue until SkyMail has taken it. A refusal is
 // warned about in the log with kind and no recipient.
 func (s *SkyMail) Notify(ctx context.Context, kind, idempotencyKey string, n Notification) error {
-	if s == nil || strings.TrimSpace(s.BaseURL) == "" {
+	if s.noBaseURL() {
 		return ErrTemplateUnconfigured
 	}
 	if n.ExpiresAt != nil && !n.ExpiresAt.After(time.Now()) {
@@ -194,6 +201,13 @@ func (s *SkyMail) EventUpdated(ctx context.Context, idempotencyKey string, holde
 	return s.tellHolder(ctx, kindEventUpdated, EventUpdatedType, idempotencyKey, holder, vars, source, expiresAt, nil)
 }
 
+// EventReminder tells a Ticket holder that the Event is tomorrow, under the
+// template key typ (SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY), the way
+// EventUpdated tells of a new time or place.
+func (s *SkyMail) EventReminder(ctx context.Context, typ, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time) error {
+	return s.tellHolder(ctx, kindEventReminder, typ, idempotencyKey, holder, vars, source, expiresAt, nil)
+}
+
 // tellHolder posts typ to a Ticket holder: a Notification to a registered
 // holder's subject under idempotencyKey, the type's template by address to a
 // guest. A guest's mail that went out with no answer is ErrMaybeDelivered.
@@ -212,7 +226,7 @@ func (s *SkyMail) tellHolder(ctx context.Context, kind, typ, idempotencyKey stri
 			Attachments: attachments,
 		})
 	}
-	if s == nil || strings.TrimSpace(s.BaseURL) == "" {
+	if s.noBaseURL() {
 		return ErrTemplateUnconfigured
 	}
 	token, err := s.Tokens.Token(ctx)

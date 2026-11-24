@@ -192,3 +192,33 @@ func (a *afterCheckIn) ResendTicket(ctx context.Context, p authz.Principal, id u
 func (a *afterCheckIn) RenewTicketLink(ctx context.Context, p authz.Principal, id uuid.UUID, notify bool, requestKey string) (Ticket, Resend, error) {
 	return a.inner.RenewTicketLink(ctx, p, id, notify, requestKey)
 }
+
+// The Event's door writes Venue entries, no check-in: nothing fires.
+
+func (a *afterCheckIn) AuthorizeEventDoor(ctx context.Context, p authz.Principal, eventID uuid.UUID) error {
+	return a.inner.AuthorizeEventDoor(ctx, p, eventID)
+}
+
+func (a *afterCheckIn) EnterTicketQR(ctx context.Context, p authz.Principal, eventID uuid.UUID, token string) (DoorEntry, error) {
+	return a.inner.EnterTicketQR(ctx, p, eventID, token)
+}
+
+func (a *afterCheckIn) EnterUser(ctx context.Context, p authz.Principal, eventID, userID uuid.UUID) (DoorEntry, error) {
+	return a.inner.EnterUser(ctx, p, eventID, userID)
+}
+
+func (a *afterCheckIn) ResolveEntry(ctx context.Context, p authz.Principal, eventID uuid.UUID, target DoorCheckInTarget) (DoorEntry, error) {
+	return a.inner.ResolveEntry(ctx, p, eventID, target)
+}
+
+func (a *afterCheckIn) UndoEntry(ctx context.Context, p authz.Principal, eventID, entryID uuid.UUID) error {
+	return a.inner.UndoEntry(ctx, p, eventID, entryID)
+}
+
+func (a *afterCheckIn) EntrySummary(ctx context.Context, p authz.Principal, eventID uuid.UUID) (EntrySummary, error) {
+	return a.inner.EntrySummary(ctx, p, eventID)
+}
+
+func (a *afterCheckIn) ListEntries(ctx context.Context, p authz.Principal, eventID uuid.UUID, date string) ([]DoorEntry, error) {
+	return a.inner.ListEntries(ctx, p, eventID, date)
+}

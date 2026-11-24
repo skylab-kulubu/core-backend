@@ -64,12 +64,17 @@ The order, as for SkyPass:
    ticket_qr_superseded`.
 6. The check-in: Ticket × Session, the same row a SkyPass scan, the
    Session QR or the desk writes. `201` with the check-in (`id`, `ticketId`,
-   `sessionId`, `eventDayId`, `createdAt`, as SkyPass's); already in: `409`.
+   `sessionId`, `eventDayId`, `createdAt`, as SkyPass's, and `kind`);
+   already in: `409`. The Event's entry mode decides what the scan writes
+   ([venue-entry.md](venue-entry.md)): `per_session` writes the Check-in
+   and the day's Venue entry if there is none (`kind: "check_in"`);
+   `venue` writes the day's Venue entry alone (`kind: "entry"`, `id` is the
+   entry's) and a second scan that day is `409 already_entered`.
 
 | Status | `code` | Meaning | What today's sky-app shows |
 |---|---|---|---|
-| 201 | | checked in | "Giriş alındı" and the name (from `/check-ins`) |
-| 409 | | this Ticket is already in for this Session | "Zaten giriş yapmış" |
+| 201 | | checked in (`kind: "check_in"`) or, in the venue mode, entered today (`kind: "entry"`) | "Giriş alındı" and the name (from `/check-ins`) |
+| 409 | `already_entered` in the venue mode | this Ticket is already in for this Session (venue: today) | "Zaten giriş yapmış" |
 | 404 | | another Event's Ticket, or none | "Bu etkinliğe kaydı yok" |
 | 401 | `ticket_qr_invalid`, `ticket_qr_expired` | not core's code, or past its Event | "Kodun süresi dolmuş" |
 | 410 | `ticket_qr_superseded` | the link was renewed; `detail`: "Bu bilet yenilenmiş; kişiden son postadaki bileti açmasını iste." | the generic error (`detail`) |
@@ -173,7 +178,9 @@ the panel resends the ticket, ticket 05) for a new code.
 
 `skylab_door_scans_total{credential="ticket_qr",outcome=…}` on `/v1/metrics`:
 `checked_in`, `already`, `not_found`, `invalid`, `expired`, `superseded`,
-`session_closed`, `forbidden`, `failed`. No ids, no names.
+`session_closed`, `forbidden`, `failed` (`checked_in` counts a Venue entry
+the scan wrote too). `skylab_venue_entries_total{source=…}` counts the
+Venue entries written: `scan`, `desk`, `attendance`. No ids, no names.
 
 ## Industry practice
 

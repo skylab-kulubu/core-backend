@@ -52,9 +52,15 @@ type Event struct {
 	// ticketCount and waitlistCount are the counts as the store read them,
 	// which ProjectFor answers to an editor alone.
 	ticketCount, waitlistCount int
-	StartDate                  *time.Time `json:"startDate,omitempty"`
-	EndDate                    *time.Time `json:"endDate,omitempty"`
-	Linkedin                   string     `json:"linkedin,omitempty"`
+	// EntryMode is what a door scan writes (docs/venue-entry.md):
+	// per_session, venue, or nil for automatic. EffectiveEntryMode is the
+	// mode the door works in now, which the store derives from it and from
+	// whether the Event has a live Session; a write never sets it.
+	EntryMode          *EntryMode `json:"entryMode"`
+	EffectiveEntryMode EntryMode  `json:"effectiveEntryMode"`
+	StartDate          *time.Time `json:"startDate,omitempty"`
+	EndDate            *time.Time `json:"endDate,omitempty"`
+	Linkedin           string     `json:"linkedin,omitempty"`
 	// Active is derived (ADR 0066): published and not ended (ActiveAt).
 	// The store answers it; a write never sets it.
 	Active bool `json:"active"`
@@ -180,6 +186,9 @@ type Resource struct {
 	// CopiedFromEventID is the Event this one was copied from.
 	CopiedFromEventID *uuid.UUID `json:"copiedFromEventId,omitempty"`
 	Ranked            bool       `json:"ranked"`
+	// EffectiveEntryMode is the mode the door works in (Event's): the door
+	// apps open the day's "Alana giriş" screen on venue.
+	EffectiveEntryMode EntryMode `json:"effectiveEntryMode"`
 
 	// FileCount and VideoCount count the Event's files and videos anyone
 	// can see; the Event's detail lists them.
@@ -193,25 +202,26 @@ type Resource struct {
 func (e Event) Resource() Resource {
 	addresses := media.ConfiguredAddresses()
 	return Resource{
-		ID:                e.ID,
-		Name:              e.Name,
-		StartDate:         e.StartDate,
-		EndDate:           e.EndDate,
-		Location:          e.Location,
-		OwnerTeam:         e.OwnerTeam,
-		OrganizerName:     organizer.Name(e.OwnerTeam),
-		CoverImageURL:     addresses.Object(e.CoverImageURL),
-		CoverImageSizes:   addresses.LinkedSizes(e.coverImage),
-		CoverColors:       append([]string{}, e.CoverColors...),
-		Active:            e.Active,
-		Status:            e.Status,
-		PublishedAt:       e.PublishedAt,
-		CancelledAt:       e.CancelledAt,
-		CancelReason:      e.CancelReason,
-		CopiedFromEventID: e.CopiedFromEventID,
-		Ranked:            e.Ranked,
-		FileCount:         e.FileCount,
-		VideoCount:        e.VideoCount,
+		ID:                 e.ID,
+		Name:               e.Name,
+		StartDate:          e.StartDate,
+		EndDate:            e.EndDate,
+		Location:           e.Location,
+		OwnerTeam:          e.OwnerTeam,
+		OrganizerName:      organizer.Name(e.OwnerTeam),
+		CoverImageURL:      addresses.Object(e.CoverImageURL),
+		CoverImageSizes:    addresses.LinkedSizes(e.coverImage),
+		CoverColors:        append([]string{}, e.CoverColors...),
+		Active:             e.Active,
+		Status:             e.Status,
+		PublishedAt:        e.PublishedAt,
+		CancelledAt:        e.CancelledAt,
+		CancelReason:       e.CancelReason,
+		CopiedFromEventID:  e.CopiedFromEventID,
+		Ranked:             e.Ranked,
+		EffectiveEntryMode: e.EffectiveEntryMode,
+		FileCount:          e.FileCount,
+		VideoCount:         e.VideoCount,
 	}
 }
 

@@ -47,7 +47,7 @@ const maxCreatedBody = 4 << 10
 // on a refusal carries no recipient, as every SkyMail line.
 func (s *SkyMail) AccountDeletionNotice(ctx context.Context, templateKey, recipient string, vars map[string]string) error {
 	templateKey = strings.TrimSpace(templateKey)
-	if s == nil || templateKey == "" || strings.TrimSpace(s.BaseURL) == "" {
+	if s == nil || templateKey == "" || s.noBaseURL() {
 		return ErrTemplateUnconfigured
 	}
 	if s.Tokens == nil {

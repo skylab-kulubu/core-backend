@@ -26,6 +26,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/health"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/mapregion"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/membershipterm"
@@ -67,7 +68,10 @@ type Deps struct {
 	FeedbackSender handlers.FeedbackSender
 	// FeedbackReminders cancels the reminders of a feedback form the panel
 	// closed; nil leaves its two routes out.
-	FeedbackReminders      handlers.FeedbackReminders
+	FeedbackReminders handlers.FeedbackReminders
+	// FormBackfills serves POST /v1/events/{id}/forms/{formId}/backfill
+	// (docs/form-pulls.md); nil leaves it out.
+	FormBackfills          handlers.FormBackfills
 	Media                  media.Service
 	URLs                   shorturl.Service
 	Certificates           certificate.Service
@@ -349,6 +353,7 @@ func New(deps Deps) *fiber.App {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
 			text := deps.AccountAccessMetrics.Prometheus()
+			text += mail.URLMissingPrometheus()
 			if deps.AccountErasureMetrics != nil {
 				text += deps.AccountErasureMetrics.Prometheus()
 			}
@@ -538,6 +543,7 @@ func New(deps Deps) *fiber.App {
 		personTeams = deps.ManagedTeams
 	}
 	app.Get(handlers.PersonTeamsPath, handlers.NewPersonTeamsHandler(personTeams).Get)
+	app.Get("/v1/go", handlers.ShortLinkRoot)
 	app.Get("/v1/go/:alias", urls.Redirect)
 	app.Get("/v1/go/:alias/:channel", urls.RedirectChannel)
 	// Before JIT and every product route: a Group overage token gets its
@@ -742,6 +748,9 @@ func New(deps Deps) *fiber.App {
 			app.Post("/v1/sessions/:id/feedback/close", feedbackH.CloseSession)
 		}
 	}
+	if deps.FormBackfills != nil {
+		app.Post("/v1/events/:id/forms/:formId/backfill", handlers.NewFormBackfillHandler(deps.FormBackfills, log.Default()).Request)
+	}
 	app.Post("/v1/events/:id/images", events.AddImages)
 	app.Delete("/v1/events/:id/images", events.RemoveImages)
 	app.Post("/v1/events/:id/files", events.AddFiles(event.Files))
@@ -832,6 +841,7 @@ func New(deps Deps) *fiber.App {
 	// An operator's "Öne al" off the waiting list (docs/event-capacity.md).
 	app.Post("/v1/tickets/:id/promote", tickets.PromoteTicket)
 	app.Get("/v1/tickets", tickets.List)
+	app.Post(handlers.TicketSearchPath, tickets.Search)
 	// The forms service's account with ticket:forms reports each answer to its
 	// forms; an accepted answer to an Event's form writes its Ticket
 	// (docs/form-response-tickets.md).
@@ -851,12 +861,18 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/sessions/:sessionId/check-in/resolve", tickets.ResolveAndCheckIn)
 	app.Get("/v1/sessions/:sessionId/check-ins", tickets.DoorActivity)
 	app.Delete("/v1/sessions/:sessionId/check-ins/:checkInId", tickets.UndoCheckInByID)
+	// The Event's door without a Session: Venue entry (docs/venue-entry.md).
+	app.Post("/v1/events/:eventId/entries/resolve", tickets.ResolveEntry)
+	app.Get("/v1/events/:eventId/entries/summary", tickets.EntrySummary)
+	app.Get("/v1/events/:eventId/entries", tickets.ListEntries)
+	app.Delete("/v1/events/:eventId/entries/:entryId", tickets.UndoEntry)
 	if pass != nil {
 		// One route for whatever the door scanned (docs/ticket-qr.md):
 		// check-in/scan is its name, check-in/skypass the old one the
 		// released sky-app calls, kept as is.
 		app.Post("/v1/sessions/:sessionId/check-in/skypass", pass.CheckInSession)
 		app.Post("/v1/sessions/:sessionId/check-in/scan", pass.CheckInSession)
+		app.Post("/v1/events/:eventId/entries/scan", pass.EnterEvent)
 	}
 
 	app.Get("/v1/competitors", competitors.List)

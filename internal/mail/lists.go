@@ -112,7 +112,7 @@ func (s *SkyMail) RemoveRecipient(ctx context.Context, listID, recipientID uuid.
 }
 
 func (s *SkyMail) doJSON(ctx context.Context, kind, method, path string, body any, want int, dest any) error {
-	if s == nil || strings.TrimSpace(s.BaseURL) == "" {
+	if s.noBaseURL() {
 		return errors.New("mail: skymail is not configured")
 	}
 	token, err := s.Tokens.Token(ctx)

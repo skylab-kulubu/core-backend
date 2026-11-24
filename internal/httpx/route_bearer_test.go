@@ -73,6 +73,7 @@ var routesBehindBearerSample = []string{
 	"GET /v1/dashboard/summary",
 	"GET /v1/dashboard/event-stats",
 	"POST /v1/events/:id/feedback/send",
+	"POST /v1/events/:id/forms/:formId/backfill",
 	"GET /v1/events/:id/certificate-rule",
 	"PUT /v1/events/:id/certificate-rule",
 	"GET /v1/events/:eventId/certificates/attendance",
@@ -84,6 +85,7 @@ var routesBehindBearerSample = []string{
 	"POST /v1/skypass/qr",
 	"GET /v1/events/:eventId/competitions",
 	"GET /v1/subject-requests",
+	"POST /v1/tickets/search",
 	"GET /v1/users/me/capabilities",
 	"GET /v1/users/directory",
 	"GET /v1/certificates/me",
@@ -93,6 +95,11 @@ var routesBehindBearerSample = []string{
 	"POST /v1/tickets/:id/promote",
 	"DELETE /v1/tickets/:ticketId/sessions/:sessionId/check-in",
 	"DELETE /v1/sessions/:sessionId/check-ins/:checkInId",
+	"POST /v1/events/:eventId/entries/scan",
+	"POST /v1/events/:eventId/entries/resolve",
+	"GET /v1/events/:eventId/entries/summary",
+	"GET /v1/events/:eventId/entries",
+	"DELETE /v1/events/:eventId/entries/:entryId",
 	"POST /v1/sessions/:sessionId/check-in/me",
 	"POST /v1/sessions/:sessionId/check-in/guest",
 	"POST /v1/sessions/:sessionId/door-qr",
@@ -112,6 +119,7 @@ type (
 	unusedFeedbackSender   struct{ handlers.FeedbackSender }
 	unusedFeedbackReminder struct{ handlers.FeedbackReminders }
 	unusedEventMail        struct{ eventmail.Service }
+	unusedFormBackfills    struct{ handlers.FormBackfills }
 )
 
 var segmentParam = regexp.MustCompile(`/:[A-Za-z0-9_]+`)
@@ -136,6 +144,7 @@ func TestEveryRouteButThePublicOnesReadsTheBearer(t *testing.T) {
 	deps.FeedbackSender = unusedFeedbackSender{}
 	deps.FeedbackReminders = unusedFeedbackReminder{}
 	deps.EventMail = unusedEventMail{}
+	deps.FormBackfills = unusedFormBackfills{}
 	deps.AppAssignments = true
 	clients, err := apppref.ParseClients("forms:skyforms")
 	if err != nil {

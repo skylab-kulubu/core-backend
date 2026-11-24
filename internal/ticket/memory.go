@@ -17,6 +17,8 @@ type MemoryStore struct {
 	mu       sync.Mutex
 	byID     map[uuid.UUID]Ticket
 	checkIns map[uuid.UUID]CheckIn
+	// entries are the Venue entries (docs/venue-entry.md).
+	entries map[uuid.UUID]VenueEntry
 	// events reads an Event's capacity (UseEvents); nil bounds none.
 	events EventGetter
 	// seq orders the Tickets as written: the waiting list's order where
@@ -51,6 +53,7 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		byID:     make(map[uuid.UUID]Ticket),
 		checkIns: make(map[uuid.UUID]CheckIn),
+		entries:  make(map[uuid.UUID]VenueEntry),
 		seq:      make(map[uuid.UUID]int),
 
 		formResponses: make(map[uuid.UUID]uuid.UUID),
@@ -350,8 +353,57 @@ func (s *MemoryStore) AddCheckIn(_ context.Context, c CheckIn) (CheckIn, error) 
 		c.ID = uuid.New()
 	}
 	c.CreatedAt = time.Now().UTC()
+	entry := c.Entry
+	c.Entry, c.EntryWritten = nil, false
 	s.checkIns[c.ID] = c
+	if entry != nil && !s.enteredLocked(c.TicketID, entry.EntryDate) {
+		e := *entry
+		e.ID, e.CreatedAt = uuid.New(), c.CreatedAt
+		if e.Source != EntryScan {
+			id := c.ID
+			e.CheckInID = &id
+		}
+		s.entries[e.ID] = e
+		c.EntryWritten = true
+	}
 	return c, nil
+}
+
+// enteredLocked reports whether ticketID has an entry on date; s.mu is
+// held.
+func (s *MemoryStore) enteredLocked(ticketID uuid.UUID, date string) bool {
+	for _, e := range s.entries {
+		if e.TicketID == ticketID && e.EntryDate == date {
+			return true
+		}
+	}
+	return false
+}
+
+// removeCheckInLocked deletes the check-in id and takes back the entry it
+// wrote, or hands it to the Ticket's other check-in that day; s.mu is held.
+func (s *MemoryStore) removeCheckInLocked(id uuid.UUID) {
+	gone := s.checkIns[id]
+	delete(s.checkIns, id)
+	var other *uuid.UUID
+	for _, c := range s.checkIns {
+		if c.TicketID == gone.TicketID && c.EventDayID == gone.EventDayID {
+			cid := c.ID
+			other = &cid
+			break
+		}
+	}
+	for eid, e := range s.entries {
+		if e.CheckInID == nil || *e.CheckInID != id {
+			continue
+		}
+		if other == nil && e.Source != EntryScan {
+			delete(s.entries, eid)
+			continue
+		}
+		e.CheckInID = other
+		s.entries[eid] = e
+	}
 }
 
 func (s *MemoryStore) RemoveCheckIn(_ context.Context, ticketID, sessionID uuid.UUID) (bool, error) {
@@ -359,7 +411,7 @@ func (s *MemoryStore) RemoveCheckIn(_ context.Context, ticketID, sessionID uuid.
 	defer s.mu.Unlock()
 	for id, c := range s.checkIns {
 		if c.TicketID == ticketID && c.SessionID == sessionID {
-			delete(s.checkIns, id)
+			s.removeCheckInLocked(id)
 			return true, nil
 		}
 	}
@@ -382,8 +434,104 @@ func (s *MemoryStore) RemoveCheckInByID(_ context.Context, id uuid.UUID) (bool, 
 	if _, ok := s.checkIns[id]; !ok {
 		return false, nil
 	}
-	delete(s.checkIns, id)
+	s.removeCheckInLocked(id)
 	return true, nil
+}
+
+func (s *MemoryStore) AddVenueEntry(_ context.Context, e VenueEntry) (VenueEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.byID[e.TicketID]
+	if !ok {
+		return VenueEntry{}, ErrNotFound
+	}
+	if refused := inactiveErr(t); refused != nil {
+		return VenueEntry{}, refused
+	}
+	if s.enteredLocked(e.TicketID, e.EntryDate) {
+		return VenueEntry{}, &EntryConflictError{}
+	}
+	if e.ID == uuid.Nil {
+		e.ID = uuid.New()
+	}
+	e.EventID = t.EventID
+	e.CreatedAt = time.Now().UTC()
+	s.entries[e.ID] = e
+	return e, nil
+}
+
+func (s *MemoryStore) VenueEntryByID(_ context.Context, id uuid.UUID) (VenueEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.entries[id]
+	if !ok {
+		return VenueEntry{}, ErrNotFound
+	}
+	return e, nil
+}
+
+func (s *MemoryStore) RemoveVenueEntry(_ context.Context, id uuid.UUID) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.entries[id]; !ok {
+		return false, nil
+	}
+	delete(s.entries, id)
+	return true, nil
+}
+
+// VenueEntriesOn names a guest's entry; a member's name is the service's
+// to find (the store keeps no people).
+func (s *MemoryStore) VenueEntriesOn(_ context.Context, eventID uuid.UUID, date string) ([]DoorEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]DoorEntry, 0)
+	for _, e := range s.entries {
+		if e.EventID != eventID || e.EntryDate != date {
+			continue
+		}
+		name := ""
+		if t, ok := s.byID[e.TicketID]; ok && t.TicketType == Guest {
+			name = strings.TrimSpace(t.GuestFirstName + " " + t.GuestLastName)
+			if name == "" {
+				name = strings.TrimSpace(t.GuestEmail)
+			}
+		}
+		out = append(out, DoorEntry{
+			ID: e.ID, Kind: KindEntry, TicketID: e.TicketID, EntryDate: e.EntryDate,
+			EventDayID: e.EventDayID, Source: e.Source, Name: name, CreatedAt: e.CreatedAt,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (s *MemoryStore) VenueEntryDays(_ context.Context, eventID uuid.UUID) ([]EntryDay, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	byDate := make(map[string]*EntryDay)
+	for _, e := range s.entries {
+		if e.EventID != eventID {
+			continue
+		}
+		day, ok := byDate[e.EntryDate]
+		if !ok {
+			day = &EntryDay{Date: e.EntryDate, BySource: emptyBySource()}
+			byDate[e.EntryDate] = day
+		}
+		if day.EventDayID == nil && e.EventDayID != nil {
+			id := *e.EventDayID
+			day.EventDayID = &id
+		}
+		day.Total++
+		day.BySource[string(e.Source)]++
+	}
+	out := make([]EntryDay, 0, len(byDate))
+	for _, day := range byDate {
+		out = append(out, *day)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Date < out[j].Date })
+	return out, nil
 }
 
 func (s *MemoryStore) HasCheckIn(_ context.Context, ticketID, sessionID uuid.UUID) (bool, error) {
