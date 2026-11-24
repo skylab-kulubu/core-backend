@@ -85,23 +85,36 @@ skylab-site#40). `DOOR_QR_GUEST_URL`:
 
 ### `POST /v1/sessions/{sessionId}/check-in/guest`
 
-Body: `{"email": "…", "doorToken": "…"}`. `doorToken` is the `dq` value.
+Body: `{"email": "…", "doorToken": "…"}` or `{"ticketKey": "…", "doorToken": "…"}`.
+`doorToken` is the `dq` value. Despite the route's name it serves everyone
+who lands on the page the QR opens (a phone's camera opens the page, not
+sky-app):
+
+- `ticketKey` is the Ticket's access key (the ticket page's `/bilet/{key}`,
+  which the phone may keep): it finds any Ticket of the Session's Event, a
+  member's too. Another Event's key, a renewed (old) key or an unknown one
+  is 404.
+- `email` finds a guest Ticket written for it first; failing that, the
+  Ticket of the member whose account e-mail it is (primary, or school
+  e-mail), on this Event. Case and spaces do not matter.
+- With both, the key is used.
 
 | Status | `code` | Meaning |
 |---|---|---|
 | 201 | | checked in |
-| 400 | | no e-mail |
+| 400 | | neither an e-mail nor a ticket key |
 | 403 | `session_closed` | the Session is cancelled or outside its time window |
 | 403 | `door_qr_required` | `qr` mode and no `doorToken` |
 | 403 | `door_qr_invalid` | not a door QR of this Session and Event (forged, another key, garbled, over 1 KB) |
 | 403 | `door_qr_expired` | past `expiresAt`: scan the screen again |
 | 403 | `door_qr_used_up` | this token has let `DOOR_QR_MAX_USES` guests in: scan the screen again |
-| 404 | | no guest Ticket for this e-mail on the Session's Event, or no such Session |
+| 404 | | no Ticket for this e-mail or key on the Session's Event, or no such Session. While the Event takes registrations the body carries `registrationUrl`: its form (`formUrl`), else its external registration link; the page shows it. Closed registration, no field |
 | 409 | | already checked in to this Session |
 | 429 | `guest_check_in_rate_limited` | this address failed 10 times this minute; `Retry-After` |
 
 The door QR is checked before any Ticket is looked up, so in `qr` mode the
-route no longer tells a stranger which e-mails are registered.
+route no longer tells a stranger which e-mails are registered; nor does
+`registrationUrl`, which the Event's public page shows anyway.
 
 **Session window.** Guests check in, and door QRs are minted, only while the
 Session is not cancelled and now is within
@@ -273,9 +286,11 @@ Rollback: `GUEST_SELF_CHECKIN_MODE=open`.
 
 Rollback: `SESSION_QR_MODE=open`.
 
-Not in this step (ticket 22's rest): members on `/kapi` by account e-mail or
-ticket key, `registrationUrl` on a 404, and the Venue entry written by a
-check-in (ticket 21).
+Members on `/kapi` by account e-mail or ticket key and `registrationUrl` on
+a 404 came with ticket 22's rest; the Venue entry a check-in writes with
+ticket 21 ([venue-entry.md](venue-entry.md)). The page (skylab-site) sends
+`ticketKey` and shows `registrationUrl` in its own release; until then
+members already check in there with their account e-mail.
 
 ## Compared with common practice
 

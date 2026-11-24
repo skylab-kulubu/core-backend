@@ -81,13 +81,26 @@ type DoorCheckIn struct {
 	Kind string `json:"kind"`
 }
 
-// GuestCheckIn is a guest checking themselves in to a Session: the e-mail
-// their guest Ticket was written for, and the door QR token they scanned
-// (docs/guest-self-check-in.md).
+// GuestCheckIn is someone checking themselves in to a Session on the page
+// the door or attendance QR opens (docs/guest-self-check-in.md): by the
+// e-mail their Ticket was written for (a guest's, or a member's account
+// e-mail: primary or school), or by their Ticket's access key (any Ticket),
+// with the token of the QR they scanned.
 type GuestCheckIn struct {
 	Email     string
+	TicketKey string
 	DoorToken string
 }
+
+// GuestNotFoundError is a self check-in that found no Ticket: ErrNotFound,
+// with where to register while the Event takes registrations (its form,
+// or its external registration link). The page shows the link.
+type GuestNotFoundError struct {
+	RegistrationURL string
+}
+
+func (e *GuestNotFoundError) Error() string { return ErrNotFound.Error() }
+func (e *GuestNotFoundError) Unwrap() error { return ErrNotFound }
 
 // DoorQR is a minted door QR for the screen at a Session's door. URL is what
 // the QR encodes; the screen asks for a new one after RefreshAfterSeconds.
