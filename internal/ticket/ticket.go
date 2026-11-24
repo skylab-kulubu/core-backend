@@ -15,6 +15,38 @@ const (
 	Guest      = "GUEST"
 )
 
+// Status is a Ticket's status (docs/ticket-cancellation.md). Only an active
+// Ticket opens the door, is counted and is told of the Event; the others are
+// kept, never deleted.
+type Status string
+
+const (
+	StatusActive     Status = "active"
+	StatusWaitlisted Status = "waitlisted"
+	StatusCancelled  Status = "cancelled"
+)
+
+// Statuses are every status, in the order the panel lists them.
+var Statuses = []Status{StatusActive, StatusWaitlisted, StatusCancelled}
+
+// ValidStatus reports whether s is one of Statuses.
+func ValidStatus(s Status) bool {
+	return s == StatusActive || s == StatusWaitlisted || s == StatusCancelled
+}
+
+// CancelledBy is who cancelled a Ticket: its holder, an operator from the
+// panel, or the form whose answer wrote it.
+type CancelledBy string
+
+const (
+	CancelledByHolder   CancelledBy = "holder"
+	CancelledByOperator CancelledBy = "operator"
+	CancelledByForm     CancelledBy = "form"
+)
+
+// MaxCancelReason is the longest reason an operator may give, in characters.
+const MaxCancelReason = 500
+
 type CheckIn struct {
 	ID         uuid.UUID `json:"id"`
 	TicketID   uuid.UUID `json:"ticketId"`
@@ -128,9 +160,17 @@ type Ticket struct {
 	// TicketURL and QRToken are the holder's own, in their own list
 	// (GET /v1/tickets/me) only: the ticket page and the Ticket QR
 	// (docs/ticket-page.md, docs/ticket-qr.md).
-	TicketURL string    `json:"ticketUrl,omitempty"`
-	QRToken   string    `json:"qrToken,omitempty"`
-	CheckIns  []CheckIn `json:"checkIns"`
+	TicketURL string `json:"ticketUrl,omitempty"`
+	QRToken   string `json:"qrToken,omitempty"`
+	// Status is active, waitlisted or cancelled; the empty status of a
+	// Ticket made in memory reads as active (Active).
+	Status          Status      `json:"status"`
+	StatusChangedAt *time.Time  `json:"statusChangedAt,omitempty"`
+	WaitlistedAt    *time.Time  `json:"waitlistedAt,omitempty"`
+	CancelledAt     *time.Time  `json:"cancelledAt,omitempty"`
+	CancelledBy     CancelledBy `json:"cancelledBy,omitempty"`
+	CancelReason    string      `json:"cancelReason,omitempty"`
+	CheckIns        []CheckIn   `json:"checkIns"`
 	// Feedback are the holder's own feedback links (ticket 12): only the
 	// holder's own tickets answer (`GET /v1/tickets/me`) carries them, and
 	// only when there is one (docs/event-feedback.md).
@@ -173,4 +213,18 @@ type GuestApplication struct {
 	// Ticket is the guest Ticket as stored, for a Trusted caller. Anybody
 	// else gets the zero Ticket: not even its id.
 	Ticket Ticket
+}
+
+// Active reports whether t is an active Ticket: the only one that opens the
+// door, is counted and is told of its Event.
+func (t Ticket) Active() bool {
+	return t.Status == StatusActive || t.Status == ""
+}
+
+// StatusOf is t's status, active for the empty one.
+func (t Ticket) StatusOf() Status {
+	if t.Status == "" {
+		return StatusActive
+	}
+	return t.Status
 }

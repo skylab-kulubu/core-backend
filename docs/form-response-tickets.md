@@ -88,7 +88,11 @@ guest; an operator corrects names from the Event hub.
 
 A pending answer writes nothing until Forms reports it accepted, so a form
 that needs review tickets on approval. A declined answer writes nothing and
-**does not take back a Ticket written earlier**: Tickets have no cancel. A
+**does not take back a Ticket written earlier** (yet: kontenjan-iptal-hatirlatma
+ticket 05 cancels the Ticket the answer wrote). An operator cancels a Ticket
+from the panel ([ticket-cancellation.md](ticket-cancellation.md)); an
+accepted answer of a person whose Ticket was cancelled reopens it, with a new
+link and QR, and counts it in `ticketsWritten`. A
 person core cannot find, or whose account is blocked or no longer active in
 core, gets no Ticket.
 

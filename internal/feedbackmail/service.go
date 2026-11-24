@@ -381,6 +381,10 @@ func (s *Service) recipientOf(ctx context.Context, ticketID uuid.UUID) (recipien
 	if err != nil {
 		return recipient{}, false, err
 	}
+	// A Ticket cancelled since the mail was queued is told nothing.
+	if !t.Active() {
+		return recipient{}, false, nil
+	}
 	email, first, full, err := s.holder(ctx, t)
 	r := recipient{email: email, first: first, full: full}
 	if t.TicketType != ticket.Guest && t.OwnerID != nil {

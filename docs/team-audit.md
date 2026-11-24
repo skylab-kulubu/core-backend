@@ -29,6 +29,8 @@ Keycloak's own admin events show every such change as made by
 | the daily term job | `membership.term.expired` | the term's Group | after: `endsAt`; `target_user_id` is the holder; actor `system` (below) |
 | `POST /v1/tickets/:id/notification` ([ticket-resend.md](ticket-resend.md)) | `ticket.resend` | the Event's team | after: `ticketId`, `eventId`, `resend` (the mail's …:r<n>); no target person |
 | `POST /v1/tickets/:id/access-key/rotate` | `ticket.link.renew` | the Event's team | after: `ticketId`, `eventId`, `resend` (0 without the mail); no target person |
+| `POST /v1/tickets/:id/cancel` ([ticket-cancellation.md](ticket-cancellation.md)) | `ticket.cancel` | the Event's team | after: `ticketId`, `eventId`; never the reason; no target person. A refusal (`checked_in`, `in_competition`) is a `failed` row |
+| `POST /v1/tickets/:id/restore` | `ticket.restore` | the Event's team | after: `ticketId`, `eventId`; no target person |
 | The person card's account writes ([user-accounts.md](user-accounts.md)) | `user.enable`, `user.disable`, `user.password.set`, `user.password.mail`, `user.email.change`, `user.email.verify`, `user.email.mail`, `user.email.primary`, `user.required_actions`, `user.credential.remove`, `user.idp.unlink`, `user.lockout.clear`, `user.profile` | none (empty `group_path`); `target_user_id` is the person | flags and ids only: `enabled`, `temporary`, `generated`, `verified`, `primary` (`school`/`personal`), `requiredActions`, `credentialId`/`credentialType`, `provider`, `fields`. Never an address, a name or a password (migration `20261122190000`) |
 
 Privileged's writes carry `actor_basis` `privileged`. With team delegation

@@ -376,3 +376,30 @@ func TestCancellationMailStopsWhenUndoneMidway(t *testing.T) {
 		t.Fatalf("sent after the undo: %v", got)
 	}
 }
+
+// A cancelled Ticket's holder is not told the Event was cancelled
+// (docs/ticket-cancellation.md): only active Tickets are its holders.
+func TestCancellationMailSkipsCancelledTickets(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.member(t, "ada@example.com", "Ada")
+	e.guest(t, "grace@example.com", "Grace")
+	listed, err := e.tickets.ListByEvent(t.Context(), e.ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tk := range listed {
+		if tk.GuestEmail == "grace@example.com" {
+			if _, _, err := e.tickets.Cancel(t.Context(), tk.ID, ticket.CancelledByOperator, ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := e.svc.Cancel(t.Context(), e.leader, e.ev.ID, "Hava koşulları", true); err != nil {
+		t.Fatal(err)
+	}
+	e.pass(t)
+	if got, want := e.mail.to(mail.EventStatusCancelled), []string{"ada@example.com"}; !slices.Equal(got, want) {
+		t.Fatalf("sent to %v, want %v", got, want)
+	}
+}

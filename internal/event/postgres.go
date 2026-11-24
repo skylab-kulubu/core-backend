@@ -1137,7 +1137,7 @@ func (s *PostgresStore) Publish(ctx context.Context, id uuid.UUID, by *uuid.UUID
 	if notifyTickets && s.notifyTickets.Load() {
 		tag, err := tx.Exec(ctx, `
 			INSERT INTO ticket_notifications (ticket_id)
-			SELECT id FROM tickets WHERE event_id = $1
+			SELECT id FROM tickets WHERE event_id = $1 AND status = 'active'
 			ON CONFLICT (ticket_id) DO NOTHING`, id)
 		if err != nil {
 			return false, err

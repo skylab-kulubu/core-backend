@@ -201,6 +201,13 @@ type auditRecord struct {
 // recorded (a test); with one, a row that cannot be opened stops the action
 // (teamaudit.ErrUnavailable), as every audited write.
 func (s *service) beginTicketAudit(ctx context.Context, p authz.Principal, ev event.Event, action teamaudit.Action, ticketID uuid.UUID) (*auditRecord, error) {
+	return s.beginTicketAuditAs(ctx, p, ev, action, ticketID, s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket}, authz.Assign))
+}
+
+// beginTicketAuditAs is beginTicketAudit with the basis decided by the
+// caller: privileged, else the Leader of a Team the Event's team sits in or
+// under.
+func (s *service) beginTicketAuditAs(ctx context.Context, p authz.Principal, ev event.Event, action teamaudit.Action, ticketID uuid.UUID, privileged bool) (*auditRecord, error) {
 	if s.audit == nil {
 		return nil, nil
 	}
@@ -213,7 +220,7 @@ func (s *service) beginTicketAudit(ctx context.Context, p authz.Principal, ev ev
 		return nil, teamaudit.ErrUnavailable
 	}
 	actor.Basis, actor.ViaGroupID = teamaudit.BasisPrivileged, ""
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket}, authz.Assign) {
+	if !privileged {
 		via, err := s.leaderVia(ctx, p, team)
 		if err != nil {
 			return nil, teamaudit.ErrUnavailable
@@ -286,6 +293,10 @@ func resendAuditCode(err error) string {
 		return "daily_limited"
 	case errors.Is(err, ErrNotFound):
 		return "not_found"
+	case errors.Is(err, ErrTicketCheckedIn):
+		return "checked_in"
+	case errors.Is(err, ErrTicketInCompetition):
+		return "in_competition"
 	default:
 		return "failed"
 	}

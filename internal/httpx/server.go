@@ -811,6 +811,10 @@ func New(deps Deps) *fiber.App {
 	// (docs/ticket-resend.md).
 	app.Post("/v1/tickets/:id/notification", tickets.ResendTicket)
 	app.Post("/v1/tickets/:id/access-key/rotate", tickets.RenewTicketLink)
+	// An operator's cancellation and its taking back
+	// (docs/ticket-cancellation.md).
+	app.Post("/v1/tickets/:id/cancel", tickets.CancelTicket)
+	app.Post("/v1/tickets/:id/restore", tickets.RestoreTicket)
 	app.Get("/v1/tickets", tickets.List)
 	// The forms service's account with ticket:forms reports each answer to its
 	// forms; an accepted answer to an Event's form writes its Ticket

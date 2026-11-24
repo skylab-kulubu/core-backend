@@ -56,6 +56,22 @@ func (a *afterCheckIn) Mine(ctx context.Context, p authz.Principal) ([]Ticket, e
 	return a.inner.Mine(ctx, p)
 }
 
+func (a *afterCheckIn) MineIncluding(ctx context.Context, p authz.Principal, include []Status) ([]Ticket, error) {
+	return a.inner.MineIncluding(ctx, p, include)
+}
+
+func (a *afterCheckIn) ListByEventStatus(ctx context.Context, p authz.Principal, eventID uuid.UUID, statuses []Status) ([]Ticket, error) {
+	return a.inner.ListByEventStatus(ctx, p, eventID, statuses)
+}
+
+func (a *afterCheckIn) CancelTicket(ctx context.Context, p authz.Principal, id uuid.UUID, reason string) (Ticket, error) {
+	return a.inner.CancelTicket(ctx, p, id, reason)
+}
+
+func (a *afterCheckIn) RestoreTicket(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error) {
+	return a.inner.RestoreTicket(ctx, p, id)
+}
+
 func (a *afterCheckIn) ListByEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]Ticket, error) {
 	return a.inner.ListByEvent(ctx, p, eventID)
 }

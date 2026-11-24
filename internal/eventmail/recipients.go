@@ -22,6 +22,10 @@ func RecipientsFromTickets(tickets []ticket.Ticket, users map[uuid.UUID]user.Use
 	out := make([]Recipient, 0, len(tickets))
 	seen := map[string]struct{}{}
 	for _, row := range tickets {
+		// The Event's mail list holds active Tickets' holders only.
+		if !row.Active() {
+			continue
+		}
 		email, name := ticketRecipient(row, users)
 		email = strings.ToLower(strings.TrimSpace(email))
 		if email == "" {
