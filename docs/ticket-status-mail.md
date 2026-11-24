@@ -66,8 +66,9 @@ refused.
 
 ## Rollback
 
-Turn `TICKET_STATUS_MAIL` off and let the queue drain before rolling the
-code back: the release before would send a queued `cancelled` row as
-"Biletin hazır". The down migration deletes those rows, narrows the kind
-check again and drops `tickets.form_response_id`; cancelled Tickets stay
-cancelled.
+Rolling the code back needs no down migration: the release before drops a
+queued `cancelled` row unsent (its worker mails only an active Ticket), so
+unsent cancellation mails are lost. Let the queue drain first to keep them
+(turn `TICKET_STATUS_MAIL` off a few minutes before). The down migration
+deletes those rows, narrows the kind check again and drops
+`tickets.form_response_id`; cancelled Tickets stay cancelled.

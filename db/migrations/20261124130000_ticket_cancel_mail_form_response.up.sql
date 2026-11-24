@@ -13,8 +13,8 @@
 -- any other way writes, has none; one reopened another way loses it.
 --
 -- The release before runs on the new schema: it writes neither (its rows
--- are created, its Tickets keep no answer), and its worker would send a
--- queued cancelled row as "Biletin hazır" (see the down migration).
+-- are created, its Tickets keep no answer), and its worker drops a queued
+-- cancelled row unsent (the Ticket is not active).
 SET LOCAL lock_timeout = '5s';
 
 ALTER TABLE ticket_notifications DROP CONSTRAINT IF EXISTS ticket_notifications_kind_check;
