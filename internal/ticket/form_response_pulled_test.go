@@ -11,9 +11,10 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
-// An answer pulled from Forms' list (a backfill, the daily catch-up) finds
-// a cancelled Ticket as one already there: it stays cancelled, for a
-// member and a guest alike, and nothing is written.
+// An answer pulled from Forms' list again (a backfill, the daily catch-up)
+// takes the forms report's rule: a Ticket an operator cancelled is found as
+// one already there and stays cancelled, for a member and a guest alike,
+// and nothing is written. Only Forms' own decline is reopened.
 func TestAPulledAnswerKeepsACancelledTicketCancelled(t *testing.T) {
 	ctx := context.Background()
 	events := event.NewMemoryStore()
@@ -38,7 +39,6 @@ func TestAPulledAnswerKeepsACancelledTicketCancelled(t *testing.T) {
 		}
 	}
 	for _, r := range []ticket.FormResponse{member, guest} {
-		r.Pulled = true
 		got, err := svc.RecordFormResponse(ctx, formsService, r)
 		if err != nil || got.TicketsWritten != 0 {
 			t.Fatalf("pulled: %+v %v", got, err)

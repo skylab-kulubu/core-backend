@@ -152,7 +152,7 @@ func TestSignedInAnswerGoesToTheTicketRuleWithItsSubmittedAtAndInvite(t *testing
 	if r.SubmittedAt == nil || !r.SubmittedAt.Equal(time.Date(2026, 11, 20, 9, 15, 0, 0, time.UTC)) {
 		t.Fatalf("submittedAt %v", r.SubmittedAt)
 	}
-	if r.Invite != "abc_DEF-123" || r.Guest != nil || r.Pulled {
+	if r.Invite != "abc_DEF-123" || r.Guest != nil {
 		t.Fatalf("invite %q guest %v", r.Invite, r.Guest)
 	}
 	if !strings.Contains(strings.Join(h.lines, "\n"), `"outcome":"recorded"`) {

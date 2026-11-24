@@ -9,9 +9,9 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
 
-// On PostgreSQL: a guest's Ticket cancelled, then its answer pulled again
-// (a backfill, and the daily catch-up overlapping it): the Ticket stays
-// cancelled and no mail is queued.
+// On PostgreSQL: a guest's Ticket cancelled by an operator, then its answer
+// pulled again (a backfill, and the daily catch-up overlapping it): the
+// forms report's rule keeps the Ticket cancelled and no mail is queued.
 func TestPostgresPulledAnswerQueuesNoMailForACancelledTicket(t *testing.T) {
 	e := newCapacityPG(t)
 	ctx := context.Background()
@@ -41,7 +41,6 @@ func TestPostgresPulledAnswerQueuesNoMailForACancelledTicket(t *testing.T) {
 		return n
 	}
 	before := mails()
-	answer.Pulled = true
 	for range 2 {
 		if _, err := svc.RecordFormResponse(ctx, formsService, answer); err != nil {
 			t.Fatal(err)

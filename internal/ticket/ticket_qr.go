@@ -3,6 +3,7 @@ package ticket
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -67,32 +68,44 @@ func (s *service) checkInTicketQR(ctx context.Context, p authz.Principal, sessio
 	if err != nil {
 		return CheckIn{}, err
 	}
-	if s.qr == nil {
-		return CheckIn{}, ErrTicketQRInvalid
-	}
-	claims, err := s.qr.Verify(token)
-	if err != nil {
-		return CheckIn{}, ErrTicketQRInvalid
-	}
-	if claims.Event != ev.ID {
-		return CheckIn{}, ErrNotFound
-	}
-	t, err := s.tickets.Get(ctx, claims.Ticket)
+	t, err := s.ticketOfQR(ctx, ev, token)
 	if err != nil {
 		return CheckIn{}, err
 	}
+	return s.checkIn(ctx, p, t.ID, sessionID, true)
+}
+
+// ticketOfQR is the Ticket of ev a Ticket QR the door scanned names: the
+// signature (ErrTicketQRInvalid), the Event (ErrNotFound for another
+// Event's or no such Ticket), the expiry by the Event's dates now
+// (ErrTicketQRExpired) and the QR version (ErrTicketQRSuperseded).
+func (s *service) ticketOfQR(ctx context.Context, ev event.Event, token string) (Ticket, error) {
+	if s.qr == nil {
+		return Ticket{}, ErrTicketQRInvalid
+	}
+	claims, err := s.qr.Verify(token)
+	if err != nil {
+		return Ticket{}, ErrTicketQRInvalid
+	}
+	if claims.Event != ev.ID {
+		return Ticket{}, ErrNotFound
+	}
+	t, err := s.tickets.Get(ctx, claims.Ticket)
+	if err != nil {
+		return Ticket{}, err
+	}
 	if t.EventID != ev.ID || !held(t) {
-		return CheckIn{}, ErrNotFound
+		return Ticket{}, ErrNotFound
 	}
 	// Online, the Event's dates now decide, not the expiry the code was
 	// signed with: an Event moved later keeps the codes already sent.
 	if !time.Now().Before(QRExpiry(t, ev)) {
-		return CheckIn{}, ErrTicketQRExpired
+		return Ticket{}, ErrTicketQRExpired
 	}
 	if claims.Version != t.QRVersion {
-		return CheckIn{}, ErrTicketQRSuperseded
+		return Ticket{}, ErrTicketQRSuperseded
 	}
-	return s.CheckIn(ctx, p, t.ID, sessionID)
+	return t, nil
 }
 
 // TicketQR is t's Ticket QR, as the holder's mail, PDF, page and app show
@@ -147,9 +160,22 @@ type CodeStore interface {
 var scanOutcomes = []string{"checked_in", "already", "not_found", "invalid", "expired", "superseded", "session_closed", "forbidden", "failed"}
 
 // DoorScanMetrics counts Ticket QR scans by outcome:
-// skylab_door_scans_total{credential="ticket_qr",outcome=…}.
+// skylab_door_scans_total{credential="ticket_qr",outcome=…}; and the Venue
+// entries written by source: skylab_venue_entries_total{source=…}
+// (docs/venue-entry.md). Neither names anybody.
 type DoorScanMetrics struct {
-	counts [9]atomic.Uint64
+	counts  [9]atomic.Uint64
+	entries [3]atomic.Uint64
+}
+
+// recordEntry counts a Venue entry written.
+func (m *DoorScanMetrics) recordEntry(source EntrySource) {
+	if m == nil {
+		return
+	}
+	if i := slices.Index(entrySources, source); i >= 0 {
+		m.entries[i].Add(1)
+	}
 }
 
 func (m *DoorScanMetrics) record(err error) {
@@ -188,6 +214,11 @@ func (m *DoorScanMetrics) Prometheus() string {
 	for i, outcome := range scanOutcomes {
 		out.WriteString(`skylab_door_scans_total{credential="ticket_qr",outcome="` + outcome + `"} ` +
 			strconv.FormatUint(m.counts[i].Load(), 10) + "\n")
+	}
+	out.WriteString("# TYPE skylab_venue_entries_total counter\n")
+	for i, source := range entrySources {
+		out.WriteString(`skylab_venue_entries_total{source="` + string(source) + `"} ` +
+			strconv.FormatUint(m.entries[i].Load(), 10) + "\n")
 	}
 	return out.String()
 }

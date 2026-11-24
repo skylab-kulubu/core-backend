@@ -53,6 +53,15 @@ type CheckIn struct {
 	SessionID  uuid.UUID `json:"sessionId"`
 	EventDayID uuid.UUID `json:"eventDayId"`
 	CreatedAt  time.Time `json:"createdAt"`
+	// Kind is what a door write answers: check_in, or entry when a scan in
+	// the venue mode wrote the day's Venue entry alone (ID is then the
+	// entry's; docs/venue-entry.md). A stored check-in leaves it out.
+	Kind string `json:"kind,omitempty"`
+	// Entry is the day's Venue entry AddCheckIn writes with the check-in
+	// when the Ticket has none that day; nil writes none. EntryWritten
+	// says whether it did.
+	Entry        *VenueEntry `json:"-"`
+	EntryWritten bool        `json:"-"`
 }
 
 type DoorCheckInTarget struct {
@@ -67,6 +76,9 @@ type DoorCheckIn struct {
 	EventDayID uuid.UUID `json:"eventDayId"`
 	PersonName string    `json:"personName"`
 	CreatedAt  time.Time `json:"createdAt"`
+	// Kind is check_in, or entry for the day's Venue entry the Session's
+	// door activity lists in the venue mode (docs/venue-entry.md).
+	Kind string `json:"kind"`
 }
 
 // GuestCheckIn is a guest checking themselves in to a Session: the e-mail
@@ -170,6 +182,10 @@ type Ticket struct {
 	// (docs/ticket-page.md, docs/ticket-qr.md).
 	TicketURL string `json:"ticketUrl,omitempty"`
 	QRToken   string `json:"qrToken,omitempty"`
+	// Cancellable is whether the holder may cancel the Ticket now
+	// (HolderMayCancel; kontenjan-iptal-hatirlatma 03), in the holder's own
+	// list (GET /v1/tickets/me) only; every other answer leaves it out.
+	Cancellable *bool `json:"cancellable,omitempty"`
 	// Status is active, waitlisted or cancelled; the empty status of a
 	// Ticket made in memory reads as active (Active).
 	Status          Status      `json:"status"`

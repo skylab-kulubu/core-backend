@@ -209,8 +209,6 @@ func (r *Recorder) Response(ctx context.Context, tx pgx.Tx, origin Origin, in Re
 	report := ticket.FormResponse{
 		FormID: in.FormID, ResponseID: in.ResponseID, Status: ticket.FormResponseStatus(in.Status),
 		UserID: in.UserID, SubmittedAt: in.SubmittedAt, Invite: in.Invite(),
-		// A pulled answer never reopens a cancelled Ticket.
-		Pulled: origin.Via == ViaPull,
 	}
 	if in.UserID == nil && in.Guest != nil {
 		report.Guest = &ticket.GuestInfo{FirstName: in.Guest.FirstName, LastName: in.Guest.LastName, Email: in.Guest.Email}

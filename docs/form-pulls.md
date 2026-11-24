@@ -50,12 +50,12 @@ The job pulls every accepted answer of the form (no `changedSince`). Each
 answer takes the Ticket rule as the HTTP report's does: on every current
 Event that lists the form, not cancelled, not ended, open to applications
 when the answer was sent (`submittedAt`), within capacity or on the waiting
-list; an answer that already has its Ticket keeps it. **A pulled answer
-never reopens a cancelled Ticket** (`ticket.FormResponse.Pulled`,
-`Admission.KeepCancelled`): whoever cancelled it (the holder, an organizer,
-Forms' decline), the answer is the state of one core has seen, not a new
-application, so the Ticket stays cancelled and nobody is mailed. The same
-holds for the daily catch-up overlapping an event or the HTTP report. The rule reads the
+list; an answer that already has its Ticket keeps it. A cancelled Ticket
+takes the forms report's one rule (`Admission.FormResponse`,
+[form-response-tickets.md](form-response-tickets.md)): only one Forms' own
+decline cancelled is reopened by an accepted answer; one the holder or an
+organizer cancelled stays cancelled and nobody is mailed. The same holds
+for the daily catch-up overlapping an event or the HTTP report. The rule reads the
 Events at each answer, so an Event cancelled while the job runs gets no more
 Tickets. A Ticket written this way is mailed as any other
 ([ticket-created-notification.md](ticket-created-notification.md)): at once on

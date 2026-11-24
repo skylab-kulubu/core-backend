@@ -2,6 +2,7 @@ package ticket
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -25,8 +26,15 @@ func (s *service) UndoCheckIn(ctx context.Context, p authz.Principal, ticketID, 
 // Session's door activity and the resolve and scan answers name the
 // check-in, not its Ticket. A check-in of another Session is ErrNotFound,
 // as one that does not exist; undoCheckIn decides the rest.
+//
+// In the venue mode a scan at the Session's door answers the day's Venue
+// entry (kind entry): its id here takes that entry back, the door's undo
+// working in either mode (docs/venue-entry.md).
 func (s *service) UndoCheckInByID(ctx context.Context, p authz.Principal, sessionID, checkInID uuid.UUID) error {
 	ci, err := s.tickets.CheckInByID(ctx, checkInID)
+	if errors.Is(err, ErrNotFound) {
+		return s.undoSessionEntry(ctx, p, sessionID, checkInID)
+	}
 	if err != nil {
 		return err
 	}
@@ -70,4 +78,25 @@ func (s *service) undoCheckIn(ctx context.Context, p authz.Principal, t Ticket, 
 	s.logger.Printf(`{"event":"ticket_checkin_undo","actorId":%q,"eventId":%q,"ticketId":%q,"sessionId":%q}`,
 		p.ID, ev.ID, t.ID, sessionID)
 	return nil
+}
+
+// undoSessionEntry takes back the Venue entry entryID at sessionID's door:
+// ErrNotFound when it is not an entry of the Session's Event.
+func (s *service) undoSessionEntry(ctx context.Context, p authz.Principal, sessionID, entryID uuid.UUID) error {
+	entry, err := s.tickets.VenueEntryByID(ctx, entryID)
+	if err != nil {
+		return err
+	}
+	if eventID, err := s.ticketEventID(ctx, sessionID); err != nil {
+		return err
+	} else if eventID != entry.EventID {
+		return ErrNotFound
+	}
+	t, err := s.tickets.Get(ctx, entry.TicketID)
+	if err != nil {
+		return err
+	}
+	return s.undoCheckIn(ctx, p, t, sessionID, func() (bool, error) {
+		return s.tickets.RemoveVenueEntry(ctx, entryID)
+	})
 }

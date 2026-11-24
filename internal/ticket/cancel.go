@@ -2,6 +2,7 @@ package ticket
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -74,6 +75,80 @@ func (s *service) operatedTicket(ctx context.Context, p authz.Principal, id uuid
 // cancelled is answered as it is, with no audit row. reason is optional, at
 // most MaxCancelReason characters.
 func (s *service) CancelTicket(ctx context.Context, p authz.Principal, id uuid.UUID, reason string) (Ticket, error) {
+	return s.cancelByOperator(ctx, p, id, reason, false)
+}
+
+// CancelTicketTelling cancels the Ticket for its holder (holderCancel)
+// when p holds it, else for an operator (CancelTicket), who tells the holder
+// when notify (docs/ticket-status-mail.md). Someone else's Ticket is no
+// Ticket to a caller who may not read it (ErrNotFound,
+// kontenjan-iptal-hatirlatma 03); a reader who may not cancel (DK) is
+// refused (ErrForbidden).
+func (s *service) CancelTicketTelling(ctx context.Context, p authz.Principal, id uuid.UUID, reason string, notify bool) (Ticket, error) {
+	if p.ID != "" && p.Product == "" {
+		t, err := s.tickets.Get(ctx, id)
+		if err != nil {
+			return Ticket{}, err
+		}
+		if t.OwnerID != nil && t.OwnerID.String() == p.ID {
+			cancelled, err := holderCancel(ctx, s.tickets, s.events, t, time.Now())
+			if err != nil {
+				return Ticket{}, err
+			}
+			return s.withEvent(ctx, cancelled), nil
+		}
+	}
+	cancelled, err := s.cancelByOperator(ctx, p, id, reason, notify)
+	if errors.Is(err, ErrForbidden) {
+		if t, getErr := s.tickets.Get(ctx, id); getErr == nil && errors.Is(s.readable(ctx, p, t), ErrForbidden) {
+			return Ticket{}, ErrNotFound
+		}
+	}
+	return cancelled, err
+}
+
+// holderCancel is t's holder cancelling it themselves
+// (kontenjan-iptal-hatirlatma 03): an active Ticket until its Event starts,
+// a waitlisted one (leaving the list) until the Event ends
+// (HolderCancellable, else ErrCancelClosed); never one with a check-in or
+// of a Competition's Entrant. The holder is told while the status mails are
+// on, and an active Ticket's place goes to the waiting list. A Ticket
+// already cancelled is answered as it is. The caller has established that
+// the holder asks: the member's sign-in, or the ticket page's key.
+func holderCancel(ctx context.Context, tickets Store, events event.Store, t Ticket, now time.Time) (Ticket, error) {
+	if t.StatusOf() == StatusCancelled {
+		return t, nil
+	}
+	ev, err := events.Get(ctx, t.EventID)
+	if errors.Is(err, event.ErrNotFound) {
+		return Ticket{}, ErrNotFound
+	}
+	if err != nil {
+		return Ticket{}, err
+	}
+	if !HolderCancellable(ev, t, now) {
+		return Ticket{}, ErrCancelClosed
+	}
+	var cancelled Ticket
+	if store, ok := tickets.(CancelMailStore); ok {
+		cancelled, _, err = store.CancelTelling(ctx, t.ID, CancelledByHolder, "", true)
+	} else if store, ok := tickets.(StatusStore); ok {
+		cancelled, _, err = store.Cancel(ctx, t.ID, CancelledByHolder, "")
+	} else {
+		return Ticket{}, ErrStatusUnavailable
+	}
+	return cancelled, err
+}
+
+// HolderCancel is the holder's own cancellation on the stores, for the
+// ticket page (POST /v1/public/tickets/{key}/cancel): the key in the path
+// is the holder's right, as it is to read the Ticket (ADR 0082).
+func HolderCancel(ctx context.Context, tickets Store, events event.Store, t Ticket, now time.Time) (Ticket, error) {
+	return holderCancel(ctx, tickets, events, t, now)
+}
+
+// cancelByOperator is CancelTicket, telling the holder when notify.
+func (s *service) cancelByOperator(ctx context.Context, p authz.Principal, id uuid.UUID, reason string, notify bool) (Ticket, error) {
 	reason = strings.TrimSpace(reason)
 	if utf8.RuneCountInString(reason) > MaxCancelReason {
 		return Ticket{}, ErrInvalid
@@ -96,7 +171,12 @@ func (s *service) CancelTicket(ctx context.Context, p authz.Principal, id uuid.U
 	if err != nil {
 		return Ticket{}, err
 	}
-	cancelled, _, err := store.Cancel(ctx, id, CancelledByOperator, reason)
+	var cancelled Ticket
+	if telling, ok := store.(CancelMailStore); ok {
+		cancelled, _, err = telling.CancelTelling(ctx, id, CancelledByOperator, reason, notify)
+	} else {
+		cancelled, _, err = store.Cancel(ctx, id, CancelledByOperator, reason)
+	}
 	s.finishTicketAudit(ctx, record, err, 0)
 	if err != nil {
 		return Ticket{}, err
@@ -142,9 +222,16 @@ func (s *service) RestoreTicket(ctx context.Context, p authz.Principal, id uuid.
 // reopenIfCancelled reopens t when it is cancelled, for its holder
 // registering again (Member apply, Apply-for-other, Guest apply, the forms
 // report), under the Event's capacity (a): reopened reports it. A Ticket of
-// any other status is left.
+// any other status is left. The forms report (a.FormResponse set, by HTTP
+// or a core.forms event) reopens only a Ticket Forms' own decline
+// cancelled (CancelledByForm): the holder's own cancellation and an
+// operator's stand, and the report finds the Ticket as one already there,
+// with no mail.
 func (s *service) reopenIfCancelled(ctx context.Context, t Ticket, a Admission) (Ticket, bool, error) {
-	if t.StatusOf() != StatusCancelled || a.KeepCancelled {
+	if t.StatusOf() != StatusCancelled {
+		return t, false, nil
+	}
+	if a.FormResponse != uuid.Nil && t.CancelledBy != CancelledByForm {
 		return t, false, nil
 	}
 	var (

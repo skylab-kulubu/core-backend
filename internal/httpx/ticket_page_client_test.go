@@ -135,3 +135,34 @@ func TestTicketCheckInsBudgetIsPerKey(t *testing.T) {
 		t.Fatal("another key inherited the first one's budget")
 	}
 }
+
+// The holder's cancel from the page (kontenjan-iptal-hatirlatma 03) has a
+// small budget per client: the 11th request in a minute from one visitor
+// is 429, another visitor is still answered. Every answer is no-store.
+func TestTicketCancelBudgetIsPerClient(t *testing.T) {
+	t.Parallel()
+	app := ticketPageApp(t, siteProxies(t, "dokploy-traefik,tasks.site", "tasks.site"))
+	path := "/v1/public/tickets/" + ticketKey + "/cancel"
+	post := func(visitor string) (int, string) {
+		t.Helper()
+		request := httptest.NewRequest(fiber.MethodPost, path, nil)
+		request.Header.Set(fiber.HeaderXForwardedFor, visitor)
+		response, err := app.Test(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response.StatusCode, response.Header.Get(fiber.HeaderCacheControl)
+	}
+	for i := range handlers.TicketCancelsPerClientMinute {
+		status, cache := post("198.51.100.20")
+		if status != fiber.StatusNotFound || cache != "no-store" {
+			t.Fatalf("request %d: %d %q", i+1, status, cache)
+		}
+	}
+	if status, _ := post("198.51.100.20"); status != fiber.StatusTooManyRequests {
+		t.Fatalf("over the budget: status %d, want 429", status)
+	}
+	if status, _ := post("203.0.113.9"); status != fiber.StatusNotFound {
+		t.Fatalf("another visitor: status %d", status)
+	}
+}

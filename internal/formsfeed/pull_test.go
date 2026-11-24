@@ -116,11 +116,6 @@ func TestBackfillPullsEveryPageThroughTheTicketRule(t *testing.T) {
 	if len(h.reports) != 3 || h.reader.calls != 1 || h.reports[1].Guest == nil {
 		t.Fatalf("reports %+v reads %d", h.reports, h.reader.calls)
 	}
-	for _, r := range h.reports {
-		if !r.Pulled {
-			t.Fatalf("a pulled answer went to the rule unmarked: %+v", r)
-		}
-	}
 	if l.queries[0].ChangedSince != nil || len(q.cursors) != 1 || q.cursors[0] != "p2" {
 		t.Fatalf("queries %+v cursors %v", l.queries, q.cursors)
 	}
