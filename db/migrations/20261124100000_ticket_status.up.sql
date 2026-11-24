@@ -8,6 +8,12 @@
 -- Every Ticket already there is active (the column's default). The release
 -- before writes no status, so its inserts are active and it runs on this
 -- schema unchanged.
+--
+-- The checks and the index scan tickets under a lock: give up after 5s
+-- instead of queueing every Ticket read behind a long one (the release does
+-- not start, the one before keeps serving, the next start applies it).
+SET LOCAL lock_timeout = '5s';
+
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS status_changed_at TIMESTAMPTZ;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS waitlisted_at TIMESTAMPTZ;

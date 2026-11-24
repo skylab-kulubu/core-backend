@@ -14,6 +14,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 // On the database: a cancellation keeps the row with its status, drops the
@@ -214,5 +215,44 @@ func TestRegisteringAgainAndPublishingOnPostgres(t *testing.T) {
 	}
 	if _, ok := e.queued(t, gone.ID); ok {
 		t.Fatal("the cancelled Ticket was told")
+	}
+}
+
+// Erasure clears the operator's reason with the rest of the person's
+// Ticket data (member and guest alike); an Event whose only Tickets are
+// cancelled goes back to a draft.
+func TestCancelledTicketsOnErasureAndUnpublishOnPostgres(t *testing.T) {
+	e := newResendEnv(t)
+	ctx := context.Background()
+	holderID := uuid.New()
+	if _, _, err := user.NewService(e.users).Ensure(ctx, holderID, user.Profile{Email: "grace@example.com", FirstName: "Grace", LastName: "Hopper"}); err != nil {
+		t.Fatal(err)
+	}
+	member, err := e.svc.Apply(ctx, authz.Principal{ID: holderID.String()}, e.ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []uuid.UUID{member.ID, e.guest.ID} {
+		if _, err := e.svc.CancelTicket(ctx, weblabLead, id, "Grace Hopper aradı, gelemeyecek"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := e.users.RequestDeletion(ctx, holderID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.users.AnonymizeAccount(ctx, holderID, time.Now().UTC(), []string{"ada@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	var reasons int
+	if err := e.pool.QueryRow(ctx, `SELECT count(*) FROM tickets WHERE id = ANY($1) AND cancel_reason IS NOT NULL`,
+		[]uuid.UUID{member.ID, e.guest.ID}).Scan(&reasons); err != nil {
+		t.Fatal(err)
+	}
+	if reasons != 0 {
+		t.Fatalf("%d reasons kept after erasure", reasons)
+	}
+
+	if ok, err := e.events.Unpublish(ctx, e.ev.ID); err != nil || !ok {
+		t.Fatalf("unpublish with cancelled Tickets only: %v %v", ok, err)
 	}
 }

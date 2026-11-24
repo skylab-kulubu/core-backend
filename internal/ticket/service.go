@@ -975,6 +975,13 @@ func (s *service) GetByUserEvent(ctx context.Context, p authz.Principal, userID,
 	if err := s.readable(ctx, p, t); err != nil {
 		return Ticket{}, err
 	}
+	// "Is this person registered?": only an active Ticket says yes. sky-app
+	// shows "Kayıtlısın" on a 200 and hides the join button, so a cancelled
+	// (or waitlisted) Ticket answers 404 and the person may register again
+	// (docs/ticket-cancellation.md).
+	if !t.Active() {
+		return Ticket{}, ErrNotFound
+	}
 	return s.withEvent(ctx, t), nil
 }
 

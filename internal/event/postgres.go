@@ -1140,7 +1140,8 @@ func (s *PostgresStore) Publish(ctx context.Context, id uuid.UUID, by *uuid.UUID
 	// The draft's Tickets' Notifications, queued with the publication
 	// (Yusuf, 2026-11-22, K3): every Ticket the Event has now was written
 	// while it was a draft, since a published Event becomes a draft again
-	// only without Tickets. A row still queued is left as it is.
+	// only without active Tickets (a cancelled one stays cancelled and is
+	// not told). A row still queued is left as it is.
 	queued := int64(0)
 	if notifyTickets && s.notifyTickets.Load() {
 		tag, err := tx.Exec(ctx, `
@@ -1269,7 +1270,7 @@ func (s *PostgresStore) Unpublish(ctx context.Context, id uuid.UUID) (bool, erro
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE events e SET status = 'draft', updated_at = now()
 		WHERE e.id = $1 AND e.archived_at IS NULL AND e.status = 'published'
-			AND NOT EXISTS (SELECT 1 FROM tickets t WHERE t.event_id = e.id)
+			AND NOT EXISTS (SELECT 1 FROM tickets t WHERE t.event_id = e.id AND t.status = 'active')
 			AND NOT EXISTS (SELECT 1 FROM competitors c WHERE c.event_id = e.id AND c.withdrawn_at IS NULL)`, id)
 	if err != nil {
 		return false, err
@@ -1281,7 +1282,7 @@ func (s *PostgresStore) Unpublish(ctx context.Context, id uuid.UUID) (bool, erro
 	var published, tickets, competitors bool
 	err = s.pool.QueryRow(ctx, `
 		SELECT e.status = 'published',
-			EXISTS (SELECT 1 FROM tickets t WHERE t.event_id = e.id),
+			EXISTS (SELECT 1 FROM tickets t WHERE t.event_id = e.id AND t.status = 'active'),
 			EXISTS (SELECT 1 FROM competitors c WHERE c.event_id = e.id AND c.withdrawn_at IS NULL)
 		FROM events e WHERE e.id = $1 AND e.archived_at IS NULL`, id).Scan(&published, &tickets, &competitors)
 	if errors.Is(err, pgx.ErrNoRows) {

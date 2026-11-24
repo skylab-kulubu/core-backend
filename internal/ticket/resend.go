@@ -110,6 +110,11 @@ func (s *service) managedTicket(ctx context.Context, p authz.Principal, id uuid.
 	if !held(t) {
 		return Ticket{}, event.Event{}, ErrHolderErased
 	}
+	// A cancelled (or waitlisted) Ticket is not sent again nor given a new
+	// link: 409 ticket_cancelled / ticket_waitlisted, no audit row.
+	if refused := inactiveErr(t); refused != nil {
+		return Ticket{}, event.Event{}, refused
+	}
 	return t, ev, nil
 }
 

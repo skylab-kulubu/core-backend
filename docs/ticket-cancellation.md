@@ -13,7 +13,8 @@ decline (05) and the waiting list itself (06, 07) build on this.
 | `waitlisted` | on the Event's waiting list (ticket 06 writes it) | no (`409 ticket_waitlisted`; page QR/PDF `410`) | no |
 | `cancelled` | cancelled | no (`409 ticket_cancelled`; page QR/PDF `410`) | no |
 
-Columns (migration `20261124100000`): `status` (default `active`; every
+Columns (migration `20261124100000`, which gives up after a 5s
+`lock_timeout` rather than queue Ticket reads behind a long one): `status` (default `active`; every
 Ticket before the migration is active, and the release before writes active
 Tickets on the new schema), `status_changed_at`, `waitlisted_at`,
 `cancelled_at`, `cancelled_by` (`holder`, `operator`, `form`),
@@ -31,7 +32,15 @@ active ones (`status = 'active'`, not `<> 'cancelled'`, so the waiting list
 stays out too):
 
 - the Event's list (`GET /v1/events/{id}/tickets`, default), the holder's own
-  list (`GET /v1/tickets/me`, default) and the lookup (`GET /v1/tickets`);
+  list (`GET /v1/tickets/me`, default), the lookup (`GET /v1/tickets`) and
+  "is this person registered" (`GET /v1/tickets/user/{userId}/event/{eventId}`:
+  `404` for a cancelled or waitlisted Ticket, so sky-app, which shows
+  "Kayıtlısın" on a `200`, offers to join again);
+- the panel's resend and link renewal (`POST /v1/tickets/{id}/notification`,
+  `/access-key/rotate`): `409 ticket_cancelled` (`ticket_waitlisted`), no
+  audit row, no quota spent;
+- unpublishing (`event_has_tickets` counts active Tickets only: an Event
+  whose Tickets are all cancelled goes back to a draft);
 - the door: the search lists no other; every way in (scan, SkyPass, me,
   resolve by name, e-mail, person or code, the guest's own check-in, the
   Ticket QR) finds the Ticket and refuses it with `409 ticket_cancelled` or
@@ -50,7 +59,8 @@ stays out too):
 - the dashboard's counts (applications per Event and per day).
 
 Every status is seen by: erasure and retention (a cancelled Ticket is still
-personal data), the single Ticket reads (`GET /v1/tickets/{id}`, the panel's
+personal data; erasure also clears the operator's `cancel_reason`, which may
+name the person), the single Ticket reads (`GET /v1/tickets/{id}`, the panel's
 `?status=`), the ticket page (to say `ticket_cancelled`) and the
 re-registration below. Check-in counts need no filter: a Ticket with a
 check-in cannot be cancelled.

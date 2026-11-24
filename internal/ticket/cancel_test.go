@@ -312,7 +312,7 @@ func TestDoorRefusesACancelledTicket(t *testing.T) {
 	if _, err := e.svc.CheckInUser(ctx, weblabLead, e.sess.ID, e.holderID); !errors.Is(err, ticket.ErrTicketCancelled) {
 		t.Errorf("SkyPass: %v", err)
 	}
-	if _, err := e.svc.CheckInMe(ctx, e.holder, e.sess.ID); !errors.Is(err, ticket.ErrTicketCancelled) {
+	if _, err := e.svc.CheckInMe(ctx, e.holder, e.sess.ID, ""); !errors.Is(err, ticket.ErrTicketCancelled) {
 		t.Errorf("me: %v", err)
 	}
 	if _, err := e.svc.ResolveAndCheckIn(ctx, weblabLead, e.sess.ID, ticket.DoorCheckInTarget{PersonID: &e.holderID}); !errors.Is(err, ticket.ErrTicketCancelled) {
@@ -456,4 +456,33 @@ func TestRegisteringAgainReopensACancelledTicket(t *testing.T) {
 		}
 		check(t, e, before.ID, before)
 	})
+}
+
+// "Is this person registered?" (GET /v1/tickets/user/{u}/event/{e}) says no
+// for a cancelled Ticket, so sky-app offers to join again; a cancelled
+// Ticket is not sent again nor given a new link.
+func TestCancelledTicketIsNoRegistrationAndNoResend(t *testing.T) {
+	ctx := context.Background()
+	e := newCancelEnv(t)
+	if got, err := e.svc.GetByUserEvent(ctx, e.holder, e.holderID, e.ev.ID); err != nil || got.ID != e.member.ID {
+		t.Fatalf("active: %+v %v", got, err)
+	}
+	e.cancel(t, e.member.ID)
+	for name, p := range map[string]authz.Principal{"the holder": e.holder, "the Leader": weblabLead} {
+		if _, err := e.svc.GetByUserEvent(ctx, p, e.holderID, e.ev.ID); !errors.Is(err, ticket.ErrNotFound) {
+			t.Errorf("cancelled, asked by %s: %v", name, err)
+		}
+	}
+	if _, err := e.svc.ResendTicket(ctx, weblabLead, e.member.ID, ""); !errors.Is(err, ticket.ErrTicketCancelled) {
+		t.Errorf("resend: %v", err)
+	}
+	if _, _, err := e.svc.RenewTicketLink(ctx, weblabLead, e.member.ID, false, ""); !errors.Is(err, ticket.ErrTicketCancelled) {
+		t.Errorf("renew: %v", err)
+	}
+	if _, err := e.svc.Apply(ctx, e.holder, e.ev.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := e.svc.GetByUserEvent(ctx, e.holder, e.holderID, e.ev.ID); err != nil || got.ID != e.member.ID {
+		t.Fatalf("registered again: %+v %v", got, err)
+	}
 }

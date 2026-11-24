@@ -2,7 +2,9 @@ package migrate_test
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
@@ -127,5 +129,55 @@ func TestTicketStatusMigration(t *testing.T) {
 	}
 	if active != 2 {
 		t.Fatalf("up again: %d of 2 active", active)
+	}
+}
+
+// A transaction holding a lock on tickets makes the migration give up after
+// its lock_timeout instead of queueing every Ticket read behind it: the
+// release does not start, the one before keeps serving, and the next start
+// applies it.
+func TestTicketStatusMigrationGivesUpOnAHeldLock(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, readDown(t, ticketStatusDown)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE version = `+ticketStatusVersion); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx)
+	if _, err := holder.Exec(ctx, `LOCK TABLE tickets IN ACCESS SHARE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	err = migrate.Apply(ctx, pool)
+	if err == nil || !strings.Contains(err.Error(), "lock timeout") {
+		t.Fatalf("apply under a held lock = %v", err)
+	}
+	if waited := time.Since(started); waited > 30*time.Second {
+		t.Fatalf("waited %v", waited)
+	}
+	var columns int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'tickets' AND column_name = 'status'`).Scan(&columns); err != nil {
+		t.Fatal(err)
+	}
+	if recorded(t, pool, ticketStatusVersion) || columns != 0 {
+		t.Fatal("a timed-out migration left something behind")
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if !recorded(t, pool, ticketStatusVersion) {
+		t.Fatal("not applied once the lock was gone")
 	}
 }
