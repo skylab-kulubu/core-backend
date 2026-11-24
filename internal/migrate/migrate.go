@@ -1833,6 +1833,13 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
 			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.promote%'
 		)`,
+	// Forms' mails that core sends (docs/forms-mail.md): the queue and its
+	// two indexes.
+	20261124170000: `
+		SELECT 1
+		WHERE to_regclass('public.forms_mail_queue') IS NOT NULL
+		  AND to_regclass('public.forms_mail_queue_due_idx') IS NOT NULL
+		  AND to_regclass('public.forms_mail_queue_user_idx') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
