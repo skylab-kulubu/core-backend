@@ -1436,17 +1436,21 @@ const skyMailTimeout = 15 * time.Second
 // token with core's own service account. The token request uses the same
 // client as the post: without one, mail.ClientCredentials falls back to
 // http.DefaultClient, which never gives up, and a hung mail would hold the
-// user sync's pass (and so its lock) or the request that sent it. An unset
-// SKYMAIL_URL stops core here: it has no default.
+// user sync's pass (and so its lock) or the request that sent it. SKYMAIL_URL
+// has no default: unset, mail is off, startup and every attempt log
+// mail.URLMissingLine and skylab_skymail_url_missing reads 1. Core keeps
+// running.
 func newSkyMail(base, realm, clientID, clientSecret, skyMailURL string, timeout time.Duration) *mail.SkyMail {
 	origin, err := mail.APIOrigin(skyMailURL)
-	if err != nil {
-		log.Fatal(err)
+	missing := err != nil
+	if missing && mail.MarkURLMissing() {
+		log.Print(mail.URLMissingLine)
 	}
 	client := &http.Client{Timeout: timeout}
 	return &mail.SkyMail{
-		BaseURL: origin,
-		HTTP:    client,
+		BaseURL:    origin,
+		URLMissing: missing,
+		HTTP:       client,
 		Tokens: mail.ClientCredentials{
 			TokenURL:     base + "/realms/" + realm + "/protocol/openid-connect/token",
 			ClientID:     clientID,

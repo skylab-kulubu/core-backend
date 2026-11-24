@@ -108,7 +108,7 @@ type NotificationSource struct {
 // notification waits in core's queue until SkyMail has taken it. A refusal is
 // warned about in the log with kind and no recipient.
 func (s *SkyMail) Notify(ctx context.Context, kind, idempotencyKey string, n Notification) error {
-	if s == nil || strings.TrimSpace(s.BaseURL) == "" {
+	if s.noBaseURL() {
 		return ErrTemplateUnconfigured
 	}
 	if n.ExpiresAt != nil && !n.ExpiresAt.After(time.Now()) {
@@ -205,7 +205,7 @@ func (s *SkyMail) tellHolder(ctx context.Context, kind, typ, idempotencyKey stri
 			Attachments: attachments,
 		})
 	}
-	if s == nil || strings.TrimSpace(s.BaseURL) == "" {
+	if s.noBaseURL() {
 		return ErrTemplateUnconfigured
 	}
 	token, err := s.Tokens.Token(ctx)

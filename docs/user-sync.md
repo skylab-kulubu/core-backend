@@ -103,7 +103,7 @@ SkyMail since the cutoff, and the sync then sends.
 | `USER_SYNC_INTERVAL` | `5m` | Time between passes, a Go duration from `1m` to `24h`. |
 | `WELCOME_MAIL_SINCE` | `2026-10-19T00:00:00+03:00` | RFC 3339. Accounts Keycloak created before it get no Welcome mail. |
 
-The Welcome mail also needs SkyMail: `SKYMAIL_URL` (required, no default) and a
+The Welcome mail also needs SkyMail: `SKYMAIL_URL` (no default: unset, mail is off and every attempt logs `ERROR skymail_url_missing`) and a
 welcome template key or id ([skymail-templates.md](skymail-templates.md)).
 Without them the sync still opens rows and assigns Sky numbers, marks nothing
 and says so at startup.

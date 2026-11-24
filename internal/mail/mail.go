@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 )
@@ -50,12 +51,16 @@ const (
 	maxDiagnosticCode = 64
 )
 
-// ErrAPIOriginUnset stops core at startup when it would send mail with no
-// SkyMail address. There is no default: the old one, production's public
-// SkyMail, took a sandbox core's mail to a SkyMail that refuses its token,
-// and the mail was lost with no other trace (ADR-0016: every service names
-// the services it calls).
-var ErrAPIOriginUnset = errors.New("SKYMAIL_URL is not set: name this environment's SkyMail API (production and sandbox each have their own)")
+// ErrAPIOriginUnset is an empty SKYMAIL_URL. There is no default: the old
+// one, production's public SkyMail, took a sandbox core's mail to a SkyMail
+// that refuses its token, and the mail was lost with no other trace
+// (ADR-0016: every service names the services it calls). Core does not stop
+// for it: mail is off, and every attempt says so (URLMissingLine).
+var ErrAPIOriginUnset = errors.New("SKYMAIL_URL is not set")
+
+// URLMissingLine is the log line for an unset SKYMAIL_URL, at startup and at
+// every mail attempt. The release wizard looks for it and for the gauge.
+const URLMissingLine = "ERROR skymail_url_missing"
 
 // APIOrigin is SKYMAIL_URL without its trailing slash, or ErrAPIOriginUnset
 // when it is empty.
@@ -65,6 +70,42 @@ func APIOrigin(raw string) (string, error) {
 		return "", ErrAPIOriginUnset
 	}
 	return strings.TrimRight(u, "/"), nil
+}
+
+var urlMissing atomic.Bool
+
+// MarkURLMissing records that this core was started without SKYMAIL_URL:
+// skylab_skymail_url_missing reads 1 from then on. It is true only the first
+// time, so startup says it once however many clients are built.
+func MarkURLMissing() bool { return urlMissing.CompareAndSwap(false, true) }
+
+// URLMissingPrometheus is the skylab_skymail_url_missing gauge: 1 when core
+// runs with mail off because SKYMAIL_URL is unset, 0 otherwise.
+func URLMissingPrometheus() string {
+	value := "0"
+	if urlMissing.Load() {
+		value = "1"
+	}
+	return "# TYPE skylab_skymail_url_missing gauge\nskylab_skymail_url_missing " + value + "\n"
+}
+
+// noBaseURL reports whether s cannot send for want of an address. A client
+// built without SKYMAIL_URL (URLMissing) says so on every attempt.
+func (s *SkyMail) noBaseURL() bool {
+	if s == nil {
+		return true
+	}
+	if strings.TrimSpace(s.BaseURL) != "" {
+		return false
+	}
+	if s.URLMissing {
+		logger := s.Logger
+		if logger == nil {
+			logger = log.Default()
+		}
+		logger.Print(URLMissingLine)
+	}
+	return true
 }
 
 type TokenSource interface {
@@ -78,7 +119,10 @@ func (s StaticToken) Token(context.Context) (string, error) {
 }
 
 type SkyMail struct {
-	BaseURL                string
+	BaseURL string
+	// URLMissing marks a client built without SKYMAIL_URL: mail is off and
+	// every attempt logs URLMissingLine.
+	URLMissing             bool
 	TemplateID             uuid.UUID
 	TemplateKey            string
 	CertificateTemplateID  uuid.UUID
@@ -197,7 +241,7 @@ func (s *SkyMail) WarnUnconfiguredTemplates() {
 // must not fail the request that triggered it. The refusal goes to the log
 // instead of being dropped, which is the whole point of this path.
 func (s *SkyMail) send(ctx context.Context, kind string, tpl template, recipient, fullName string, vars map[string]string) {
-	if s == nil || strings.TrimSpace(s.BaseURL) == "" || !tpl.configured() {
+	if s.noBaseURL() || !tpl.configured() {
 		return
 	}
 	token, err := s.Tokens.Token(ctx)
