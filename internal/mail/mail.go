@@ -79,14 +79,14 @@ var urlMissing atomic.Bool
 // time, so startup says it once however many clients are built.
 func MarkURLMissing() bool { return urlMissing.CompareAndSwap(false, true) }
 
-// URLMissingPrometheus is the skylab_skymail_url_missing gauge: 1 when core
-// runs with mail off because SKYMAIL_URL is unset, 0 otherwise.
+// URLMissingPrometheus is the skylab_skymail_url_missing gauge, written
+// only while it is 1: core runs with mail off because SKYMAIL_URL is unset.
+// A core with an address writes nothing, so no line means 0.
 func URLMissingPrometheus() string {
-	value := "0"
-	if urlMissing.Load() {
-		value = "1"
+	if !urlMissing.Load() {
+		return ""
 	}
-	return "# TYPE skylab_skymail_url_missing gauge\nskylab_skymail_url_missing " + value + "\n"
+	return "# TYPE skylab_skymail_url_missing gauge\nskylab_skymail_url_missing 1\n"
 }
 
 // noBaseURL reports whether s cannot send for want of an address. A client

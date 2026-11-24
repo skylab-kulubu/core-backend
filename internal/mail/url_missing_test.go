@@ -39,13 +39,13 @@ func TestMailWithoutURLSaysSoOnEveryAttempt(t *testing.T) {
 }
 
 func TestURLMissingGauge(t *testing.T) {
-	if got := URLMissingPrometheus(); got != "# TYPE skylab_skymail_url_missing gauge\nskylab_skymail_url_missing 0\n" {
+	if got := URLMissingPrometheus(); got != "" {
 		t.Fatalf("before %q", got)
 	}
 	if !MarkURLMissing() || MarkURLMissing() {
 		t.Fatal("MarkURLMissing is true only the first time")
 	}
-	if got := URLMissingPrometheus(); !strings.HasSuffix(got, "skylab_skymail_url_missing 1\n") {
+	if got := URLMissingPrometheus(); got != "# TYPE skylab_skymail_url_missing gauge\nskylab_skymail_url_missing 1\n" {
 		t.Fatalf("after %q", got)
 	}
 }
