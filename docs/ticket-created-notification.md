@@ -109,6 +109,66 @@ Ticket insert ──(same statement)──▶ ticket_notifications ──▶ wor
   core; once core sends them, `TicketUrl` and `TicketCode` become the
   contract's required variables (CONTEXT, Required variable).
 
+## The PDF ticket with the mail (`TICKET_PDF_ATTACHMENT`)
+
+bilet-qr-ve-pdf ticket 09; ADR 0082 decision 6; SkyMail README "Posta eki"
+(skymail-backend #136). While `TICKET_PDF_ATTACHMENT=on` the worker draws
+the Ticket's PDF ([ticket-page.md](ticket-page.md), the one
+`GET /v1/public/tickets/<key>/pdf` gives) just before each send, and it goes
+with the e-mail as a Mail attachment, to a member and a guest alike:
+
+```json
+"attachments": [{"filename": "bilet-kodlama-gecesi.pdf", "content_type": "application/pdf", "content_base64": "JVBERi0x…"}]
+```
+
+- In the member's `POST /v1/notifications` (one recipient, as always) and
+  in the guest's `POST /v1/mail_tasks/single`. Only the e-mail carries it;
+  the inbox item does not.
+- The file name is the ticket page's: `bilet-<the Event's name in ASCII,
+  Turkish letters as their Latin ones>.pdf` (`ticketpage.FileName`), never
+  the holder's name.
+- **Gotenberg failing or slower than 2 minutes:** the mail goes **without**
+  the PDF; its link, QR and code are in it anyway. The rest of that pass
+  sends without the PDF too, so a Gotenberg down holds no mail; the next
+  pass (10 seconds later) tries Gotenberg again. The PDF waits for one of
+  the ticket page's two render slots for at most 20 seconds, like the
+  public route.
+- **Over 512 KB** (SkyMail's bound; the PDF is made to stay under it): the
+  mail goes without it and the log has one line naming the Event, never
+  the holder: `ticket notification: the PDF of event <id> is 530 KB, over
+  SkyMail's 512 KB; the mail goes without it`.
+- **SkyMail refusing the body with the file** (`400 attachment.*`, or any
+  `400`/`422`): the same mail goes again at once without it, under the same
+  key (a refused request leaves no key at SkyMail).
+- Each of these counts in the pass's line as `pdf_skipped`.
+- **Retries:** a retry draws the PDF again (its bytes differ: the time it
+  was drawn) under the **same** Idempotency-Key. The file is not part of
+  SkyMail's request digest, so the retry is SkyMail's replay and the file
+  of the first try is the one that goes.
+- **The lease:** with the PDF on, a pass holds its rows for 5 minutes
+  instead of 2 and starts a row only while 2 minutes (the PDF) and one more
+  (the send) are left of it; the rows not started wait for the lease to run
+  out and are taken again, by this core or another. No other core takes a
+  row this one is still sending.
+- **"Bileti gönder" / "Bileti yeniden gönder"** (`POST
+  /v1/tickets/{id}/notification`) and "Bağlantıyı yenile" queue the row
+  again ([ticket-resend.md](ticket-resend.md)): the same worker sends it, so
+  it carries the PDF too, under its `…:r<n>` key.
+- **Keeping:** core keeps no PDF; SkyMail keeps the file only until the
+  mail's outcome is written (its README, "Posta eki").
+
+Turning it on: SkyMail with attachment support in production (#136, the
+23 November 2026 release), Gotenberg reachable (`GOTENBERG_URL`), then
+`TICKET_PDF_ATTACHMENT=on` in core's environment (Dokploy, not a secret)
+and a redeploy. The startup line then ends `…, PDF attachment on` (`…, PDF
+attachment off` while it is off; `TICKET_PDF_ATTACHMENT is on but there is
+no Gotenberg` without a renderer). The first week after, look at the bounce
+count of the ticket mail (ADR 0073 report).
+
+Rollback: `TICKET_PDF_ATTACHMENT=off` (or unset) and a redeploy: the mail
+goes without the file, as before. Nothing is stored, nothing to migrate; the
+previous image ignores the switch.
+
 ## Sending it again
 
 The panel sends a Ticket's mail again ("Bileti yeniden gönder", and with
@@ -138,7 +198,7 @@ key stays `…:v1`.
 Each pass that did something logs one line of counts, never a person:
 
 ```text
-ticket notification: 3 sent, 1 dropped, 0 refused by SkyMail, 0 given up, 0 tried again later, 0 guest mails unanswered and not tried again
+ticket notification: 3 sent, 1 dropped, 0 refused by SkyMail, 0 given up, 0 tried again later, 0 guest mails unanswered and not tried again, 0 pdf_skipped
 ```
 
 ## Erasure
@@ -158,7 +218,9 @@ also goes with its Ticket (`ON DELETE CASCADE`).
    a form that writes a Ticket.
 4. `TICKET_CREATED_NOTIFICATION=on`; the startup line reads
    `ticket notification: on (event.ticket-created), ticket page on` with
-   `TICKET_PAGE_URL` set, `… no ticket page (TICKET_PAGE_URL unset)` without.
+   `TICKET_PAGE_URL` set, `… no ticket page (TICKET_PAGE_URL unset)` without,
+   each ending `, PDF attachment on` or `, PDF attachment off`
+   (`TICKET_PDF_ATTACHMENT`, above).
 
 Rollback: `TICKET_CREATED_NOTIFICATION=off` (or unset). The rows already
 queued stay; turned on again within a day they are sent, later they are given

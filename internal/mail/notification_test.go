@@ -44,7 +44,7 @@ func TestTicketCreatedForAMemberPostsANotification(t *testing.T) {
 	sub := uuid.New()
 	end := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
 	err := sky.TicketCreated(context.Background(), "core:event.ticket-created:x:v1", TicketHolder{Sub: sub, Email: "unused@example.com"},
-		map[string]string{"EventName": "Gece"}, NotificationSource{Kind: "ticket", Ref: "x"}, &end)
+		map[string]string{"EventName": "Gece"}, NotificationSource{Kind: "ticket", Ref: "x"}, &end, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestTicketCreatedForAGuestPostsTheTemplateByAddress(t *testing.T) {
 	srv, got := notificationServer(t, http.StatusCreated, `{}`)
 	sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok")}
 	if err := sky.TicketCreated(context.Background(), "k", TicketHolder{Email: "can@example.com", FullName: "Can Er"},
-		map[string]string{"EventName": "Gece"}, NotificationSource{Kind: "ticket", Ref: "x"}, nil); err != nil {
+		map[string]string{"EventName": "Gece"}, NotificationSource{Kind: "ticket", Ref: "x"}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	c := (*got)[0]
@@ -135,7 +135,7 @@ func TestTicketCreatedForAGuestIsNotTriedAgainWhenNoAnswerCame(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), Logger: log.New(io.Discard, "", 0)}
-	err := sky.TicketCreated(context.Background(), "k", TicketHolder{Email: "can@example.com"}, nil, NotificationSource{Kind: "ticket", Ref: "x"}, nil)
+	err := sky.TicketCreated(context.Background(), "k", TicketHolder{Email: "can@example.com"}, nil, NotificationSource{Kind: "ticket", Ref: "x"}, nil, nil)
 	if !errors.Is(err, ErrMaybeDelivered) {
 		t.Fatalf("err %v, want ErrMaybeDelivered", err)
 	}
@@ -145,7 +145,7 @@ func TestTicketCreatedForAGuestIsNotTriedAgainWhenNoAnswerCame(t *testing.T) {
 	url := closed.URL
 	closed.Close()
 	sky = &SkyMail{BaseURL: url, Tokens: StaticToken("tok"), Logger: log.New(io.Discard, "", 0)}
-	err = sky.TicketCreated(context.Background(), "k", TicketHolder{Email: "can@example.com"}, nil, NotificationSource{Kind: "ticket", Ref: "x"}, nil)
+	err = sky.TicketCreated(context.Background(), "k", TicketHolder{Email: "can@example.com"}, nil, NotificationSource{Kind: "ticket", Ref: "x"}, nil, nil)
 	var refused *SendError
 	if errors.Is(err, ErrMaybeDelivered) || !errors.As(err, &refused) || refused.Status != 0 {
 		t.Fatalf("err %v, want a SendError that may be tried again", err)
@@ -216,6 +216,52 @@ func TestNotifyTakesAnUnknownTypeAsOneToTryAgain(t *testing.T) {
 		var refused *SendError
 		if !errors.As(err, &refused) || refused.Status != http.StatusUnprocessableEntity || refused.Permanent() != permanent {
 			t.Fatalf("%s: err %v, want permanent=%v", answer, err, permanent)
+		}
+	}
+}
+
+// The Ticket's PDF goes as SkyMail's Mail attachment (README "Posta eki"):
+// filename, content_type and standard base64, with the Notification of a
+// member and with a guest's /single alike, under the same key.
+func TestTicketCreatedCarriesThePDF(t *testing.T) {
+	pdf := []byte("%PDF-1.7 bilet")
+	att := []Attachment{PDFAttachment("bilet-kodlama-gecesi.pdf", pdf)}
+	want := map[string]any{"filename": "bilet-kodlama-gecesi.pdf", "content_type": "application/pdf", "content_base64": "JVBERi0xLjcgYmlsZXQ="}
+	for name, holder := range map[string]TicketHolder{"member": {Sub: uuid.New()}, "guest": {Email: "can@example.com", FullName: "Can Er"}} {
+		t.Run(name, func(t *testing.T) {
+			srv, got := notificationServer(t, http.StatusCreated, `{}`)
+			sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok")}
+			if err := sky.TicketCreated(context.Background(), "core:event.ticket-created:x:v1", holder, map[string]string{"EventName": "Gece"}, NotificationSource{Kind: "ticket", Ref: "x"}, nil, att); err != nil {
+				t.Fatal(err)
+			}
+			files, _ := (*got)[0].body["attachments"].([]any)
+			if len(files) != 1 {
+				t.Fatalf("attachments %v, want one", (*got)[0].body["attachments"])
+			}
+			file := files[0].(map[string]any)
+			if len(file) != len(want) {
+				t.Fatalf("attachment %v, want %v", file, want)
+			}
+			for k, v := range want {
+				if file[k] != v {
+					t.Fatalf("attachment[%s] = %v, want %v", k, file[k], v)
+				}
+			}
+		})
+	}
+}
+
+// Without a file the body is the one of before: no attachments field, so a
+// key already used keeps its request digest.
+func TestTicketCreatedWithoutAFileSendsNoAttachmentsField(t *testing.T) {
+	for name, holder := range map[string]TicketHolder{"member": {Sub: uuid.New()}, "guest": {Email: "can@example.com"}} {
+		srv, got := notificationServer(t, http.StatusCreated, `{}`)
+		sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok")}
+		if err := sky.TicketCreated(context.Background(), "k", holder, nil, NotificationSource{Kind: "ticket", Ref: "x"}, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := (*got)[0].body["attachments"]; ok {
+			t.Fatalf("%s: attachments sent without a file", name)
 		}
 	}
 }
