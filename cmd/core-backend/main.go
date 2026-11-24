@@ -900,6 +900,9 @@ func main() {
 		}
 		sky.TemplateKey = templateKey(os.LookupEnv, "SKYMAIL_WELCOME_TEMPLATE_KEY", mail.DefaultWelcomeTemplateKey)
 		sky.CertificateTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_CERTIFICATE_TEMPLATE_KEY", mail.DefaultCertificateTemplateKey)
+		// The publisher's mail when an Event's attendance closes by itself
+		// (docs/certificate-rule.md); an empty key turns it off.
+		sky.CertificateAutoFinalizedTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_CERTIFICATE_AUTO_FINALIZED_TEMPLATE_KEY", mail.DefaultCertificateAutoFinalizedTemplateKey)
 		membershipTemplateKeys(sky, os.LookupEnv)
 		if raw := os.Getenv("SKYMAIL_WELCOME_TEMPLATE_ID"); raw != "" {
 			tid, err := uuid.Parse(raw)
@@ -987,8 +990,6 @@ func main() {
 	} else {
 		log.Printf("ticket page: on, closes %s after the Event", ticketPageConfig.Grace)
 	}
-	worker("ticket notification", startTicketCreatedNotification(workers, ticketNotificationOn, tickets, ticketnotify.NewPostgresQueue(pool), events, users, sky,
-		ticketPageConfig, os.Getenv("PUBLIC_API_ORIGIN"), log.Printf))
 	// A published Event's new time or place (docs/event-updated-notification.md):
 	// SkyMail tells its Ticket holders by inbox and e-mail.
 	eventUpdatedOn, err := eventUpdatedNotificationOn(os.Getenv)
@@ -1028,6 +1029,21 @@ func main() {
 		&ticketpage.MediaImages{Media: mediaStore, Blobs: blobs},
 		ticketpage.Config{Page: ticketPageConfig, APIOrigin: os.Getenv("PUBLIC_API_ORIGIN")})
 	ticketPage.Entries = tickets
+	// The Ticket's PDF with its mail (TICKET_PDF_ATTACHMENT): the ticket
+	// page's PDF, drawn by the worker just before each send.
+	ticketPDFAttachment, err := ticketPDFAttachmentOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var ticketMailPDF ticketnotify.PDFs
+	switch {
+	case ticketPDFAttachment && ticketPDF == nil:
+		log.Printf("ticket notification: PDF attachment off (TICKET_PDF_ATTACHMENT is on but there is no Gotenberg)")
+	case ticketPDFAttachment:
+		ticketMailPDF = ticketPage
+	}
+	worker("ticket notification", startTicketCreatedNotification(workers, ticketNotificationOn, tickets, ticketnotify.NewPostgresQueue(pool), events, users, sky,
+		ticketPageConfig, os.Getenv("PUBLIC_API_ORIGIN"), ticketMailPDF, log.Printf))
 	var eventMapMetrics interface{ Prometheus() string }
 	mapRegions := mapregion.NewPostgresStore(pool)
 	if mapWorker := startEventMaps(workers, worker, render, publicBlobs, mediaStore, mediaPurposes, decodeBudget, mapRegions); mapWorker != nil {
@@ -1046,6 +1062,14 @@ func main() {
 	worker("certificate issuance worker", certificate.MaintainIssuance(workers, certSvc, 2*time.Second, 10, func(err error) {
 		log.Printf("certificate issuance worker: %v", err)
 	}))
+	// Automatic attendance finalization (docs/certificate-rule.md): every
+	// minute, the Events whose last live Session ended an hour ago close
+	// their attendance and queue their certificates. One replica plans at a
+	// time (an advisory lock).
+	worker("certificate auto finalize", certificate.MaintainAutoFinalize(workers, certSvc, time.Minute, func(err error) {
+		log.Printf("certificate auto finalize: %v", err)
+	}))
+	certificateMetrics, _ := certSvc.(interface{ Prometheus() string })
 	var lists mail.Lists
 	mailSnapshots := eventmail.NewPostgresSnapshotStore(pool)
 	if sky != nil {
@@ -1237,6 +1261,7 @@ func main() {
 		MediaDecodeMetrics:        decodeBudget,
 		MemoryMetrics:             memory,
 		EventMapMetrics:           eventMapMetrics,
+		CertificateMetrics:        certificateMetrics,
 		MapRegions:                &mapregion.Service{Store: mapRegions, Authz: az, Address: media.ConfiguredAddresses().Object},
 	})
 

@@ -23,6 +23,9 @@ type MemoryStore struct {
 	batches     map[uuid.UUID]Batch
 	jobs        map[uuid.UUID]Job
 	finalizedAt map[uuid.UUID]time.Time
+	// finalizedSource is who closed each attendance: FinalizedManual or
+	// FinalizedAuto.
+	finalizedSource map[uuid.UUID]string
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -30,7 +33,7 @@ func NewMemoryStore() *MemoryStore {
 		byID: make(map[uuid.UUID]record), templates: make(map[uuid.UUID]Template),
 		versions: make(map[uuid.UUID]TemplateVersion), bindings: make(map[string]Binding),
 		batches: make(map[uuid.UUID]Batch), jobs: make(map[uuid.UUID]Job),
-		finalizedAt: make(map[uuid.UUID]time.Time),
+		finalizedAt: make(map[uuid.UUID]time.Time), finalizedSource: make(map[uuid.UUID]string),
 	}
 }
 
