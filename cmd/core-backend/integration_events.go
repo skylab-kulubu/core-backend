@@ -54,7 +54,7 @@ func startEvents(ctx context.Context, pool *pgxpool.Pool, getenv func(string) st
 		}
 		consumerStopped = consumer.Run(ctx)
 	} else if forms != nil {
-		log.Printf("integration events: %s=true does nothing while %s=false", formsEventsEnv, events.EnabledEnv)
+		log.Printf("integration events: %s=true reads no %s while %s=false; the pulls from Forms run (docs/form-pulls.md)", formsEventsEnv, formsfeed.Queue, events.EnabledEnv)
 	}
 	log.Printf("integration events: %s", config)
 	done := make(chan struct{})

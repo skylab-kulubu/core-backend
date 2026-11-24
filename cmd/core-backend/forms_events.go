@@ -14,11 +14,13 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
 
-// formsEventsEnv turns the core.forms consumer on with true, while
-// EVENTS_ENABLED=true (docs/integration-events.md "core.forms"). Off (the
-// default), core does not read core.forms and its events wait in the queue:
-// the switch is how ops opens Forms' events after Forms publishes them,
-// without a new image (Yusuf, 2026-11-24).
+// formsEventsEnv is the one switch of Forms' integration (Yusuf,
+// 2026-11-24): true reads core.forms while EVENTS_ENABLED=true
+// (docs/integration-events.md "core.forms") and runs the pulls from Forms'
+// list, the organizer's backfill and the daily catch-up
+// (docs/form-pulls.md). Off (the default), core does not read core.forms
+// (its events wait in the queue), pulls nothing and answers the backfill
+// 503: ops opens Forms' integration after Forms ships, without a new image.
 const formsEventsEnv = "EVENTS_FORMS_ENABLED"
 
 // formsEventsEnabled reads formsEventsEnv: true, or false/unset. Any other
@@ -102,8 +104,8 @@ func formsEventsRecorder(getenv func(string) string, client *formsfeed.Client, r
 }
 
 // formsClientFromEnv is newFormsClient for startup: an address that does
-// not read warns and leaves Forms' reads off (the pulls, and core.forms,
-// which then stops core if it is on), as the tracking withdrawals do.
+// not read warns and leaves the client out (with EVENTS_FORMS_ENABLED=true
+// core then stops), as the tracking withdrawals do.
 func formsClientFromEnv(getenv func(string) string, base, realm string) *formsfeed.Client {
 	client, from, err := newFormsClient(getenv, base, realm)
 	if err != nil {
@@ -112,15 +114,15 @@ func formsClientFromEnv(getenv func(string) string, base, realm string) *formsfe
 		return nil
 	}
 	if client == nil {
-		log.Printf("forms reads: off (no Forms internal address or no core service account); backfill answers 503 forms_pull_off")
+		log.Printf("forms reads: no Forms internal address or no core service account")
 		return nil
 	}
-	log.Printf("forms reads: on, Forms' address from %s; daily catch-up and backfill pulls run", from)
+	log.Printf("forms reads: Forms' address from %s", from)
 	return client
 }
 
 // formsMetrics is the answers' counters (events and pulls share one
-// recorder) and the pulls'.
+// recorder) and the pulls', with EVENTS_FORMS_ENABLED=true.
 type formsMetrics struct {
 	recorder *formsfeed.Recorder
 	puller   *formsfeed.Puller

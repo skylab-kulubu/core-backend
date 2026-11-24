@@ -3,6 +3,7 @@ package formsfeed
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -21,12 +22,18 @@ type memQueue struct {
 	dropped    int
 	planned    [][]uuid.UUID
 	backfilled map[uuid.UUID]bool
+	asked      map[uuid.UUID]time.Time
 }
 
-func (q *memQueue) Backfill(_ context.Context, formID, eventID, _ uuid.UUID, _ time.Time) (bool, error) {
+func (q *memQueue) Backfill(_ context.Context, formID, eventID, _ uuid.UUID, now time.Time) (bool, error) {
 	if q.backfilled == nil {
 		q.backfilled = map[uuid.UUID]bool{}
+		q.asked = map[uuid.UUID]time.Time{}
 	}
+	if last, ok := q.asked[formID]; ok && now.Sub(last) < BackfillCooldown {
+		return false, &BackfillCooldownError{RetryAfter: last.Add(BackfillCooldown).Sub(now)}
+	}
+	q.asked[formID] = now
 	if q.backfilled[formID] {
 		return false, nil
 	}
@@ -43,7 +50,7 @@ func (q *memQueue) Claim(context.Context, time.Time) (PullJob, bool, error) {
 	return j, true, nil
 }
 
-func (q *memQueue) SaveCursor(_ context.Context, _ uuid.UUID, cursor string) error {
+func (q *memQueue) SaveCursor(_ context.Context, _ uuid.UUID, cursor string, _ time.Time) error {
 	q.cursors = append(q.cursors, cursor)
 	return nil
 }
@@ -82,7 +89,7 @@ func (l *pageLister) List(_ context.Context, _ uuid.UUID, q ListQuery) (Page, er
 
 var pullNow = time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
 
-func newPuller(h *harness, q *memQueue, l *pageLister) *Puller {
+func newPuller(h *harness, q *memQueue, l Lister) *Puller {
 	return &Puller{Queue: q, Forms: l, Recorder: h.rec, Events: h.rec.Events, Now: func() time.Time { return pullNow }, Logf: h.rec.Logf}
 }
 
@@ -109,6 +116,11 @@ func TestBackfillPullsEveryPageThroughTheTicketRule(t *testing.T) {
 	if len(h.reports) != 3 || h.reader.calls != 1 || h.reports[1].Guest == nil {
 		t.Fatalf("reports %+v reads %d", h.reports, h.reader.calls)
 	}
+	for _, r := range h.reports {
+		if !r.Pulled {
+			t.Fatalf("a pulled answer went to the rule unmarked: %+v", r)
+		}
+	}
 	if l.queries[0].ChangedSince != nil || len(q.cursors) != 1 || q.cursors[0] != "p2" {
 		t.Fatalf("queries %+v cursors %v", l.queries, q.cursors)
 	}
@@ -129,7 +141,8 @@ func TestCatchupAsksFromItsChangedSince(t *testing.T) {
 	if _, err := newPuller(h, q, l).RunOne(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if l.queries[0].ChangedSince == nil || !l.queries[0].ChangedSince.Equal(since) || len(q.finished) != 1 || q.finished[0] != nil {
+	// Forms sent no watermark: the job's start is kept, not nothing.
+	if l.queries[0].ChangedSince == nil || !l.queries[0].ChangedSince.Equal(since) || len(q.finished) != 1 || q.finished[0] == nil || !q.finished[0].Equal(pullNow) {
 		t.Fatalf("queries %+v finished %v", l.queries, q.finished)
 	}
 }
@@ -203,4 +216,31 @@ func TestPlanCoversTheOpenEventsApplicationForms(t *testing.T) {
 	if len(q.planned[0]) != 2 || !got[applicationForm] || !got[extra] {
 		t.Fatalf("planned %v", q.planned[0])
 	}
+}
+
+func TestACursorThatDoesNotMoveOrAnEndlessListStopsTheJob(t *testing.T) {
+	h := newHarness()
+	l := &pageLister{pages: map[string]Page{"": {NextCursor: "a"}, "a": {NextCursor: "a"}}}
+	q := &memQueue{jobs: []PullJob{{ID: uuid.New(), FormID: applicationForm, Kind: PullBackfill, RequestedAt: pullNow}}}
+	newPuller(h, q, l).RunOne(context.Background())
+	if len(q.retries) != 1 || len(q.finished) != 0 || len(l.queries) != 2 {
+		t.Fatalf("stuck cursor: retries %d finished %d queries %d", len(q.retries), len(q.finished), len(l.queries))
+	}
+
+	endless := &endlessLister{}
+	q = &memQueue{jobs: []PullJob{{ID: uuid.New(), FormID: applicationForm, Kind: PullBackfill, RequestedAt: pullNow}}}
+	newPuller(h, q, endless).RunOne(context.Background())
+	if len(q.retries) != 1 || endless.calls != maxPagesPerRun {
+		t.Fatalf("endless list: retries %d calls %d", len(q.retries), endless.calls)
+	}
+	if !strings.Contains(strings.Join(h.lines, "\n"), `"reason":"invalid"`) {
+		t.Fatal("no invalid reason logged")
+	}
+}
+
+type endlessLister struct{ calls int }
+
+func (l *endlessLister) List(context.Context, uuid.UUID, ListQuery) (Page, error) {
+	l.calls++
+	return Page{NextCursor: fmt.Sprint(l.calls)}, nil
 }

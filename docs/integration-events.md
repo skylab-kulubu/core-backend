@@ -34,7 +34,7 @@ connected.
 | `RABBITMQ_VHOST` | `skylab` | The vhost ops sets up. |
 | `RABBITMQ_USERNAME` | none | Core's user, `core_a` or `core_b` (the rotation alternates them). Required when on. |
 | `RABBITMQ_PASSWORD` | none | Its password. Required when on. |
-| `EVENTS_FORMS_ENABLED` | `false` | `true` reads `core.forms` too, while `EVENTS_ENABLED=true`. Off, its events wait in the queue. Any other value stops core. On, it needs `FORMS_INTERNAL_URL` and core's service account (below), else core stops naming what is missing. |
+| `EVENTS_FORMS_ENABLED` | `false` | The one switch of Forms' integration: `true` reads `core.forms` too, while `EVENTS_ENABLED=true`, and runs the pulls from Forms ([form-pulls.md](form-pulls.md)) either way. Off, its events wait in the queue and nothing is pulled. Any other value stops core. On, it needs `FORMS_INTERNAL_URL` and core's service account (below), else core stops naming what is missing. |
 | `FORMS_INTERNAL_URL` | `ACCOUNT_ERASURE_FORMS_URL` | Forms' address on the internal network, for the single answer read of `core.forms` and the pulls ([form-pulls.md](form-pulls.md)). Unset: the Erasure command's Forms address. |
 
 `EVENTS_FORMS_ENABLED` is a switch of its own (Yusuf, 2026-11-24; the SPEC

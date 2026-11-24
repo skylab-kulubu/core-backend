@@ -28,6 +28,10 @@ const (
 	// once a day after the first day.
 	minPullBackoff = time.Minute
 	maxPullBackoff = 24 * time.Hour
+	// maxPagesPerRun bounds one run of a job (100 000 answers): a list
+	// that goes on past it, or a cursor that does not move, is Forms'
+	// fault, and the job stops with an error instead of looping.
+	maxPagesPerRun = 1000
 )
 
 // Lister reads a page of a form's accepted answers (Client).
@@ -113,7 +117,7 @@ func (p *Puller) Tick(ctx context.Context) {
 	if now := p.now(); p.lastPlan.IsZero() || now.Sub(p.lastPlan) >= planEvery {
 		if n, err := p.Plan(ctx); err != nil {
 			if ctx.Err() == nil {
-				p.logf(`{"event":"form_pull_plan_failed","level":"warn","error":%q}`, err.Error())
+				p.logf(`{"event":"form_pull_plan_failed","level":"warn","error":%q}`, events.SafeErrorText(err))
 			}
 		} else {
 			p.lastPlan = now
@@ -125,7 +129,7 @@ func (p *Puller) Tick(ctx context.Context) {
 	for ctx.Err() == nil {
 		ran, err := p.RunOne(ctx)
 		if err != nil && ctx.Err() == nil {
-			p.logf(`{"event":"form_pull_claim_failed","level":"warn","error":%q}`, err.Error())
+			p.logf(`{"event":"form_pull_claim_failed","level":"warn","error":%q}`, events.SafeErrorText(err))
 		}
 		if !ran || err != nil {
 			return
@@ -239,6 +243,9 @@ func (p *Puller) run(ctx context.Context, job PullJob, res *pullResult) (*time.T
 		return nil, fmt.Errorf("reading the Events: %w", err)
 	}
 	origin := Origin{Via: ViaPull, role: role}
+	// Without Forms' watermark the job's start is the form's: the next
+	// pass asks from there, and its window does not grow.
+	started := p.now().UTC()
 	for {
 		page, err := p.Forms.List(ctx, job.FormID, q)
 		if err != nil {
@@ -264,9 +271,18 @@ func (p *Puller) run(ctx context.Context, job PullJob, res *pullResult) (*time.T
 			}
 		}
 		if page.NextCursor == "" {
+			if page.Watermark == nil {
+				return &started, nil
+			}
 			return page.Watermark, nil
 		}
-		if err := p.Queue.SaveCursor(ctx, job.ID, page.NextCursor); err != nil {
+		if page.NextCursor == q.After {
+			return nil, invalid("Forms' cursor did not move")
+		}
+		if res.pages >= maxPagesPerRun {
+			return nil, invalid("Forms' list goes on past %d pages", maxPagesPerRun)
+		}
+		if err := p.Queue.SaveCursor(ctx, job.ID, page.NextCursor, p.now()); err != nil {
 			return nil, err
 		}
 		q.After = page.NextCursor

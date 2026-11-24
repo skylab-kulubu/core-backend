@@ -55,9 +55,11 @@ func TestBackfillRequestRules(t *testing.T) {
 		on    bool
 		want  error
 		again bool
+		after time.Duration
 	}{
 		{name: "queued", p: editor, ev: open.ID, form: form, on: true},
-		{name: "waiting already", p: editor, ev: open.ID, form: form, on: true, again: true},
+		{name: "asked again within 15 minutes", p: editor, ev: open.ID, form: form, on: true, again: true, after: 14 * time.Minute, want: ErrBackfillCooldown},
+		{name: "waiting already", p: editor, ev: open.ID, form: form, on: true, again: true, after: 16 * time.Minute},
 		{name: "no such Event", p: editor, ev: uuid.New(), form: form, on: true, want: ErrBackfillEventNotFound},
 		{name: "may not edit", p: member, ev: open.ID, form: form, on: true, want: ErrBackfillForbidden},
 		{name: "a draft hidden", p: member, ev: draft.ID, form: form, on: true, want: ErrBackfillEventNotFound},
@@ -76,13 +78,19 @@ func TestBackfillRequestRules(t *testing.T) {
 				Authz:  authz.NewAuthorizer(authz.DefaultPolicy()), Queue: q, On: tc.on, Now: func() time.Time { return now },
 			}
 			if tc.again {
+				b.Now = func() time.Time { return now.Add(-tc.after) }
 				if _, err := b.Request(context.Background(), tc.p, tc.ev, tc.form); err != nil {
 					t.Fatal(err)
 				}
+				b.Now = func() time.Time { return now }
 			}
 			queued, err := b.Request(context.Background(), tc.p, tc.ev, tc.form)
 			if !errors.Is(err, tc.want) || (err == nil && queued == tc.again) {
 				t.Fatalf("queued %t err %v; want %v", queued, err, tc.want)
+			}
+			var cooldown *BackfillCooldownError
+			if errors.As(err, &cooldown) && cooldown.RetryAfter != BackfillCooldown-tc.after {
+				t.Fatalf("retry after %v", cooldown.RetryAfter)
 			}
 		})
 	}

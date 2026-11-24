@@ -1841,7 +1841,10 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		SELECT 1
 		WHERE to_regclass('public.form_pulls') IS NOT NULL
 		  AND to_regclass('public.form_pulls_form_kind_idx') IS NOT NULL
-		  AND to_regclass('public.form_pull_watermarks') IS NOT NULL`,
+		  AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'form_pull_watermarks' AND column_name = 'last_backfill_at'
+		  )`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

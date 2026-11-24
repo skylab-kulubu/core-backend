@@ -12,7 +12,9 @@
 --     is Forms' time up to which core has the form's answers (the first
 --     time the pass saw the form linked, else the last pull's), and the
 --     next pass asks from watermark − 5 minutes; next_catchup_at is when.
---     A row whose form no current Event lists goes after 30 days.
+--     last_backfill_at is when an organizer last asked for the form's
+--     backfill: a second ask within 15 minutes is refused (429). A row
+--     whose form no current Event lists goes after 30 days.
 --
 -- Expand only: nothing reads them before this release.
 SET LOCAL lock_timeout = '5s';
@@ -40,5 +42,6 @@ CREATE TABLE IF NOT EXISTS form_pull_watermarks (
     form_id UUID PRIMARY KEY,
     watermark TIMESTAMPTZ NOT NULL,
     next_catchup_at TIMESTAMPTZ NOT NULL,
+    last_backfill_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

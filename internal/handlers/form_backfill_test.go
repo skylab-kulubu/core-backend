@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -27,10 +28,11 @@ func (s *stubBackfills) Request(_ context.Context, p authz.Principal, _, _ uuid.
 
 func TestFormBackfillAnswers(t *testing.T) {
 	cases := []struct {
-		queued bool
-		err    error
-		status int
-		code   string
+		queued     bool
+		err        error
+		status     int
+		code       string
+		retryAfter string
 	}{
 		{queued: true, status: 202},
 		{queued: false, status: 200},
@@ -41,6 +43,7 @@ func TestFormBackfillAnswers(t *testing.T) {
 		{err: formsfeed.ErrBackfillNotListed, status: 409, code: "form_not_listed"},
 		{err: formsfeed.ErrBackfillFormInUse, status: 409, code: "form_in_use"},
 		{err: formsfeed.ErrBackfillOff, status: 503, code: "forms_pull_off"},
+		{err: &formsfeed.BackfillCooldownError{RetryAfter: 89500 * time.Millisecond}, status: 429, code: "backfill_cooldown", retryAfter: "90"},
 		{err: errors.New("database"), status: 500},
 	}
 	person := uuid.New()
@@ -61,6 +64,9 @@ func TestFormBackfillAnswers(t *testing.T) {
 		resp.Body.Close()
 		if resp.StatusCode != tc.status || (tc.code != "" && body["code"] != tc.code) {
 			t.Fatalf("%v: %d %v", tc.err, resp.StatusCode, body)
+		}
+		if got := resp.Header.Get("Retry-After"); got != tc.retryAfter {
+			t.Fatalf("Retry-After %q, want %q", got, tc.retryAfter)
 		}
 		if tc.status < 300 && body["queued"] != tc.queued {
 			t.Fatalf("%d: body %v", tc.status, body)

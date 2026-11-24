@@ -37,7 +37,20 @@ const (
 	// watermarkRetention is how long the watermark of a form no current
 	// Event lists is kept.
 	watermarkRetention = 30 * 24 * time.Hour
+	// BackfillCooldown is how long after an organizer's backfill of a form
+	// another one is refused (a button pressed again and again).
+	BackfillCooldown = 15 * time.Minute
 )
+
+// ErrBackfillCooldown is a backfill asked again within BackfillCooldown; it
+// comes as a *BackfillCooldownError, which says when to try again.
+var ErrBackfillCooldown = errors.New("formsfeed: the form's backfill was asked for less than 15 minutes ago")
+
+// BackfillCooldownError is ErrBackfillCooldown with the wait left.
+type BackfillCooldownError struct{ RetryAfter time.Duration }
+
+func (e *BackfillCooldownError) Error() string { return ErrBackfillCooldown.Error() }
+func (e *BackfillCooldownError) Unwrap() error { return ErrBackfillCooldown }
 
 // PullJob is one row of form_pulls.
 type PullJob struct {
@@ -54,12 +67,14 @@ type PullJob struct {
 // PullQueue is the jobs and the watermarks (PostgresPulls).
 type PullQueue interface {
 	// Backfill queues an organizer's pull of the form; false when one is
-	// waiting already.
+	// waiting already. Asked again within BackfillCooldown it is a
+	// *BackfillCooldownError, and nothing changes.
 	Backfill(ctx context.Context, formID, eventID, requestedBy uuid.UUID, now time.Time) (bool, error)
 	// Claim takes the next due job and keeps it from others for pullLease.
 	Claim(ctx context.Context, now time.Time) (PullJob, bool, error)
-	// SaveCursor keeps the next page's cursor of a running job.
-	SaveCursor(ctx context.Context, id uuid.UUID, cursor string) error
+	// SaveCursor keeps the next page's cursor of a running job and renews
+	// its lease from now.
+	SaveCursor(ctx context.Context, id uuid.UUID, cursor string, now time.Time) error
 	// Finish deletes a done job and moves its form's watermark forward to
 	// watermark (nil leaves it).
 	Finish(ctx context.Context, job PullJob, watermark *time.Time, now time.Time) error
@@ -81,16 +96,42 @@ type PostgresPulls struct{ pool *pgxpool.Pool }
 func NewPostgresPulls(pool *pgxpool.Pool) *PostgresPulls { return &PostgresPulls{pool: pool} }
 
 func (s *PostgresPulls) Backfill(ctx context.Context, formID, eventID, requestedBy uuid.UUID, now time.Time) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	// The form's row, with the ask's time unless the last ask is too
+	// recent. A form the daily pass has not seen yet starts its watermark
+	// now: the backfill covers what came before.
+	var asked time.Time
+	err = tx.QueryRow(ctx, `
+		INSERT INTO form_pull_watermarks AS w (form_id, watermark, next_catchup_at, last_backfill_at, updated_at)
+		VALUES ($1, $2, $3, $2, $2)
+		ON CONFLICT (form_id) DO UPDATE SET last_backfill_at = EXCLUDED.last_backfill_at, updated_at = EXCLUDED.updated_at
+		WHERE w.last_backfill_at IS NULL OR w.last_backfill_at <= EXCLUDED.last_backfill_at - $4::float8 * interval '1 second'
+		RETURNING last_backfill_at`, formID, now, now.Add(CatchupEvery), BackfillCooldown.Seconds()).Scan(&asked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var last time.Time
+		if err := tx.QueryRow(ctx, `SELECT last_backfill_at FROM form_pull_watermarks WHERE form_id = $1`, formID).Scan(&last); err != nil {
+			return false, err
+		}
+		return false, &BackfillCooldownError{RetryAfter: max(last.Add(BackfillCooldown).Sub(now), time.Second)}
+	}
+	if err != nil {
+		return false, err
+	}
 	var id uuid.UUID
-	err := s.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO form_pulls (id, form_id, kind, event_id, requested_by, requested_at, next_attempt_at)
 		VALUES ($1, $2, 'backfill', $3, $4, $5, $5)
 		ON CONFLICT (form_id, kind) DO NOTHING
 		RETURNING id`, uuid.New(), formID, eventID, requestedBy, now).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+	queued := err == nil
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, err
 	}
-	return err == nil, err
+	return queued, tx.Commit(ctx)
 }
 
 func (s *PostgresPulls) Claim(ctx context.Context, now time.Time) (PullJob, bool, error) {
@@ -117,8 +158,8 @@ func (s *PostgresPulls) Claim(ctx context.Context, now time.Time) (PullJob, bool
 	return j, true, nil
 }
 
-func (s *PostgresPulls) SaveCursor(ctx context.Context, id uuid.UUID, cursor string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE form_pulls SET cursor = NULLIF($2, '') WHERE id = $1`, id, cursor)
+func (s *PostgresPulls) SaveCursor(ctx context.Context, id uuid.UUID, cursor string, now time.Time) error {
+	_, err := s.pool.Exec(ctx, `UPDATE form_pulls SET cursor = NULLIF($2, ''), next_attempt_at = $3 WHERE id = $1`, id, cursor, now.Add(pullLease))
 	return err
 }
 

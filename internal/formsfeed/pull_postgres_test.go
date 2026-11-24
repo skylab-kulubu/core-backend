@@ -2,6 +2,7 @@ package formsfeed_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -20,8 +21,14 @@ func TestPostgresPullsQueueAndPlan(t *testing.T) {
 	if ok, err := q.Backfill(ctx, form, eventID, person, now); err != nil || !ok {
 		t.Fatalf("backfill: %t %v", ok, err)
 	}
-	if ok, err := q.Backfill(ctx, form, eventID, person, now); err != nil || ok {
-		t.Fatalf("second backfill: %t %v", ok, err)
+	// Asked again within 15 minutes: refused, with the wait left.
+	var cooldown *formsfeed.BackfillCooldownError
+	if _, err := q.Backfill(ctx, form, eventID, person, now.Add(5*time.Minute)); !errors.As(err, &cooldown) || cooldown.RetryAfter != 10*time.Minute {
+		t.Fatalf("second backfill: %v", err)
+	}
+	// After the wait, a job still waiting: not queued again.
+	if ok, err := q.Backfill(ctx, form, eventID, person, now.Add(16*time.Minute)); err != nil || ok {
+		t.Fatalf("third backfill: %t %v", ok, err)
 	}
 	job, ok, err := q.Claim(ctx, now)
 	if err != nil || !ok || job.FormID != form || job.Kind != formsfeed.PullBackfill || job.EventID == nil || *job.EventID != eventID {
@@ -31,8 +38,12 @@ func TestPostgresPullsQueueAndPlan(t *testing.T) {
 	if _, ok, _ := q.Claim(ctx, now.Add(time.Minute)); ok {
 		t.Fatal("a leased job was claimed again")
 	}
-	if err := q.SaveCursor(ctx, job.ID, "p2"); err != nil {
+	// Saving a page's cursor renews the lease: still not due 16 minutes on.
+	if err := q.SaveCursor(ctx, job.ID, "p2", now.Add(10*time.Minute)); err != nil {
 		t.Fatal(err)
+	}
+	if _, ok, _ := q.Claim(ctx, now.Add(16*time.Minute)); ok {
+		t.Fatal("the lease was not renewed")
 	}
 	if err := q.Retry(ctx, job.ID, 1, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
@@ -59,9 +70,11 @@ func TestPostgresPullsQueueAndPlan(t *testing.T) {
 		t.Fatalf("first plan: %d %v", queued, err)
 	}
 	var got time.Time
+	// The backfill's ask started the form's watermark (now); Forms' older
+	// one did not move it back, and the plan kept it.
 	pool.QueryRow(ctx, `SELECT watermark FROM form_pull_watermarks WHERE form_id = $1`, form).Scan(&got)
-	if !got.Equal(watermark) {
-		t.Fatalf("the backfill's watermark was replaced: %v", got)
+	if !got.Equal(now) {
+		t.Fatalf("watermark %v, want the ask's time", got)
 	}
 	later := now.Add(formsfeed.CatchupEvery + time.Minute)
 	if queued, err := q.Plan(ctx, []uuid.UUID{form, other}, later); err != nil || queued != 2 {

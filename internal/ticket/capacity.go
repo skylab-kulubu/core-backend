@@ -37,6 +37,12 @@ type Admission struct {
 	// (joinWaitlist), and an accepted forms answer. Without it, or with the
 	// waiting list off, a full Event is ErrEventFull.
 	Waitlist bool
+	// KeepCancelled finds a cancelled Ticket as one already there instead
+	// of reopening it: an answer pulled from Forms' list (a backfill, the
+	// daily catch-up; docs/form-pulls.md) is the state of an answer core
+	// has seen, not a new application, and must not undo a cancellation
+	// or mail its holder again.
+	KeepCancelled bool
 }
 
 // admit is the status a Ticket written under a, on an Event of c, takes,

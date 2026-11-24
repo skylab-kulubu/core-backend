@@ -45,6 +45,10 @@ type FormResponse struct {
 	// ?davet= of the mail's link), when Forms reports it: it marks that
 	// invite answered (etkinlik geri bildirim formu, ticket 04).
 	Invite string
+	// Pulled is an answer read from Forms' list (a backfill or the daily
+	// catch-up, docs/form-pulls.md), not reported by Forms as it happened:
+	// a cancelled Ticket it finds stays cancelled (Admission.KeepCancelled).
+	Pulled bool
 }
 
 // FeedbackAnswers marks who answered a feedback form: the invite the code
@@ -231,7 +235,7 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		}
 	}
 	result := FormResponseResult{Outcome: FormResponseRecorded, ListingEvents: listed}
-	admission := Admission{Waitlist: true}
+	admission := Admission{Waitlist: true, KeepCancelled: r.Pulled}
 	var active, waitlisted, full int
 	for _, ev := range listing {
 		eventID := ev.ID
@@ -256,6 +260,8 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		case errors.Is(err, ErrEventFull):
 			full++
 			continue
+		case got.ID != uuid.Nil && got.StatusOf() == StatusCancelled:
+			// A pulled answer kept a cancelled Ticket: counted neither way.
 		case got.ID != uuid.Nil && got.StatusOf() == StatusWaitlisted:
 			waitlisted++
 		case errors.Is(err, ErrTicketWaitlisted):

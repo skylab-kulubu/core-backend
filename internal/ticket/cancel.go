@@ -144,7 +144,7 @@ func (s *service) RestoreTicket(ctx context.Context, p authz.Principal, id uuid.
 // report), under the Event's capacity (a): reopened reports it. A Ticket of
 // any other status is left.
 func (s *service) reopenIfCancelled(ctx context.Context, t Ticket, a Admission) (Ticket, bool, error) {
-	if t.StatusOf() != StatusCancelled {
+	if t.StatusOf() != StatusCancelled || a.KeepCancelled {
 		return t, false, nil
 	}
 	var (

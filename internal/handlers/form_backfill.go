@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"math"
+	"strconv"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
@@ -35,7 +37,8 @@ func NewFormBackfillHandler(backfills FormBackfills, logger *log.Logger) *FormBa
 // {"queued": true}, or 200 {"queued": false} when a backfill of the form
 // waits already. 404 for an Event the caller cannot see (or archived), 403
 // for one they may not edit, 409 event_cancelled, event_ended,
-// form_not_listed or form_in_use, 503 forms_pull_off.
+// form_not_listed or form_in_use, 429 backfill_cooldown (with Retry-After)
+// within 15 minutes of the form's last one, 503 forms_pull_off.
 func (h *FormBackfillHandler) Request(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
@@ -68,6 +71,14 @@ func (h *FormBackfillHandler) Request(c fiber.Ctx) error {
 		return problemCode(c, fiber.StatusConflict, "Conflict", "form_not_listed")
 	case errors.Is(err, formsfeed.ErrBackfillFormInUse):
 		return problemCode(c, fiber.StatusConflict, "Conflict", "form_in_use")
+	case errors.Is(err, formsfeed.ErrBackfillCooldown):
+		wait := formsfeed.BackfillCooldown
+		var cooldown *formsfeed.BackfillCooldownError
+		if errors.As(err, &cooldown) {
+			wait = cooldown.RetryAfter
+		}
+		c.Set(fiber.HeaderRetryAfter, strconv.Itoa(int(math.Ceil(wait.Seconds()))))
+		return problemCode(c, fiber.StatusTooManyRequests, "Too Many Requests", "backfill_cooldown")
 	case errors.Is(err, formsfeed.ErrBackfillOff):
 		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", "forms_pull_off")
 	default:
@@ -83,6 +94,8 @@ func (h *FormBackfillHandler) log(c fiber.Ctx, eventID, formID uuid.UUID, queued
 	}
 	outcome := "queued"
 	switch {
+	case errors.Is(err, formsfeed.ErrBackfillCooldown):
+		outcome = "cooldown"
 	case err != nil:
 		outcome = "refused"
 	case !queued:

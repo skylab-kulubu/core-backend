@@ -36,19 +36,26 @@ service account never asks). Then, in order:
 | `409` `event_ended` | the Event has ended |
 | `409` `form_not_listed` | the Event does not list the form as its application or an extra form (a feedback form is never pulled) |
 | `409` `form_in_use` | another current Event lists the form, as any form (the one-place rule, ADR 0069 addendum of 2026-11-22): last year's form linked to this year's Event must not ticket its applicants through the other |
-| `503` `forms_pull_off` | core has no Forms internal address or service account (below) |
+| `429` `backfill_cooldown` | the form's backfill was asked for less than 15 minutes ago (`Retry-After`: the seconds left); a button pressed again and again |
+| `503` `forms_pull_off` | `EVENTS_FORMS_ENABLED` is not `true` (below) |
 | `202 {"queued": true}` | a job is queued |
 | `200 {"queued": false}` | a backfill of the form waits already |
 
 The request writes one line, `"event":"form_backfill_request"`, with the
-Event, the form and `outcome` (`queued`, `waiting`, `refused`), never who
-asked.
+Event, the form and `outcome` (`queued`, `waiting`, `cooldown`, `refused`),
+never who asked. The ask is kept on the form (`last_backfill_at`); a form
+the daily pass had not seen gets its watermark then.
 
 The job pulls every accepted answer of the form (no `changedSince`). Each
 answer takes the Ticket rule as the HTTP report's does: on every current
 Event that lists the form, not cancelled, not ended, open to applications
 when the answer was sent (`submittedAt`), within capacity or on the waiting
-list; an answer that already has its Ticket keeps it. The rule reads the
+list; an answer that already has its Ticket keeps it. **A pulled answer
+never reopens a cancelled Ticket** (`ticket.FormResponse.Pulled`,
+`Admission.KeepCancelled`): whoever cancelled it (the holder, an organizer,
+Forms' decline), the answer is the state of one core has seen, not a new
+application, so the Ticket stays cancelled and nobody is mailed. The same
+holds for the daily catch-up overlapping an event or the HTTP report. The rule reads the
 Events at each answer, so an Event cancelled while the job runs gets no more
 Tickets. A Ticket written this way is mailed as any other
 ([ticket-created-notification.md](ticket-created-notification.md)): at once on
@@ -87,11 +94,15 @@ from the single answer endpoint for the guest's name and e-mail, as for an
 event. Each answer runs in a transaction of its own and keeps its version
 (`forms_record_versions`): a version older than one core handled is stale;
 the same version is taken again (an event of a form not linked then was
-`not_listed`). The next page's cursor is kept after each page, so a retry
-goes on from there.
+`not_listed`). The next page's cursor is kept after each page, with the
+lease renewed, so a retry goes on from there. A cursor that does not move,
+or a list past 1,000 pages in one run, stops the job with an error
+(`reason` `invalid`) instead of looping.
 
 - Done (the last page, `nextCursor` null): the job is deleted and the form's
-  watermark moves forward to the page's `watermark` (never back).
+  watermark moves forward to the page's `watermark` (never back); when Forms
+  sends none, to when the job's run started, so the next window does not
+  grow.
 - An answer the single read did not find (`404`) or the Ticket rule refused:
   counted, the job goes on.
 - Anything else (Forms down, `401`, `403`, `404` of the list, which is a
@@ -111,14 +122,15 @@ line with `via` `pull`.
 
 ## Off and on
 
-There is no switch of its own (SPEC §10 eki: no new variable). The pulls
-run when core has Forms' internal address (`FORMS_INTERNAL_URL`, else
+The pulls share core.forms' switch, `EVENTS_FORMS_ENABLED` (Yusuf,
+2026-11-24: one switch of its own for Forms' integration; the SPEC had
+proposed no new variable). With `true` they run, whether or not
+`EVENTS_ENABLED` is on (the list is HTTP, apart from the broker), and core
+needs Forms' internal address (`FORMS_INTERNAL_URL`, else
 `ACCOUNT_ERASURE_FORMS_URL`) and its own service account (`KEYCLOAK_URL`,
-`KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`); the startup
-line says which (`forms reads: on|off`). Without them the backfill answers
-`503 forms_pull_off` and nothing is planned. An address that does not read
-warns and leaves them off. They do not depend on `EVENTS_ENABLED`: the list
-is HTTP, apart from the broker.
+`KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`), or it
+stops naming what is missing. Off (the default) nothing is planned or
+pulled, and the backfill answers `503 forms_pull_off`.
 
 ## Tables
 
@@ -127,7 +139,7 @@ Migration `20261124161000` (expand only):
 | Table | Rows | Kept |
 | --- | --- | --- |
 | `form_pulls` | one job: `form_id`, `kind`, `event_id` and `requested_by` (a backfill's Event and the organizer's subject), `requested_at`, `changed_since` (a catch-up's), `cursor`, `attempts`, `next_attempt_at`; one job of each kind a form | until done, at most a week |
-| `form_pull_watermarks` | one form: `watermark`, `next_catchup_at`, `updated_at` | while an Event lists the form, then 30 days |
+| `form_pull_watermarks` | one form: `watermark`, `next_catchup_at`, `last_backfill_at`, `updated_at` | while an Event lists the form, then 30 days |
 
 Ids and times only; `requested_by` is a person's subject for at most a week.
 

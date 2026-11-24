@@ -1124,14 +1124,16 @@ func main() {
 	formsEvents := formsEventsRecorder(os.Getenv, formsClient, formsRecorder)
 	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, keycloakEventHandling, formsEvents)
 	formPulls := formsfeed.NewPostgresPulls(pool)
+	// The pulls share core.forms' switch (EVENTS_FORMS_ENABLED, the one
+	// switch of Forms' integration), whether or not the broker is on.
 	var formPuller *formsfeed.Puller
-	if formsClient != nil {
+	if formsEvents != nil {
 		formPuller = &formsfeed.Puller{Queue: formPulls, Forms: formsClient, Recorder: formsRecorder, Events: events, DB: pool, Logf: log.Printf}
 		worker("form pulls", formPuller.Run(workers))
 	}
 	formBackfills := &formsfeed.Backfills{Events: events, Authz: az, Queue: formPulls, On: formPuller != nil}
 	formsCounters := formsMetrics{puller: formPuller}
-	if formsEvents != nil || formPuller != nil {
+	if formsEvents != nil {
 		formsCounters.recorder = formsRecorder
 	}
 	worker("integration events", eventsStopped)
