@@ -229,6 +229,10 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 			OwnerTeam:       team,
 			Capacity:        source.Capacity,
 			WaitlistEnabled: source.WaitlistEnabled,
+			// The door's mail switches are the organizer's choices: the
+			// copy keeps them (docs/attendance-mail.md).
+			AttendanceWelcomeMail:  source.AttendanceWelcomeMail,
+			AttendanceRecordedMail: source.AttendanceRecordedMail,
 			// The door's mode is how the Event is run: the copy keeps it
 			// (CONTEXT: Entry mode).
 			EntryMode:            source.EntryMode,

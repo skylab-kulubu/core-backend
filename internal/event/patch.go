@@ -35,6 +35,10 @@ type Patch struct {
 	// WaitlistEnabled turns the waiting list on or off (null is ErrInvalid;
 	// docs/event-capacity.md).
 	WaitlistEnabled optional.Field[bool] `json:"waitlistEnabled"`
+	// AttendanceWelcomeMail and AttendanceRecordedMail turn the door's
+	// mails on or off (null is ErrInvalid; docs/attendance-mail.md).
+	AttendanceWelcomeMail  optional.Field[bool] `json:"attendanceWelcomeMail"`
+	AttendanceRecordedMail optional.Field[bool] `json:"attendanceRecordedMail"`
 	// EntryMode sets the door's mode: per_session or venue, null for
 	// automatic (docs/venue-entry.md); any other value is ErrInvalid.
 	EntryMode       optional.Field[*EntryMode] `json:"entryMode"`
@@ -100,7 +104,8 @@ func (p Patch) apply(existing Event) (Event, error) {
 	e.LocationLat = p.LocationLat.Or(existing.LocationLat)
 	e.LocationLng = p.LocationLng.Or(existing.LocationLng)
 	e.LocationAddress = p.LocationAddress.Or(existing.LocationAddress)
-	if p.Ranked.Null || p.RegistrationClosed.Null || p.FeedbackMode.Null || p.FeedbackAutoSend.Null || p.AttendanceAutoFinalize.Null || p.WaitlistEnabled.Null {
+	if p.Ranked.Null || p.RegistrationClosed.Null || p.FeedbackMode.Null || p.FeedbackAutoSend.Null || p.AttendanceAutoFinalize.Null || p.WaitlistEnabled.Null ||
+		p.AttendanceWelcomeMail.Null || p.AttendanceRecordedMail.Null {
 		return Event{}, ErrInvalid
 	}
 	if e.FeedbackMode = p.FeedbackMode.Or(existing.FeedbackMode); !e.FeedbackMode.Valid() {
@@ -122,6 +127,14 @@ func (p Patch) apply(existing Event) (Event, error) {
 	if p.WaitlistEnabled.Set {
 		on := p.WaitlistEnabled.Value
 		e.WaitlistEnabled = &on
+	}
+	if p.AttendanceWelcomeMail.Set {
+		on := p.AttendanceWelcomeMail.Value
+		e.AttendanceWelcomeMail = &on
+	}
+	if p.AttendanceRecordedMail.Set {
+		on := p.AttendanceRecordedMail.Value
+		e.AttendanceRecordedMail = &on
 	}
 	e.StartDate = p.StartDate.Or(existing.StartDate)
 	e.EndDate = p.EndDate.Or(existing.EndDate)

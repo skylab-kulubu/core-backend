@@ -97,6 +97,14 @@ active Ticket of it is reminded once, one mail per address, at most
 `SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY` addresses it (unset: the key above;
 empty: off). See [event-reminder.md](event-reminder.md).
 
+`event.attendance-welcome` and `event.attendance-recorded` too, off until
+`ATTENDANCE_MAIL=on`: the door's "hoş geldin" on a Ticket's first Venue entry
+of a day and "katılımın alındı" on each Session Check-in, two minutes after
+the scan, at most `ATTENDANCE_MAIL_PER_MINUTE` (20) mails a minute.
+`SKYMAIL_ATTENDANCE_WELCOME_TEMPLATE_KEY` and
+`SKYMAIL_ATTENDANCE_RECORDED_TEMPLATE_KEY` address them (unset: the keys
+above; empty: that kind off). See [attendance-mail.md](attendance-mail.md).
+
 A ninth, `club.management-term`, rides a queue of its own the same way: the
 warning 14 days and 1 day before a YK, DK or Team Leader membership's term
 ends (to the holder and those over them), the list of terms marked expired

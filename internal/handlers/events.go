@@ -40,6 +40,10 @@ type eventBody struct {
 	Capacity        int                    `json:"capacity"`
 	// WaitlistEnabled on create; none is on (docs/event-capacity.md).
 	WaitlistEnabled *bool `json:"waitlistEnabled"`
+	// AttendanceWelcomeMail and AttendanceRecordedMail on create; none is
+	// on (docs/attendance-mail.md).
+	AttendanceWelcomeMail  *bool `json:"attendanceWelcomeMail"`
+	AttendanceRecordedMail *bool `json:"attendanceRecordedMail"`
 	// EntryMode on create: per_session, venue, or none for automatic
 	// (docs/venue-entry.md).
 	EntryMode *event.EntryMode `json:"entryMode"`
@@ -130,15 +134,18 @@ func (b eventBody) asEvent() event.Event {
 		Capacity:        b.Capacity,
 		WaitlistEnabled: b.WaitlistEnabled,
 		EntryMode:       b.EntryMode,
-		StartDate:       b.StartDate,
-		EndDate:         b.EndDate,
-		Linkedin:        b.Linkedin,
-		Status:          event.Status(b.Status),
-		Ranked:          b.Ranked,
-		PrizeInfo:       b.PrizeInfo,
-		CoverImageID:    b.CoverImageID,
-		AttendanceRule:  b.AttendanceRule,
-		AttendanceRatio: b.AttendanceRatio,
+
+		AttendanceWelcomeMail:  b.AttendanceWelcomeMail,
+		AttendanceRecordedMail: b.AttendanceRecordedMail,
+		StartDate:              b.StartDate,
+		EndDate:                b.EndDate,
+		Linkedin:               b.Linkedin,
+		Status:                 event.Status(b.Status),
+		Ranked:                 b.Ranked,
+		PrizeInfo:              b.PrizeInfo,
+		CoverImageID:           b.CoverImageID,
+		AttendanceRule:         b.AttendanceRule,
+		AttendanceRatio:        b.AttendanceRatio,
 
 		AttendanceMinCount:     b.AttendanceMinCount,
 		AttendanceAutoFinalize: b.AttendanceAutoFinalize == nil || *b.AttendanceAutoFinalize,

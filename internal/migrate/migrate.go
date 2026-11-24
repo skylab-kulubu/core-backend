@@ -1897,6 +1897,23 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM information_schema.columns
 			WHERE table_schema = 'public' AND table_name = 'form_pull_watermarks' AND column_name = 'last_backfill_at'
 		  )`,
+	// The door's mails (docs/attendance-mail.md): the Event's two switches,
+	// the queue's kind check and its two one-a-day/one-a-Session keys.
+	20261125203000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events'
+			  AND column_name IN ('attendance_welcome_mail', 'attendance_recorded_mail')
+		) = 2
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.attendance_mails') AND conname = 'attendance_mails_kind_check' AND convalidated
+		)
+		AND to_regclass('public.attendance_mails_welcome_key') IS NOT NULL
+		AND to_regclass('public.attendance_mails_recorded_key') IS NOT NULL
+		AND to_regclass('public.attendance_mails_due_idx') IS NOT NULL
+		AND to_regclass('public.attendance_mails_done_idx') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

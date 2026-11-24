@@ -157,6 +157,8 @@ func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
 		on := true
 		in.WaitlistEnabled = &on
 	}
+	in.AttendanceWelcomeMail = onUnlessOff(in.AttendanceWelcomeMail)
+	in.AttendanceRecordedMail = onUnlessOff(in.AttendanceRecordedMail)
 	return in
 }
 
@@ -1005,4 +1007,10 @@ func (s *service) AssignSeason(ctx context.Context, p authz.Principal, eventID u
 	}
 	updated, err := s.store.SetSeason(ctx, eventID, seasonID)
 	return s.detail(ctx, updated, err)
+}
+
+// onUnlessOff is a switch that is on unless it says off: nil is on.
+func onUnlessOff(v *bool) *bool {
+	on := v == nil || *v
+	return &on
 }
