@@ -136,6 +136,18 @@ func (s *service) eligible(ctx context.Context, ev event.Event, t ticket.Ticket)
 	return ok && ticketEligible(ev, attendance, row), nil
 }
 
+// attendanceSnapshot is the Ticket's attendance as its certificate is
+// issued, which the certificate keeps (docs/certificate-rule.md): a reissue
+// takes a new one, and one issued below the rule by hand carries its real
+// count.
+func (s *service) attendanceSnapshot(ctx context.Context, eventID, ticketID uuid.UUID) (*AttendanceSnapshot, error) {
+	attendance, err := s.attendance.EventAttendance(ctx, eventID)
+	if err != nil {
+		return nil, err
+	}
+	return attendance.snapshotOf(ticketID), nil
+}
+
 func (s *service) recipient(ctx context.Context, t ticket.Ticket) (name, email string, err error) {
 	if t.TicketType == ticket.Guest {
 		name = strings.TrimSpace(t.GuestFirstName + " " + t.GuestLastName)
@@ -189,6 +201,10 @@ func (s *service) materializeLegacy(ctx context.Context, ev event.Event, t ticke
 	if err != nil {
 		return Certificate{}, err
 	}
+	attendance, err := s.attendanceSnapshot(ctx, ev.ID, t.ID)
+	if err != nil {
+		return Certificate{}, err
+	}
 	serial, err := newSerial()
 	if err != nil {
 		return Certificate{}, err
@@ -205,7 +221,7 @@ func (s *service) materializeLegacy(ctx context.Context, ev event.Event, t ticke
 	if err != nil {
 		return Certificate{}, err
 	}
-	c := Certificate{EventID: ev.ID, TicketID: t.ID, OwnerID: t.OwnerID, Serial: serial, RecipientName: name, RecipientEmail: email, EventName: ev.Name, OwnerTeam: ev.OwnerTeam, VerifyURL: url, TemplateSource: "legacy"}
+	c := Certificate{EventID: ev.ID, TicketID: t.ID, OwnerID: t.OwnerID, Serial: serial, RecipientName: name, RecipientEmail: email, EventName: ev.Name, OwnerTeam: ev.OwnerTeam, VerifyURL: url, TemplateSource: "legacy", Attendance: attendance}
 	created, err := s.store.Create(ctx, c, pdf)
 	if err != nil {
 		return Certificate{}, err
@@ -339,7 +355,7 @@ func (s *service) Verify(ctx context.Context, serial string) (PublicCertificate,
 		status = "revoked"
 		pdfURL = ""
 	}
-	return PublicCertificate{Serial: c.Serial, RecipientName: c.RecipientName, EventName: c.EventName, OwnerTeam: c.OwnerTeam, OrganizerName: organizer.Name(c.OwnerTeam), Status: status, VerifyURL: c.VerifyURL, PDFURL: pdfURL, IssuedAt: c.IssuedAt, RevokedAt: c.RevokedAt}, nil
+	return PublicCertificate{Serial: c.Serial, RecipientName: c.RecipientName, EventName: c.EventName, OwnerTeam: c.OwnerTeam, OrganizerName: organizer.Name(c.OwnerTeam), Status: status, VerifyURL: c.VerifyURL, PDFURL: pdfURL, IssuedAt: c.IssuedAt, RevokedAt: c.RevokedAt, Attendance: publicAttendance(c.Attendance)}, nil
 }
 
 func (s *service) PDF(ctx context.Context, serial string) ([]byte, error) {
