@@ -79,6 +79,11 @@ func (s *PostgresStore) CreateAdmitted(ctx context.Context, t Ticket, a Admissio
 		if got, err = s.insertTicket(ctx, tx, t, status); err != nil {
 			return err
 		}
+		if a.FormResponse != uuid.Nil {
+			if _, err := tx.Exec(ctx, `UPDATE tickets SET form_response_id = $2 WHERE id = $1`, got.ID, a.FormResponse); err != nil {
+				return err
+			}
+		}
 		got.OverCapacity = over
 		switch {
 		case status == StatusActive && s.notifyCreated.Load():
@@ -156,7 +161,8 @@ func (s *PostgresStore) insertTicket(ctx context.Context, tx pgx.Tx, t Ticket, s
 // or waitlisted as a lets (CreateAdmitted), with a new access key and the
 // next QR version. An active one's mail goes again under the next resend
 // number while the Notifications are on; a waitlisted one is told it waits
-// while the status mails are on.
+// while the status mails are on. The forms answer the Ticket came from is
+// a.FormResponse's now (none when another way reopens it).
 func (s *PostgresStore) ReopenAdmitted(ctx context.Context, id uuid.UUID, a Admission) (Ticket, bool, error) {
 	var (
 		got     Ticket
@@ -187,8 +193,9 @@ func (s *PostgresStore) ReopenAdmitted(ctx context.Context, id uuid.UUID, a Admi
 					waitlisted_at = CASE WHEN $3 = 'waitlisted' THEN now() END,
 					cancelled_at = NULL, cancelled_by = NULL, cancel_reason = NULL,
 					access_key = CASE WHEN access_key IS NULL THEN NULL ELSE $2 END,
-					qr_version = qr_version + 1, updated_at = now()
-				WHERE id = $1`, id, key, string(status)); err != nil {
+					qr_version = qr_version + 1, updated_at = now(),
+					form_response_id = $4
+				WHERE id = $1`, id, key, string(status), formResponse(a)); err != nil {
 				return err
 			}
 			changed, over = true, beyond
@@ -213,6 +220,15 @@ func (s *PostgresStore) ReopenAdmitted(ctx context.Context, id uuid.UUID, a Admi
 	got.CheckIns = []CheckIn{}
 	got.OverCapacity = over
 	return got, changed, nil
+}
+
+// formResponse is the forms answer a reopening keeps on the Ticket: the
+// one reopening it, none for any other way (docs/form-response-tickets.md).
+func formResponse(a Admission) *uuid.UUID {
+	if a.FormResponse == uuid.Nil {
+		return nil
+	}
+	return &a.FormResponse
 }
 
 // Promote makes a waitlisted Ticket active under its Event's lock, past the

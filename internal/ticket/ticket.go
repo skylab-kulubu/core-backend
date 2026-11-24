@@ -182,6 +182,10 @@ type Ticket struct {
 	// (docs/ticket-page.md, docs/ticket-qr.md).
 	TicketURL string `json:"ticketUrl,omitempty"`
 	QRToken   string `json:"qrToken,omitempty"`
+	// Cancellable is whether the holder may cancel the Ticket now
+	// (HolderMayCancel; kontenjan-iptal-hatirlatma 03), in the holder's own
+	// list (GET /v1/tickets/me) only; every other answer leaves it out.
+	Cancellable *bool `json:"cancellable,omitempty"`
 	// Status is active, waitlisted or cancelled; the empty status of a
 	// Ticket made in memory reads as active (Active).
 	Status          Status      `json:"status"`

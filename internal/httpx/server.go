@@ -144,10 +144,6 @@ type Deps struct {
 	// outcome, and serves them on /v1/metrics. Nil counts into nothing.
 	GuestApplyMetrics *handlers.GuestApplyMetrics
 
-	// GuestApplyPublicIPLimit is what Guest apply's per-address budget does
-	// when it runs out (GUEST_APPLY_PUBLIC_IP_LIMIT_MODE). Empty enforces.
-	GuestApplyPublicIPLimit handlers.GuestApplyLimitMode
-
 	// SkyPassWalletMetrics are SkyPass in Google Wallet's counters
 	// (docs/skypass-google-wallet.md), served on /v1/metrics. Nil leaves
 	// them out.
@@ -462,6 +458,9 @@ func New(deps Deps) *fiber.App {
 		// holders behind one address at the door, so a large budget per
 		// client and a small one per key.
 		app.Get("/v1/public/tickets/:key/check-ins", perClientLimitOf(trustedProxies, handlers.TicketCheckInsPerClientMinute), handlers.TicketCheckInsLimit(), page.CheckIns)
+		// The holder cancels from the page (kontenjan-iptal-hatirlatma 03):
+		// the key is the right, a small budget per client.
+		app.Post("/v1/public/tickets/:key/cancel", perClientLimitOf(trustedProxies, handlers.TicketCancelsPerClientMinute), page.Cancel)
 	}
 	if pass != nil {
 		app.Get("/v1/skypass/jwks", pass.JWKS)
@@ -475,20 +474,19 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/account-deletion-requests/status", selfDeletion.Status)
 		app.Post("/v1/account-deletion-requests/status/retry", selfDeletion.Retry)
 	}
-	// Guest apply takes a token but does not require one (docs/guest-apply.md):
-	// an invalid token leaves the request anonymous, so the route stays ahead
-	// of Bearer, which would answer it 401. A valid one meets the same account
-	// access gate and Group overage step as on every other route.
+	// Guest apply takes a token but does not require one on the internal
+	// network (docs/guest-apply.md): an invalid token leaves the request
+	// anonymous, so the route stays ahead of Bearer, which would answer it
+	// 401. A request without a usable token from the edge is answered 404
+	// like an internal route. A valid token meets the same account access
+	// gate and Group overage step as on every other route.
 	parseToken := authn.WithServiceProducts(deps.ParseToken, deps.ServiceClients)
-	guestLimits := handlers.DefaultGuestApplyLimits()
-	if deps.GuestApplyPublicIPLimit != "" {
-		guestLimits.PublicIPMode = deps.GuestApplyPublicIPLimit
-	}
-	guestApply := handlers.NewGuestApply(trustedProxies, deps.GuestApplyMetrics, guestLimits, log.Default())
+	guestApply := handlers.NewGuestApply(trustedProxies, deps.GuestApplyMetrics, handlers.DefaultGuestApplyLimits(), log.Default())
 	guestApplyRoute := []any{
 		middlewares.OptionalBearer(parseToken),
 		middlewares.AccountAccessGate(deps.AccountAccessGate, deps.AccountAccessMetrics),
 		middlewares.GroupOverage(deps.GroupOverage),
+		guestApply.HideFromEdge,
 	}
 	for _, limit := range guestApply.Limits() {
 		guestApplyRoute = append(guestApplyRoute, limit)

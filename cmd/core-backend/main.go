@@ -141,11 +141,6 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("trusted proxy ranges: %s", trustedProxies)
-	guestApplyIPLimit, err := handlers.ParseGuestApplyLimitMode(os.Getenv(handlers.GuestApplyLimitModeEnv))
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("guest apply per-address limit: %s", guestApplyIPLimit)
 
 	// SIGTERM (Docker's stop) and SIGINT end signals; serve then shuts
 	// down in order (serve.go). A signal during startup is acted on once
@@ -1253,7 +1248,6 @@ func main() {
 		TicketQR:                  ticketQR,
 		TicketPage:                ticketPage,
 		DoorScanMetrics:           doorScans,
-		GuestApplyPublicIPLimit:   guestApplyIPLimit,
 		Dashboard:                 dashboardSvc,
 		GithubActivity:            githubActivity,
 		Consents:                  consents,

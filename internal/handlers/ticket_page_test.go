@@ -53,6 +53,7 @@ func ticketPageApp(t *testing.T) (*fiber.App, ticket.Ticket, *event.MemoryStore,
 	app.Get("/v1/public/tickets/:key", page.Page)
 	app.Get("/v1/public/tickets/:key/qr.png", page.QR)
 	app.Get("/v1/public/tickets/:key/pdf", TicketPDFLimit(), page.PDF)
+	app.Post("/v1/public/tickets/:key/cancel", page.Cancel)
 	return app, applied.Ticket, events, ev
 }
 
@@ -212,5 +213,38 @@ func TestTicketPDFUnavailable(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != fiber.StatusServiceUnavailable || resp.Header.Get("Retry-After") != "30" || !strings.Contains(string(body), "ticket_pdf_unavailable") {
 		t.Fatalf("%d %s", resp.StatusCode, body)
+	}
+}
+
+// The holder cancels from the page (kontenjan-iptal-hatirlatma 03): no
+// body, 200 {"state":"ticket_cancelled"} with nothing of the person, again
+// the same; no-store like the page. An unknown or malformed key is 404.
+func TestTicketPageCancelRoute(t *testing.T) {
+	t.Parallel()
+	app, tk, _, _ := ticketPageApp(t)
+	post := func(path string) (int, string, string) {
+		t.Helper()
+		resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, path, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body), resp.Header.Get("Cache-Control")
+	}
+	path := "/v1/public/tickets/" + tk.AccessKey + "/cancel"
+	for range 2 {
+		status, body, cache := post(path)
+		if status != fiber.StatusOK || body != `{"state":"ticket_cancelled"}` || cache != "no-store" {
+			t.Fatalf("cancel %d %s %q", status, body, cache)
+		}
+	}
+	status, body, _ := getTicketPage(t, app, "/v1/public/tickets/"+tk.AccessKey)
+	if status != fiber.StatusOK || !strings.Contains(body, `"state":"ticket_cancelled"`) || !strings.Contains(body, `"cancellable":false`) {
+		t.Fatalf("page after %d %s", status, body)
+	}
+	for _, key := range []string{"ABCDEFGHIJKLMNOPQRSTUVWXYZ", "nope"} {
+		if status, body, _ := post("/v1/public/tickets/" + key + "/cancel"); status != fiber.StatusNotFound || strings.Contains(body, "Elif") {
+			t.Fatalf("%s: %d %s", key, status, body)
+		}
 	}
 }

@@ -1833,6 +1833,22 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
 			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.promote%'
 		)`,
+	// A Ticket's cancellation mail and the forms answer it came from
+	// (docs/ticket-status-mail.md, docs/form-response-tickets.md): the
+	// queued mail's kind check that takes cancelled, the Ticket's answer
+	// and its index.
+	20261124130000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.ticket_notifications') AND conname = 'ticket_notifications_kind_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%cancelled%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'tickets' AND column_name = 'form_response_id'
+		)
+		AND to_regclass('public.tickets_form_response_idx') IS NOT NULL`,
 	// The door's mode and Venue entry (docs/venue-entry.md): the Event's
 	// entry_mode with its check, the venue_entries table with its one entry
 	// a day, its source check, its two indexes and its writer's guard.

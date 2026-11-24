@@ -40,6 +40,8 @@ func cancelError(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusConflict, "Conflict", "ticket_checked_in")
 	case errors.Is(err, ticket.ErrTicketInCompetition):
 		return problemCode(c, fiber.StatusConflict, "Conflict", "ticket_in_competition")
+	case errors.Is(err, ticket.ErrCancelClosed):
+		return problemCode(c, fiber.StatusConflict, "Conflict", "ticket_cancel_closed")
 	default:
 		return resendError(c, err)
 	}
@@ -47,10 +49,16 @@ func cancelError(c fiber.Ctx, err error) error {
 
 type ticketCancelBody struct {
 	Reason string `json:"reason"`
+	// Notify tells the holder (event.ticket-cancelled while
+	// TICKET_STATUS_MAIL is on); an operator's choice, off when left out.
+	Notify bool `json:"notify"`
 }
 
-// CancelTicket is POST /v1/tickets/{id}/cancel {reason?}: an operator
-// cancels the Ticket. A Ticket already cancelled answers 200 as it is.
+// CancelTicket is POST /v1/tickets/{id}/cancel {reason?, notify?}: the
+// Ticket's holder cancels it themselves (until the Event starts, 409
+// ticket_cancel_closed after; the body is not read for them), or an
+// operator cancels it, telling the holder when notify. A Ticket already
+// cancelled answers 200 as it is.
 func (h *TicketHandler) CancelTicket(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
@@ -66,11 +74,15 @@ func (h *TicketHandler) CancelTicket(c fiber.Ctx) error {
 			return problem(c, fiber.StatusBadRequest, "Bad Request")
 		}
 	}
-	cancelled, err := h.svc.CancelTicket(auditContext(c, p), p, id, body.Reason)
+	cancelled, err := h.svc.CancelTicketTelling(auditContext(c, p), p, id, body.Reason, body.Notify)
 	if err != nil {
 		return cancelError(c, err)
 	}
-	h.logStatus(c, "ticket_cancelled", cancelled)
+	name := "ticket_cancelled"
+	if cancelled.OwnerID != nil && cancelled.OwnerID.String() == p.ID {
+		name = "ticket_cancelled_by_holder"
+	}
+	h.logStatus(c, name, cancelled)
 	return c.JSON(cancelled)
 }
 

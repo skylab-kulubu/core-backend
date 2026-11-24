@@ -81,6 +81,10 @@ func (a *afterCheckIn) CancelTicket(ctx context.Context, p authz.Principal, id u
 	return a.inner.CancelTicket(ctx, p, id, reason)
 }
 
+func (a *afterCheckIn) CancelTicketTelling(ctx context.Context, p authz.Principal, id uuid.UUID, reason string, notify bool) (Ticket, error) {
+	return a.inner.CancelTicketTelling(ctx, p, id, reason, notify)
+}
+
 func (a *afterCheckIn) RestoreTicket(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error) {
 	return a.inner.RestoreTicket(ctx, p, id)
 }

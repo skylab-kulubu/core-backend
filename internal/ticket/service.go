@@ -49,6 +49,11 @@ type Service interface {
 	// CancelTicket and RestoreTicket are an operator's cancellation of a
 	// Ticket and its taking back (docs/ticket-cancellation.md).
 	CancelTicket(ctx context.Context, p authz.Principal, id uuid.UUID, reason string) (Ticket, error)
+	// CancelTicketTelling is POST /v1/tickets/{id}/cancel: the Ticket's
+	// holder cancels it themselves (kontenjan-iptal-hatirlatma 03; reason
+	// and notify are not theirs to give, the holder is always told), an
+	// operator as CancelTicket does, telling the holder when notify.
+	CancelTicketTelling(ctx context.Context, p authz.Principal, id uuid.UUID, reason string, notify bool) (Ticket, error)
 	RestoreTicket(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error)
 	Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error)
 	GetByUserEvent(ctx context.Context, p authz.Principal, userID, eventID uuid.UUID) (Ticket, error)
@@ -754,12 +759,14 @@ func normalizeGuest(g GuestInfo) GuestInfo {
 // ApplyGuest writes the guest Ticket of g's e-mail on the Event, or finds the
 // one already there (docs/guest-apply.md).
 //
-// Only a trusted caller (guestApplyTrusted) gets the Ticket back and may
-// change an existing guest's name or phone number. Anybody else, the
-// token-less forms hop included, gets the zero Ticket and may only fill a
-// detail the stored Ticket lacks: the route is public, and whoever knows a
-// guest's e-mail and a public Event id must not read the guest's phone number
-// or rename them.
+// A token holder must be an operator of the Event (guestApplyTrusted), else
+// ErrForbidden, a service account too: with sign-up open a person's token
+// costs no more than an e-mail address, and a guest Ticket takes a place and
+// mails a stranger. An operator gets the Ticket back and may change an existing guest's name or phone
+// number. The token-less internal hop (the route answers it only off the
+// edge) gets the zero Ticket and may only fill a detail the stored Ticket
+// lacks: whoever knows a guest's e-mail and a public Event id must not read
+// the guest's phone number or rename them.
 func (s *service) ApplyGuest(ctx context.Context, p authz.Principal, eventID uuid.UUID, g GuestInfo) (GuestApplication, error) {
 	return s.ApplyGuestJoining(ctx, p, eventID, g, false)
 }
@@ -794,10 +801,13 @@ func (s *service) ApplyGuestJoining(ctx context.Context, p authz.Principal, even
 			return GuestApplication{}, ErrForbidden
 		}
 	}
+	trusted := s.guestApplyTrusted(p, ev)
+	if p.ID != "" && !trusted {
+		return GuestApplication{}, ErrForbidden
+	}
 	if err := s.openForRegistration(&p, ev, operator); err != nil {
 		return GuestApplication{}, err
 	}
-	trusted := s.guestApplyTrusted(p, ev)
 	a := Admission{Waitlist: joinWaitlist}
 	if operator {
 		a = Admission{Over: true}
@@ -846,20 +856,13 @@ func (s *service) operatorOf(p authz.Principal, ev event.Event) bool {
 			s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign))
 }
 
-// guestApplyTrusted reports whether p may see the Ticket a Guest apply wrote
-// and change an existing guest's details: a product's service identity, or an
-// operator of the Event, that is a person who may update the Event or assign
-// its Tickets (Privileged included). The Event hub's "Katılımcı ekle" is
-// offered to exactly those people.
+// guestApplyTrusted reports whether p may write a guest with a token, see the
+// Ticket a Guest apply wrote and change an existing guest's details: an
+// operator of the Event (operatorOf), the people the Event hub offers
+// "Katılımcı ekle" to. No service account: the forms service reports its
+// answers instead (docs/form-response-tickets.md).
 func (s *service) guestApplyTrusted(p authz.Principal, ev event.Event) bool {
-	if p.Product != "" {
-		return true
-	}
-	if p.ID == "" {
-		return false
-	}
-	return s.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: ev.OwnerTeam}, authz.Update) ||
-		s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign)
+	return s.operatorOf(p, ev)
 }
 
 func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo, trusted bool, a Admission) (GuestApplication, error) {
@@ -967,7 +970,48 @@ func (s *service) MineIncluding(ctx context.Context, p authz.Principal, include 
 		return nil, err
 	}
 	tickets = onlyStatuses(tickets, append([]Status{StatusActive}, include...))
-	return s.withHolderLinks(ctx, s.withFeedbackLinks(ctx, s.withEvents(ctx, tickets))), nil
+	return s.withCancellable(ctx, s.withHolderLinks(ctx, s.withFeedbackLinks(ctx, s.withEvents(ctx, tickets)))), nil
+}
+
+// withCancellable says on each of the holder's Tickets whether they may
+// cancel it now (HolderMayCancel), the check-ins and Entrants read in one
+// query for all of them. When those cannot be read the Tickets say false
+// (the button hides; the route still decides), and a log line naming
+// nobody says so.
+func (s *service) withCancellable(ctx context.Context, tickets []Ticket) []Ticket {
+	if len(tickets) == 0 {
+		return tickets
+	}
+	blocked := map[uuid.UUID]bool{}
+	unread := false
+	if store, ok := s.tickets.(CancelBlockStore); ok {
+		ids := make([]uuid.UUID, len(tickets))
+		for i, t := range tickets {
+			ids[i] = t.ID
+		}
+		got, err := store.CancelBlocked(ctx, ids)
+		if err != nil {
+			s.logger.Printf("tickets: cancellation blocks not read, %d tickets answered not cancellable: %v", len(tickets), err)
+			unread = true
+		} else {
+			blocked = got
+		}
+	}
+	now := time.Now()
+	events := map[uuid.UUID]*event.Event{}
+	for i := range tickets {
+		t := &tickets[i]
+		ev, seen := events[t.EventID]
+		if !seen {
+			if got, err := s.events.Get(ctx, t.EventID); err == nil {
+				ev = &got
+			}
+			events[t.EventID] = ev
+		}
+		may := !unread && ev != nil && HolderMayCancel(*ev, *t, now, blocked[t.ID])
+		t.Cancellable = &may
+	}
+	return tickets
 }
 
 // withHolderLinks gives the holder's own Tickets their ticket page

@@ -14,7 +14,7 @@ ticket page, the Ticket QR and the desk's code search stand on.
 
 Core draws the access key and the code itself, from `crypto/rand`
 (`internal/ticket/code.go`), on every path that writes a Ticket: Member
-apply, Apply-for-other, Guest apply (the public route, Forms' hop and the
+apply, Apply-for-other, Guest apply (the internal hop and the
 panel's "Katılımcı ekle", a draft's included) and a Forms answer. They all
 go through the store's `Create`. A code another Ticket holds (the unique
 index) is drawn again, up to eight times; a second draw is already rare at
