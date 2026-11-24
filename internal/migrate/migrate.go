@@ -1833,6 +1833,33 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
 			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.promote%'
 		)`,
+	// The door's mode and Venue entry (docs/venue-entry.md): the Event's
+	// entry_mode with its check, the venue_entries table with its one entry
+	// a day, its source check, its two indexes and its writer's guard.
+	20261124150000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'entry_mode'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events') AND conname = 'events_entry_mode_check' AND convalidated
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.venue_entries') AND conname = 'venue_entries_ticket_day_key' AND contype = 'u'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.venue_entries') AND conname = 'venue_entries_source_check' AND convalidated
+		)
+		AND to_regclass('public.venue_entries_event_day_idx') IS NOT NULL
+		AND to_regclass('public.venue_entries_check_in_idx') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.venue_entries') AND tgname = 'venue_entries_require_active_writer' AND NOT tgisinternal
+		)`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
