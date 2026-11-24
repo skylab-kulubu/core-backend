@@ -45,10 +45,14 @@ no script and no `style` attribute. The scene's colours are classes in that
 `<style>`, not `var(--…)` in SVG presentation attributes (`fill=`,
 `stroke=`), which Safari does not resolve.
 
-Scenes come from the error page work (`notes/hata-sayfalari` in the hub),
-prototype v5: 404-A (GECEKODU's desk at 03:47) and 410-A with its labels
-turned to a YıldızJam sign-up link and its counter at zero, so the drawing
-does not contradict the sentence. The 404 copy is v4's as approved; the 410
-sentence ("Etkinlik bitti, bağlantı da onunla kapandı; güncel etkinlikler
-ana sayfada.") is a proposal awaiting approval. When the skylcn `ErrorScene`
-is published the page can be checked against it; it does not depend on it.
+The scenes are skyl.app's own, drawn in the line language of the error page
+prototype v5 (`notes/hata-sayfalari` in the hub) because a short link is
+mostly opened from a poster's QR: 404, a faculty notice board with a SKY LAB
+poster half torn away and its QR's corner on the floor; 410, the same board
+with a new SKYDAYS poster ("tarih: ??", "yakında") pasted over an old ARTLAB
+one whose crossed-out date still shows. Copy: 404 "Bu sayfa yok" / "Afişteki
+bağlantı eksik okunmuş olabilir; QR'ı yeniden okut ya da adresi kontrol
+et."; 410 "Bu bağlantının süresi doldu" / "Etkinlik bitti, bağlantı da
+onunla kapandı; güncel etkinlikler ana sayfada." The torn poster is clipped
+by an in-page `clipPath` (`url(#…)`), which loads nothing. The page does not
+depend on the skylcn `ErrorScene`.

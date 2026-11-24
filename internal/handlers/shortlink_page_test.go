@@ -143,7 +143,11 @@ func TestShortLinkMissPageIsSelfContained(t *testing.T) {
 	}
 	// Safari does not resolve var() in an SVG presentation attribute; the
 	// colours are classes in the one <style>.
-	for _, banned := range []string{"<script", " style=", "<link", "<img", "@import", "url(", "src=", `="var(`} {
+	// url(#…) names the torn poster's clip path in the page itself.
+	if strings.Count(body, "url(") != strings.Count(body, "url(#") {
+		t.Fatal("page loads something by url()")
+	}
+	for _, banned := range []string{"<script", " style=", "<link", "<img", "@import", "src=", `="var(`} {
 		if strings.Contains(body, banned) {
 			t.Fatalf("page holds %q", banned)
 		}
