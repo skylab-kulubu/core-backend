@@ -648,7 +648,7 @@ func (h *TicketHandler) ByUserEvent(c fiber.Ctx) error {
 // logs and browser history.
 const TicketSearchPath = "/v1/tickets/search"
 
-// ticketSearchDeprecation is GET /v1/tickets?email= 's Deprecation header
+// ticketSearchDeprecation is the Deprecation header of GET /v1/tickets?email=
 // (RFC 9745): deprecated since 2026-11-24 00:00 UTC, kept for a while for a
 // client that still sends it.
 const ticketSearchDeprecation = "@1795478400"
