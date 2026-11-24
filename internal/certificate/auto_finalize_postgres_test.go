@@ -3,6 +3,7 @@ package certificate_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -302,5 +303,46 @@ func TestPostgresAutoFinalizeSkipsAFailingEvent(t *testing.T) {
 	}
 	if source, _, batches := f.closed(t, broken); source != certificate.FinalizedAuto || len(batches) != 1 {
 		t.Fatalf("broken after the fix: %q %v", source, batches)
+	}
+}
+
+// An Event with no live Session closes an hour after its own end once
+// someone entered it, and certifies who did (docs/certificate-rule.md, "An
+// Event with no Session"); its certificates carry no attendance snapshot.
+// One nobody entered is left alone (TestPostgresAutoFinalizeSchedule).
+func TestPostgresAutoFinalizeSessionless(t *testing.T) {
+	ctx := context.Background()
+	f := newPGAuto(t)
+	five := time.Date(2031, 3, 14, 17, 0, 0, 0, time.UTC)
+	id := f.create(t, autoEvent{name: "Buluşma", rule: certificate.RuleCount, status: event.StatusPublished, auto: true})
+	if _, err := f.pool.Exec(ctx, `UPDATE events SET start_date = $2, end_date = $3 WHERE id = $1`, id, five.Add(-3*time.Hour), five); err != nil {
+		t.Fatal(err)
+	}
+	entered, absent := uuid.New(), uuid.New()
+	for i, ticketID := range []uuid.UUID{entered, absent} {
+		if _, err := f.pool.Exec(ctx, `INSERT INTO tickets (id, event_id, ticket_type, guest_first_name, guest_last_name, guest_email) VALUES ($1, $2, 'GUEST', 'Ayşe', 'Yılmaz', $3)`, ticketID, id, fmt.Sprintf("ayse%d@example.com", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.pool.Exec(ctx, `INSERT INTO venue_entries (id, ticket_id, event_id, entry_date, source) VALUES ($1, $2, $3, '2031-03-14', 'scan')`, uuid.New(), entered, id); err != nil {
+		t.Fatal(err)
+	}
+	attendance, err := certificate.NewPostgresStore(f.pool).EventAttendance(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !attendance.Sessionless || attendance.CountedTotal != 1 || attendance.LastSessionEnd == nil || !attendance.LastSessionEnd.Equal(five) {
+		t.Fatalf("attendance %+v", attendance)
+	}
+	result, err := f.svc.AutoFinalize(ctx, five.Add(59*time.Minute))
+	if err != nil || result.Finalized != 0 {
+		t.Fatalf("17:59: %v %+v", err, result)
+	}
+	result, err = f.svc.AutoFinalize(ctx, five.Add(time.Hour))
+	if err != nil || result.Finalized != 1 || len(result.Errors) != 0 {
+		t.Fatalf("18:00: %v %+v", err, result)
+	}
+	if source, _, batches := f.closed(t, id); source != certificate.FinalizedAuto || strings.Join(batches, ",") != "finalization/system/1" {
+		t.Fatalf("closed %q %v", source, batches)
 	}
 }

@@ -81,6 +81,7 @@ func (s *service) Summary(ctx context.Context, p authz.Principal, eventID uuid.U
 		EventID: eventID, EligibleCount: eligibleCount, IssuedCount: issued, RevokedCount: revoked,
 		QueuedCount: queued, FailedCount: failed, Resolution: s.projectResolution(p, resolution),
 		CountedTotal: attendance.CountedTotal, EffectiveMin: event.RuleMin(ev, attendance.CountedTotal), BelowCount: belowCount,
+		Sessionless:     attendance.Sessionless,
 		AutoFinalizeAt:  autoFinalizeAt(ev, attendance, finalization != nil, time.Now()),
 		MailQueuedCount: mailQueued, MailFailedCount: mailFailed,
 	}
@@ -116,7 +117,7 @@ func (s *service) Attendance(ctx context.Context, p authz.Principal, eventID uui
 	}
 	out := AttendanceList{
 		CountedTotal: attendance.CountedTotal, EffectiveMin: event.RuleMin(ev, attendance.CountedTotal), Rule: ev.AttendanceRule,
-		Required: attendance.Required, Rows: make([]AttendanceRow, 0, len(attendance.Tickets)),
+		Sessionless: attendance.Sessionless, Required: attendance.Required, Rows: make([]AttendanceRow, 0, len(attendance.Tickets)),
 	}
 	for _, item := range attendance.Tickets {
 		eligible := ticketEligible(ev, attendance, item)
