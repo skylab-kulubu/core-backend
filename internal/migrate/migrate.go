@@ -1833,6 +1833,15 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
 			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.promote%'
 		)`,
+	// The reminder the day before an Event (docs/event-reminder.md): its two
+	// tables and the queue's three indexes.
+	20261124140000: `
+		SELECT 1
+		WHERE to_regclass('public.event_reminders') IS NOT NULL
+		  AND to_regclass('public.event_reminder_mails') IS NOT NULL
+		  AND to_regclass('public.event_reminder_mails_due_idx') IS NOT NULL
+		  AND to_regclass('public.event_reminder_mails_event_idx') IS NOT NULL
+		  AND to_regclass('public.event_reminder_mails_attempted_idx') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

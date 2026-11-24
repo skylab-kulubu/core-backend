@@ -36,6 +36,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
+	"github.com/skylab-kulubu/core-backend/internal/eventreminder"
 	"github.com/skylab-kulubu/core-backend/internal/eventupdatenotify"
 	"github.com/skylab-kulubu/core-backend/internal/feedback"
 	"github.com/skylab-kulubu/core-backend/internal/googlewallet"
@@ -1049,6 +1050,14 @@ func main() {
 	}
 	worker("ticket notification", startTicketCreatedNotification(workers, ticketNotificationOn, ticketStatusMail, tickets, ticketnotify.NewPostgresQueue(pool), events, users, sky,
 		ticketPageConfig, os.Getenv("PUBLIC_API_ORIGIN"), ticketMailPDF, log.Printf))
+	// The reminder the day before an Event (docs/event-reminder.md):
+	// SkyMail tells its Ticket holders by inbox and e-mail.
+	eventReminder, err := eventReminderFromEnv(os.Getenv, os.LookupEnv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	worker("event reminder", startEventReminder(workers, eventReminder, eventreminder.NewPostgresQueue(pool), events, tickets, users, sky,
+		ticketPageConfig, os.Getenv("PUBLIC_API_ORIGIN"), log.Printf))
 	var eventMapMetrics interface{ Prometheus() string }
 	mapRegions := mapregion.NewPostgresStore(pool)
 	if mapWorker := startEventMaps(workers, worker, render, publicBlobs, mediaStore, mediaPurposes, decodeBudget, mapRegions); mapWorker != nil {
