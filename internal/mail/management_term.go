@@ -25,7 +25,7 @@ func (s *SkyMail) ManagementTermConfigured() bool {
 // queue until SkyMail has taken it (internal/membershipterm). A refusal is
 // warned about in the log with the kind management_term and no recipient.
 func (s *SkyMail) ManagementTerm(ctx context.Context, recipient, fullName string, vars map[string]string) error {
-	if !s.ManagementTermConfigured() || strings.TrimSpace(s.BaseURL) == "" {
+	if !s.ManagementTermConfigured() || s.noBaseURL() {
 		return ErrTemplateUnconfigured
 	}
 	token, err := s.Tokens.Token(ctx)

@@ -47,7 +47,7 @@ func (s *SkyMail) EventStatusConfigured(kind EventStatusKind) bool {
 // no recipient.
 func (s *SkyMail) EventStatus(ctx context.Context, kind EventStatusKind, recipient, fullName string, vars map[string]string) error {
 	key := s.EventStatusTemplateKey(kind)
-	if key == "" || strings.TrimSpace(s.BaseURL) == "" {
+	if key == "" || s.noBaseURL() {
 		return ErrTemplateUnconfigured
 	}
 	token, err := s.Tokens.Token(ctx)

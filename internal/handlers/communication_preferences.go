@@ -94,8 +94,10 @@ type communicationPreferenceBody struct {
 // Update is PUT /v1/users/me/communication-preferences: {"items":
 // [{"category", "channel", "enabled": true|false|null}], "tracking":
 // {"enabled": true|false}}, null forgetting the choice, either part
-// optional but not both. "tracking" is the open and click tracking switch
-// (false turns it off and tells SkyMail). It answers the new screen.
+// optional but not both. "tracking" is the old open and click tracking
+// switch: since B9 (every mail is tracked) it is still checked, true or
+// false, and then ignored, for one release, so an older Account center gets
+// 200. It answers the new screen.
 func (h *CommunicationPreferenceHandler) Update(c fiber.Ctx) error {
 	if !h.svc.Enabled() {
 		return communicationPreferenceError(c, commpref.ErrDisabled)

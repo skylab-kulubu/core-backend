@@ -36,8 +36,10 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
+	"github.com/skylab-kulubu/core-backend/internal/eventreminder"
 	"github.com/skylab-kulubu/core-backend/internal/eventupdatenotify"
 	"github.com/skylab-kulubu/core-backend/internal/feedback"
+	"github.com/skylab-kulubu/core-backend/internal/formsfeed"
 	"github.com/skylab-kulubu/core-backend/internal/googlewallet"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/health"
@@ -141,11 +143,6 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("trusted proxy ranges: %s", trustedProxies)
-	guestApplyIPLimit, err := handlers.ParseGuestApplyLimitMode(os.Getenv(handlers.GuestApplyLimitModeEnv))
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("guest apply per-address limit: %s", guestApplyIPLimit)
 
 	// SIGTERM (Docker's stop) and SIGINT end signals; serve then shuts
 	// down in order (serve.go). A signal during startup is acted on once
@@ -729,19 +726,16 @@ func main() {
 	communicationPreferenceStore := commpref.NewPostgresStore(pool)
 	communicationPreferences := commpref.NewService(communicationPreferenceConfig, communicationPreferenceStore, dir, privilegedRoots)
 	// Open and click tracking (docs/communication-preferences.md,
-	// "Tracking"): the mode, and the worker that tells SkyMail of every
-	// person who turns it off. Neither needs COMMUNICATION_PREFERENCE_KEY.
+	// "Tracking"): the operator's mode. It needs no
+	// COMMUNICATION_PREFERENCE_KEY. Since B9 nobody withdraws: the worker
+	// that told SkyMail of withdrawals is not started, and
+	// COMMUNICATION_TRACKING_WITHDRAWAL_URL is not read.
 	trackingMode, err := commpref.TrackingModeFromEnv(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
 	}
 	communicationPreferences.SetTrackingMode(trackingMode)
-	trackingWithdrawals, trackingWithdrawalURLFrom := newTrackingWithdrawals(os.Getenv, base, realm, communicationPreferenceStore)
-	communicationPreferences.OnTrackingWithdrawn(trackingWithdrawals.Wake)
-	for _, line := range commpref.TrackingStartupLines(trackingMode, trackingWithdrawals.Sending(), trackingWithdrawalURLFrom) {
-		log.Print(line)
-	}
-	worker("tracking withdrawals", trackingWithdrawals.Run(workers, log.Printf))
+	log.Print(commpref.TrackingStartupLine(trackingMode))
 	// App preferences (ADR 0081, docs/app-preferences.md). Without a client
 	// map their routes are not served; the erasure step still deletes a
 	// person's rows.
@@ -895,9 +889,6 @@ func main() {
 	var sky *mail.SkyMail
 	if base != "" && realm != "" && os.Getenv("KEYCLOAK_CLIENT_ID") != "" && os.Getenv("KEYCLOAK_CLIENT_SECRET") != "" {
 		sky = newSkyMail(base, realm, os.Getenv("KEYCLOAK_CLIENT_ID"), os.Getenv("KEYCLOAK_CLIENT_SECRET"), os.Getenv("SKYMAIL_URL"), skyMailTimeout)
-		if notice := mail.DefaultOriginNotice(os.Getenv("SKYMAIL_URL")); notice != "" {
-			log.Print(notice)
-		}
 		sky.TemplateKey = templateKey(os.LookupEnv, "SKYMAIL_WELCOME_TEMPLATE_KEY", mail.DefaultWelcomeTemplateKey)
 		sky.CertificateTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_CERTIFICATE_TEMPLATE_KEY", mail.DefaultCertificateTemplateKey)
 		// The publisher's mail when an Event's attendance closes by itself
@@ -1049,6 +1040,14 @@ func main() {
 	}
 	worker("ticket notification", startTicketCreatedNotification(workers, ticketNotificationOn, ticketStatusMail, tickets, ticketnotify.NewPostgresQueue(pool), events, users, sky,
 		ticketPageConfig, os.Getenv("PUBLIC_API_ORIGIN"), ticketMailPDF, log.Printf))
+	// The reminder the day before an Event (docs/event-reminder.md):
+	// SkyMail tells its Ticket holders by inbox and e-mail.
+	eventReminder, err := eventReminderFromEnv(os.Getenv, os.LookupEnv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	worker("event reminder", startEventReminder(workers, eventReminder, eventreminder.NewPostgresQueue(pool), events, tickets, users, sky,
+		ticketPageConfig, os.Getenv("PUBLIC_API_ORIGIN"), log.Printf))
 	var eventMapMetrics interface{ Prometheus() string }
 	mapRegions := mapregion.NewPostgresStore(pool)
 	if mapWorker := startEventMaps(workers, worker, render, publicBlobs, mediaStore, mediaPurposes, decodeBudget, mapRegions); mapWorker != nil {
@@ -1107,7 +1106,34 @@ func main() {
 		keycloakEventHandling.erase = erasePreferencesIn
 		keycloakEventHandling.wakeTeams = communicationPreferences.WakeTeamCleanup
 	}
-	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, keycloakEventHandling)
+	// core.forms' events (docs/integration-events.md "core.forms"), with
+	// EVENTS_FORMS_ENABLED=true: the HTTP report's Ticket rule, the feedback
+	// invites, the feedback forms' state.
+	// Forms' internal reads (FORMS_INTERNAL_URL, core's service account):
+	// the single answer read of core.forms and the pulls
+	// (docs/form-pulls.md). Events and pulls share one recorder.
+	formsClient := formsClientFromEnv(os.Getenv, base, realm)
+	formsRecorder := &formsfeed.Recorder{
+		Events: events, Record: formsRecordFunc(ticketSvc), States: feedbackInvites.ReportFormState, Logf: log.Printf,
+	}
+	if formsClient != nil {
+		formsRecorder.Forms = formsClient
+	}
+	formsEvents := formsEventsRecorder(os.Getenv, formsClient, formsRecorder)
+	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, keycloakEventHandling, formsEvents)
+	formPulls := formsfeed.NewPostgresPulls(pool)
+	// The pulls share core.forms' switch (EVENTS_FORMS_ENABLED, the one
+	// switch of Forms' integration), whether or not the broker is on.
+	var formPuller *formsfeed.Puller
+	if formsEvents != nil {
+		formPuller = &formsfeed.Puller{Queue: formPulls, Forms: formsClient, Recorder: formsRecorder, Events: events, DB: pool, Logf: log.Printf}
+		worker("form pulls", formPuller.Run(workers))
+	}
+	formBackfills := &formsfeed.Backfills{Events: events, Authz: az, Queue: formPulls, On: formPuller != nil}
+	formsCounters := formsMetrics{puller: formPuller}
+	if formsEvents != nil {
+		formsCounters.recorder = formsRecorder
+	}
 	worker("integration events", eventsStopped)
 	urlSvc := shorturl.NewService(urlStore, az)
 	githubActivity := githubActivityFromEnv(os.Getenv, az, log.Printf)
@@ -1217,6 +1243,7 @@ func main() {
 		FeedbackInvites:        feedbackInvites,
 		FeedbackSender:         feedbackInvites,
 		FeedbackReminders:      feedbackInvites,
+		FormBackfills:          formBackfills,
 		Certificates:           certSvc,
 		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),
 		SkyPassWalletMetrics:   wallet,
@@ -1231,7 +1258,7 @@ func main() {
 		ManagementTerms:        terms,
 		TeamDelegationMetrics:  delegationMetrics,
 		RetentionMetrics:       retentionMetrics,
-		EventsMetrics:          eventsMetrics,
+		EventsMetrics:          joinedMetrics{eventsMetrics, formsCounters},
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,
 		ParseSelfDeleteSudo:    parseSelfDeleteSudo,
@@ -1253,7 +1280,6 @@ func main() {
 		TicketQR:                  ticketQR,
 		TicketPage:                ticketPage,
 		DoorScanMetrics:           doorScans,
-		GuestApplyPublicIPLimit:   guestApplyIPLimit,
 		Dashboard:                 dashboardSvc,
 		GithubActivity:            githubActivity,
 		Consents:                  consents,
@@ -1261,7 +1287,7 @@ func main() {
 		AppPreferences:            appPreferences,
 		Audience:                  newsAudience,
 		Recipients:                recipients,
-		TrackingWithdrawalMetrics: communicationPreferenceMetrics{trackingWithdrawals, communicationPreferences},
+		TrackingWithdrawalMetrics: communicationPreferenceMetrics{communicationPreferences},
 		Readiness:                 readiness,
 		MediaDecodeMetrics:        decodeBudget,
 		MemoryMetrics:             memory,
@@ -1389,15 +1415,14 @@ func accountErasureStartup(getenv func(string) string) (bool, erasure.Config, er
 }
 
 // optionalErasureMetrics keeps a worker that is off from publishing gauges.
-// communicationPreferenceMetrics is the tracking withdrawals' metrics and
-// the deleted teams cleanup's refused runs.
+// communicationPreferenceMetrics is the deleted teams cleanup's refused
+// runs. The tracking withdrawals' metrics went with their worker (B9).
 type communicationPreferenceMetrics struct {
-	withdrawals *commpref.Withdrawals
 	preferences *commpref.Service
 }
 
 func (m communicationPreferenceMetrics) Prometheus() string {
-	return m.withdrawals.Prometheus() + m.preferences.CleanupPrometheus()
+	return m.preferences.CleanupPrometheus()
 }
 
 func optionalErasureMetrics(gauges *account.ErasureGauges) interface{ Prometheus() string } {
@@ -1439,12 +1464,21 @@ const skyMailTimeout = 15 * time.Second
 // token with core's own service account. The token request uses the same
 // client as the post: without one, mail.ClientCredentials falls back to
 // http.DefaultClient, which never gives up, and a hung mail would hold the
-// user sync's pass (and so its lock) or the request that sent it.
+// user sync's pass (and so its lock) or the request that sent it. SKYMAIL_URL
+// has no default: unset, mail is off, startup and every attempt log
+// mail.URLMissingLine and skylab_skymail_url_missing reads 1. Core keeps
+// running.
 func newSkyMail(base, realm, clientID, clientSecret, skyMailURL string, timeout time.Duration) *mail.SkyMail {
+	origin, err := mail.APIOrigin(skyMailURL)
+	missing := err != nil
+	if missing && mail.MarkURLMissing() {
+		log.Print(mail.URLMissingLine)
+	}
 	client := &http.Client{Timeout: timeout}
 	return &mail.SkyMail{
-		BaseURL: mail.APIOrigin(skyMailURL),
-		HTTP:    client,
+		BaseURL:    origin,
+		URLMissing: missing,
+		HTTP:       client,
 		Tokens: mail.ClientCredentials{
 			TokenURL:     base + "/realms/" + realm + "/protocol/openid-connect/token",
 			ClientID:     clientID,
@@ -1452,41 +1486,6 @@ func newSkyMail(base, realm, clientID, clientSecret, skyMailURL string, timeout 
 			HTTP:         client,
 		},
 	}
-}
-
-// newTrackingWithdrawals is the worker that tells SkyMail of tracking
-// withdrawals, with core's own service account (KEYCLOAK_CLIENT_ID, client
-// core) and SkyMail's internal address. Without the address or the client
-// credentials it sends nothing and keeps the queue's gauges. An address
-// that does not read does not stop core either (ACCOUNT_ERASURE_SKYMAIL_URL
-// is read here even while the erasure worker, which checks it for itself,
-// is off): startup warns and the withdrawals wait. It names the variable the
-// address came from.
-func newTrackingWithdrawals(getenv func(string) string, base, realm string, queue commpref.WithdrawalQueue) (*commpref.Withdrawals, string) {
-	address, from, err := commpref.WithdrawalURLFromEnv(getenv)
-	if err != nil {
-		// The error names the variable, never its value.
-		log.Printf("WARNING communication tracking: %v; withdrawals to SkyMail off", err)
-		return commpref.NewWithdrawals(queue, nil), from
-	}
-	clientID := strings.TrimSpace(getenv("KEYCLOAK_CLIENT_ID"))
-	if address == "" || base == "" || realm == "" || clientID == "" || strings.TrimSpace(getenv("KEYCLOAK_CLIENT_SECRET")) == "" {
-		return commpref.NewWithdrawals(queue, nil), from
-	}
-	return commpref.NewWithdrawals(queue, &commpref.SkyMailWithdrawals{
-		BaseURL: address,
-		Tokens: &erasure.ClientCredentials{
-			TokenURL: base + "/realms/" + realm + "/protocol/openid-connect/token",
-			ClientID: clientID,
-			// Read for every token request, never kept (ADR-0050).
-			Secret: func() (string, error) {
-				if secret := strings.TrimSpace(getenv("KEYCLOAK_CLIENT_SECRET")); secret != "" {
-					return secret, nil
-				}
-				return "", errors.New("KEYCLOAK_CLIENT_SECRET is not set")
-			},
-		},
-	}), from
 }
 
 // templateKey reads a SkyMail template key. An unset variable takes the seeded
