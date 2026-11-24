@@ -261,7 +261,7 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 			full++
 			continue
 		case got.ID != uuid.Nil && got.StatusOf() == StatusCancelled:
-			// A pulled answer kept a cancelled Ticket: counted neither way.
+			// A cancelled Ticket the answer did not reopen: counted neither way.
 		case got.ID != uuid.Nil && got.StatusOf() == StatusWaitlisted:
 			waitlisted++
 		case errors.Is(err, ErrTicketWaitlisted):
