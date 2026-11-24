@@ -222,6 +222,12 @@ func (s *MemoryStore) Create(ctx context.Context, e Event) (Event, error) {
 		on := true
 		e.WaitlistEnabled = &on
 	}
+	e.AttendanceWelcomeMail = onUnlessOff(e.AttendanceWelcomeMail)
+	e.AttendanceRecordedMail = onUnlessOff(e.AttendanceRecordedMail)
+	if e.AttendeeNote == nil {
+		e.AttendeeNote = new(string)
+	}
+	e.AttendeeNoteView = nil
 	e.FeedbackMode = feedbackMode(e.FeedbackMode)
 	now := time.Now().UTC()
 	e.RegistrationClosedAt = nil
@@ -256,6 +262,16 @@ func (s *MemoryStore) Update(ctx context.Context, e Event) (Event, error) {
 	if e.WaitlistEnabled == nil {
 		e.WaitlistEnabled = existing.WaitlistEnabled
 	}
+	if e.AttendanceWelcomeMail == nil {
+		e.AttendanceWelcomeMail = existing.AttendanceWelcomeMail
+	}
+	if e.AttendanceRecordedMail == nil {
+		e.AttendanceRecordedMail = existing.AttendanceRecordedMail
+	}
+	if e.AttendeeNote == nil {
+		e.AttendeeNote = existing.AttendeeNote
+	}
+	e.AttendeeNoteView = nil
 	// An update writes neither the status nor what goes with it.
 	e.Status, e.PublishedAt, e.PublishedBy = existing.Status, existing.PublishedAt, existing.PublishedBy
 	reason := existing.CancelReason

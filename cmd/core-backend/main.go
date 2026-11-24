@@ -21,6 +21,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/accessgate"
 	"github.com/skylab-kulubu/core-backend/internal/account"
 	"github.com/skylab-kulubu/core-backend/internal/apppref"
+	"github.com/skylab-kulubu/core-backend/internal/attendancemail"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
@@ -1048,6 +1049,13 @@ func main() {
 	}
 	worker("event reminder", startEventReminder(workers, eventReminder, eventreminder.NewPostgresQueue(pool), events, tickets, users, sky,
 		ticketPageConfig, os.Getenv("PUBLIC_API_ORIGIN"), log.Printf))
+	// The door's mails (docs/attendance-mail.md): "hoş geldin" on the day's
+	// first entry, "katılımın alındı" on each Session Check-in.
+	attendanceMail, err := attendanceMailFromEnv(os.Getenv, os.LookupEnv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	worker("attendance mail", startAttendanceMail(workers, attendanceMail, tickets, attendancemail.NewPostgresQueue(pool), events, users, sky, log.Printf))
 	var eventMapMetrics interface{ Prometheus() string }
 	mapRegions := mapregion.NewPostgresStore(pool)
 	if mapWorker := startEventMaps(workers, worker, render, publicBlobs, mediaStore, mediaPurposes, decodeBudget, mapRegions); mapWorker != nil {

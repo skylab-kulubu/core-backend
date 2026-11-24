@@ -46,11 +46,22 @@ const EventUpdatedType = "event.updated"
 // Idempotency-Key names whatever key is set.
 const EventReminderType = "event.reminder"
 
+// The door's mails (docs/attendance-mail.md): the Notification types (and
+// e-mail template keys) of "hoş geldin" on the day's first entry and of
+// "katılımın alındı" on a Session Check-in, the defaults of
+// SKYMAIL_ATTENDANCE_WELCOME_TEMPLATE_KEY and
+// SKYMAIL_ATTENDANCE_RECORDED_TEMPLATE_KEY.
+const (
+	AttendanceWelcomeType  = "event.attendance-welcome"
+	AttendanceRecordedType = "event.attendance-recorded"
+)
+
 const (
 	kindTicketCreated = "ticket_created"
 	kindEventUpdated  = "event_updated"
 	kindTicketStatus  = "ticket_status"
 	kindEventReminder = "event_reminder"
+	kindAttendance    = "attendance_mail"
 )
 
 // Notification is one POST /v1/notifications (SkyMail docs/notifications.md):
@@ -212,11 +223,25 @@ func (s *SkyMail) EventReminder(ctx context.Context, typ, idempotencyKey string,
 // holder's subject under idempotencyKey, the type's template by address to a
 // guest. A guest's mail that went out with no answer is ErrMaybeDelivered.
 func (s *SkyMail) tellHolder(ctx context.Context, kind, typ, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
+	variables := make(map[string]any, len(vars))
+	for name, value := range vars {
+		variables[name] = value
+	}
+	return s.tellHolderVariables(ctx, kind, typ, idempotencyKey, holder, variables, source, expiresAt, attachments)
+}
+
+// AttendanceMail tells a Ticket holder of their scan at the door under the
+// template key typ (AttendanceWelcomeType's or AttendanceRecordedType's
+// key; docs/attendance-mail.md), the way EventReminder tells of tomorrow.
+// Its variables are not all text: the programme and the Sessions are lists,
+// the counts numbers.
+func (s *SkyMail) AttendanceMail(ctx context.Context, typ, idempotencyKey string, holder TicketHolder, vars map[string]any, source NotificationSource, expiresAt *time.Time) error {
+	return s.tellHolderVariables(ctx, kindAttendance, typ, idempotencyKey, holder, vars, source, expiresAt, nil)
+}
+
+// tellHolderVariables is tellHolder with variables of any JSON shape.
+func (s *SkyMail) tellHolderVariables(ctx context.Context, kind, typ, idempotencyKey string, holder TicketHolder, variables map[string]any, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
 	if holder.Sub != uuid.Nil {
-		variables := make(map[string]any, len(vars))
-		for name, value := range vars {
-			variables[name] = value
-		}
 		return s.Notify(ctx, kind, idempotencyKey, Notification{
 			Type:        typ,
 			Recipients:  []NotificationRecipient{{Sub: holder.Sub}},
@@ -233,7 +258,12 @@ func (s *SkyMail) tellHolder(ctx context.Context, kind, typ, idempotencyKey stri
 	if err != nil || token == "" {
 		return &SendError{}
 	}
-	task := template{key: typ}.task(holder.Email, holder.FullName, vars)
+	task := map[string]any{
+		"template_key":        typ,
+		"recipient_email":     holder.Email,
+		"recipient_full_name": holder.FullName,
+		"body_variables":      variables,
+	}
 	if len(attachments) > 0 {
 		task["attachments"] = attachments
 	}

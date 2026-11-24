@@ -146,6 +146,17 @@ func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
 		in.DoorStaffIDs = nil
 	}
 	in.TicketCount, in.WaitlistCount = nil, nil
+	// The attendee note (the venue's Wi-Fi) only to who may edit the Event,
+	// and to who reads its Tickets (DK; Yusuf, 2026-11-25), read-only.
+	in.AttendeeNoteView = nil
+	if p != nil && (s.authz.Allow(*p, resource(in.OwnerTeam), authz.Update) ||
+		s.authz.Allow(*p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: in.OwnerTeam}, authz.Read)) {
+		note := ""
+		if in.AttendeeNote != nil {
+			note = *in.AttendeeNote
+		}
+		in.AttendeeNoteView = &note
+	}
 	if p == nil || !s.authz.Allow(*p, resource(in.OwnerTeam), authz.Update) {
 		in.Files = servableItems(in.Files)
 		in.Videos = servableItems(in.Videos)
@@ -157,6 +168,8 @@ func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
 		on := true
 		in.WaitlistEnabled = &on
 	}
+	in.AttendanceWelcomeMail = onUnlessOff(in.AttendanceWelcomeMail)
+	in.AttendanceRecordedMail = onUnlessOff(in.AttendanceRecordedMail)
 	return in
 }
 
@@ -276,6 +289,9 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (_ Ev
 	if in, err = normalizeExternalRegistration(in); err != nil {
 		return Event{}, err
 	}
+	if in, err = normalizeAttendeeNote(in); err != nil {
+		return Event{}, err
+	}
 	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() || !validEntryMode(in.EntryMode) {
 		return Event{}, ErrInvalid
 	}
@@ -360,6 +376,9 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 		return Event{}, err
 	}
 	if in, err = normalizeExternalRegistration(in); err != nil {
+		return Event{}, err
+	}
+	if in, err = normalizeAttendeeNote(in); err != nil {
 		return Event{}, err
 	}
 	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() || !validEntryMode(in.EntryMode) {
@@ -1011,4 +1030,10 @@ func (s *service) AssignSeason(ctx context.Context, p authz.Principal, eventID u
 	}
 	updated, err := s.store.SetSeason(ctx, eventID, seasonID)
 	return s.detail(ctx, updated, err)
+}
+
+// onUnlessOff is a switch that is on unless it says off: nil is on.
+func onUnlessOff(v *bool) *bool {
+	on := v == nil || *v
+	return &on
 }

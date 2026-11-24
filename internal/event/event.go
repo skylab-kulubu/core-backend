@@ -47,6 +47,21 @@ type Event struct {
 	// but who an operator adds. Nil on a write keeps the stored one (on for
 	// a new Event); the store always answers it. Waitlist reads it.
 	WaitlistEnabled *bool `json:"waitlistEnabled"`
+	// AttendanceWelcomeMail and AttendanceRecordedMail are the organizer's
+	// switches for the door's mails (docs/attendance-mail.md): "hoş geldin"
+	// on the day's first entry, "katılımın alındı" on each Session
+	// Check-in. Nil on a write keeps the stored one (on for a new Event);
+	// the store always answers them.
+	AttendanceWelcomeMail  *bool `json:"attendanceWelcomeMail"`
+	AttendanceRecordedMail *bool `json:"attendanceRecordedMail"`
+	// AttendeeNote is the organizer's note for whoever enters (Wi-Fi, the
+	// way to the room; docs/attendance-mail.md): plain text, at most
+	// AttendeeNoteMax characters, "" for none. Nil on a write keeps the
+	// stored one; the store always answers it. It is never in a JSON answer
+	// by itself: ProjectFor copies it to AttendeeNoteView for who may edit
+	// the Event, so a public answer cannot carry it by mistake.
+	AttendeeNote     *string `json:"-"`
+	AttendeeNoteView *string `json:"attendeeNote,omitempty"`
 	// Full is derived by the store: Capacity > 0 and the active Tickets
 	// fill it. Anyone who sees the Event sees it.
 	Full bool `json:"full"`

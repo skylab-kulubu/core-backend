@@ -3,6 +3,7 @@ package ticket
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -27,7 +28,50 @@ type PostgresStore struct {
 	// notifyStatus queues the ticket status mails (TICKET_STATUS_MAIL,
 	// NotifyStatus): "Bekleme listesindesin" and "Yer açıldı".
 	notifyStatus atomic.Bool
+	// mailWelcome and mailRecorded queue the door's mails
+	// (ATTENDANCE_MAIL, NotifyAttendance; docs/attendance-mail.md) in the
+	// statement that writes the day's Venue entry and the Check-in.
+	mailWelcome  atomic.Bool
+	mailRecorded atomic.Bool
 }
+
+// AttendanceMailDelay is how long after the scan a door's mail is due
+// (docs/attendance-mail.md): the welcome and the Session Check-ins of the
+// same two minutes go as one mail, and an undo within them sends nothing.
+const AttendanceMailDelay = 2 * time.Minute
+
+// NotifyAttendance turns the door's mails on or off: while welcome is on,
+// the statement that writes a Ticket's first Venue entry of a day queues its
+// "hoş geldin" (attendance_mails); while recorded is on, the one that writes
+// a Check-in queues its "katılımın alındı". Each only when the Event's own
+// switch is on.
+func (s *PostgresStore) NotifyAttendance(welcome, recorded bool) {
+	s.mailWelcome.Store(welcome)
+	s.mailRecorded.Store(recorded)
+}
+
+// queueWelcomeSQL queues the welcome of the Venue entry the CTE entry wrote
+// (columns ticket_id, event_id, entry_date) while $welcome is true and the
+// Event's switch is on. One a Ticket a day: a row already there is left,
+// except one dropped (its entry was undone before it went), which the new
+// entry queues again.
+func queueWelcomeSQL(welcome string) string {
+	return `
+		INSERT INTO attendance_mails (id, kind, ticket_id, event_id, entry_date, next_attempt_at)
+		SELECT gen_random_uuid(), 'welcome', entry.ticket_id, entry.event_id, entry.entry_date,
+			now() + ` + attendanceDelaySQL + `
+		FROM entry JOIN events e ON e.id = entry.event_id
+		WHERE ` + welcome + `::boolean AND e.attendance_welcome_mail
+		ON CONFLICT (ticket_id, entry_date) WHERE kind = 'welcome' DO UPDATE SET ` + requeueSQL
+}
+
+// attendanceDelaySQL is AttendanceMailDelay as an interval.
+var attendanceDelaySQL = `interval '` + strconv.Itoa(int(AttendanceMailDelay/time.Second)) + ` seconds'`
+
+// requeueSQL arms a dropped row again for a new scan.
+const requeueSQL = `done_at = NULL, outcome = NULL, attempts = 0, claimed_at = NULL, attempted_at = NULL,
+			created_at = now(), next_attempt_at = EXCLUDED.next_attempt_at
+		WHERE attendance_mails.outcome = 'dropped'`
 
 // NotifyCreated turns the new Ticket's Notification on or off: while on,
 // Create also queues the Ticket in ticket_notifications, in the same
@@ -514,11 +558,22 @@ func (s *PostgresStore) AddCheckIn(ctx context.Context, c CheckIn) (CheckIn, err
 			FROM ci JOIN tickets t ON t.id = ci.ticket_id
 			WHERE $5::date IS NOT NULL
 			ON CONFLICT (ticket_id, entry_date) DO NOTHING
-			RETURNING id
+			RETURNING id, ticket_id, event_id, entry_date
+		), welcome AS (`+queueWelcomeSQL("$8")+`
+		), recorded AS (
+			-- The Check-in's receipt (docs/attendance-mail.md): one a Ticket a
+			-- Session, on the entry's day (the scan's Istanbul day without one).
+			INSERT INTO attendance_mails (id, kind, ticket_id, event_id, entry_date, session_id, next_attempt_at)
+			SELECT gen_random_uuid(), 'recorded', ci.ticket_id, t.event_id,
+				COALESCE($5::date, (now() AT TIME ZONE 'Europe/Istanbul')::date), ci.session_id,
+				now() + `+attendanceDelaySQL+`
+			FROM ci JOIN tickets t ON t.id = ci.ticket_id JOIN events e ON e.id = t.event_id
+			WHERE $9::boolean AND e.attendance_recorded_mail
+			ON CONFLICT (ticket_id, session_id) WHERE kind = 'recorded' DO UPDATE SET `+requeueSQL+`
 		)
 		SELECT ci.id, ci.ticket_id, ci.event_day_id, ci.session_id, ci.created_at, EXISTS (SELECT 1 FROM entry)
 		FROM ci
-	`, c.ID, c.TicketID, c.EventDayID, c.SessionID, date, source, by).Scan(
+	`, c.ID, c.TicketID, c.EventDayID, c.SessionID, date, source, by, s.mailWelcome.Load(), s.mailRecorded.Load()).Scan(
 		&c.ID, &c.TicketID, &c.EventDayID, &c.SessionID, &c.CreatedAt, &c.EntryWritten)
 	if isUnique(err) {
 		return CheckIn{}, ErrConflict
