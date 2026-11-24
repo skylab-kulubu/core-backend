@@ -153,13 +153,17 @@ type CertificateRuleSession struct {
 // finalization switch (AutoFinalize, Event.AttendanceAutoFinalize), and the
 // Sessions.
 type CertificateRule struct {
-	Rule         string                   `json:"rule"`
-	AutoFinalize bool                     `json:"autoFinalize"`
-	Ratio        *float64                 `json:"ratio,omitempty"`
-	MinCount     *int                     `json:"minCount"`
-	EffectiveMin int                      `json:"effectiveMin"`
-	CountedTotal int                      `json:"countedTotal"`
-	Sessions     []CertificateRuleSession `json:"sessions"`
+	Rule         string   `json:"rule"`
+	AutoFinalize bool     `json:"autoFinalize"`
+	Ratio        *float64 `json:"ratio,omitempty"`
+	MinCount     *int     `json:"minCount"`
+	EffectiveMin int      `json:"effectiveMin"`
+	CountedTotal int      `json:"countedTotal"`
+	// Sessionless: the Event has no live Session. The Event itself is then
+	// the one counted unit (CountedTotal 1) and a Venue entry its
+	// attendance (docs/certificate-rule.md, "An Event with no Session").
+	Sessionless bool                     `json:"sessionless"`
+	Sessions    []CertificateRuleSession `json:"sessions"`
 }
 
 // mayReadCertificateRule is whether p may read the Event's rule: who may
@@ -192,12 +196,16 @@ func (s *service) certificateRule(ctx context.Context, e Event) (CertificateRule
 		Rule: attendanceRule(e.AttendanceRule), Ratio: e.AttendanceRatio, MinCount: e.AttendanceMinCount,
 		AutoFinalize: e.AttendanceAutoFinalize, Sessions: []CertificateRuleSession{},
 	}
+	live := 0
 	for _, day := range days {
 		sessions, err := s.store.ListSessions(ctx, day.ID)
 		if err != nil {
 			return CertificateRule{}, err
 		}
 		for _, sess := range sessions {
+			if !sess.Cancelled {
+				live++
+			}
 			out.Sessions = append(out.Sessions, CertificateRuleSession{
 				ID: sess.ID, DayID: day.ID, Title: sess.Title, SessionType: sess.SessionType,
 				StartTime: sess.StartTime, EndTime: sess.EndTime, Cancelled: sess.Cancelled,
@@ -207,6 +215,9 @@ func (s *service) certificateRule(ctx context.Context, e Event) (CertificateRule
 				out.CountedTotal++
 			}
 		}
+	}
+	if live == 0 {
+		out.Sessionless, out.CountedTotal = true, 1
 	}
 	if out.Rule != RuleCount {
 		out.MinCount = nil

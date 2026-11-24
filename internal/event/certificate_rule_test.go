@@ -314,3 +314,21 @@ func TestCopyCarriesTheCertificateRule(t *testing.T) {
 		t.Fatalf("copied marks %v %+v", marks, rule)
 	}
 }
+
+// An Event with no live Session reads sessionless: the Event itself is the
+// one counted unit (N 1, threshold 1) and a Venue entry its attendance; a
+// live Session turns it back (docs/certificate-rule.md).
+func TestCertificateRuleSessionless(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	env := newRuleEnv(t)
+	rule, err := env.svc.CertificateRule(ctx, copyLeader, env.ev.ID)
+	if err != nil || !rule.Sessionless || rule.CountedTotal != 1 || rule.EffectiveMin != 1 {
+		t.Fatalf("no Session: %+v %v", rule, err)
+	}
+	env.session(t, "Açılış", "TALK", event.SessionCertificate{})
+	rule, err = env.svc.CertificateRule(ctx, copyLeader, env.ev.ID)
+	if err != nil || rule.Sessionless || rule.CountedTotal != 1 {
+		t.Fatalf("one Session: %+v %v", rule, err)
+	}
+}
