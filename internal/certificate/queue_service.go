@@ -387,6 +387,10 @@ func (s *service) materializeVersion(ctx context.Context, ev event.Event, item t
 	if err != nil {
 		return Certificate{}, err
 	}
+	attendance, err := s.attendanceSnapshot(ctx, ev.ID, item.ID)
+	if err != nil {
+		return Certificate{}, err
+	}
 	serial, err := newSerial()
 	if err != nil {
 		return Certificate{}, err
@@ -402,7 +406,7 @@ func (s *service) materializeVersion(ctx context.Context, ev event.Event, item t
 		ID: uuid.New(), EventID: ev.ID, TicketID: item.ID, OwnerID: item.OwnerID, Serial: serial,
 		RecipientName: name, RecipientEmail: email, EventName: ev.Name, OwnerTeam: ev.OwnerTeam,
 		VerifyURL: verifyURL, TemplateVersionID: &version.ID, TemplateSource: batch.TemplateSource,
-		PDFSHA256: hex.EncodeToString(sum[:]), BatchID: &batch.ID, JobID: &job.ID,
+		PDFSHA256: hex.EncodeToString(sum[:]), BatchID: &batch.ID, JobID: &job.ID, Attendance: attendance,
 	}
 	legacyPDF := pdf
 	if s.artifacts != nil {

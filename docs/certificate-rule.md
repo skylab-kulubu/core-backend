@@ -112,3 +112,14 @@ An hour (`certificate.AutoFinalizeDelay`) after an Event's **last live Session**
 - `409` while the attendance is open; a draft or cancelled Event refuses it with its reason.
 - Queues, with `reason: "rescan"` in one batch, the Tickets eligible now that have **never had a certificate**: not one with an active certificate, not one whose certificate was revoked (a revocation is deliberate), not one whose latest job is queued or running.
 - `202` with `{"queued": N, "batch": {…}}`; with no one, no batch is opened: `200` with `{"queued": 0}`.
+
+## Attendance snapshot and the public verification
+
+A certificate keeps the attendance it was issued on (`certificates.attended_count`, `counted_total`, `program_minutes`, migration `20261124020000`), read with the rule's own attendance query at the moment it is written, on the queued path and on the immediate (`LegacyImmediate`) one:
+
+- `attended_count`: the Ticket's check-ins on live **counted** Sessions; `counted_total`: N then.
+- `program_minutes`: the sum of `end_time − start_time` (whole minutes) of the counted Sessions it attended. A Session without both times adds 0; one that ends before it starts adds 0. A non-counted Session adds nothing, to either number.
+- A certificate given by hand below the rule carries its real count (S5). A reissue takes the attendance anew; the replaced row keeps its own.
+- The three are NULL together or all set (`>= 0`; `certificates_attendance_snapshot_check`). A certificate issued before the migration keeps NULL: nothing is filled in afterwards (S2).
+
+`GET /v1/public/certificates/{serial}` and `GET /v1/certificates/verify/{serial}` add `"attendance": {"attended": 6, "total": 8, "programMinutes": 540}` (a revoked certificate too); without a snapshot the field is absent. It names no Session, check-in time, manual issue or justification. The PDF, its template fields and `/v1/certificates/me` do not change. Rolling the migration back drops the snapshots taken since.

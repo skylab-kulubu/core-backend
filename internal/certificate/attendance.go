@@ -56,6 +56,10 @@ type TicketAttendance struct {
 	Name string
 	// Attended is the Ticket's check-ins on live counted Sessions.
 	Attended int
+	// ProgramMinutes sums the program length (end − start, in minutes) of
+	// the live counted Sessions it checked in on: a Session without both
+	// times adds 0, one that ends before it starts adds 0.
+	ProgramMinutes int
 	// MissingRequired are the live required Sessions it has no check-in on.
 	MissingRequired []uuid.UUID
 	// Active is its active certificate; Revoked its latest revoked one, only
@@ -215,6 +219,7 @@ func (m memoryAttendance) EventAttendance(ctx context.Context, eventID uuid.UUID
 	}
 	out := Attendance{Required: []RequiredSession{}, Tickets: []TicketAttendance{}}
 	counted := map[uuid.UUID]bool{}
+	minutes := map[uuid.UUID]int{}
 	for _, day := range days {
 		sessions, err := m.events.ListSessions(ctx, day.ID)
 		if err != nil {
@@ -227,6 +232,7 @@ func (m memoryAttendance) EventAttendance(ctx context.Context, eventID uuid.UUID
 			out.addLiveSession(sessionEnds(ev, day, sess))
 			if sess.CertificateCounted {
 				counted[sess.ID] = true
+				minutes[sess.ID] = programMinutes(sess)
 				out.CountedTotal++
 			}
 			if sess.CertificateRequired {
@@ -253,6 +259,7 @@ func (m memoryAttendance) EventAttendance(ctx context.Context, eventID uuid.UUID
 		for _, checkIn := range t.CheckIns {
 			if counted[checkIn.SessionID] && !seen[checkIn.SessionID] {
 				row.Attended++
+				row.ProgramMinutes += minutes[checkIn.SessionID]
 			}
 			seen[checkIn.SessionID] = true
 		}
@@ -305,4 +312,21 @@ func sessionEnds(ev event.Event, day event.Day, sess event.Session) *time.Time {
 	default:
 		return ev.EndsAt()
 	}
+}
+
+// programMinutes is a Session's program length in whole minutes as
+// programMinutesSQL reads it: 0 without both times or when it ends before
+// it starts.
+func programMinutes(sess event.Session) int {
+	if sess.StartTime == nil || sess.EndTime == nil || !sess.EndTime.After(*sess.StartTime) {
+		return 0
+	}
+	return int(sess.EndTime.Sub(*sess.StartTime) / time.Minute)
+}
+
+// snapshotOf is a Ticket's attendance snapshot at its certificate's issue;
+// a Ticket the attendance does not list attended none of the N Sessions.
+func (a Attendance) snapshotOf(ticketID uuid.UUID) *AttendanceSnapshot {
+	row, _ := a.ticketOf(ticketID)
+	return &AttendanceSnapshot{Attended: row.Attended, CountedTotal: a.CountedTotal, ProgramMinutes: row.ProgramMinutes}
 }

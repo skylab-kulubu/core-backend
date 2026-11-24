@@ -215,6 +215,26 @@ type PublicCertificate struct {
 	PDFURL        string     `json:"pdfUrl,omitempty"`
 	IssuedAt      time.Time  `json:"issuedAt"`
 	RevokedAt     *time.Time `json:"revokedAt,omitempty"`
+	// Attendance is the attendance the certificate was issued on, absent
+	// for one issued before core kept it. It names no Session, check-in
+	// time or manual issue.
+	Attendance *PublicAttendance `json:"attendance,omitempty"`
+}
+
+// PublicAttendance is a certificate's attendance as the verification page
+// shows it: "8 oturumdan 6'sı · 9 saat".
+type PublicAttendance struct {
+	Attended       int `json:"attended"`
+	Total          int `json:"total"`
+	ProgramMinutes int `json:"programMinutes"`
+}
+
+// publicAttendance is the snapshot as the public verification answers it.
+func publicAttendance(a *AttendanceSnapshot) *PublicAttendance {
+	if a == nil {
+		return nil
+	}
+	return &PublicAttendance{Attended: a.Attended, Total: a.CountedTotal, ProgramMinutes: a.ProgramMinutes}
 }
 
 type ShareInfo struct {
