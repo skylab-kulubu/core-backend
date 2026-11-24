@@ -95,12 +95,18 @@ Body (optional): `{"reason": "…"}`, at most 500 characters (`400` over).
 - The Ticket's "Biletin hazır" mail still waiting is dropped. Its link and
   QR stay: the page says `ticket_cancelled`, QR and PDF answer `410`.
 - No mail to the holder yet (ticket 04, `TICKET_STATUS_MAIL`).
+- An active Ticket's place goes to the Event's waiting list in the same
+  transaction: the longest waiting is promoted
+  ([event-capacity.md](event-capacity.md)). Cancelling a waitlisted Ticket
+  takes it off the list and frees no place.
 
 ## `POST /v1/tickets/{id}/restore`
 
 Same rights and `409 event_ended`. The Ticket is active again with a new
 access key and the next QR version (the old link answers `404`, the old QR
-`410`; the code stays), and its "Biletin hazır" mail is queued under the
+`410`; the code stays), past the Event's capacity if it must (the answer
+says `overCapacity: true`; [event-capacity.md](event-capacity.md)), and its
+"Biletin hazır" mail is queued under the
 next resend number (`…:r<n>`, [ticket-resend.md](ticket-resend.md); not
 counted against the resend limits' purpose, though the row is in
 `ticket_resends`) while `TICKET_CREATED_NOTIFICATION` is on. An active
@@ -110,7 +116,9 @@ Ticket answers `200` as it is; a waitlisted one is `409 ticket_waitlisted`.
 
 Member apply, Apply-for-other, Guest apply and the forms report find a
 cancelled Ticket of the same person and Event and reopen it, as a restore
-does (new key and QR version, the mail again). Only an active (or
+does (new key and QR version, the mail again), under the Event's capacity
+as a new registration: on a full Event it goes on the waiting list (or is
+refused), from the panel past the capacity ([event-capacity.md](event-capacity.md)). Only an active (or
 waitlisted) Ticket is "already there" (`409`, Guest apply's `existing`).
 A guest Ticket reopened answers as written (`created`; the forms report
 counts it).

@@ -24,6 +24,9 @@ type PostgresStore struct {
 	// statement that writes the Ticket. Set at startup, read by every
 	// request: atomic.
 	notifyCreated atomic.Bool
+	// notifyStatus queues the ticket status mails (TICKET_STATUS_MAIL,
+	// NotifyStatus): "Bekleme listesindesin" and "Yer açıldı".
+	notifyStatus atomic.Bool
 }
 
 // NotifyCreated turns the new Ticket's Notification on or off: while on,

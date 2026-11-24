@@ -138,13 +138,24 @@ func (s *service) CanAssign(p authz.Principal, ownerTeam string) bool {
 // may assign them; its files and videos in full (waiting for their malware
 // scan, or rejected by it with the reason) only to who may edit it, and to
 // anyone else only the ones they can download.
+//
+// The Event's Ticket counts (ticketCount, waitlistCount) only to who may
+// edit it; anyone sees whether it is full (docs/event-capacity.md).
 func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
 	if p == nil || !s.CanAssign(*p, in.OwnerTeam) {
 		in.DoorStaffIDs = nil
 	}
+	in.TicketCount, in.WaitlistCount = nil, nil
 	if p == nil || !s.authz.Allow(*p, resource(in.OwnerTeam), authz.Update) {
 		in.Files = servableItems(in.Files)
 		in.Videos = servableItems(in.Videos)
+	} else {
+		tickets, waitlist := in.ticketCount, in.waitlistCount
+		in.TicketCount, in.WaitlistCount = &tickets, &waitlist
+	}
+	if in.WaitlistEnabled == nil {
+		on := true
+		in.WaitlistEnabled = &on
 	}
 	return in
 }

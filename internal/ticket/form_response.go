@@ -98,6 +98,13 @@ const (
 	// Session's (etkinlik geri bildirim formu, tickets 02 and 03): it writes
 	// no Ticket, whatever its status and whoever answered.
 	FormResponseFeedback FormResponseOutcome = "feedback"
+	// FormResponseWaitlisted is an accepted answer that found every Event
+	// of its form full, and is on the waiting list of at least one
+	// (docs/event-capacity.md): a waitlisted Ticket, a 2xx too.
+	FormResponseWaitlisted FormResponseOutcome = "waitlisted"
+	// FormResponseEventFull is an accepted answer that found every Event of
+	// its form full with the waiting list off: no Ticket, a 2xx too.
+	FormResponseEventFull FormResponseOutcome = "event_full"
 )
 
 // FormResponseResult is what recording a report did.
@@ -129,6 +136,12 @@ type FormResponseResult struct {
 // A guest is written as Guest apply writes one for an untrusted caller: the
 // report carries what an anonymous form filler typed, so it may only fill a
 // detail the stored Ticket lacks and never renames a guest.
+//
+// Each Event decides under its own capacity (docs/event-capacity.md): a
+// full one puts the answer on its waiting list while that is on, else
+// writes nothing. The outcome is FormResponseRecorded when any Event has
+// the person on an active Ticket, else FormResponseWaitlisted when any has
+// them waiting, else FormResponseEventFull.
 func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r FormResponse) (FormResponseResult, error) {
 	if !s.CanRecordFormResponse(p) {
 		return FormResponseResult{}, ErrForbidden
@@ -218,16 +231,37 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		}
 	}
 	result := FormResponseResult{Outcome: FormResponseRecorded, ListingEvents: listed}
+	admission := Admission{Waitlist: true}
+	var active, waitlisted, full int
 	for _, ev := range listing {
 		eventID := ev.ID
 		written := false
+		var got Ticket
 		if r.UserID != nil {
-			_, err = s.applyRegistered(ctx, eventID, *r.UserID)
+			got, err = s.applyRegistered(ctx, eventID, *r.UserID, admission)
 			written = err == nil
+			if errors.Is(err, ErrConflict) || errors.Is(err, ErrTicketWaitlisted) {
+				// The Ticket already there: its status tells the outcome.
+				if existing, getErr := s.tickets.GetByOwnerEvent(ctx, *r.UserID, eventID); getErr == nil {
+					got = existing
+				}
+			}
 		} else {
 			var applied GuestApplication
-			applied, err = s.writeGuest(ctx, eventID, guest, false)
+			applied, err = s.writeGuest(ctx, eventID, guest, false, admission)
 			written = err == nil && applied.Result == GuestCreated
+			got = applied.Ticket
+		}
+		switch {
+		case errors.Is(err, ErrEventFull):
+			full++
+			continue
+		case got.ID != uuid.Nil && got.StatusOf() == StatusWaitlisted:
+			waitlisted++
+		case errors.Is(err, ErrTicketWaitlisted):
+			waitlisted++
+		case err == nil || errors.Is(err, ErrConflict):
+			active++
 		}
 		if err := settledFormResponse(err); err != nil {
 			return FormResponseResult{}, err
@@ -235,6 +269,13 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		if written {
 			result.TicketsWritten++
 		}
+	}
+	switch {
+	case active > 0:
+	case waitlisted > 0:
+		result.Outcome = FormResponseWaitlisted
+	case full > 0:
+		result.Outcome = FormResponseEventFull
 	}
 	return result, nil
 }
@@ -309,10 +350,11 @@ func earlier(a, b time.Time) time.Time {
 }
 
 // settledFormResponse treats as done what sending the report again would not
-// change: a Ticket already there, and a person core cannot find or whose
-// account is blocked or no longer active (erased since they answered).
+// change: a Ticket already there (active or waitlisted), and a person core
+// cannot find or whose account is blocked or no longer active (erased since
+// they answered).
 func settledFormResponse(err error) error {
-	if errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) || errors.Is(err, user.ErrAccountBlocked) {
+	if errors.Is(err, ErrConflict) || errors.Is(err, ErrTicketWaitlisted) || errors.Is(err, ErrNotFound) || errors.Is(err, user.ErrAccountBlocked) {
 		return nil
 	}
 	return err

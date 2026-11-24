@@ -65,7 +65,18 @@ type Queued struct {
 	// Resend is which time the panel sent the Ticket's mail again
 	// (docs/ticket-resend.md): 0 is its first mail.
 	Resend int
+	// Kind is the mail (docs/event-capacity.md): KindCreated ("Biletin
+	// hazır", every row before the waiting list, and the empty kind),
+	// KindWaitlisted or KindPromoted.
+	Kind string
 }
+
+// The kinds of a queued row (ticket_notifications.kind).
+const (
+	KindCreated    = "created"
+	KindWaitlisted = "waitlisted"
+	KindPromoted   = "promoted"
+)
 
 // Queue keeps the Tickets waiting (PostgresQueue: ticket_notifications).
 type Queue interface {
@@ -81,6 +92,13 @@ type Queue interface {
 // Mailer posts the Notification (mail.SkyMail).
 type Mailer interface {
 	TicketCreated(ctx context.Context, idempotencyKey string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time, attachments []mail.Attachment) error
+}
+
+// StatusMailer posts the waiting list's mails (mail.SkyMail): typ is
+// mail.WaitlistJoinedType or mail.WaitlistPromotedType. A Mailer that is
+// not one drops those rows.
+type StatusMailer interface {
+	TicketStatus(ctx context.Context, typ, idempotencyKey string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time, attachments []mail.Attachment) error
 }
 
 // PDFs draws the PDF ticket an access key opens and names it
@@ -187,6 +205,12 @@ func ResendKey(ticketID uuid.UUID, n int) string {
 	return "core:" + mail.TicketCreatedType + ":" + ticketID.String() + ":r" + strconv.Itoa(n)
 }
 
+// StatusKey is the key of a waiting list mail of typ: the Ticket and its QR
+// version, which a reopening raises, so each time on the list is told once.
+func StatusKey(typ string, ticketID uuid.UUID, qrVersion int) string {
+	return "core:" + typ + ":" + ticketID.String() + ":q" + strconv.Itoa(qrVersion)
+}
+
 // Pass sends the due Notifications of one claim.
 func (s *Service) Pass(ctx context.Context) (Report, error) {
 	var report Report
@@ -276,8 +300,25 @@ func (s *Service) deliver(ctx context.Context, q Queued, pdf *bool, report *Repo
 		return 0, err
 	}
 	// A Ticket cancelled (or waitlisted) since it was queued is not ready:
-	// no mail (docs/ticket-cancellation.md).
-	if !t.Active() {
+	// no mail (docs/ticket-cancellation.md). "Bekleme listesindesin" goes
+	// only while the Ticket still waits (docs/event-capacity.md).
+	typ := mail.TicketCreatedType
+	switch q.Kind {
+	case KindWaitlisted:
+		typ = mail.WaitlistJoinedType
+		if t.StatusOf() != ticket.StatusWaitlisted {
+			return dropped, nil
+		}
+	case KindPromoted:
+		typ = mail.WaitlistPromotedType
+		fallthrough
+	default:
+		if !t.Active() {
+			return dropped, nil
+		}
+	}
+	status, _ := s.config.Mail.(StatusMailer)
+	if typ != mail.TicketCreatedType && status == nil {
 		return dropped, nil
 	}
 	ev, err := s.config.Events.GetIncludingArchived(ctx, t.EventID)
@@ -303,7 +344,8 @@ func (s *Service) deliver(ctx context.Context, q Queued, pdf *bool, report *Repo
 		return dropped, nil
 	}
 	var attachments []mail.Attachment
-	if s.config.PDF != nil {
+	// The waiting list's mail carries no ticket: no PDF.
+	if s.config.PDF != nil && q.Kind != KindWaitlisted {
 		attachments, err = s.attachment(ctx, t, ev, pdf)
 		if err != nil {
 			return 0, err
@@ -313,7 +355,19 @@ func (s *Service) deliver(ctx context.Context, q Queued, pdf *bool, report *Repo
 		}
 	}
 	key, vars, source := ResendKey(t.ID, q.Resend), s.vars(ev, t), mail.NotificationSource{Kind: "ticket", Ref: t.ID.String()}
-	err = s.config.Mail.TicketCreated(ctx, key, holder, vars, source, ev.EndDate, attachments)
+	send := func(attachments []mail.Attachment) error {
+		return s.config.Mail.TicketCreated(ctx, key, holder, vars, source, ev.EndDate, attachments)
+	}
+	if typ != mail.TicketCreatedType {
+		key = StatusKey(typ, t.ID, t.QRVersion)
+		if q.Kind == KindWaitlisted {
+			vars = waitlistedVars(vars)
+		}
+		send = func(attachments []mail.Attachment) error {
+			return status.TicketStatus(ctx, typ, key, holder, vars, source, ev.EndDate, attachments)
+		}
+	}
+	err = send(attachments)
 	var refused *mail.SendError
 	if attachments != nil && errors.As(err, &refused) && refused.Permanent() {
 		// SkyMail refused the body with the file (400 attachment.*, say):
@@ -321,7 +375,7 @@ func (s *Service) deliver(ctx context.Context, q Queued, pdf *bool, report *Repo
 		// A refused request leaves no key behind: the same key is free.
 		s.logger.Printf("ticket notification: SkyMail refused the mail with the PDF (%d %s); sent without it", refused.Status, refused.Code)
 		report.PDFSkipped++
-		err = s.config.Mail.TicketCreated(ctx, key, holder, vars, source, ev.EndDate, nil)
+		err = send(nil)
 	}
 	switch {
 	case errors.Is(err, mail.ErrMaybeDelivered):
@@ -420,6 +474,18 @@ func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]string {
 		}
 	}
 	return vars
+}
+
+// waitlistedVars are event.waitlist-joined's variables (skymail-frontend
+// #179): the Event's and TicketUrl, the ticket page where the holder may
+// leave the list (empty without TICKET_PAGE_URL). No QR and no code: a
+// waitlisted Ticket opens no door (its QR answers 410).
+func waitlistedVars(vars map[string]string) map[string]string {
+	out := make(map[string]string, 6)
+	for _, name := range []string{"EventId", "EventName", "EventDate", "OwnerTeam", "Venue", "TicketUrl"} {
+		out[name] = vars[name]
+	}
+	return out
 }
 
 func joinName(first, last string) string {

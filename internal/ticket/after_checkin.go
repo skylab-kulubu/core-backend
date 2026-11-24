@@ -25,6 +25,18 @@ func (a *afterCheckIn) Apply(ctx context.Context, p authz.Principal, eventID uui
 	return a.inner.Apply(ctx, p, eventID)
 }
 
+func (a *afterCheckIn) ApplyJoining(ctx context.Context, p authz.Principal, eventID uuid.UUID, joinWaitlist bool) (Ticket, error) {
+	return a.inner.ApplyJoining(ctx, p, eventID, joinWaitlist)
+}
+
+func (a *afterCheckIn) ApplyGuestJoining(ctx context.Context, p authz.Principal, eventID uuid.UUID, g GuestInfo, joinWaitlist bool) (GuestApplication, error) {
+	return a.inner.ApplyGuestJoining(ctx, p, eventID, g, joinWaitlist)
+}
+
+func (a *afterCheckIn) PromoteTicket(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error) {
+	return a.inner.PromoteTicket(ctx, p, id)
+}
+
 func (a *afterCheckIn) ApplyForOther(ctx context.Context, p authz.Principal, eventID, userID uuid.UUID) (Ticket, error) {
 	return a.inner.ApplyForOther(ctx, p, eventID, userID)
 }

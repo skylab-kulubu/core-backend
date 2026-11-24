@@ -32,14 +32,17 @@ type Patch struct {
 	FormAlias       optional.Field[string]          `json:"formAlias"`
 	ExtraFormURLs   optional.Field[[]EventFormLink] `json:"extraFormUrls"`
 	Capacity        optional.Field[int]             `json:"capacity"`
-	StartDate       optional.Field[*time.Time]      `json:"startDate"`
-	EndDate         optional.Field[*time.Time]      `json:"endDate"`
-	Linkedin        optional.Field[string]          `json:"linkedin"`
-	Ranked          optional.Field[bool]            `json:"ranked"`
-	PrizeInfo       optional.Field[string]          `json:"prizeInfo"`
-	CoverImageID    optional.Field[*uuid.UUID]      `json:"coverImageId"`
-	AttendanceRule  optional.Field[string]          `json:"attendanceRule"`
-	AttendanceRatio optional.Field[*float64]        `json:"attendanceRatio"`
+	// WaitlistEnabled turns the waiting list on or off (null is ErrInvalid;
+	// docs/event-capacity.md).
+	WaitlistEnabled optional.Field[bool]       `json:"waitlistEnabled"`
+	StartDate       optional.Field[*time.Time] `json:"startDate"`
+	EndDate         optional.Field[*time.Time] `json:"endDate"`
+	Linkedin        optional.Field[string]     `json:"linkedin"`
+	Ranked          optional.Field[bool]       `json:"ranked"`
+	PrizeInfo       optional.Field[string]     `json:"prizeInfo"`
+	CoverImageID    optional.Field[*uuid.UUID] `json:"coverImageId"`
+	AttendanceRule  optional.Field[string]     `json:"attendanceRule"`
+	AttendanceRatio optional.Field[*float64]   `json:"attendanceRatio"`
 	// AttendanceMinCount is the count rule's threshold, null for the
 	// default (docs/certificate-rule.md).
 	AttendanceMinCount optional.Field[*int] `json:"attendanceMinCount"`
@@ -94,7 +97,7 @@ func (p Patch) apply(existing Event) (Event, error) {
 	e.LocationLat = p.LocationLat.Or(existing.LocationLat)
 	e.LocationLng = p.LocationLng.Or(existing.LocationLng)
 	e.LocationAddress = p.LocationAddress.Or(existing.LocationAddress)
-	if p.Ranked.Null || p.RegistrationClosed.Null || p.FeedbackMode.Null || p.FeedbackAutoSend.Null || p.AttendanceAutoFinalize.Null {
+	if p.Ranked.Null || p.RegistrationClosed.Null || p.FeedbackMode.Null || p.FeedbackAutoSend.Null || p.AttendanceAutoFinalize.Null || p.WaitlistEnabled.Null {
 		return Event{}, ErrInvalid
 	}
 	if e.FeedbackMode = p.FeedbackMode.Or(existing.FeedbackMode); !e.FeedbackMode.Valid() {
@@ -110,6 +113,10 @@ func (p Patch) apply(existing Event) (Event, error) {
 		e.ExtraFormURLs = append([]EventFormLink{}, p.ExtraFormURLs.Value...)
 	}
 	e.Capacity = p.Capacity.Or(existing.Capacity)
+	if p.WaitlistEnabled.Set {
+		on := p.WaitlistEnabled.Value
+		e.WaitlistEnabled = &on
+	}
 	e.StartDate = p.StartDate.Or(existing.StartDate)
 	e.EndDate = p.EndDate.Or(existing.EndDate)
 	e.Linkedin = p.Linkedin.Or(existing.Linkedin)

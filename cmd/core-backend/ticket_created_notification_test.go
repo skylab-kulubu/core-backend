@@ -64,3 +64,20 @@ func TestTicketPDFAttachmentOn(t *testing.T) {
 		t.Fatal("true must be refused: the value is on or off")
 	}
 }
+
+func TestTicketStatusMailOn(t *testing.T) {
+	for raw, want := range map[string]bool{"": false, "off": false, " on ": true, "on": true} {
+		got, err := ticketStatusMailOn(func(name string) string {
+			if name != "TICKET_STATUS_MAIL" {
+				t.Fatalf("read %s", name)
+			}
+			return raw
+		})
+		if err != nil || got != want {
+			t.Fatalf("%q: %v, %v; want %v", raw, got, err, want)
+		}
+	}
+	if _, err := ticketStatusMailOn(func(string) string { return "true" }); err == nil {
+		t.Fatal("true must be refused: the value is on or off")
+	}
+}
