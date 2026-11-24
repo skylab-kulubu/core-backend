@@ -136,9 +136,10 @@ func (a *Audience) TrackingAvailable() bool {
 // not, with an objection on record or not, makes no difference. Inactive is
 // the erased subject, an account core holds as being erased or erased, or a
 // club member Keycloak has disabled (the snapshot holds the club's members
-// only: a disabled non-Member is not seen and is allowed). Inactive comes
-// before the brake. It reads the audience's snapshot of the tree
-// (AudienceSnapshotTTL).
+// only: a disabled non-Member is not seen and is allowed). The brake
+// (TrackingOptIn) comes first and reads nothing: everyone is tracking_off
+// even while Keycloak does not answer. Otherwise it reads the audience's
+// snapshot of the tree (AudienceSnapshotTTL).
 func (a *Audience) ResolveTracking(ctx context.Context, subjects []uuid.UUID) ([]TrackingDecision, error) {
 	if !a.TrackingAvailable() {
 		return nil, ErrDisabled
@@ -157,6 +158,14 @@ func (a *Audience) ResolveTracking(ctx context.Context, subjects []uuid.UUID) ([
 	if len(subjects) == 0 {
 		return out, nil
 	}
+	// The brake answers without Keycloak or the accounts: it must hold
+	// while they do not answer, when SkyMail would otherwise track everyone.
+	if mode := a.prefs.TrackingMode(); !mode.on() {
+		for _, id := range subjects {
+			out = append(out, TrackingDecision{Subject: id, Reason: TrackingOff})
+		}
+		return out, nil
+	}
 	snap, err := a.snapshot(ctx)
 	if err != nil {
 		return nil, err
@@ -166,16 +175,12 @@ func (a *Audience) ResolveTracking(ctx context.Context, subjects []uuid.UUID) ([
 	if err != nil {
 		return nil, err
 	}
-	mode := a.prefs.TrackingMode()
 	for _, id := range subjects {
 		decision := TrackingDecision{Subject: id}
 		person, inTree := snap.people[id]
-		switch {
-		case id == user.DeletedSubject || accounts[id].Blocked || (inTree && !person.Enabled):
+		if id == user.DeletedSubject || accounts[id].Blocked || (inTree && !person.Enabled) {
 			decision.Reason = TrackingInactive
-		case !mode.on():
-			decision.Reason = TrackingOff
-		default:
+		} else {
 			decision.Allowed = true
 		}
 		out = append(out, decision)

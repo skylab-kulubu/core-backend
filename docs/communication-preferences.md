@@ -365,11 +365,12 @@ every `sub` asked exactly once, in the order asked (`Cache-Control:
 no-store`). At most 1000 subs, each a lower-case hyphenated UUID, once;
 `{"subs": []}` answers `[]`. The first rule that fails is the reason:
 
-1. `inactive`: the erased subject, an account core holds as being erased or
+1. `tracking_off`: the brake (`opt_in`), for everyone. It reads neither
+   Keycloak nor the accounts, so it holds while Keycloak does not answer;
+2. `inactive`: the erased subject, an account core holds as being erased or
    erased, or a club member Keycloak has disabled (the snapshot holds the
    club's members only, so a disabled non-Member is not seen and is
-   allowed);
-2. `tracking_off`: the brake (`opt_in`).
+   allowed; known case, kept on purpose).
 
 Before B9 core also said `preference_off` and `not_member`; it no longer
 does. It reads the News audience's snapshot of the `/UYELER` tree (30 s)
@@ -429,5 +430,5 @@ fail fast); the error names the variable, never a value. Core never falls
 back to another version.
 
 Startup logs `communication preferences: on|off` with the key versions and
-the current one (never a key), `communication tracking:
-mode …` and whether withdrawals reach SkyMail.
+the current one (never a key), and `communication tracking: mode …`
+(a `WARNING` while the brake is on).

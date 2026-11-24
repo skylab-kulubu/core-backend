@@ -35,7 +35,7 @@ func TestTrackingModeFromEnv(t *testing.T) {
 
 // The resolver's table (B9): every active account is tracked, a Member or
 // not, with an objection on record or not; only an inactive account and the
-// brake (opt_in) say no, inactive first. It needs no link key.
+// brake (opt_in) say no, the brake first. It needs no link key.
 func TestResolveTracking(t *testing.T) {
 	f := newAudienceFixture(t, false)
 	// Rows written before B9 change nothing.
@@ -60,7 +60,7 @@ func TestResolveTracking(t *testing.T) {
 			"outsider": "", "service": "", "weblabYK": "", "stranger": "",
 		}},
 		{TrackingOptIn, map[string]TrackingReason{
-			"front": TrackingOff, "air": TrackingOff, "drone": TrackingOff, "disabled": TrackingInactive, "erased": TrackingInactive,
+			"front": TrackingOff, "air": TrackingOff, "drone": TrackingOff, "disabled": TrackingOff, "erased": TrackingOff,
 			"outsider": TrackingOff, "service": TrackingOff, "weblabYK": TrackingOff, "stranger": TrackingOff,
 		}},
 	} {
@@ -103,11 +103,20 @@ func TestResolveTracking(t *testing.T) {
 	if got, err := f.audience.ResolveTracking(context.Background(), nil); err != nil || len(got) != 0 {
 		t.Fatalf("none asked: %v %v", got, err)
 	}
+	f.prefs.SetTrackingMode(TrackingOptOut)
 	f.clock = f.clock.Add(time.Hour)
 	f.kc.fail = errors.New("keycloak down")
 	if _, err := f.audience.ResolveTracking(context.Background(), []uuid.UUID{f.p["front"]}); !errors.Is(err, ErrTeamsUnavailable) {
 		t.Fatalf("keycloak down: %v", err)
 	}
+	// The brake holds without Keycloak: everyone is tracking_off, nothing
+	// is read.
+	f.prefs.SetTrackingMode(TrackingOptIn)
+	if got, err := f.audience.ResolveTracking(context.Background(), []uuid.UUID{f.p["front"], stranger}); err != nil || len(got) != 2 ||
+		got[0].Allowed || got[0].Reason != TrackingOff || got[1].Allowed || got[1].Reason != TrackingOff {
+		t.Fatalf("brake with keycloak down: %+v %v", got, err)
+	}
+	f.prefs.SetTrackingMode(TrackingOptOut)
 	if (&Audience{}).TrackingAvailable() || (*Audience)(nil).TrackingAvailable() {
 		t.Fatal("an audience without a directory answers")
 	}
