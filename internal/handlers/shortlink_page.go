@@ -63,7 +63,7 @@ p.line{margin:8px 0 0;max-width:34ch;font-size:15px;line-height:1.5;color:var(--
 // from a poster's QR. 404: a faculty notice board, a SKY LAB poster half torn
 // away, its QR's corner on the floor. 410: the same board, a new SKYDAYS
 // poster ("tarih: ??", "yakında") pasted over an old ARTLAB one whose
-// crossed-out name and date ("12 Eki") still show.
+// crossed-out name and date ("27 Kasım") still show.
 const shortLinkScene404 = `<svg class="scene" viewBox="0 0 240 180" aria-hidden="true" focusable="false">
 <path class="s" d="M10 160H230"/>
 <rect x="14" y="12" width="212" height="118" rx="4" class="fill-s"/>
@@ -95,8 +95,8 @@ const shortLinkScene410 = `<svg class="scene" viewBox="0 0 240 180" aria-hidden=
 <text x="33" y="52" class="m fi-faint" font-size="4.4" font-weight="700" letter-spacing=".6">SKY LAB</text>
 <path class="d f" d="M33 64H69M33 70H59"/>
 <text x="33" y="88" class="m fi-soft" font-size="6.4" font-weight="700">ARTLAB</text>
-<text x="33" y="98" class="m fi-soft" font-size="6.4" font-weight="700">12 Eki</text>
-<path stroke-width="1.4" class="strike st-alert" d="M31 86H58M31 96H57"/>
+<text x="33" y="98" class="m fi-soft" font-size="6.4" font-weight="700">27 Kasım</text>
+<path stroke-width="1.4" class="strike st-alert" d="M31 86H58M31 96H66"/>
 </g>
 <g transform="rotate(2 122 74)"><path class="fill-s" d="M80 22H164V126H80Z"/>
 <rect class="fi-brand" x="81" y="23" width="82" height="13" stroke="none"/>
