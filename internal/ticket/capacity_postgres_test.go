@@ -15,6 +15,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/testpostgres"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 // capacityPG is a database with the Tickets and Events stores, both mails
@@ -330,5 +331,65 @@ func TestNoPromotionOnceStartedOnPostgres(t *testing.T) {
 	over, _, err := e.store.Promote(ctx, second.ID)
 	if err != nil || !over.OverCapacity {
 		t.Fatalf("over %+v %v", over, err)
+	}
+}
+
+// Erasure (KVKK) cancels the person's waitlisted Tickets, a member's and a
+// guest's, before they lose their holder; promotion never picks a row
+// without a holder (one left by an erasure before this release).
+func TestErasureLeavesTheWaitingListOnPostgres(t *testing.T) {
+	e := newCapacityPG(t)
+	ctx := context.Background()
+	users := user.NewPostgresStore(e.pool)
+	ev := e.event(t, 1, true)
+	first, err := e.store.CreateAdmitted(ctx, guestTicket(ev.ID, 0), ticket.Admission{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghost, err := e.store.CreateAdmitted(ctx, guestTicket(ev.ID, 1), ticket.Admission{Waitlist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A row anonymized while waiting, as before this release.
+	if _, err := e.pool.Exec(ctx, `UPDATE tickets SET guest_first_name = '', guest_last_name = '', guest_email = '', access_key = NULL WHERE id = $1`, ghost.ID); err != nil {
+		t.Fatal(err)
+	}
+	memberID := uuid.New()
+	if _, _, err := user.NewService(users).Ensure(ctx, memberID, user.Profile{Email: "member@example.com", FirstName: "Üye", LastName: "K"}); err != nil {
+		t.Fatal(err)
+	}
+	member, err := e.store.CreateAdmitted(ctx, ticket.Ticket{EventID: ev.ID, TicketType: ticket.Registered, OwnerID: &memberID}, ticket.Admission{Waitlist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := e.store.CreateAdmitted(ctx, guestTicket(ev.ID, 2), ticket.Admission{Waitlist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last, err := e.store.CreateAdmitted(ctx, guestTicket(ev.ID, 3), ticket.Admission{Waitlist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := users.RequestDeletion(ctx, memberID, nil); err != nil {
+		t.Fatal(err)
+	}
+	// The member also applied as a guest with the address of guest 2.
+	if err := users.AnonymizeAccount(ctx, memberID, time.Now().UTC(), []string{"guest2@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []uuid.UUID{member.ID, guest.ID} {
+		got, err := e.store.Get(ctx, id)
+		if err != nil || got.StatusOf() != ticket.StatusCancelled || got.OwnerID != nil || got.GuestEmail != "" {
+			t.Fatalf("erased waiting Ticket %+v %v", got, err)
+		}
+	}
+	if _, _, err := e.store.Cancel(ctx, first.ID, ticket.CancelledByOperator, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := e.store.Get(ctx, ghost.ID); got.StatusOf() != ticket.StatusWaitlisted {
+		t.Fatalf("the holderless row was promoted: %+v", got)
+	}
+	if got, _ := e.store.Get(ctx, last.ID); got.StatusOf() != ticket.StatusActive {
+		t.Fatalf("the place went to %+v, not the next person", got)
 	}
 }

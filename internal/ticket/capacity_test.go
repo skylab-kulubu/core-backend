@@ -379,3 +379,47 @@ func TestReRegistrationOnAFullEventWaits(t *testing.T) {
 		t.Fatalf("restored %+v %v", restored, err)
 	}
 }
+
+// A member already waiting who joins again is told so (409
+// ticket_waitlisted), never "already registered"; the forms report counts
+// the waiting Ticket as there; an operator adding the person promotes them.
+func TestWaitingMemberAppliesAgain(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	e := newCapacityEnv(t, 1, true, true)
+	member := e.member(t)
+	waiting, err := e.svc.ApplyJoining(ctx, member, e.ev.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, join := range []bool{false, true} {
+		if _, err := e.svc.ApplyJoining(ctx, member, e.ev.ID, join); !errors.Is(err, ticket.ErrTicketWaitlisted) || errors.Is(err, ticket.ErrConflict) {
+			t.Fatalf("join %v again: %v", join, err)
+		}
+	}
+	id := uuid.MustParse(member.ID)
+	result, err := e.svc.RecordFormResponse(ctx, formsService, ticket.FormResponse{
+		FormID: e.formID, ResponseID: uuid.New(), Status: ticket.FormResponseAccepted, UserID: &id,
+	})
+	if err != nil || result.Outcome != ticket.FormResponseWaitlisted || result.TicketsWritten != 0 {
+		t.Fatalf("forms report %+v %v", result, err)
+	}
+	added, err := e.svc.ApplyForOther(ctx, weblabLead, e.ev.ID, id)
+	if err != nil || added.ID != waiting.ID || added.StatusOf() != ticket.StatusActive || !added.OverCapacity {
+		t.Fatalf("panel add %+v %v", added, err)
+	}
+}
+
+// A waiting guest added from the panel is promoted too.
+func TestWaitingGuestAddedFromThePanel(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	e := newCapacityEnv(t, 1, true, true)
+	if _, err := e.svc.ApplyGuestJoining(ctx, anonymous, e.ev.ID, ticket.GuestInfo{FirstName: "Ada", LastName: "L", Email: "ada@example.com"}, true); err != nil {
+		t.Fatal(err)
+	}
+	applied, err := e.svc.ApplyGuest(ctx, weblabLead, e.ev.ID, ticket.GuestInfo{FirstName: "Ada", LastName: "L", Email: "ada@example.com"})
+	if err != nil || applied.Ticket.StatusOf() != ticket.StatusActive {
+		t.Fatalf("%+v %v", applied.Ticket, err)
+	}
+}

@@ -240,7 +240,7 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		if r.UserID != nil {
 			got, err = s.applyRegistered(ctx, eventID, *r.UserID, admission)
 			written = err == nil
-			if errors.Is(err, ErrConflict) {
+			if errors.Is(err, ErrConflict) || errors.Is(err, ErrTicketWaitlisted) {
 				// The Ticket already there: its status tells the outcome.
 				if existing, getErr := s.tickets.GetByOwnerEvent(ctx, *r.UserID, eventID); getErr == nil {
 					got = existing
@@ -257,6 +257,8 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 			full++
 			continue
 		case got.ID != uuid.Nil && got.StatusOf() == StatusWaitlisted:
+			waitlisted++
+		case errors.Is(err, ErrTicketWaitlisted):
 			waitlisted++
 		case err == nil || errors.Is(err, ErrConflict):
 			active++
@@ -348,10 +350,11 @@ func earlier(a, b time.Time) time.Time {
 }
 
 // settledFormResponse treats as done what sending the report again would not
-// change: a Ticket already there, and a person core cannot find or whose
-// account is blocked or no longer active (erased since they answered).
+// change: a Ticket already there (active or waitlisted), and a person core
+// cannot find or whose account is blocked or no longer active (erased since
+// they answered).
 func settledFormResponse(err error) error {
-	if errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) || errors.Is(err, user.ErrAccountBlocked) {
+	if errors.Is(err, ErrConflict) || errors.Is(err, ErrTicketWaitlisted) || errors.Is(err, ErrNotFound) || errors.Is(err, user.ErrAccountBlocked) {
 		return nil
 	}
 	return err

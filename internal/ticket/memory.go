@@ -500,7 +500,8 @@ func (s *MemoryStore) promoteLocked(ctx context.Context, eventID uuid.UUID) erro
 	}
 	var waiting []Ticket
 	for _, t := range s.byID {
-		if t.EventID == eventID && t.StatusOf() == StatusWaitlisted {
+		// An erased holder's row (no owner, no address) is nobody.
+		if t.EventID == eventID && t.StatusOf() == StatusWaitlisted && (t.OwnerID != nil || t.GuestEmail != "") {
 			waiting = append(waiting, t)
 		}
 	}

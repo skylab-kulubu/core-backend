@@ -63,6 +63,13 @@ func TestFullEventHTTP(t *testing.T) {
 	if status != fiber.StatusCreated || !strings.Contains(body, `"status":"waitlisted"`) {
 		t.Fatalf("join %d %s", status, body)
 	}
+	// Joining again while waiting: 409 ticket_waitlisted, never a bare 409
+	// that an older sky-app shows as "already registered".
+	for _, body := range []string{"", `{"joinWaitlist":true}`} {
+		if status, got := call(memberApp, apply, body); status != fiber.StatusConflict || !strings.Contains(got, `"code":"ticket_waitlisted"`) {
+			t.Fatalf("again %q: %d %s", body, status, got)
+		}
+	}
 	waiting, err := store.GetByOwnerEvent(ctx, member, ev.ID)
 	if err != nil {
 		t.Fatal(err)

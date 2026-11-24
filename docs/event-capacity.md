@@ -35,6 +35,12 @@ refused), never two active.
 
 - `409 event_full` carries `waitlistEnabled`, so a client offers the list
   only while it is on. Nothing is written.
+- A member already waiting who applies again gets `409 ticket_waitlisted`,
+  never the bare `409` of an active Ticket (an older sky-app shows that as
+  "already registered"). The forms report counts the waiting Ticket as
+  there (`waitlisted`).
+- The panel adding a person who waits (Apply-for-other, the panel's guest)
+  promotes them, past the capacity if it must (`overCapacity: true`).
 - The public Guest apply's answer is told from the Event, not from a Ticket
   the e-mail already holds ([guest-apply.md](guest-apply.md)): an e-mail
   that applied before gets what a new one would, so the answer still does
@@ -65,6 +71,12 @@ Ticket was written), as many as there are free places (all of them once
   Once it starts the list stays as it is (kept, never deleted).
 - Two cancellations at once promote two different people: each waits for
   the Event's lock and counts again.
+- Account erasure (KVKK) cancels the person's waitlisted Tickets (a
+  member's, and the guest Tickets of their addresses) before they lose
+  their holder; promotion skips any row without an owner or an address.
+- The Event's row is locked `FOR NO KEY UPDATE`: the writers of its Tickets
+  queue, rows that only reference the Event do not. The promoted Tickets'
+  mails are queued in one statement.
 - The log says `event <id>: <n> promoted from the waitlist`, naming nobody.
 
 ### "Öne al": `POST /v1/tickets/{id}/promote`

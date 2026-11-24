@@ -660,11 +660,24 @@ func (s *service) resolveApplyTarget(ctx context.Context, userID uuid.UUID) erro
 // applyRegistered writes the member's Ticket on the Event under its
 // capacity (a). One already there is ErrConflict, unless it is cancelled:
 // the member registering again reopens it (new link and QR, its mail again;
-// reopenIfCancelled).
+// reopenIfCancelled). A waitlisted one is ErrTicketWaitlisted (409
+// ticket_waitlisted: an older sky-app must not read it as "already
+// registered"), unless an operator adds the person (a.Over): then it is
+// promoted, past the capacity if it must.
 func (s *service) applyRegistered(ctx context.Context, eventID, ownerID uuid.UUID, a Admission) (Ticket, error) {
 	existing, err := s.tickets.GetByOwnerEvent(ctx, ownerID, eventID)
 	switch {
 	case err == nil:
+		if existing.StatusOf() == StatusWaitlisted {
+			if !a.Over {
+				return Ticket{}, ErrTicketWaitlisted
+			}
+			promoted, err := s.promoteWaiting(ctx, existing)
+			if err != nil {
+				return Ticket{}, err
+			}
+			return s.withEvent(ctx, promoted), nil
+		}
 		reopened, changed, err := s.reopenIfCancelled(ctx, existing, a)
 		if err != nil {
 			return Ticket{}, err
@@ -685,6 +698,18 @@ func (s *service) applyRegistered(ctx context.Context, eventID, ownerID uuid.UUI
 		return Ticket{}, err
 	}
 	return s.withEvent(ctx, created), nil
+}
+
+// promoteWaiting moves a waitlisted Ticket to active for an operator
+// adding its holder from the panel ("Katılımcı ekle" on who waits): as
+// "Öne al", past the capacity if it must, its mail queued.
+func (s *service) promoteWaiting(ctx context.Context, t Ticket) (Ticket, error) {
+	store, err := s.capacityStore()
+	if err != nil {
+		return Ticket{}, err
+	}
+	promoted, _, err := store.Promote(ctx, t.ID)
+	return promoted, err
 }
 
 // create writes t under its Event's capacity (a) on a CapacityStore, as
@@ -838,6 +863,13 @@ func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo
 	}
 	if err != nil {
 		return GuestApplication{}, err
+	}
+	// A waitlisted guest added from the panel is promoted, as a member is
+	// (applyRegistered).
+	if a.Over && existing.StatusOf() == StatusWaitlisted {
+		if existing, err = s.promoteWaiting(ctx, existing); err != nil {
+			return GuestApplication{}, err
+		}
 	}
 	// A cancelled guest Ticket registered again is reopened: written anew,
 	// as far as the caller and the forms report are concerned.

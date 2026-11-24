@@ -92,7 +92,9 @@ type pgxQuerier interface {
 func readCapacity(ctx context.Context, q pgxQuerier, eventID uuid.UUID, lock bool) (Capacity, error) {
 	query := capacitySQL
 	if lock {
-		query += ` FOR UPDATE OF e`
+		// NO KEY UPDATE: the writers of the Event's Tickets queue on it,
+		// while rows that only reference the Event (KEY SHARE) do not.
+		query += ` FOR NO KEY UPDATE OF e`
 	}
 	var c Capacity
 	err := q.QueryRow(ctx, query, eventID).Scan(&c.Capacity, &c.Waitlist, &c.Promotable)
@@ -156,6 +158,36 @@ func QueuePromotedMail(ctx context.Context, tx pgx.Tx, ticketID uuid.UUID, mail 
 	return nil
 }
 
+// queuePromotedMails queues the mails of the Tickets just promoted in one
+// statement per table, however long the list: the Event's lock is not held
+// a row at a time.
+func queuePromotedMails(ctx context.Context, tx pgx.Tx, ids []uuid.UUID, mail PromotionMail) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	switch mail {
+	case PromotionWaitlistPromoted:
+		_, err := tx.Exec(ctx, `
+			INSERT INTO ticket_notifications (ticket_id, kind) SELECT unnest($1::uuid[]), 'promoted'
+			ON CONFLICT (ticket_id) DO UPDATE
+			SET kind = EXCLUDED.kind, resend = 0, created_at = now(), next_attempt_at = now(), attempts = 0, claimed_at = NULL`, ids)
+		return err
+	case PromotionTicketCreated:
+		_, err := tx.Exec(ctx, `
+			WITH numbered AS (
+				INSERT INTO ticket_resends (ticket_id, n, renewed)
+				SELECT id, COALESCE((SELECT max(r.n) FROM ticket_resends r WHERE r.ticket_id = id), 0) + 1, false
+				FROM unnest($1::uuid[]) AS id
+				RETURNING ticket_id, n
+			)
+			INSERT INTO ticket_notifications (ticket_id, resend, kind) SELECT ticket_id, n, 'created' FROM numbered
+			ON CONFLICT (ticket_id) DO UPDATE
+			SET resend = EXCLUDED.resend, kind = EXCLUDED.kind, created_at = now(), next_attempt_at = now(), attempts = 0, claimed_at = NULL`, ids)
+		return err
+	}
+	return nil
+}
+
 // QueueTicketMail queues a Ticket's mail of kind (waitlisted, promoted) in
 // tx: a row still queued for the Ticket is replaced, so a "listedesin" not
 // yet sent gives way to "yer açıldı".
@@ -194,6 +226,9 @@ func PromoteWaitlist(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, mail Pro
 		WITH next AS (
 			SELECT id FROM tickets
 			WHERE event_id = $1 AND status = 'waitlisted'
+				-- An erased holder's row (no owner, no address) is nobody:
+				-- erasure cancels it, and promotion never picks one.
+				AND (owner_id IS NOT NULL OR guest_email <> '')
 			ORDER BY waitlisted_at NULLS LAST, created_at, id
 			LIMIT $2
 			FOR UPDATE
@@ -208,10 +243,8 @@ func PromoteWaitlist(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, mail Pro
 	if err != nil {
 		return nil, err
 	}
-	for _, id := range promoted {
-		if err := QueuePromotedMail(ctx, tx, id, mail); err != nil {
-			return nil, err
-		}
+	if err := queuePromotedMails(ctx, tx, promoted, mail); err != nil {
+		return nil, err
 	}
 	if len(promoted) > 0 {
 		log.Printf("event %s: %d promoted from the waitlist", eventID, len(promoted))
