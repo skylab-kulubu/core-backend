@@ -4,8 +4,8 @@ Some Events take their sign-up on another product's form (Microsoft Forms,
 Google Forms, a spreadsheet) instead of a Skyforms form. Two things serve
 them (Yusuf, 2026-11-24):
 
-- the Event's **external registration link**, where the site's "Kayıt ol"
-  (and later SkyEvents') sends people;
+- the Event's **external registration link**, public, where a "Kayıt ol"
+  (SkyEvents, a page of the site) sends people;
 - the **attendee import**, where an operator turns the list that form
   collected into Tickets, so that the door, the attendance and the
   certificate work for those people as for anyone else.
@@ -28,8 +28,9 @@ Event (lists, the detail, `GET /v1/events/{id}` signed out); an Event
 without one leaves the field out. A copy of the Event does not take it: a
 new form for each Event, as the Skyforms form (event-copy.md).
 
-The link and a Skyforms form may both be set; the site sends "Kayıt ol" to
-the link when there is one.
+The link and a Skyforms form may both be set; a "Kayıt ol" goes to the link
+when there is one. (The site's event cards are CMS entries with a link of
+their own and do not read core's Events, 2026-11-25.)
 
 ## The attendee import
 

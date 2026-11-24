@@ -10,7 +10,7 @@ import (
 
 // An Event's external registration link (docs/attendee-import.md): where
 // people register for an Event whose sign-up runs on another product's form
-// (Microsoft Forms and the like). The site and SkyEvents send "Kayıt ol"
+// (Microsoft Forms and the like). A "Kayıt ol" (SkyEvents) sends people
 // there; the people who registered come back into core as Tickets through
 // the attendee import.
 
