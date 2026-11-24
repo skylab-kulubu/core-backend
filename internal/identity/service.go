@@ -58,6 +58,11 @@ type Service interface {
 	// membership, as AddMember decides, without writing
 	// (membership_decision.go).
 	MembershipWriteDecision(ctx context.Context, p authz.Principal, groupRef string) (MembershipDecision, error)
+	// PrincipalFor is a person's authority now, read from Keycloak instead
+	// of a token, for a decision made when they are not the caller
+	// (principal_for.go). Fail-closed: no active account is ErrForbidden, a
+	// failed read ErrPrincipalUnavailable.
+	PrincipalFor(ctx context.Context, userID uuid.UUID) (authz.Principal, error)
 	// CreateSubTeam opens a Sub-team under a Team (POST
 	// /v1/groups/{id}/children) and ChangeTeamCode changes a Team's code
 	// (PUT /v1/groups/{id}/code): Privileged, or a Leader with delegation on

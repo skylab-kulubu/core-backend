@@ -21,7 +21,7 @@ const partialFull = `{
 	"capacity":120,"startDate":"2030-03-14T16:00:00Z","endDate":"2030-03-15T00:00:00Z",
 	"linkedin":"https://linkedin.com/x","ranked":true,"prizeInfo":"Ödül",
 	"coverImageId":"cccccccc-cccc-cccc-cccc-cccccccccccc",
-	"attendanceRule":"ratio","attendanceRatio":0.5,
+	"attendanceRule":"count","attendanceMinCount":6,
 	"doorStaffIds":["dddddddd-dddd-dddd-dddd-dddddddddddd"],
 	"feedbackMode":"per_session","feedbackFormUrl":"https://forms.yildizskylab.com/f/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
 	"feedbackFormAlias":"gecekodu-geri-bildirim","feedbackAutoSend":false}`
@@ -108,14 +108,17 @@ func TestEventUpdateWritesSentValuesAndClearsNull(t *testing.T) {
 		{"ranked off", `{"ranked":false}`, map[string]any{"ranked": false}},
 		{"prizeInfo cleared", `{"prizeInfo":null}`, map[string]any{"prizeInfo": nil}},
 		{"cover cleared", `{"coverImageId":null}`, map[string]any{"coverImageId": nil}},
-		{"attendance none", `{"attendanceRule":"none","attendanceRatio":null}`, map[string]any{"attendanceRule": "none", "attendanceRatio": nil}},
-		{"attendance rule cleared", `{"attendanceRule":null}`, map[string]any{"attendanceRule": "none"}},
-		{"attendance ratio", `{"attendanceRatio":0.75}`, map[string]any{"attendanceRule": "ratio", "attendanceRatio": 0.75}},
+		{"attendance none", `{"attendanceRule":"none"}`, map[string]any{"attendanceRule": "none", "attendanceMinCount": nil}},
+		{"attendance rule cleared", `{"attendanceRule":null}`, map[string]any{"attendanceRule": "none", "attendanceMinCount": nil}},
+		{"attendance once drops the threshold", `{"attendanceRule":"once","attendanceMinCount":3}`, map[string]any{"attendanceRule": "once", "attendanceMinCount": nil}},
+		{"attendance threshold", `{"attendanceMinCount":4}`, map[string]any{"attendanceMinCount": float64(4)}},
+		{"attendance threshold default", `{"attendanceMinCount":null}`, map[string]any{"attendanceMinCount": nil}},
 		{"door staff cleared", `{"doorStaffIds":null}`, map[string]any{"doorStaffIds": nil}},
 		{"door staff", `{"doorStaffIds":["ffffffff-ffff-ffff-ffff-ffffffffffff"]}`, map[string]any{"doorStaffIds": []any{"ffffffff-ffff-ffff-ffff-ffffffffffff"}}},
 		{"feedback mode", `{"feedbackMode":"event_with_sessions"}`, map[string]any{"feedbackMode": "event_with_sessions"}},
 		{"feedback form cleared", `{"feedbackFormUrl":null,"feedbackFormAlias":null}`, map[string]any{"feedbackFormUrl": nil, "feedbackFormAlias": nil}},
 		{"feedback sent automatically", `{"feedbackAutoSend":true}`, map[string]any{"feedbackAutoSend": true}},
+		{"attendance closed by hand only", `{"attendanceAutoFinalize":false}`, map[string]any{"attendanceAutoFinalize": false}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -154,8 +157,10 @@ func TestEventUpdateRefusesClearingARequiredField(t *testing.T) {
 		`{"location":""}`, `{"location":null}`,
 		`{"ownerTeam":""}`, `{"ownerTeam":null}`,
 		`{"ranked":null}`,
-		`{"feedbackMode":null}`, `{"feedbackMode":"herkes"}`, `{"feedbackAutoSend":null}`,
+		`{"feedbackMode":null}`, `{"feedbackMode":"herkes"}`, `{"feedbackAutoSend":null}`, `{"attendanceAutoFinalize":null}`,
 		`{"attendanceRule":"ratio","attendanceRatio":null}`,
+		`{"attendanceRule":"ratio","attendanceRatio":0.75}`,
+		`{"attendanceMinCount":0}`, `{"attendanceRule":"count","attendanceMinCount":-1}`,
 		`{"capacity":"çok"}`,
 		`{"locationLat":41.05}`, `{"locationLng":null}`, `{"locationLat":95,"locationLng":29}`,
 		`{"locationLat":"kuzey","locationLng":29}`,
@@ -190,7 +195,7 @@ func TestEventUpdateWholeBodyAsSkyApp(t *testing.T) {
 		"description":"Açıklama","formUrl":"https://forms.yildizskylab.com/f/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
 		"linkedin":"https://linkedin.com/x","capacity":120,
 		"coverImageId":"cccccccc-cccc-cccc-cccc-cccccccccccc","ranked":true,"prizeInfo":"Ödül",
-		"attendanceRule":"ratio","attendanceRatio":0.5,"active":false}`)
+		"attendanceRule":"count","active":false}`)
 	if status != fiber.StatusOK {
 		t.Fatalf("%d %v", status, updated)
 	}

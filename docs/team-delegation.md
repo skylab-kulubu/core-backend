@@ -341,6 +341,33 @@ with `actor_basis` `leader` and the Team that grants it. No row, no change:
 The team membership mail goes as before; its `LeaderName` ("İşlemi yapan")
 is now whoever made the change, a Leader too.
 
+### Deciding for someone who is not the caller
+
+An Invitation accepted days after it was sent, an Access request approved,
+an Access review applied at the window's end: each writes as a person who
+is not the caller at that moment, and must not write what that person may
+no longer do. `identity.Service.PrincipalFor` reads the person's authority
+now, the way their token would carry it, with core's service account:
+
+- **Groups:** every Group they are in (`GroupsForUser`, full paths), so a
+  person in more Groups than a token carries (the Group overage,
+  ADR-0059) is read whole.
+- **Roles:** core's client roles they hold in effect
+  (`EffectiveClientRoles` of `core`: direct, through their Groups and the
+  Groups above them, the default roles and composites). This is what a
+  token's `resource_access.core.roles` carries; the Groups' own role
+  mappings alone would miss a role mapped to the person directly or held
+  through a composite.
+- **Account:** an active account of core (not erased or being erased) and
+  enabled in Keycloak; otherwise `ErrForbidden`.
+
+The result goes to the same decisions as a token's
+(`MembershipWriteDecision`: Privileged writer, Privileged reader, Leader,
+Protected group), which read the Leader groups fresh anyway. A read that
+fails is `ErrPrincipalUnavailable` with the zero Principal, which no write
+allows: fail-closed. Nothing is cached. Code:
+`internal/identity/principal_for.go`.
+
 ### Team structure
 
 ADR 0065 ticket 05 (S9, S10). The same three routes serve Privileged on

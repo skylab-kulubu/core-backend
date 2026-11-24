@@ -92,6 +92,11 @@ type Service interface {
 	UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session, cancelled *bool, feedback SessionFeedback) (Session, error)
 	DeleteSession(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	RestoreSession(ctx context.Context, p authz.Principal, id uuid.UUID) (Session, error)
+	// CertificateRule reads the Event's certificate rule and its Sessions'
+	// marks; SetCertificateRule writes them in one transaction
+	// (docs/certificate-rule.md).
+	CertificateRule(ctx context.Context, p authz.Principal, eventID uuid.UUID) (CertificateRule, error)
+	SetCertificateRule(ctx context.Context, p authz.Principal, eventID uuid.UUID, in CertificateRuleInput) (CertificateRule, error)
 	// ListBySeason reads the Season's Events, drafts left out.
 	ListBySeason(ctx context.Context, seasonID uuid.UUID) ([]Event, error)
 	AssignSeason(ctx context.Context, p authz.Principal, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error)
@@ -230,26 +235,6 @@ func (s *service) Get(ctx context.Context, p *authz.Principal, id uuid.UUID) (Ev
 	return s.detail(ctx, e, err)
 }
 
-func normalizeAttendance(in Event) (Event, error) {
-	rule := strings.TrimSpace(strings.ToLower(in.AttendanceRule))
-	if rule == "" {
-		rule = "none"
-	}
-	switch rule {
-	case "none", "once":
-		in.AttendanceRule = rule
-		return in, nil
-	case "ratio":
-		if in.AttendanceRatio == nil || *in.AttendanceRatio <= 0 || *in.AttendanceRatio > 1 {
-			return Event{}, ErrInvalid
-		}
-		in.AttendanceRule = rule
-		return in, nil
-	default:
-		return Event{}, ErrInvalid
-	}
-}
-
 func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (_ Event, err error) {
 	defer func() { err = s.shownTo(&p, err) }()
 	if in.Name == "" || in.Location == "" {
@@ -270,7 +255,7 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (_ Ev
 	if in.Status == StatusPublished {
 		in.PublishedBy = lifecycle.ActorID(p.ID)
 	}
-	in, err = normalizeAttendance(in)
+	in, err = normalizeAttendance(in, nil)
 	if err != nil {
 		return Event{}, err
 	}
@@ -353,7 +338,7 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 	if in.Name == "" || in.Location == "" {
 		return Event{}, ErrInvalid
 	}
-	in, err = normalizeAttendance(in)
+	in, err = normalizeAttendance(in, &existing)
 	if err != nil {
 		return Event{}, err
 	}
@@ -845,6 +830,9 @@ func (s *service) CreateSession(ctx context.Context, p authz.Principal, sess Ses
 	if !s.authz.Allow(p, s.ownerResource(owner, authz.TypeSession), authz.Create) {
 		return Session{}, ErrForbidden
 	}
+	if sess, err = sess.certificateMarks(CountedByDefault(sess.SessionType), false); err != nil {
+		return Session{}, err
+	}
 	sess.FeedbackFormURL, sess.FeedbackFormAlias = strings.TrimSpace(sess.FeedbackFormURL), strings.TrimSpace(sess.FeedbackFormAlias)
 	if err := s.checkSessionFormPlace(ctx, sess); err != nil {
 		return Session{}, err
@@ -886,6 +874,9 @@ func (s *service) UpdateSession(ctx context.Context, p authz.Principal, id uuid.
 		sess.Cancelled = *cancelled
 	}
 	if sess, err = feedback.apply(sess, existing); err != nil {
+		return Session{}, err
+	}
+	if sess, err = sess.certificateMarks(existing.CertificateCounted, existing.CertificateRequired); err != nil {
 		return Session{}, err
 	}
 	if err := validateSession(sess); err != nil {

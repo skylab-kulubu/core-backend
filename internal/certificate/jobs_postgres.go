@@ -10,7 +10,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
-const batchCols = `id,event_id,template_version_id,template_source,reason,status,requested_by,total_count,queued_count,issued_count,failed_count,created_at,started_at,completed_at`
+const batchCols = `id,event_id,template_version_id,template_source,reason,status,requested_by,justification,total_count,queued_count,issued_count,failed_count,created_at,started_at,completed_at`
 const jobCols = `id,batch_id,event_id,ticket_id,status,attempt_count,next_attempt_at,lease_until,error_code,certificate_id,created_at,started_at,completed_at`
 const claimedJobCols = `j.id,j.batch_id,j.event_id,j.ticket_id,j.status,j.attempt_count,j.next_attempt_at,j.lease_until,j.error_code,j.certificate_id,j.created_at,j.started_at,j.completed_at`
 
@@ -24,14 +24,21 @@ func (s *PostgresStore) CreateBatch(ctx context.Context, b Batch, ticketIDs []uu
 	}
 	defer tx.Rollback(ctx)
 	if b.Reason == "finalization" {
-		if _, err := tx.Exec(ctx, `INSERT INTO certificate_event_state (event_id,attendance_finalized_at,attendance_finalized_by) VALUES ($1,now(),$2)`, b.EventID, nullableUUIDPtr(b.RequestedBy)); err != nil {
-			if isUnique(err) {
-				return Batch{}, ErrConflict
-			}
+		// The state row's key (event_id) closes the attendance once: of a
+		// manual and an automatic finalization racing, or of two replicas,
+		// the second writes nothing and queues nothing.
+		tag, err := tx.Exec(ctx, `
+			INSERT INTO certificate_event_state (event_id,attendance_finalized_at,attendance_finalized_by,finalized_source)
+			VALUES ($1,now(),$2,$3) ON CONFLICT (event_id) DO NOTHING`,
+			b.EventID, nullableUUIDPtr(b.RequestedBy), finalizedSource(b))
+		if err != nil {
 			if subjectlock.IsInactiveAccountReference(err) {
 				return Batch{}, ErrForbidden
 			}
 			return Batch{}, err
+		}
+		if tag.RowsAffected() == 0 {
+			return Batch{}, ErrConflict
 		}
 	}
 	b.TotalCount = len(ticketIDs)
@@ -41,17 +48,25 @@ func (s *PostgresStore) CreateBatch(ctx context.Context, b Batch, ticketIDs []uu
 		status = "completed"
 	}
 	err = tx.QueryRow(ctx, `
-		INSERT INTO certificate_batches (id,event_id,template_version_id,template_source,reason,status,requested_by,total_count,queued_count,completed_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,CASE WHEN $8=0 THEN now() END) RETURNING `+batchCols,
-		b.ID, b.EventID, b.TemplateVersionID, b.TemplateSource, b.Reason, status, b.RequestedBy, len(ticketIDs)).Scan(batchScan(&b)...)
+		INSERT INTO certificate_batches (id,event_id,template_version_id,template_source,reason,status,requested_by,total_count,queued_count,completed_at,justification)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,CASE WHEN $8=0 THEN now() END,$9) RETURNING `+batchCols,
+		b.ID, b.EventID, b.TemplateVersionID, b.TemplateSource, b.Reason, status, b.RequestedBy, len(ticketIDs), b.Justification).Scan(batchScan(&b)...)
 	if err != nil {
 		if subjectlock.IsInactiveAccountReference(err) {
 			return Batch{}, ErrForbidden
 		}
 		return Batch{}, err
 	}
-	for _, ticketID := range ticketIDs {
-		if _, err := tx.Exec(ctx, `INSERT INTO certificate_jobs (id,batch_id,event_id,ticket_id) VALUES ($1,$2,$3,$4)`, uuid.New(), b.ID, b.EventID, ticketID); err != nil {
+	if len(ticketIDs) > 0 {
+		// One statement for every job, however many Tickets the batch has.
+		jobIDs := make([]uuid.UUID, len(ticketIDs))
+		for i := range jobIDs {
+			jobIDs[i] = uuid.New()
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO certificate_jobs (id,batch_id,event_id,ticket_id)
+			SELECT j.id, $1, $2, j.ticket_id FROM unnest($3::uuid[], $4::uuid[]) AS j(id, ticket_id)`,
+			b.ID, b.EventID, jobIDs, ticketIDs); err != nil {
 			return Batch{}, err
 		}
 	}
@@ -225,6 +240,19 @@ func (s *PostgresStore) AttendanceFinalizedAt(ctx context.Context, eventID uuid.
 	return &finalized, err
 }
 
+func (s *PostgresStore) AttendanceFinalization(ctx context.Context, eventID uuid.UUID) (*Finalization, error) {
+	var f Finalization
+	err := s.pool.QueryRow(ctx, `SELECT attendance_finalized_at, attendance_finalized_by, finalized_source FROM certificate_event_state WHERE event_id=$1`, eventID).
+		Scan(&f.At, &f.By, &f.Source)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
 func (s *PostgresStore) JobCounts(ctx context.Context, eventID uuid.UUID) (queued, failed int, err error) {
 	err = s.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status IN ('queued','running')),count(*) FILTER (WHERE status='failed') FROM certificate_jobs WHERE event_id=$1`, eventID).Scan(&queued, &failed)
 	return
@@ -242,7 +270,7 @@ func (s *PostgresStore) refreshBatch(ctx context.Context, batchID uuid.UUID) err
 }
 
 func batchScan(b *Batch) []any {
-	return []any{&b.ID, &b.EventID, &b.TemplateVersionID, &b.TemplateSource, &b.Reason, &b.Status, &b.RequestedBy, &b.TotalCount, &b.QueuedCount, &b.IssuedCount, &b.FailedCount, &b.CreatedAt, &b.StartedAt, &b.CompletedAt}
+	return []any{&b.ID, &b.EventID, &b.TemplateVersionID, &b.TemplateSource, &b.Reason, &b.Status, &b.RequestedBy, &b.Justification, &b.TotalCount, &b.QueuedCount, &b.IssuedCount, &b.FailedCount, &b.CreatedAt, &b.StartedAt, &b.CompletedAt}
 }
 
 func jobScan(j *Job) []any {
@@ -261,4 +289,13 @@ func nullableUUIDPtr(id *uuid.UUID) any {
 		return nil
 	}
 	return *id
+}
+
+// finalizedSource is who a finalization batch closes the attendance as:
+// FinalizedManual unless it says FinalizedAuto.
+func finalizedSource(b Batch) string {
+	if b.FinalizedSource == FinalizedAuto {
+		return FinalizedAuto
+	}
+	return FinalizedManual
 }

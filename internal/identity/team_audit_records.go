@@ -89,6 +89,9 @@ type AuditEntry struct {
 	Outcome       string           `json:"outcome"`
 	ErrorCode     string           `json:"errorCode,omitempty"`
 	CorrelationID string           `json:"correlationId,omitempty"`
+	// Via is how the change came (invitation, access_request,
+	// access_review); absent for a direct change.
+	Via string `json:"via,omitempty"`
 }
 
 // AuditPage is a page and the token of the next one ("" on the last).
@@ -152,7 +155,7 @@ func (s *service) TeamAuditRecords(ctx context.Context, p authz.Principal, in Au
 	for _, r := range rows {
 		e := AuditEntry{
 			ID: r.ID, OccurredAt: r.OccurredAt, Action: string(r.Action), Outcome: string(r.Outcome),
-			ErrorCode: r.ErrorCode, CorrelationID: r.Actor.CorrelationID, Before: r.Before, After: r.After,
+			ErrorCode: r.ErrorCode, CorrelationID: r.Actor.CorrelationID, Before: r.Before, After: r.After, Via: string(r.Via),
 			Actor: AuditActor{
 				AuditPerson: AuditPerson{ID: r.Actor.ID, DisplayName: names[r.Actor.ID]},
 				Basis:       string(r.Actor.Basis), ViaGroupID: r.Actor.ViaGroupID, Client: r.Actor.Client,

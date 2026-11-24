@@ -47,9 +47,17 @@ type GuestCheckIn struct {
 
 // DoorQR is a minted door QR for the screen at a Session's door. URL is what
 // the QR encodes; the screen asks for a new one after RefreshAfterSeconds.
+//
+// Use is the token's class ("door" or "display") and MaxUses how many
+// check-ins one token admits. SessionQRMode is SESSION_QR_MODE: in "qr" the
+// static Session QR no longer checks anyone in, so the panel stops offering
+// it.
 type DoorQR struct {
 	Token               string    `json:"token"`
 	URL                 string    `json:"url"`
+	Use                 string    `json:"use"`
+	MaxUses             int       `json:"maxUses"`
+	SessionQRMode       string    `json:"sessionQrMode"`
 	SessionID           uuid.UUID `json:"sessionId"`
 	EventID             uuid.UUID `json:"eventId"`
 	IssuedAt            time.Time `json:"issuedAt"`

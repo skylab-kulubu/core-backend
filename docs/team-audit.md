@@ -42,6 +42,27 @@ it too. So do a Leader's `leader.add` and `leader.remove` (ticket 06,
 Reads are not recorded. A change made in Keycloak's own console is not
 recorded either: core does not see it.
 
+### How a change came (`via`)
+
+A change made directly from the panel has no `via`. A change that came by
+another way carries it (migration `20261123200000`):
+
+| `via` | Rows | Actor |
+|---|---|---|
+| `invitation` | the `member.add` of an accepted Invitation | the person who sent the Invitation |
+| `access_request` | the `member.add` of an approved Access request | the person who approved it |
+| `access_review` | a removal an Access review decided (`member.remove`, `app.unassign`) | the person who decided it |
+
+The actor and the basis are always those of the person who made or decided
+the change, as for a direct one; `via` only says how it came. Every row
+before the column, and every row the release before writes, has none
+(`NULL`). Writes take it from their context (`teamaudit.WithVia`), so the
+same audited writer serves a direct change and the others: a `denied` row
+of such a write carries it too. A row's `via` is written with the row and
+never changes (the finish-only trigger). The Invitation's and the Access
+request's own opening, withdrawal or refusal are not rows: they change no
+Group, and stay on their own rows.
+
 ## Fields
 
 | Column | Holds |
@@ -56,6 +77,7 @@ recorded either: core does not see it.
 | `outcome`, `error_code` | `pending`, `ok`, `failed` or `denied`; a code exactly for `failed` (`not_found`, `invalid`, `forbidden`, `keycloak_<4xx status>`) and `denied` |
 | `correlation_id` | the request's id (`X-Request-ID`); empty when the caller sent one that is not a plain token |
 | `client` | the client the caller's token was issued to (`azp`) |
+| `via` | how the change came: `invitation`, `access_request` or `access_review`; `NULL` for a direct change (above). A code only (CHECK) |
 
 `before` and `after` hold only a Group's id, path, parent id, code (its
 Keycloak name), role names, the `kind` of a leader action, the
@@ -218,6 +240,7 @@ Each item:
 | `successor` | `{id, displayName}` of a `membership.term.handover` row: `after.successorId`, named; `null` otherwise |
 | `group` | `{id, path, currentPath}`: `path` at the time; `currentPath` the Group's path now while it exists, `null` once it is gone. `null` for an app row about a person |
 | `before`, `after` | as the row holds them (the table above); `null` when empty |
+| `via` | `invitation`, `access_request` or `access_review`; absent for a direct change |
 
 Names are read from core's `users` when the page is built: a person whose
 account is erased, blocked or marked for deletion shows as "Silinmiş

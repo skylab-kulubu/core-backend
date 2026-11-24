@@ -645,19 +645,19 @@ func TestService_CheckInMeOwnerAndDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ci, err := svc.CheckInMe(ctx, owner, sess.ID)
+	ci, err := svc.CheckInMe(ctx, owner, sess.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ci.TicketID != tk.ID || ci.SessionID != sess.ID {
 		t.Fatalf("me %+v", ci)
 	}
-	_, err = svc.CheckInMe(ctx, owner, sess.ID)
+	_, err = svc.CheckInMe(ctx, owner, sess.ID, "")
 	if !errors.Is(err, ticket.ErrConflict) {
 		t.Fatalf("dup me: %v", err)
 	}
 	stranger := authz.Principal{ID: uuid.MustParse("88888888-8888-8888-8888-888888888888").String()}
-	_, err = svc.CheckInMe(ctx, stranger, sess.ID)
+	_, err = svc.CheckInMe(ctx, stranger, sess.ID, "")
 	if !errors.Is(err, ticket.ErrNotFound) {
 		t.Fatalf("stranger: %v", err)
 	}
