@@ -777,6 +777,7 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/events/:eventId/certificates/summary", certs.Summary)
 		app.Get("/v1/events/:eventId/certificates/attendance", certs.Attendance)
 		app.Post("/v1/events/:eventId/certificates/rescan", certs.Rescan)
+		app.Post("/v1/events/:eventId/certificates/mail/resend", certs.ResendEventMails)
 		app.Get("/v1/events/:eventId/certificates/template", certs.Resolve)
 		app.Post("/v1/events/:eventId/certificates/preview", certs.PreviewEvent)
 		app.Get("/v1/events/:eventId/certificate-batches", certs.ListBatches)
@@ -797,6 +798,7 @@ func New(deps Deps) *fiber.App {
 		app.Post("/v1/certificate-batches/:id/retry", certs.RetryBatch)
 		app.Post("/v1/certificates/:serial/revoke", certs.Revoke)
 		app.Post("/v1/certificates/:serial/reissue", certs.Reissue)
+		app.Post("/v1/certificates/:serial/mail/resend", certs.ResendMail)
 	}
 	app.Get("/v1/events/:eventId/competitors", competitors.ListByEvent)
 	app.Get("/v1/events/:eventId/competitors/winner", competitors.Winner)
