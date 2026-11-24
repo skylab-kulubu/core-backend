@@ -1027,6 +1027,7 @@ func main() {
 	ticketPage := ticketpage.New(tickets, events, users, ticketQR, ticketPDF,
 		&ticketpage.MediaImages{Media: mediaStore, Blobs: blobs},
 		ticketpage.Config{Page: ticketPageConfig, APIOrigin: os.Getenv("PUBLIC_API_ORIGIN")})
+	ticketPage.Entries = tickets
 	var eventMapMetrics interface{ Prometheus() string }
 	mapRegions := mapregion.NewPostgresStore(pool)
 	if mapWorker := startEventMaps(workers, worker, render, publicBlobs, mediaStore, mediaPurposes, decodeBudget, mapRegions); mapWorker != nil {

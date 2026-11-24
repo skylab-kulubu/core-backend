@@ -450,6 +450,10 @@ func New(deps Deps) *fiber.App {
 		// addresses: a budget of its own, larger.
 		app.Get("/v1/public/tickets/:key/qr.png", perClientLimitOf(trustedProxies, handlers.TicketQRsPerClientMinute), page.QR)
 		app.Get("/v1/public/tickets/:key/pdf", publicTicketLimit, handlers.TicketPDFLimit(), page.PDF)
+		// The page polls its own check-ins on the Event's day: many
+		// holders behind one address at the door, so a large budget per
+		// client and a small one per key.
+		app.Get("/v1/public/tickets/:key/check-ins", perClientLimitOf(trustedProxies, handlers.TicketCheckInsPerClientMinute), handlers.TicketCheckInsLimit(), page.CheckIns)
 	}
 	if pass != nil {
 		app.Get("/v1/skypass/jwks", pass.JWKS)

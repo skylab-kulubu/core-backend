@@ -11,6 +11,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/ticketpage"
@@ -99,5 +100,38 @@ func TestPublicTicketLimitIgnoresAnUnnamedContainer(t *testing.T) {
 	}
 	if status := visitTicket(t, app, "203.0.113.9", "/v1/public/tickets/"+ticketKey); status != fiber.StatusTooManyRequests {
 		t.Fatalf("a header from an unnamed container was believed: status %d", status)
+	}
+}
+
+// The page polls its check-ins every 4 seconds on the Event's day. Many
+// holders at the door share one address, so the route's budget per client
+// is large and the one that holds a page back is per key: the 31st request
+// in a minute for one key is 429, from any address, while another key is
+// still answered. Every answer is no-store.
+func TestTicketCheckInsBudgetIsPerKey(t *testing.T) {
+	t.Parallel()
+	app := ticketPageApp(t, siteProxies(t, "dokploy-traefik,tasks.site", "tasks.site"))
+	path := "/v1/public/tickets/" + ticketKey + "/check-ins"
+	for i := range handlers.TicketCheckInsPerKeyMinute {
+		visitor := netip.AddrFrom4([4]byte{198, 51, 100, byte(i)}).String()
+		request := httptest.NewRequest(fiber.MethodGet, path, nil)
+		request.Header.Set(fiber.HeaderXForwardedFor, visitor)
+		response, err := app.Test(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode == fiber.StatusTooManyRequests {
+			t.Fatalf("request %d was limited early", i+1)
+		}
+		if got := response.Header.Get(fiber.HeaderCacheControl); got != "no-store" {
+			t.Fatalf("Cache-Control %q", got)
+		}
+	}
+	if status := visitTicket(t, app, "203.0.113.9", path); status != fiber.StatusTooManyRequests {
+		t.Fatalf("over the key's budget: status %d, want 429", status)
+	}
+	other := "/v1/public/tickets/ZYXWVUTSRQPONMLKJIHGFEDCBA/check-ins"
+	if status := visitTicket(t, app, "203.0.113.9", other); status == fiber.StatusTooManyRequests {
+		t.Fatal("another key inherited the first one's budget")
 	}
 }
