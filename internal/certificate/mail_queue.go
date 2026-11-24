@@ -36,10 +36,11 @@ const (
 	ResendAll    = "all"
 )
 
-// MaxMailAttempts is how many times a mail is tried while SkyMail is
-// unreachable before it is given up as failed: about four hours with the
-// backoff below (1, 2, 4 … 60 minutes).
-const MaxMailAttempts = 10
+// MailRetryWindow is how long a mail is tried while SkyMail is unreachable,
+// from when it was queued, before it is given up as failed: tries 1, 2,
+// 4 … 60 minutes apart, then hourly. It stays well inside SkyMail's 72-hour
+// Idempotency-Key window, so every try is answered as one mail.
+const MailRetryWindow = 24 * time.Hour
 
 // mailLease is how long one claim holds a mail. A worker that stops
 // mid-send leaves it to the next claim once the lease runs out; SkyMail
@@ -63,7 +64,9 @@ type Mail struct {
 	ErrorCode     string
 	RequestedBy   *uuid.UUID
 	ClaimToken    uuid.UUID
-	Certificate   Certificate
+	// CreatedAt is when it was queued: MailRetryWindow runs from it.
+	CreatedAt   time.Time
+	Certificate Certificate
 }
 
 // MailState is a certificate's latest mail as the panel shows it.
@@ -204,10 +207,11 @@ func (s *service) deliverMail(ctx context.Context, sender CertificateMailer, m M
 			return MailFailed, code, now
 		}
 	}
-	if m.Attempts >= MaxMailAttempts {
+	next := now.Add(mailBackoff(m.Attempts))
+	if next.After(m.CreatedAt.Add(MailRetryWindow)) {
 		return MailFailed, code, now
 	}
-	return MailQueued, code, now.Add(mailBackoff(m.Attempts))
+	return MailQueued, code, next
 }
 
 // mailBackoff is the wait after the attempts-th try: 1, 2, 4 … minutes, at

@@ -212,7 +212,7 @@ func TestCertificateMailQueueRetriesUnderOneKey(t *testing.T) {
 }
 
 // A refused mail fails at once; one SkyMail never answers fails after
-// MaxMailAttempts. "Yeniden gönder" with scope failed queues those alone,
+// MailRetryWindow. "Yeniden gönder" with scope failed queues those alone,
 // under a new key, and pressing it twice queues once.
 func TestCertificateMailResendFailed(t *testing.T) {
 	t.Parallel()
@@ -265,14 +265,23 @@ func TestCertificateMailResendFailed(t *testing.T) {
 		t.Fatalf("resend all %v %+v", err, all)
 	}
 
-	// SkyMail never answers: given up after MaxMailAttempts.
+	// SkyMail never answers: tried again within the window, given up past it.
 	f.mailer.say(&mail.SendError{})
-	for range certificate.MaxMailAttempts {
+	f.store.AgeMails(certificate.MailRetryWindow - 3*time.Hour)
+	for range 3 {
 		f.store.MakeMailsDue()
 		f.process(t)
 	}
 	for serial, state := range f.states(t) {
-		if state.Status != certificate.MailFailed || state.Attempts != certificate.MaxMailAttempts || state.ErrorCode != "skymail_unreachable" {
+		if state.Status != certificate.MailQueued || state.Attempts != 3 {
+			t.Fatalf("%s within the window: %+v", serial, state)
+		}
+	}
+	f.store.AgeMails(3 * time.Hour)
+	f.store.MakeMailsDue()
+	f.process(t)
+	for serial, state := range f.states(t) {
+		if state.Status != certificate.MailFailed || state.Attempts != 4 || state.ErrorCode != "skymail_unreachable" {
 			t.Fatalf("%s given up: %+v", serial, state)
 		}
 	}

@@ -16,7 +16,7 @@ The send time does not change: an automatically closed attendance (an hour after
 | --- | --- |
 | 2xx | `sent`, `sent_at` |
 | 400, 422 (the body is refused) | `failed`, `skymail_<status>` |
-| no answer, 5xx, 401, 403, 404, 409, 429 | queued again after 1, 2, 4 … 60 minutes; `failed` after 10 tries (`MaxMailAttempts`, about four hours), `skymail_unreachable` or `skymail_<status>` |
+| no answer, 5xx, 401, 403, 404, 409, 429 | queued again after 1, 2, 4 … 60 minutes, then hourly; `failed` once the next try would fall more than 24 hours after the mail was queued (`MailRetryWindow`, inside SkyMail's 72-hour key window), `skymail_unreachable` or `skymail_<status>` |
 | no `SKYMAIL_URL`, no template | `failed`, `mail_unconfigured` |
 | the certificate was revoked meanwhile | `cancelled`, `revoked` (nothing is sent) |
 

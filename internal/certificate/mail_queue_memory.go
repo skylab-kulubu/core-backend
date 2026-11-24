@@ -32,7 +32,7 @@ func (s *MemoryStore) EnqueueMail(_ context.Context, m Mail) (bool, error) {
 		}
 	}
 	now := time.Now().UTC()
-	m.Status, m.Attempts, m.ErrorCode, m.ClaimToken, m.Certificate = MailQueued, 0, "", uuid.Nil, Certificate{}
+	m.Status, m.Attempts, m.ErrorCode, m.ClaimToken, m.Certificate, m.CreatedAt = MailQueued, 0, "", uuid.Nil, Certificate{}, now
 	s.mails = append(s.mails, &memoryMail{Mail: m, nextAttempt: now, createdAt: now, updatedAt: now})
 	return true, nil
 }

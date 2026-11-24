@@ -16,6 +16,16 @@ func (s *MemoryStore) ExpireJobLeases() {
 	}
 }
 
+// AgeMails moves every certificate mail's queueing back by d.
+func (s *MemoryStore) AgeMails(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, row := range s.mails {
+		row.createdAt = row.createdAt.Add(-d)
+		row.CreatedAt = row.createdAt
+	}
+}
+
 // MakeMailsDue makes every queued certificate mail due now, as if its
 // backoff had passed.
 func (s *MemoryStore) MakeMailsDue() {
