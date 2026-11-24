@@ -306,3 +306,41 @@ func certificateTemplateCaller(c fiber.Ctx) (authz.Principal, uuid.UUID, error) 
 	}
 	return p, id, nil
 }
+
+// ResendMail queues one certificate's mail again (docs/certificate-mail.md):
+// 202 with what was queued; 409 for a revoked certificate.
+func (h *CertificateHandler) ResendMail(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return certError(c, err)
+	}
+	result, err := h.svc.ResendMail(c.Context(), p, c.Params("serial"))
+	if err != nil {
+		return certError(c, err)
+	}
+	return c.Status(fiber.StatusAccepted).JSON(result)
+}
+
+type resendMailsBody struct {
+	// Scope is "failed" (the certificates whose latest mail failed) or
+	// "all" (every active certificate).
+	Scope string `json:"scope"`
+}
+
+// ResendEventMails queues the Event's certificate mails again: 202 with
+// how many were queued and how many already waited.
+func (h *CertificateHandler) ResendEventMails(c fiber.Ctx) error {
+	p, eventID, err := certificateEventCaller(c)
+	if err != nil {
+		return certError(c, err)
+	}
+	var body resendMailsBody
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	result, err := h.svc.ResendEventMails(c.Context(), p, eventID, body.Scope)
+	if err != nil {
+		return certError(c, err)
+	}
+	return c.Status(fiber.StatusAccepted).JSON(result)
+}

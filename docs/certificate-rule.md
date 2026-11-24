@@ -90,7 +90,7 @@ The batch (`certificate_batches.justification`, migration `20261124000000`) is t
 
 ## Automatic attendance finalization
 
-An hour (`certificate.AutoFinalizeDelay`) after an Event's **last live Session** ends, core closes its attendance by itself, as `POST …/certificates/finalize` does, and queues the eligible Tickets' certificates; the issuance worker issues them and sends the `core.certificate` mail as before.
+An hour (`certificate.AutoFinalizeDelay`) after an Event's **last live Session** ends, core closes its attendance by itself, as `POST …/certificates/finalize` does, and queues the eligible Tickets' certificates; the issuance worker issues them and queues the `core.certificate` mail ([certificate-mail.md](certificate-mail.md)).
 
 - A Session's end is its end time, else its day's end, else the Event's end (the feedback mail's expression). Every live Session counts, counted or not.
 - **Due** when the Event is published and not archived, its rule is not `none`, its switch `attendanceAutoFinalize` is on, its attendance is not closed, it has a live Session, and that end + 1 h is past but no more than 7 days ago (`AutoFinalizeWindow`). An older Event is left to its organizer.

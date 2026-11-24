@@ -41,6 +41,9 @@ type Certificate struct {
 	// Attendance is the attendance it was issued on; nil for a certificate
 	// issued before core kept it. Only the public verification shows it.
 	Attendance *AttendanceSnapshot `json:"-"`
+	// Mail is its latest mail in the Event's list (ListByEvent), nil
+	// elsewhere and for a certificate issued before the queue.
+	Mail *MailState `json:"mail,omitempty"`
 }
 
 // AttendanceSnapshot is a Ticket's attendance at its certificate's issue
@@ -101,6 +104,11 @@ type Service interface {
 	ListBatches(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]Batch, error)
 	RetryBatch(ctx context.Context, p authz.Principal, id uuid.UUID) (Batch, error)
 	ProcessNext(ctx context.Context, limit int) (int, error)
+	// ProcessMails sends due certificate mails (MaintainMails); ResendMail
+	// and ResendEventMails queue them again (docs/certificate-mail.md).
+	ProcessMails(ctx context.Context, limit int) (int, error)
+	ResendMail(ctx context.Context, p authz.Principal, serial string) (MailResend, error)
+	ResendEventMails(ctx context.Context, p authz.Principal, eventID uuid.UUID, scope string) (MailResend, error)
 	ListTemplates(ctx context.Context, p authz.Principal) ([]Template, error)
 	GetTemplate(ctx context.Context, p authz.Principal, id uuid.UUID) (Template, error)
 	CreateTemplate(ctx context.Context, p authz.Principal, in TemplateDraft) (Template, error)
