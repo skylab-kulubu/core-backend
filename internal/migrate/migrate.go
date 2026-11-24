@@ -1849,6 +1849,15 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE table_schema = 'public' AND table_name = 'tickets' AND column_name = 'form_response_id'
 		)
 		AND to_regclass('public.tickets_form_response_idx') IS NOT NULL`,
+	// The reminder the day before an Event (docs/event-reminder.md): its two
+	// tables and the queue's three indexes.
+	20261124140000: `
+		SELECT 1
+		WHERE to_regclass('public.event_reminders') IS NOT NULL
+		  AND to_regclass('public.event_reminder_mails') IS NOT NULL
+		  AND to_regclass('public.event_reminder_mails_due_idx') IS NOT NULL
+		  AND to_regclass('public.event_reminder_mails_event_idx') IS NOT NULL
+		  AND to_regclass('public.event_reminder_mails_attempted_idx') IS NOT NULL`,
 	// The door's mode and Venue entry (docs/venue-entry.md): the Event's
 	// entry_mode with its check, the venue_entries table with its one entry
 	// a day, its source check, its two indexes and its writer's guard.
