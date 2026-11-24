@@ -44,6 +44,7 @@ var routesAheadOfBearer = []string{
 	"GET /v1/public/tickets/:key",
 	"GET /v1/public/tickets/:key/qr.png",
 	"GET /v1/public/tickets/:key/pdf",
+	"GET /v1/public/tickets/:key/check-ins",
 	"GET /v1/skypass/jwks",
 	"GET /v1/door/jwks",
 	"POST /v1/account-deletion-requests/self",

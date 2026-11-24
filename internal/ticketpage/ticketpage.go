@@ -83,6 +83,15 @@ type Service struct {
 	slots   chan struct{}
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
+	// Entries reads what the page polls on the Event's day (CheckIns):
+	// core's Postgres store. Nil answers every key 404.
+	Entries EntryStore
+}
+
+// EntryStore reads a Ticket's own check-ins by its key in one query
+// (ticket.PostgresStore).
+type EntryStore interface {
+	PageCheckIns(ctx context.Context, key string) (ticket.PageCheckIns, error)
 }
 
 // New builds the service. render and images may be nil: no PDF, and a PDF
@@ -283,6 +292,40 @@ func (s *Service) Page(ctx context.Context, key string) (View, error) {
 		v.PDFURL = s.link(key, "/pdf")
 	}
 	return v, nil
+}
+
+// CheckInsView is the JSON of GET /v1/public/tickets/{key}/check-ins: the
+// Ticket's own check-ins, the Session's title and when, oldest first.
+type CheckInsView struct {
+	CheckIns []ticket.PageCheckIn `json:"checkIns"`
+}
+
+// CheckIns is what the ticket page polls while it is open on the Event's
+// day, to greet its holder at the door. The page's own rules, in one query
+// rather than the page's several: 404 for an unknown key, a Ticket without
+// its holder, a draft or archived Event; 410 once the page has closed.
+func (s *Service) CheckIns(ctx context.Context, key string) (CheckInsView, error) {
+	if !ticket.ValidAccessKey(key) || s.Entries == nil {
+		return CheckInsView{}, ErrNotFound
+	}
+	got, err := s.Entries.PageCheckIns(ctx, key)
+	if errors.Is(err, ticket.ErrNotFound) {
+		return CheckInsView{}, ErrNotFound
+	}
+	if err != nil {
+		return CheckInsView{}, err
+	}
+	if !got.Held || got.Event.Status == event.StatusDraft {
+		return CheckInsView{}, ErrNotFound
+	}
+	if s.cfg.Page.Closed(got.Event, s.now()) {
+		return CheckInsView{}, ErrGone
+	}
+	checkIns := got.CheckIns
+	if checkIns == nil {
+		checkIns = []ticket.PageCheckIn{}
+	}
+	return CheckInsView{CheckIns: checkIns}, nil
 }
 
 func (s *Service) token(o opened) (string, error) {

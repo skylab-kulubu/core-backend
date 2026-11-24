@@ -37,6 +37,36 @@ const TicketPDFsPerKeyMinute = 5
 // cheap to draw.
 const TicketQRsPerClientMinute = 1200
 
+// TicketCheckInsPerKeyMinute is how often one ticket's page may ask for
+// its check-ins in a minute: the page asks every 4 seconds while it is
+// shown on the Event's day (15 a minute), so two open tabs fit.
+const TicketCheckInsPerKeyMinute = 30
+
+// TicketCheckInsPerClientMinute is the check-ins route's budget a minute
+// per client address, its own: at the door many holders share one address
+// (the campus network, a mobile operator's NAT), each polling at 15 a
+// minute. The per-key budget is the one that holds a page back.
+const TicketCheckInsPerClientMinute = 3000
+
+// TicketCheckInsLimit budgets the check-ins route by the key in its path
+// (a hash of it, as TicketPDFLimit).
+func TicketCheckInsLimit() fiber.Handler {
+	return limiter.New(limiter.Config{
+		Max:        TicketCheckInsPerKeyMinute,
+		Expiration: time.Minute,
+		KeyGenerator: func(c fiber.Ctx) string {
+			sum := sha256.Sum256([]byte(c.Params("key")))
+			return "ticket-check-ins:" + hex.EncodeToString(sum[:12])
+		},
+		LimitReached: func(c fiber.Ctx) error {
+			ticketPageHeaders(c)
+			c.Set(fiber.HeaderRetryAfter, "60")
+			return problemDetailCode(c, fiber.StatusTooManyRequests, "Too Many Requests",
+				"Too many requests for this ticket; retry in a minute.", "ticket_check_ins_rate_limited")
+		},
+	})
+}
+
 // TicketPDFLimit budgets the PDF route by the key in its path (a hash of
 // it: the limiter's memory never holds the key).
 func TicketPDFLimit() fiber.Handler {
@@ -89,6 +119,16 @@ func (h *TicketPageHandler) Page(c fiber.Ctx) error {
 	view, err := h.svc.Page(c.Context(), c.Params("key"))
 	if err != nil {
 		return h.ticketPageError(c, "page", err)
+	}
+	return c.JSON(view)
+}
+
+// CheckIns is GET /v1/public/tickets/{key}/check-ins.
+func (h *TicketPageHandler) CheckIns(c fiber.Ctx) error {
+	ticketPageHeaders(c)
+	view, err := h.svc.CheckIns(c.Context(), c.Params("key"))
+	if err != nil {
+		return h.ticketPageError(c, "check-ins", err)
 	}
 	return c.JSON(view)
 }
