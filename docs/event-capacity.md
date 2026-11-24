@@ -92,7 +92,8 @@ over; a cancelled Event is `409`. A Team audit row `ticket.promote`, like
 
 ## Mails
 
-`TICKET_STATUS_MAIL` (default `off`) turns the waiting list's mails on. They
+`TICKET_STATUS_MAIL` (default `off`) turns the waiting list's mails on, and
+the cancellation's ([ticket-status-mail.md](ticket-status-mail.md)). They
 go through the "Biletin hazır" queue and worker
 ([ticket-created-notification.md](ticket-created-notification.md)):
 `ticket_notifications.kind` is `created`, `waitlisted` or `promoted`, queued

@@ -49,6 +49,11 @@ type Service interface {
 	// CancelTicket and RestoreTicket are an operator's cancellation of a
 	// Ticket and its taking back (docs/ticket-cancellation.md).
 	CancelTicket(ctx context.Context, p authz.Principal, id uuid.UUID, reason string) (Ticket, error)
+	// CancelTicketTelling is POST /v1/tickets/{id}/cancel: the Ticket's
+	// holder cancels it themselves (kontenjan-iptal-hatirlatma 03; reason
+	// and notify are not theirs to give, the holder is always told), an
+	// operator as CancelTicket does, telling the holder when notify.
+	CancelTicketTelling(ctx context.Context, p authz.Principal, id uuid.UUID, reason string, notify bool) (Ticket, error)
 	RestoreTicket(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error)
 	Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error)
 	GetByUserEvent(ctx context.Context, p authz.Principal, userID, eventID uuid.UUID) (Ticket, error)

@@ -31,8 +31,9 @@ hold.
 | `invite` | optional: the feedback invite's code the answer came with (the `?davet=` of the mail's link), for a feedback form only; an unknown one, another form's, or one longer than 64 characters is ignored; never logged ([event-feedback.md](event-feedback.md)) |
 | `submittedAt` | optional: the moment Forms first took the answer, in UTC as RFC 3339 with `Z` (`2026-10-20T09:15:00Z`); judged against the Event's registration closure, see below. A value that is not such a time (no zone, not a string) is ignored as if not sent, with a warning line that names the form only (`form_response_submitted_at_ignored`); the report is never refused for it. A time later than core's now counts as now |
 
-The answer is `204` whether or not an Event lists the form. A pending or
-declined report is not read further. Core neither stores nor logs a report
+The answer is `204` whether or not an Event lists the form. A pending
+report is not read further; a declined one only cancels what the same
+answer earned (below). Core neither stores nor logs a report
 that no Event lists: it writes nothing for it, and the report's log line
 (below) carries only ids, the status and the outcome, never who answered.
 
@@ -89,9 +90,32 @@ replaces it fills only a detail the guest Ticket lacks and never renames a
 guest; an operator corrects names from the Event hub.
 
 A pending answer writes nothing until Forms reports it accepted, so a form
-that needs review tickets on approval. A declined answer writes nothing and
-**does not take back a Ticket written earlier** (yet: kontenjan-iptal-hatirlatma
-ticket 05 cancels the Ticket the answer wrote). An operator cancels a Ticket
+that needs review tickets on approval. A declined answer writes nothing; it
+cancels the Tickets **the same answer** earned (kontenjan-iptal-hatirlatma
+ticket 05):
+
+- A Ticket keeps the answer that wrote or reopened it
+  (`tickets.form_response_id`, Forms' `responseId`; migration
+  `20261124130000`). A Ticket written another way (sky-app, the panel, Guest
+  apply) has none, and an accepted answer that finds a Ticket already there
+  does not claim it. A Ticket reopened another way (the panel's restore,
+  registering again) loses it. Tickets written before the column have none
+  and are never declined.
+- `declined` cancels, on the Events that list the form and have not ended,
+  each active or waitlisted Ticket whose answer is the report's,
+  without a check-in and not of a Competition's Entrant: `cancelledBy:
+  form`, no mail from core (Forms sends its own), an active Ticket's place
+  to the waiting list. The answer is still `204`; the log's `outcome` is
+  `cancelled` with `tickets_cancelled`, else `not_accepted`.
+- A later `accepted` report of the same answer reopens the Ticket (new link
+  and QR, "Biletin hazır" again), as registering again does.
+- Forms sends `Returned` (correction asked) as `declined` today
+  (`CoreResponseFeed.cs`): such a Ticket is cancelled and reopened when the
+  corrected answer is approved. Forms may send it as `pending` instead
+  (Fatih's call, kontenjan-iptal-hatirlatma 16).
+- Account erasure clears the column with the person's other data.
+
+An operator cancels a Ticket
 from the panel ([ticket-cancellation.md](ticket-cancellation.md)); an
 accepted answer of a person whose Ticket was cancelled reopens it, with a new
 link and QR, and counts it in `ticketsWritten`. A
@@ -112,12 +136,13 @@ as a report without a respondent and writes nothing.
 
 Core writes one JSON line per report it reads (`"event":"form_response"`):
 `correlation_id`, `form_id`, `response_id`, `status` (`unknown` for a value
-other than the three), `outcome`, `tickets_written` (new Tickets only) and
+other than the three), `outcome`, `tickets_written` (new Tickets only),
+`tickets_cancelled` (a declined answer's) and
 `listing_events`: how many current Events list the form, whatever their
 status (`0` when the report ended before they were read). More than one is a
 form shared before the one-place rule; such a form is left as it is and the
 line is how it shows.
-`outcome` is `recorded`, `not_accepted`, `no_respondent`, `not_listed`,
+`outcome` is `recorded`, `not_accepted`, `cancelled`, `no_respondent`, `not_listed`,
 `event_cancelled`, `event_ended`, `registration_closed`, `waitlisted`, `event_full`, `person_unavailable`, `invalid` or `failed`. The line never carries the
 `userId`, a name or an e-mail.
 

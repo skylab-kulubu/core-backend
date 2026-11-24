@@ -28,6 +28,13 @@ const (
 	WaitlistPromotedType = "event.waitlist-promoted"
 )
 
+// TicketCancelledType is the Notification type (and e-mail template key) a
+// Ticket's cancellation is told by (docs/ticket-status-mail.md): its holder
+// cancelled it, or an operator did and chose to tell. SkyMail seeds it
+// (skymail-frontend #179); core sends it only while TICKET_STATUS_MAIL is
+// on.
+const TicketCancelledType = "event.ticket-cancelled"
+
 // EventUpdatedType is the Notification type (and the e-mail template key) a
 // published Event's new time or place is told by (iletişim-servisi 06,
 // docs/event-updated-notification.md).
@@ -174,8 +181,8 @@ func (s *SkyMail) TicketCreated(ctx context.Context, idempotencyKey string, hold
 }
 
 // TicketStatus tells a Ticket's holder of its place on the waiting list
-// (typ WaitlistJoinedType or WaitlistPromotedType), the way TicketCreated
-// tells of a new Ticket.
+// (typ WaitlistJoinedType or WaitlistPromotedType) or of its cancellation
+// (TicketCancelledType), the way TicketCreated tells of a new Ticket.
 func (s *SkyMail) TicketStatus(ctx context.Context, typ, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
 	return s.tellHolder(ctx, kindTicketStatus, typ, idempotencyKey, holder, vars, source, expiresAt, attachments)
 }

@@ -37,6 +37,11 @@ type Admission struct {
 	// (joinWaitlist), and an accepted forms answer. Without it, or with the
 	// waiting list off, a full Event is ErrEventFull.
 	Waitlist bool
+	// FormResponse is the forms answer whose accepted report writes or
+	// reopens the Ticket (docs/form-response-tickets.md): kept on the
+	// Ticket, so that the answer's decline cancels it. uuid.Nil for any
+	// other way: a Ticket it writes keeps none, one it reopens loses it.
+	FormResponse uuid.UUID
 }
 
 // admit is the status a Ticket written under a, on an Event of c, takes,

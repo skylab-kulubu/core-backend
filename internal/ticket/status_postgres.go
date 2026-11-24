@@ -3,6 +3,7 @@ package ticket
 import (
 	"context"
 	"errors"
+	"log"
 	"strings"
 
 	"github.com/google/uuid"
@@ -16,8 +17,16 @@ import (
 // ErrTicketInCompetition. A Ticket already cancelled is answered as it is,
 // changed false. Its mail still waiting is dropped with it. An active
 // Ticket's place goes to the Event's waiting list in the same transaction
-// (docs/event-capacity.md).
+// (docs/event-capacity.md). It tells nobody (CancelTelling).
 func (s *PostgresStore) Cancel(ctx context.Context, id uuid.UUID, by CancelledBy, reason string) (Ticket, bool, error) {
+	return s.CancelTelling(ctx, id, by, reason, false)
+}
+
+// CancelTelling is Cancel that, when tell, queues the holder's
+// "Biletin iptal edildi" mail in its place while the status mails are on
+// (docs/ticket-status-mail.md); off, the log says the mail did not go,
+// naming the Event alone.
+func (s *PostgresStore) CancelTelling(ctx context.Context, id uuid.UUID, by CancelledBy, reason string, tell bool) (Ticket, bool, error) {
 	var (
 		got     Ticket
 		changed bool
@@ -51,7 +60,14 @@ func (s *PostgresStore) Cancel(ctx context.Context, id uuid.UUID, by CancelledBy
 				WHERE id = $1`, id, string(by), strings.TrimSpace(reason)); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, `DELETE FROM ticket_notifications WHERE ticket_id = $1`, id); err != nil {
+			if tell && s.notifyStatus.Load() {
+				// The row of a mail still waiting ("Biletin hazır") becomes
+				// the cancellation's: what was not sent is no longer news.
+				err = event.QueueTicketMail(ctx, tx, id, "cancelled")
+			} else {
+				_, err = tx.Exec(ctx, `DELETE FROM ticket_notifications WHERE ticket_id = $1`, id)
+			}
+			if err != nil {
 				return err
 			}
 			changed = true
@@ -68,8 +84,33 @@ func (s *PostgresStore) Cancel(ctx context.Context, id uuid.UUID, by CancelledBy
 	if err != nil {
 		return Ticket{}, false, err
 	}
+	if changed && tell && !s.notifyStatus.Load() {
+		log.Printf("event %s: a ticket was cancelled; no mail (TICKET_STATUS_MAIL is not on)", got.EventID)
+	}
 	got.CheckIns = []CheckIn{}
 	return got, changed, nil
+}
+
+// FormResponseTickets are the Tickets the forms answer responseID wrote or
+// reopened, of any status.
+func (s *PostgresStore) FormResponseTickets(ctx context.Context, responseID uuid.UUID) ([]Ticket, error) {
+	if responseID == uuid.Nil {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+ticketCols+` FROM tickets WHERE form_response_id = $1`, responseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Ticket
+	for rows.Next() {
+		t, err := scanTicket(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // Reopen makes a cancelled Ticket active again, for an operator taking the

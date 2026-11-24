@@ -105,6 +105,9 @@ const (
 	// FormResponseEventFull is an accepted answer that found every Event of
 	// its form full with the waiting list off: no Ticket, a 2xx too.
 	FormResponseEventFull FormResponseOutcome = "event_full"
+	// FormResponseCancelled is a declined answer that cancelled the
+	// Tickets it had written (kontenjan-iptal-hatirlatma 05): a 204 still.
+	FormResponseCancelled FormResponseOutcome = "cancelled"
 )
 
 // FormResponseResult is what recording a report did.
@@ -112,6 +115,8 @@ type FormResponseResult struct {
 	Outcome FormResponseOutcome
 	// TicketsWritten counts the new Tickets: not the ones already there.
 	TicketsWritten int
+	// TicketsCancelled counts the Tickets a declined answer cancelled.
+	TicketsCancelled int
 	// ListingEvents counts the current Events that list the form as an
 	// application or extra form, whatever their status: more than one is a
 	// form shared before the one-place rule (ADR 0069, addendum of
@@ -131,7 +136,8 @@ type FormResponseResult struct {
 // that is pending or declined, or that carries neither (a guest without an
 // e-mail counts as neither), writes nothing, and
 // a report sent again finds the Tickets already there. A declined answer
-// does not take back a Ticket written earlier: Tickets cannot be cancelled.
+// cancels the Tickets the same answer wrote or reopened
+// (declineFormResponse), and nothing else.
 //
 // A guest is written as Guest apply writes one for an untrusted caller: the
 // report carries what an anonymous form filler typed, so it may only fill a
@@ -177,6 +183,9 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 	}
 	if isFeedback {
 		return s.recordFeedbackAnswer(ctx, r)
+	}
+	if r.Status == FormResponseDeclined {
+		return s.declineFormResponse(ctx, events, r)
 	}
 	if r.Status != FormResponseAccepted {
 		return FormResponseResult{Outcome: FormResponseNotAccepted}, nil
@@ -231,7 +240,7 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		}
 	}
 	result := FormResponseResult{Outcome: FormResponseRecorded, ListingEvents: listed}
-	admission := Admission{Waitlist: true}
+	admission := Admission{Waitlist: true, FormResponse: r.ResponseID}
 	var active, waitlisted, full int
 	for _, ev := range listing {
 		eventID := ev.ID
@@ -278,6 +287,66 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		result.Outcome = FormResponseEventFull
 	}
 	return result, nil
+}
+
+// declineFormResponse cancels what a declined answer had earned
+// (kontenjan-iptal-hatirlatma 05): the Tickets the same answer wrote or
+// reopened (tickets.form_response_id), on the Events that list the form and
+// have not ended, active or waitlisted, without a check-in and not of a
+// Competition's Entrant. Each is cancelled by the form, with no mail (the
+// forms service sends its own), and an active one's place goes to the
+// waiting list. A Ticket another way wrote, or written before the answer
+// was kept, is not touched; nor is one the panel restored since (it keeps
+// no answer). The outcome is FormResponseCancelled when any was, else
+// FormResponseNotAccepted.
+func (s *service) declineFormResponse(ctx context.Context, events []event.Event, r FormResponse) (FormResponseResult, error) {
+	result := FormResponseResult{Outcome: FormResponseNotAccepted}
+	found, ok := s.tickets.(FormResponseStore)
+	if !ok || r.ResponseID == uuid.Nil {
+		return result, nil
+	}
+	listing := listingForm(events, r.FormID)
+	result.ListingEvents = len(listing)
+	listing = notEnded(listing, time.Now())
+	if len(listing) == 0 {
+		return result, nil
+	}
+	tickets, err := found.FormResponseTickets(ctx, r.ResponseID)
+	if err != nil {
+		return FormResponseResult{}, err
+	}
+	store, err := s.statusStore()
+	if err != nil {
+		return FormResponseResult{}, err
+	}
+	for _, t := range tickets {
+		if t.StatusOf() == StatusCancelled || !listsEvent(listing, t.EventID) {
+			continue
+		}
+		_, changed, err := store.Cancel(ctx, t.ID, CancelledByForm, "")
+		switch {
+		case errors.Is(err, ErrTicketCheckedIn), errors.Is(err, ErrTicketInCompetition), errors.Is(err, ErrNotFound):
+			continue
+		case err != nil:
+			return FormResponseResult{}, err
+		}
+		if changed {
+			result.TicketsCancelled++
+		}
+	}
+	if result.TicketsCancelled > 0 {
+		result.Outcome = FormResponseCancelled
+	}
+	return result, nil
+}
+
+func listsEvent(events []event.Event, id uuid.UUID) bool {
+	for _, ev := range events {
+		if ev.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // CanRecordFormResponse reports whether p may report form answers: the
