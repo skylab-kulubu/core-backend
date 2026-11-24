@@ -61,8 +61,9 @@ type trackingResolveResult struct {
 
 // Resolve is POST /internal/v1/communication-preferences/tracking:resolve
 // {"subs": [≤1000 lower-case UUIDs, each once]} → {"results": [{"sub",
-// "allowed", "reason": "preference_off"|"not_member"|"inactive"|null}]},
-// every sub asked exactly once, in the order asked.
+// "allowed", "reason": "inactive"|"tracking_off"|null}]}, every sub asked
+// exactly once, in the order asked. Since B9 an objection and not being a
+// Member no longer say no (preference_off and not_member are not answered).
 func (h *TrackingResolveHandler) Resolve(c fiber.Ctx) error {
 	ident, ok := c.Locals(authn.LocalsIdentity).(authn.Identity)
 	if !ok {
@@ -118,9 +119,9 @@ func (h *TrackingResolveHandler) Resolve(c fiber.Ctx) error {
 		results = append(results, r)
 	}
 	// Counts only: never a subject.
-	log.Printf(`{"event":"tracking_resolve","client":%q,"mode":%q,"asked":%d,"allowed":%d,"preference_off":%d,"not_member":%d,"inactive":%d}`,
+	log.Printf(`{"event":"tracking_resolve","client":%q,"mode":%q,"asked":%d,"allowed":%d,"inactive":%d,"tracking_off":%d}`,
 		ident.Client, h.svc.TrackingMode(), len(decisions), allowed,
-		counts[commpref.TrackingPreferenceOff], counts[commpref.TrackingNotMember], counts[commpref.TrackingInactive])
+		counts[commpref.TrackingInactive], counts[commpref.TrackingOff])
 	c.Set(fiber.HeaderCacheControl, "no-store")
 	return c.JSON(fiber.Map{"results": results})
 }
