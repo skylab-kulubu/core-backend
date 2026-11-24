@@ -105,6 +105,9 @@ type CertificateRef struct {
 	Serial    string     `json:"serial"`
 	IssuedAt  time.Time  `json:"issuedAt"`
 	RevokedAt *time.Time `json:"revokedAt,omitempty"`
+	// Mail is the active certificate's latest mail (docs/certificate-mail.md);
+	// left out for a revoked one and one issued before the queue.
+	Mail *MailState `json:"mail,omitempty"`
 }
 
 const (

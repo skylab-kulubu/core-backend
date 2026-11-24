@@ -205,6 +205,10 @@ type EventSummary struct {
 	// closed it, once closed: "manual" or "auto".
 	AutoFinalizeAt  *time.Time `json:"autoFinalizeAt,omitempty"`
 	FinalizedSource string     `json:"finalizedSource,omitempty"`
+	// MailQueuedCount and MailFailedCount are the active certificates whose
+	// latest mail waits or failed (docs/certificate-mail.md).
+	MailQueuedCount int `json:"mailQueuedCount"`
+	MailFailedCount int `json:"mailFailedCount"`
 }
 
 type PublicCertificate struct {

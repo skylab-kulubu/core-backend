@@ -277,31 +277,42 @@ func (s *SkyMail) post(ctx context.Context, kind, token string, task map[string]
 // connection was never made), so the caller knows no mail task was written.
 // A request that went out and got no answer may have been taken.
 func (s *SkyMail) postReached(ctx context.Context, kind, token string, task map[string]any) (int, bool) {
+	status, reached, _ := s.postTask(ctx, kind, token, "", task)
+	return status, reached
+}
+
+// postTask is postReached under an Idempotency-Key (none when empty), that
+// also returns the code of SkyMail's error body.
+func (s *SkyMail) postTask(ctx context.Context, kind, token, idempotencyKey string, task map[string]any) (int, bool, string) {
 	body, err := json.Marshal(task)
 	if err != nil {
-		return 0, false
+		return 0, false, ""
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.BaseURL, "/")+"/v1/mail_tasks/single", bytes.NewReader(body))
 	if err != nil {
-		return 0, false
+		return 0, false, ""
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
 	client := s.HTTP
 	if client == nil {
 		client = http.DefaultClient
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, !neverConnected(err)
+		return 0, !neverConnected(err), ""
 	}
 	defer resp.Body.Close()
 	if succeeded(resp.StatusCode) {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return resp.StatusCode, true
+		return resp.StatusCode, true, ""
 	}
-	warn(s.Logger, eventCallFailed, kind, resp.StatusCode, sendReason(resp.StatusCode), diagnosticCode(diagnosticBody(resp.Body)))
-	return resp.StatusCode, true
+	answer := diagnosticBody(resp.Body)
+	warn(s.Logger, eventCallFailed, kind, resp.StatusCode, sendReason(resp.StatusCode), diagnosticCode(answer))
+	return resp.StatusCode, true, answerCode(answer)
 }
 
 // neverConnected reports a request that failed before a connection to SkyMail
