@@ -209,6 +209,9 @@ type Audience struct {
 	accounts AudienceAccounts
 	private  bool
 	now      func() time.Time
+	// forms is the Form respondents audience (form_respondents.go); nil
+	// while it is off.
+	forms *FormRespondents
 
 	mu      sync.Mutex
 	cached  *audienceSnapshot

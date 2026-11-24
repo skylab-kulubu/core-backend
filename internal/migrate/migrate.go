@@ -1833,6 +1833,11 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
 			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.promote%'
 		)`,
+	// The Form respondents audience's audit record (docs/news-audience.md).
+	20261124172000: `
+		SELECT 1
+		WHERE to_regclass('public.form_audience_audits') IS NOT NULL
+		  AND to_regclass('public.form_audience_audits_resolved_idx') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
