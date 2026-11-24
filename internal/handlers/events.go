@@ -39,10 +39,13 @@ type eventBody struct {
 	ExtraFormURLs   *[]event.EventFormLink `json:"extraFormUrls"`
 	Capacity        int                    `json:"capacity"`
 	// WaitlistEnabled on create; none is on (docs/event-capacity.md).
-	WaitlistEnabled *bool      `json:"waitlistEnabled"`
-	StartDate       *time.Time `json:"startDate"`
-	EndDate         *time.Time `json:"endDate"`
-	Linkedin        string     `json:"linkedin"`
+	WaitlistEnabled *bool `json:"waitlistEnabled"`
+	// EntryMode on create: per_session, venue, or none for automatic
+	// (docs/venue-entry.md).
+	EntryMode *event.EntryMode `json:"entryMode"`
+	StartDate *time.Time       `json:"startDate"`
+	EndDate   *time.Time       `json:"endDate"`
+	Linkedin  string           `json:"linkedin"`
 	// Status is read on create alone (draft or published; none is
 	// published). An update (event.Patch) reads neither it nor active,
 	// which is derived (ADR 0066): a client that sends the whole Event
@@ -126,6 +129,7 @@ func (b eventBody) asEvent() event.Event {
 		FormURL:         b.FormURL,
 		Capacity:        b.Capacity,
 		WaitlistEnabled: b.WaitlistEnabled,
+		EntryMode:       b.EntryMode,
 		StartDate:       b.StartDate,
 		EndDate:         b.EndDate,
 		Linkedin:        b.Linkedin,

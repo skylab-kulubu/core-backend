@@ -583,6 +583,9 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		`UPDATE tickets SET owner_id = NULL, access_key = NULL, qr_version = qr_version + 1, cancel_reason = NULL, form_response_id = NULL WHERE owner_id = $1`,
 		`UPDATE certificates SET owner_id = NULL, recipient_email = '' WHERE owner_id = $1`,
 		`DELETE FROM event_door_staff WHERE user_id = $1`,
+		// Venue entries stay with their Tickets (docs/venue-entry.md); the
+		// door staff who wrote one is forgotten.
+		`UPDATE venue_entries SET by_user_id = NULL WHERE by_user_id = $1`,
 		`UPDATE urls SET created_by = NULL WHERE created_by = $1`,
 		`UPDATE url_hits
 		SET user_id = NULL, ip = '', user_agent = '', referer = '',

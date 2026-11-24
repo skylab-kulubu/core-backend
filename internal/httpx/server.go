@@ -851,12 +851,18 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/sessions/:sessionId/check-in/resolve", tickets.ResolveAndCheckIn)
 	app.Get("/v1/sessions/:sessionId/check-ins", tickets.DoorActivity)
 	app.Delete("/v1/sessions/:sessionId/check-ins/:checkInId", tickets.UndoCheckInByID)
+	// The Event's door without a Session: Venue entry (docs/venue-entry.md).
+	app.Post("/v1/events/:eventId/entries/resolve", tickets.ResolveEntry)
+	app.Get("/v1/events/:eventId/entries/summary", tickets.EntrySummary)
+	app.Get("/v1/events/:eventId/entries", tickets.ListEntries)
+	app.Delete("/v1/events/:eventId/entries/:entryId", tickets.UndoEntry)
 	if pass != nil {
 		// One route for whatever the door scanned (docs/ticket-qr.md):
 		// check-in/scan is its name, check-in/skypass the old one the
 		// released sky-app calls, kept as is.
 		app.Post("/v1/sessions/:sessionId/check-in/skypass", pass.CheckInSession)
 		app.Post("/v1/sessions/:sessionId/check-in/scan", pass.CheckInSession)
+		app.Post("/v1/events/:eventId/entries/scan", pass.EnterEvent)
 	}
 
 	app.Get("/v1/competitors", competitors.List)

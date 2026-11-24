@@ -54,6 +54,14 @@ func ticketError(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusConflict, "Conflict", "ticket_cancelled")
 	case errors.Is(err, ticket.ErrTicketWaitlisted):
 		return problemCode(c, fiber.StatusConflict, "Conflict", "ticket_waitlisted")
+	case errors.Is(err, ticket.ErrEventClosed):
+		// The Event's door (docs/venue-entry.md): reason says why.
+		var closed *ticket.EventClosedError
+		var fields fiber.Map
+		if errors.As(err, &closed) {
+			fields = fiber.Map{"reason": closed.Reason}
+		}
+		return problemWithFields(c, fiber.StatusForbidden, "Event Closed", "Event Closed", "event_closed", fields)
 	case errors.Is(err, ticket.ErrEventFull):
 		// The Event is full (docs/event-capacity.md): waitlistEnabled tells
 		// the client whether it may offer the waiting list.
@@ -61,6 +69,16 @@ func ticketError(c fiber.Ctx, err error) error {
 		enabled := errors.As(err, &full) && full.WaitlistEnabled
 		return problemWithFields(c, fiber.StatusConflict, "Conflict", "Conflict", "event_full",
 			fiber.Map{"waitlistEnabled": enabled})
+	case errors.As(err, new(*ticket.EntryConflictError)):
+		// A second Venue entry the same day: who is already in, when the
+		// door asked by the Event (docs/venue-entry.md).
+		var entered *ticket.EntryConflictError
+		errors.As(err, &entered)
+		var fields fiber.Map
+		if entered.Name != "" {
+			fields = fiber.Map{"name": entered.Name}
+		}
+		return problemWithFields(c, fiber.StatusConflict, "Conflict", "Bugün zaten girdi.", "already_entered", fields)
 	case errors.Is(err, ticket.ErrConflict):
 		return problemCode(c, fiber.StatusConflict, "Conflict", eventStatusCode(err))
 	case errors.Is(err, ticket.ErrAmbiguous):
