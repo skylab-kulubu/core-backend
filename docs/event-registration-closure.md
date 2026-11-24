@@ -17,7 +17,7 @@ Writing either needs what any other field of the Event needs (`authz.Update`: th
 
 | Path | Applying not open |
 |---|---|
-| `POST /v1/events/{id}/applications/me`, `…/applications/guest` (a person's own application, the editor's own too) | `409`, `code: "registration_closed"` (a draft still answers `event_not_published` to who may see it, `404` to anyone else) |
+| `POST /v1/events/{id}/applications/me` (a person's own application, the editor's own too), `…/applications/guest` without a token (the internal hop) or with Forms' token (a person who is not an operator gets `403` first, [guest-apply.md](guest-apply.md)) | `409`, `code: "registration_closed"` (a draft still answers `event_not_published` to who may see it, `404` to anyone else) |
 | `POST /v1/events/{id}/applications/users/{userId}`, and `…/applications/guest` called by an operator (who may update the Event or assign its Tickets: the panel's "Katılımcı ekle") | allowed: the editor's call (Yusuf, 2026-10-20) |
 | `POST /v1/forms/{formId}/responses` (Forms' report) | **not refused by the closure**: the Ticket is written. Only a report carrying the optional `submittedAt` is judged by it: an answer sent at or after `registrationClosedAt` or `registrationClosesAt` gets no Ticket on that Event; when no Event is left, `200` with `outcome: "registration_closed"` ([form-response-tickets.md](form-response-tickets.md)) |
 
