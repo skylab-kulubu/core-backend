@@ -37,15 +37,42 @@ const (
 )
 
 // MailRetryWindow is how long a mail is tried while SkyMail is unreachable,
-// from when it was queued, before it is given up as failed: tries 1, 2,
-// 4 … 60 minutes apart, then hourly. It stays well inside SkyMail's 72-hour
-// Idempotency-Key window, so every try is answered as one mail.
+// from its first try, before it is given up as failed: tries 1, 2, 4 … 60
+// minutes apart, then hourly. It ends well before MailKeyLimit.
 const MailRetryWindow = 24 * time.Hour
 
-// mailLease is how long one claim holds a mail. A worker that stops
-// mid-send leaves it to the next claim once the lease runs out; SkyMail
-// answers the repeat under the same Idempotency-Key.
-const mailLease = 2 * time.Minute
+// MailKeyLimit is the hard end of a mail's tries, from its first: SkyMail
+// keeps an Idempotency-Key 72 hours, and a try after that could mail twice.
+// A row first tried longer ago than this (a worker stopped for days) fails
+// as "expired" without being sent.
+const MailKeyLimit = 48 * time.Hour
+
+// MailSendTimeout bounds one request core makes to send a mail (the token,
+// a post, the template id's post): cmd/core-backend's skyMailTimeout.
+const MailSendTimeout = 15 * time.Second
+
+// mailRowBudget is the most one mail's send may take: the token and two
+// posts. Each send runs under it.
+const mailRowBudget = 3 * MailSendTimeout
+
+// MailBatch is how many mails one claim takes (MaintainMails).
+const MailBatch = 5
+
+// mailLeaseFor is how long a claim of n mails holds them: every send at
+// its longest, and a minute's slack. Each send renews its own mail's lease
+// first and skips a mail whose lease ran out, so a slow batch never sends
+// a mail another claim has taken.
+func mailLeaseFor(n int) time.Duration {
+	return time.Duration(max(n, 1))*mailRowBudget + time.Minute
+}
+
+// ResendAllCooldown is how often "Herkese yeniden gönder" may run for one
+// Event: a second one within it is refused (ErrResendTooSoon).
+const ResendAllCooldown = 10 * time.Minute
+
+// ErrResendTooSoon: "Herkese yeniden gönder" ran for the Event less than
+// ResendAllCooldown ago.
+var ErrResendTooSoon = errors.New("certificate: resend to all too soon")
 
 // MailIdempotencyKeyPrefix names a queued mail at SkyMail: the prefix and
 // the row's id, the same on every try.
@@ -64,9 +91,10 @@ type Mail struct {
 	ErrorCode     string
 	RequestedBy   *uuid.UUID
 	ClaimToken    uuid.UUID
-	// CreatedAt is when it was queued: MailRetryWindow runs from it.
-	CreatedAt   time.Time
-	Certificate Certificate
+	// FirstTriedAt is its first try's time (the claim's, on the first):
+	// MailRetryWindow and MailKeyLimit run from it.
+	FirstTriedAt time.Time
+	Certificate  Certificate
 }
 
 // MailState is a certificate's latest mail as the panel shows it.
@@ -93,6 +121,14 @@ type MailQueue interface {
 	// ClaimMails takes up to limit due mails for lease, each with its
 	// certificate, counting the try.
 	ClaimMails(ctx context.Context, limit int, lease time.Duration) ([]Mail, error)
+	// RenewMailLease holds a claimed mail for lease from now. ErrLeaseLost
+	// unless it is claimed under token and its lease has not run out.
+	RenewMailLease(ctx context.Context, id, token uuid.UUID, lease time.Duration) error
+	// ResendEventMails queues the Event's active certificates' mails again
+	// (scope ResendFailed or ResendAll) in one statement, skipping those
+	// with a mail waiting. ResendAll is refused with ErrResendTooSoon within
+	// cooldown of the Event's last one.
+	ResendEventMails(ctx context.Context, eventID uuid.UUID, scope string, by *uuid.UUID, cooldown time.Duration) (MailResend, error)
 	// FinishMail settles a claimed mail: MailSent, MailFailed or
 	// MailCancelled, or MailQueued again at retryAt. ErrLeaseLost unless it
 	// is still claimed under token.
@@ -137,10 +173,15 @@ func (s *service) queueMail(ctx context.Context, c Certificate) error {
 // sendMail sends c's mail directly, as before the queue; with the queue it
 // does nothing (queueMail wrote it).
 func (s *service) sendMail(ctx context.Context, c Certificate) {
-	if s.mail == nil {
+	if _, _, ok := s.mailQueue(); ok {
 		return
 	}
-	if _, _, ok := s.mailQueue(); ok {
+	s.sendDirect(ctx, c)
+}
+
+// sendDirect posts c's mail once, inline, telling nothing back.
+func (s *service) sendDirect(ctx context.Context, c Certificate) {
+	if s.mail == nil {
 		return
 	}
 	s.mail.Certificate(ctx, c.RecipientEmail, c.RecipientName, certificateMailVars(c))
@@ -165,12 +206,22 @@ func (s *service) ProcessMails(ctx context.Context, limit int) (int, error) {
 	if !ok {
 		return 0, nil
 	}
-	claimed, err := queue.ClaimMails(ctx, limit, mailLease)
+	claimed, err := queue.ClaimMails(ctx, limit, mailLeaseFor(limit))
 	if err != nil {
 		return 0, err
 	}
 	for _, m := range claimed {
-		status, code, retryAt := s.deliverMail(ctx, sender, m)
+		// A fresh lease for this send alone; a mail whose lease ran out
+		// while the ones before it were sent is left to the next claim.
+		if err := queue.RenewMailLease(ctx, m.ID, m.ClaimToken, mailRowBudget+time.Minute); err != nil {
+			if !errors.Is(err, ErrLeaseLost) {
+				log.Printf("ERROR certificate mail %s: lease not renewed, it waits for its lease to run out (%s)", m.ID, databaseErrorClass(err))
+			}
+			continue
+		}
+		sendCtx, cancel := context.WithTimeout(ctx, mailRowBudget)
+		status, code, retryAt := s.deliverMail(sendCtx, sender, m)
+		cancel()
 		if err := queue.FinishMail(ctx, m.ID, m.ClaimToken, status, code, retryAt); err != nil && !errors.Is(err, ErrLeaseLost) {
 			log.Printf("ERROR certificate mail %s: not settled, it waits for its lease to run out (%s)", m.ID, databaseErrorClass(err))
 		}
@@ -189,6 +240,9 @@ func (s *service) deliverMail(ctx context.Context, sender CertificateMailer, m M
 	case strings.TrimSpace(c.RecipientEmail) == "":
 		// Erased meanwhile, or a certificate with no address.
 		return MailFailed, "no_recipient", now
+	case now.After(m.FirstTriedAt.Add(MailKeyLimit)):
+		// SkyMail may have forgotten the key: a try could mail twice.
+		return MailFailed, "expired", now
 	}
 	err := sender.CertificateMail(ctx, MailIdempotencyKeyPrefix+m.ID.String(), c.RecipientEmail, c.RecipientName, certificateMailVars(c))
 	if err == nil {
@@ -208,7 +262,7 @@ func (s *service) deliverMail(ctx context.Context, sender CertificateMailer, m M
 		}
 	}
 	next := now.Add(mailBackoff(m.Attempts))
-	if next.After(m.CreatedAt.Add(MailRetryWindow)) {
+	if next.After(m.FirstTriedAt.Add(MailRetryWindow)) {
 		return MailFailed, code, now
 	}
 	return MailQueued, code, next
@@ -241,13 +295,21 @@ func (s *service) ResendMail(ctx context.Context, p authz.Principal, serial stri
 	if cert.RevokedAt != nil {
 		return MailResend{}, ErrConflict
 	}
-	return s.resend(ctx, queue, p, []Certificate{cert})
+	written, err := queue.EnqueueMail(ctx, Mail{ID: uuid.New(), CertificateID: cert.ID, EventID: cert.EventID, Reason: MailReasonResend, RequestedBy: principalUUIDPtr(p)})
+	if err != nil {
+		return MailResend{}, err
+	}
+	if !written {
+		return MailResend{AlreadyQueued: 1}, nil
+	}
+	return MailResend{Queued: 1}, nil
 }
 
 // ResendEventMails queues the Event's certificate mails again: scope
 // ResendFailed takes the active certificates whose latest mail failed,
-// ResendAll every active one. A certificate with a mail waiting is not
-// queued twice.
+// ResendAll every active one, at most once per ResendAllCooldown
+// (ErrResendTooSoon). A certificate with a mail waiting is not queued
+// twice.
 func (s *service) ResendEventMails(ctx context.Context, p authz.Principal, eventID uuid.UUID, scope string) (MailResend, error) {
 	queue, _, ok := s.mailQueue()
 	if !ok || (scope != ResendFailed && scope != ResendAll) {
@@ -260,44 +322,7 @@ func (s *service) ResendEventMails(ctx context.Context, p authz.Principal, event
 	if !s.canIssue(p, ev.OwnerTeam) {
 		return MailResend{}, ErrForbidden
 	}
-	certs, err := s.store.ListByEvent(ctx, eventID)
-	if err != nil {
-		return MailResend{}, err
-	}
-	states := map[string]MailState{}
-	if scope == ResendFailed {
-		if states, err = queue.MailStates(ctx, eventID); err != nil {
-			return MailResend{}, err
-		}
-	}
-	picked := make([]Certificate, 0, len(certs))
-	for _, c := range certs {
-		if c.RevokedAt != nil {
-			continue
-		}
-		if scope == ResendFailed && states[c.Serial].Status != MailFailed {
-			continue
-		}
-		picked = append(picked, c)
-	}
-	return s.resend(ctx, queue, p, picked)
-}
-
-func (s *service) resend(ctx context.Context, queue MailQueue, p authz.Principal, certs []Certificate) (MailResend, error) {
-	var out MailResend
-	by := principalUUIDPtr(p)
-	for _, c := range certs {
-		written, err := queue.EnqueueMail(ctx, Mail{ID: uuid.New(), CertificateID: c.ID, EventID: c.EventID, Reason: MailReasonResend, RequestedBy: by})
-		if err != nil {
-			return out, err
-		}
-		if written {
-			out.Queued++
-		} else {
-			out.AlreadyQueued++
-		}
-	}
-	return out, nil
+	return queue.ResendEventMails(ctx, eventID, scope, principalUUIDPtr(p), ResendAllCooldown)
 }
 
 // mailStates is the Event's latest mail per certificate serial; empty
@@ -318,7 +343,7 @@ func MaintainMails(ctx context.Context, svc Service, interval time.Duration, lim
 		interval = 5 * time.Second
 	}
 	if limit <= 0 {
-		limit = 20
+		limit = MailBatch
 	}
 	done := make(chan struct{})
 	go func() {

@@ -1069,7 +1069,7 @@ func main() {
 	// The certificate mail queue (docs/certificate-mail.md): SkyMail gets
 	// each issued certificate's mail under an Idempotency-Key, again with
 	// backoff while it is unreachable.
-	worker("certificate mail", certificate.MaintainMails(workers, certSvc, 5*time.Second, 20, func(err error) {
+	worker("certificate mail", certificate.MaintainMails(workers, certSvc, 5*time.Second, certificate.MailBatch, func(err error) {
 		log.Printf("certificate mail worker: %v", err)
 	}))
 	// Automatic attendance finalization (docs/certificate-rule.md): every
@@ -1465,6 +1465,9 @@ func accountErasureWorkerEnabled(getenv func(string) string) (bool, error) {
 // skyMailTimeout bounds each request core makes for a mail: the token request
 // to Keycloak and the post to SkyMail.
 const skyMailTimeout = 15 * time.Second
+
+// The certificate mail queue sizes its leases by it.
+var _ = [1]struct{}{}[skyMailTimeout-certificate.MailSendTimeout]
 
 // newSkyMail is core's SkyMail client, which asks the realm at base for its
 // token with core's own service account. The token request uses the same

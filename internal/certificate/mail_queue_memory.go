@@ -32,7 +32,7 @@ func (s *MemoryStore) EnqueueMail(_ context.Context, m Mail) (bool, error) {
 		}
 	}
 	now := time.Now().UTC()
-	m.Status, m.Attempts, m.ErrorCode, m.ClaimToken, m.Certificate, m.CreatedAt = MailQueued, 0, "", uuid.Nil, Certificate{}, now
+	m.Status, m.Attempts, m.ErrorCode, m.ClaimToken, m.Certificate, m.FirstTriedAt = MailQueued, 0, "", uuid.Nil, Certificate{}, time.Time{}
 	s.mails = append(s.mails, &memoryMail{Mail: m, nextAttempt: now, createdAt: now, updatedAt: now})
 	return true, nil
 }
@@ -52,9 +52,70 @@ func (s *MemoryStore) ClaimMails(_ context.Context, limit int, lease time.Durati
 		until := now.Add(lease)
 		row.claimedUntil, row.ClaimToken, row.updatedAt = &until, uuid.New(), now
 		row.Attempts++
+		if row.FirstTriedAt.IsZero() {
+			row.FirstTriedAt = now
+		}
 		claimed := row.Mail
 		claimed.Certificate = s.byID[row.CertificateID].cert
 		out = append(out, claimed)
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) RenewMailLease(_ context.Context, id, token uuid.UUID, lease time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	for _, row := range s.mails {
+		if row.ID != id {
+			continue
+		}
+		if row.Status != MailQueued || row.ClaimToken != token || row.claimedUntil == nil || !row.claimedUntil.After(now) {
+			return ErrLeaseLost
+		}
+		until := now.Add(lease)
+		row.claimedUntil = &until
+		return nil
+	}
+	return ErrLeaseLost
+}
+
+func (s *MemoryStore) ResendEventMails(_ context.Context, eventID uuid.UUID, scope string, by *uuid.UUID, cooldown time.Duration) (MailResend, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	if scope == ResendAll {
+		if s.resendAllAt == nil {
+			s.resendAllAt = map[uuid.UUID]time.Time{}
+		}
+		if last, ok := s.resendAllAt[eventID]; ok && now.Sub(last) < cooldown {
+			return MailResend{}, ErrResendTooSoon
+		}
+		s.resendAllAt[eventID] = now
+	}
+	latest := map[uuid.UUID]*memoryMail{}
+	pending := map[uuid.UUID]bool{}
+	for _, row := range s.mails {
+		latest[row.CertificateID] = row
+		if row.Status == MailQueued {
+			pending[row.CertificateID] = true
+		}
+	}
+	var out MailResend
+	for id, rec := range s.byID {
+		if rec.cert.EventID != eventID || rec.cert.RevokedAt != nil {
+			continue
+		}
+		if scope != ResendAll && (latest[id] == nil || latest[id].Status != MailFailed) {
+			continue
+		}
+		if pending[id] {
+			out.AlreadyQueued++
+			continue
+		}
+		m := Mail{ID: uuid.New(), CertificateID: id, EventID: eventID, Reason: MailReasonResend, Status: MailQueued, RequestedBy: by}
+		s.mails = append(s.mails, &memoryMail{Mail: m, nextAttempt: now, createdAt: now, updatedAt: now})
+		out.Queued++
 	}
 	return out, nil
 }

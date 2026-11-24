@@ -16,13 +16,23 @@ func (s *MemoryStore) ExpireJobLeases() {
 	}
 }
 
-// AgeMails moves every certificate mail's queueing back by d.
+// AgeMails moves every tried certificate mail's first try back by d.
 func (s *MemoryStore) AgeMails(d time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, row := range s.mails {
-		row.createdAt = row.createdAt.Add(-d)
-		row.CreatedAt = row.createdAt
+		if !row.FirstTriedAt.IsZero() {
+			row.FirstTriedAt = row.FirstTriedAt.Add(-d)
+		}
+	}
+}
+
+// AgeResendAll moves every Event's last "Herkese yeniden gönder" back by d.
+func (s *MemoryStore) AgeResendAll(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, at := range s.resendAllAt {
+		s.resendAllAt[id] = at.Add(-d)
 	}
 }
 
@@ -33,5 +43,18 @@ func (s *MemoryStore) MakeMailsDue() {
 	defer s.mu.Unlock()
 	for _, row := range s.mails {
 		row.nextAttempt = time.Time{}
+	}
+}
+
+// ExpireMailLeases ends every claimed mail's lease, as if its holder had
+// held the batch too long.
+func (s *MemoryStore) ExpireMailLeases() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	past := time.Now().UTC().Add(-time.Second)
+	for _, row := range s.mails {
+		if row.claimedUntil != nil {
+			row.claimedUntil = &past
+		}
 	}
 }

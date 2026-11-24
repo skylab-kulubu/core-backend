@@ -1903,7 +1903,8 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		SELECT 1
 		WHERE to_regclass('public.certificate_mails') IS NOT NULL
 		  AND to_regclass('public.certificate_mails_issued_key') IS NOT NULL
-		  AND to_regclass('public.certificate_mails_pending_key') IS NOT NULL`,
+		  AND to_regclass('public.certificate_mails_pending_key') IS NOT NULL
+		  AND to_regclass('public.certificate_mail_resend_all') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

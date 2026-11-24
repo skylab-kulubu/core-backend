@@ -26,6 +26,8 @@ type queueMailer struct {
 	keys   []string
 	to     []string
 	direct int
+	// during runs inside a send, once, outside the lock: a test's clock.
+	during func()
 }
 
 func (m *queueMailer) Certificate(context.Context, string, string, map[string]string) {
@@ -35,6 +37,13 @@ func (m *queueMailer) Certificate(context.Context, string, string, map[string]st
 }
 
 func (m *queueMailer) CertificateMail(_ context.Context, key, email, _ string, vars map[string]string) error {
+	m.mu.Lock()
+	during := m.during
+	m.during = nil
+	m.mu.Unlock()
+	if during != nil {
+		during()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.keys = append(m.keys, key)
@@ -264,11 +273,16 @@ func TestCertificateMailResendFailed(t *testing.T) {
 	if err != nil || all.Queued != 2 {
 		t.Fatalf("resend all %v %+v", err, all)
 	}
+	// "Herkese" at most once per ResendAllCooldown for the Event.
+	if _, err := f.svc.ResendEventMails(ctx, f.leader, f.event.ID, certificate.ResendAll); !errors.Is(err, certificate.ErrResendTooSoon) {
+		t.Fatalf("resend all twice: %v", err)
+	}
 
 	// SkyMail never answers: tried again within the window, given up past it.
 	f.mailer.say(&mail.SendError{})
+	f.process(t)
 	f.store.AgeMails(certificate.MailRetryWindow - 3*time.Hour)
-	for range 3 {
+	for range 2 {
 		f.store.MakeMailsDue()
 		f.process(t)
 	}
@@ -350,4 +364,80 @@ func TestCertificateMailWithoutQueueSendsDirectly(t *testing.T) {
 		t.Fatalf("resend without a queue: %v", err)
 	}
 	_ = mailer
+}
+
+// A claim's lease covers its batch, and each send renews its own mail's
+// first: a mail whose lease ran out while the ones before it were sent is
+// not sent by that claim; the next claim sends it, under the same key.
+func TestCertificateMailSkipsAMailWhoseLeaseRanOut(t *testing.T) {
+	t.Parallel()
+	f := mailSetup(t)
+	f.mailer.during = f.store.ExpireMailLeases
+	if n := f.process(t); n != 2 {
+		t.Fatalf("claimed %d", n)
+	}
+	keys, _ := f.mailer.sent()
+	if len(keys) != 1 {
+		t.Fatalf("sent %v: the second mail's lease had run out", keys)
+	}
+	sent, queued := 0, 0
+	for _, state := range f.states(t) {
+		switch state.Status {
+		case certificate.MailSent:
+			sent++
+		case certificate.MailQueued:
+			queued++
+		}
+	}
+	if sent != 1 || queued != 1 {
+		t.Fatalf("sent %d queued %d", sent, queued)
+	}
+	if n := f.process(t); n != 1 {
+		t.Fatalf("the skipped mail was not claimed again: %d", n)
+	}
+	if keys, _ := f.mailer.sent(); len(keys) != 2 || keys[0] == keys[1] {
+		t.Fatalf("keys %v", keys)
+	}
+}
+
+// A mail first tried longer ago than MailKeyLimit is not sent again:
+// SkyMail may have forgotten its key.
+func TestCertificateMailExpiresPastTheKeyLimit(t *testing.T) {
+	t.Parallel()
+	f := mailSetup(t)
+	f.mailer.say(&mail.SendError{Status: http.StatusServiceUnavailable})
+	f.process(t)
+	f.mailer.say(nil)
+	f.store.AgeMails(certificate.MailKeyLimit + time.Minute)
+	f.store.MakeMailsDue()
+	f.process(t)
+	if keys, _ := f.mailer.sent(); len(keys) != 2 {
+		t.Fatalf("an expired mail was sent: %v", keys)
+	}
+	for serial, state := range f.states(t) {
+		if state.Status != certificate.MailFailed || state.ErrorCode != "expired" {
+			t.Fatalf("%s %+v", serial, state)
+		}
+	}
+}
+
+// "Herkese yeniden gönder" opens again once the cooldown has passed.
+func TestCertificateMailResendAllCooldown(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := mailSetup(t)
+	if _, err := f.svc.ResendEventMails(ctx, f.leader, f.event.ID, certificate.ResendAll); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.ResendEventMails(ctx, f.leader, f.event.ID, certificate.ResendAll); !errors.Is(err, certificate.ErrResendTooSoon) {
+		t.Fatalf("second: %v", err)
+	}
+	// Failed alone is not held back.
+	if _, err := f.svc.ResendEventMails(ctx, f.leader, f.event.ID, certificate.ResendFailed); err != nil {
+		t.Fatalf("failed: %v", err)
+	}
+	f.store.AgeResendAll(certificate.ResendAllCooldown)
+	if got, err := f.svc.ResendEventMails(ctx, f.leader, f.event.ID, certificate.ResendAll); err != nil || got.AlreadyQueued != 2 {
+		t.Fatalf("after the cooldown: %v %+v", err, got)
+	}
 }

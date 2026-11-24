@@ -52,9 +52,12 @@ func TestCertificateMailsMigration(t *testing.T) {
 		}
 	}
 	insert := func(reason, status string, sent bool) error {
-		_, err := pool.Exec(ctx, `INSERT INTO certificate_mails (id, certificate_id, event_id, reason, status, sent_at)
-			VALUES ($1, $2, $3, $4, $5, CASE WHEN $6 THEN now() END)`, uuid.New(), certID, eventID, reason, status, sent)
+		_, err := pool.Exec(ctx, `INSERT INTO certificate_mails (id, certificate_id, event_id, reason, status, sent_at, resend_scope)
+			VALUES ($1, $2, $3, $4, $5, CASE WHEN $6 THEN now() END, CASE WHEN $4 = 'resend' THEN 'one' END)`, uuid.New(), certID, eventID, reason, status, sent)
 		return err
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO certificate_mails (id, certificate_id, event_id, reason, status) VALUES ($1, $2, $3, 'resend', 'failed')`, uuid.New(), certID, eventID); err == nil {
+		t.Fatal("a resend without its scope was written")
 	}
 	if err := insert("issued", "lost", false); err == nil {
 		t.Fatal("an unknown status was written")
@@ -73,5 +76,15 @@ func TestCertificateMailsMigration(t *testing.T) {
 	}
 	if err := insert("resend", "failed", false); err != nil {
 		t.Fatalf("a settled resend: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO certificate_mail_resend_all (event_id, last_at) VALUES ($1, now())`, eventID); err != nil {
+		t.Fatalf("cooldown row: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM events WHERE id = $1`, eventID); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM certificate_mails) + (SELECT count(*) FROM certificate_mail_resend_all)`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("rows left after the Event %d %v", left, err)
 	}
 }

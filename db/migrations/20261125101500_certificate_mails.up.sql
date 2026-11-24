@@ -12,6 +12,10 @@
 --     job that issues again after a crash never queues a second mail.
 --   * certificate_mails_pending_key: at most one queued row per
 --     certificate, so pressing "yeniden gönder" twice sends once.
+--   * first_tried_at: the retry window (24 hours) and the hard limit (48
+--     hours, inside SkyMail's 72-hour key) run from the first try.
+--   * certificate_mail_resend_all: when "Herkese yeniden gönder" last ran
+--     for an Event; a second one within 10 minutes is refused.
 --
 -- The release before this one keeps working on the new schema: it reads and
 -- writes none of it.
@@ -24,15 +28,23 @@ CREATE TABLE IF NOT EXISTS certificate_mails (
     reason TEXT NOT NULL CHECK (reason IN ('issued', 'resend')),
     status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'sent', 'failed', 'cancelled')),
     attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    first_tried_at TIMESTAMPTZ,
     next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     claimed_until TIMESTAMPTZ,
     claim_token UUID,
     error_code TEXT NOT NULL DEFAULT '' CHECK (length(error_code) <= 64),
     requested_by UUID REFERENCES users (id) ON DELETE SET NULL,
+    resend_scope TEXT CHECK (resend_scope IN ('one', 'failed', 'all')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     sent_at TIMESTAMPTZ,
-    CONSTRAINT certificate_mails_sent_check CHECK ((status = 'sent') = (sent_at IS NOT NULL))
+    CONSTRAINT certificate_mails_sent_check CHECK ((status = 'sent') = (sent_at IS NOT NULL)),
+    CONSTRAINT certificate_mails_scope_check CHECK ((reason = 'resend') = (resend_scope IS NOT NULL))
+);
+
+CREATE TABLE IF NOT EXISTS certificate_mail_resend_all (
+    event_id UUID PRIMARY KEY REFERENCES events (id) ON DELETE CASCADE,
+    last_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS certificate_mails_issued_key

@@ -237,9 +237,12 @@ func (s *service) materializeLegacy(ctx context.Context, ev event.Event, t ticke
 		return Certificate{}, err
 	}
 	if err := s.queueMail(ctx, created); err != nil {
-		log.Printf("ERROR certificate %s: mail not queued (%s)", created.ID, databaseErrorClass(err))
+		// Not queued: sent inline instead, as before the queue.
+		log.Printf("ERROR certificate %s: mail not queued, sent inline (%s)", created.ID, databaseErrorClass(err))
+		s.sendDirect(ctx, created)
+	} else {
+		s.sendMail(ctx, created)
 	}
-	s.sendMail(ctx, created)
 	return created, nil
 }
 

@@ -27,7 +27,8 @@ func (*queueCertMail) CertificateMail(context.Context, string, string, string, m
 
 // POST /v1/events/{id}/certificates/mail/resend and
 // POST /v1/certificates/{serial}/mail/resend (docs/certificate-mail.md): 403
-// for who may not issue, 400 for an unknown scope, 202 with what was queued.
+// for who may not issue, 400 for an unknown scope, 202 with what was queued,
+// 429 for a second resend to all within the cooldown.
 func TestCertificateMailResendHTTP(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -83,6 +84,9 @@ func TestCertificateMailResendHTTP(t *testing.T) {
 	}
 	if status, got := post(leader, eventPath, `{"scope":"all"}`); status != fiber.StatusAccepted || got.Queued != 1 {
 		t.Fatalf("all %d %+v", status, got)
+	}
+	if status, _ := post(leader, eventPath, `{"scope":"all"}`); status != fiber.StatusTooManyRequests {
+		t.Fatalf("all again within the cooldown %d", status)
 	}
 	if status, got := post(leader, "/v1/certificates/"+cert.Serial+"/mail/resend", ``); status != fiber.StatusAccepted || got.Queued != 0 || got.AlreadyQueued != 1 {
 		t.Fatalf("one %d %+v", status, got)

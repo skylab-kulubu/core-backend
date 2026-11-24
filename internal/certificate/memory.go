@@ -28,6 +28,8 @@ type MemoryStore struct {
 	finalizedSource map[uuid.UUID]string
 	// mails is the certificate mail queue (mail_queue_memory.go).
 	mails []*memoryMail
+	// resendAllAt is when "Herkese yeniden gönder" last ran, by Event.
+	resendAllAt map[uuid.UUID]time.Time
 }
 
 func NewMemoryStore() *MemoryStore {

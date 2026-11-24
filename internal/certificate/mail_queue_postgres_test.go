@@ -58,7 +58,7 @@ func TestPostgresCertificateMailQueue(t *testing.T) {
 		t.Fatalf("claim %v %+v", err, claimed)
 	}
 	m := claimed[0]
-	if m.Attempts != 1 || m.Reason != certificate.MailReasonIssued || m.ClaimToken == uuid.Nil ||
+	if m.Attempts != 1 || m.Reason != certificate.MailReasonIssued || m.ClaimToken == uuid.Nil || m.FirstTriedAt.IsZero() ||
 		m.Certificate.RecipientEmail != "ada@example.com" || m.Certificate.Serial != cert.Serial || m.Certificate.RevokedAt != nil {
 		t.Fatalf("claimed %+v", m)
 	}
@@ -77,8 +77,14 @@ func TestPostgresCertificateMailQueue(t *testing.T) {
 		t.Fatalf("states %v %+v", err, states)
 	}
 	claimed, err = store.ClaimMails(ctx, 10, time.Minute)
-	if err != nil || len(claimed) != 1 || claimed[0].Attempts != 2 {
-		t.Fatalf("second claim %v %+v", err, claimed)
+	if err != nil || len(claimed) != 1 || claimed[0].Attempts != 2 || !claimed[0].FirstTriedAt.Equal(m.FirstTriedAt) {
+		t.Fatalf("second claim %v %+v (first try %v)", err, claimed, m.FirstTriedAt)
+	}
+	if err := store.RenewMailLease(ctx, claimed[0].ID, claimed[0].ClaimToken, time.Minute); err != nil {
+		t.Fatalf("holder renews: %v", err)
+	}
+	if err := store.RenewMailLease(ctx, claimed[0].ID, uuid.New(), time.Minute); !errors.Is(err, certificate.ErrLeaseLost) {
+		t.Fatalf("a stranger renewed: %v", err)
 	}
 	if err := store.FinishMail(ctx, claimed[0].ID, claimed[0].ClaimToken, certificate.MailSent, "", time.Now()); err != nil {
 		t.Fatal(err)
@@ -107,12 +113,44 @@ func TestPostgresCertificateMailQueue(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE certificate_mails SET claimed_until = now() - interval '1 second' WHERE id = $1`, claimed[0].ID); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.RenewMailLease(ctx, claimed[0].ID, claimed[0].ClaimToken, time.Minute); !errors.Is(err, certificate.ErrLeaseLost) {
+		t.Fatalf("a lease that ran out was renewed: %v", err)
+	}
 	reclaimed, _ := store.ClaimMails(ctx, 10, time.Minute)
 	if len(reclaimed) != 1 || reclaimed[0].ID != claimed[0].ID || reclaimed[0].ClaimToken == claimed[0].ClaimToken {
 		t.Fatalf("reclaim %+v", reclaimed)
 	}
 	if err := store.FinishMail(ctx, claimed[0].ID, claimed[0].ClaimToken, certificate.MailSent, "", time.Now()); !errors.Is(err, certificate.ErrLeaseLost) {
 		t.Fatalf("the earlier holder settled the mail: %v", err)
+	}
+
+	// Bulk resend: one statement, the waiting one skipped; "all" once per
+	// cooldown, "failed" takes the failed alone.
+	if err := store.FinishMail(ctx, reclaimed[0].ID, reclaimed[0].ClaimToken, certificate.MailFailed, "skymail_400", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.ResendEventMails(ctx, ev.ID, certificate.ResendFailed, nil, time.Minute)
+	if err != nil || got.Queued != 1 || got.AlreadyQueued != 0 {
+		t.Fatalf("resend failed %v %+v", err, got)
+	}
+	if got, err := store.ResendEventMails(ctx, ev.ID, certificate.ResendFailed, nil, time.Minute); err != nil || got.Queued != 0 || got.AlreadyQueued != 0 {
+		t.Fatalf("resend failed again %v %+v", err, got)
+	}
+	if got, err := store.ResendEventMails(ctx, ev.ID, certificate.ResendAll, nil, time.Minute); err != nil || got.Queued != 0 || got.AlreadyQueued != 1 {
+		t.Fatalf("resend all %v %+v", err, got)
+	}
+	if _, err := store.ResendEventMails(ctx, ev.ID, certificate.ResendAll, nil, time.Minute); !errors.Is(err, certificate.ErrResendTooSoon) {
+		t.Fatalf("resend all twice: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE certificate_mail_resend_all SET last_at = now() - interval '2 minutes'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ResendEventMails(ctx, ev.ID, certificate.ResendAll, nil, time.Minute); err != nil {
+		t.Fatalf("resend all after the cooldown: %v", err)
+	}
+	var scope string
+	if err := pool.QueryRow(ctx, `SELECT resend_scope FROM certificate_mails WHERE status = 'queued'`).Scan(&scope); err != nil || scope != "failed" {
+		t.Fatalf("scope %q %v", scope, err)
 	}
 
 	// The rows go with their certificate.
