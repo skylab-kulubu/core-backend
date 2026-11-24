@@ -141,7 +141,9 @@ func TestShortLinkMissPageIsSelfContained(t *testing.T) {
 	if want := "style-src 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"; !strings.Contains(csp, want) {
 		t.Fatalf("csp %q does not name the style hash %q", csp, want)
 	}
-	for _, banned := range []string{"<script", " style=", "<link", "<img", "@import", "url(", "src="} {
+	// Safari does not resolve var() in an SVG presentation attribute; the
+	// colours are classes in the one <style>.
+	for _, banned := range []string{"<script", " style=", "<link", "<img", "@import", "url(", "src=", `="var(`} {
 		if strings.Contains(body, banned) {
 			t.Fatalf("page holds %q", banned)
 		}

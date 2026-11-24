@@ -21,6 +21,9 @@ when the alias leads nowhere:
 `application/json, text/html` all get the JSON. A live link redirects as
 before, whatever `Accept` says. Both miss answers carry `Vary: Accept`.
 
+`skyl.app/` with no alias (`GET /v1/go`, and `/v1/go/` with it) is `302` to
+`https://yildizskylab.com` with `Cache-Control: no-store`, for everyone.
+
 A disabled link is one that was deleted in the panel (`disabled_at`); the
 store answers `AliasDisabled` with the exact spelling, as the redirect does,
 so a case variant of a disabled alias is an unknown one. A link whose row is
@@ -38,7 +41,9 @@ Headers: `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`,
 `Referrer-Policy: no-referrer` and
 `Content-Security-Policy: default-src 'none'; style-src 'sha256-…'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`.
 The hash is the page's one `<style>` element, computed at start-up; there is
-no script and no `style` attribute.
+no script and no `style` attribute. The scene's colours are classes in that
+`<style>`, not `var(--…)` in SVG presentation attributes (`fill=`,
+`stroke=`), which Safari does not resolve.
 
 Scenes and copy come from the error page work (`notes/hata-sayfalari` in the
 hub): scene 404-C and 410-B of prototype v5, copy v4 as approved. When the
