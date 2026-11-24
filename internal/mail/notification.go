@@ -18,6 +18,16 @@ import (
 // new Ticket is told by (iletişim-servisi 06, docs/ticket-created-notification.md).
 const TicketCreatedType = "event.ticket-created"
 
+// WaitlistJoinedType and WaitlistPromotedType are the Notification types
+// (and e-mail template keys) of the waiting list (docs/event-capacity.md):
+// "Bekleme listesindesin" and "Yer açıldı, biletin hazır". SkyMail seeds
+// them (skymail-frontend, kontenjan-iptal-hatirlatma 09); core sends them
+// only while TICKET_STATUS_MAIL is on.
+const (
+	WaitlistJoinedType   = "event.waitlist-joined"
+	WaitlistPromotedType = "event.waitlist-promoted"
+)
+
 // EventUpdatedType is the Notification type (and the e-mail template key) a
 // published Event's new time or place is told by (iletişim-servisi 06,
 // docs/event-updated-notification.md).
@@ -26,6 +36,7 @@ const EventUpdatedType = "event.updated"
 const (
 	kindTicketCreated = "ticket_created"
 	kindEventUpdated  = "event_updated"
+	kindTicketStatus  = "ticket_status"
 )
 
 // Notification is one POST /v1/notifications (SkyMail docs/notifications.md):
@@ -160,6 +171,13 @@ func answerCode(body []byte) string {
 // with the e-mail either way; none sends the body of before.
 func (s *SkyMail) TicketCreated(ctx context.Context, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
 	return s.tellHolder(ctx, kindTicketCreated, TicketCreatedType, idempotencyKey, holder, vars, source, expiresAt, attachments)
+}
+
+// TicketStatus tells a Ticket's holder of its place on the waiting list
+// (typ WaitlistJoinedType or WaitlistPromotedType), the way TicketCreated
+// tells of a new Ticket.
+func (s *SkyMail) TicketStatus(ctx context.Context, typ, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
+	return s.tellHolder(ctx, kindTicketStatus, typ, idempotencyKey, holder, vars, source, expiresAt, attachments)
 }
 
 // EventUpdated tells a Ticket holder that the Event's time or place changed,

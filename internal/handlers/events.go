@@ -38,9 +38,11 @@ type eventBody struct {
 	FormAlias       *string                `json:"formAlias"`
 	ExtraFormURLs   *[]event.EventFormLink `json:"extraFormUrls"`
 	Capacity        int                    `json:"capacity"`
-	StartDate       *time.Time             `json:"startDate"`
-	EndDate         *time.Time             `json:"endDate"`
-	Linkedin        string                 `json:"linkedin"`
+	// WaitlistEnabled on create; none is on (docs/event-capacity.md).
+	WaitlistEnabled *bool      `json:"waitlistEnabled"`
+	StartDate       *time.Time `json:"startDate"`
+	EndDate         *time.Time `json:"endDate"`
+	Linkedin        string     `json:"linkedin"`
 	// Status is read on create alone (draft or published; none is
 	// published). An update (event.Patch) reads neither it nor active,
 	// which is derived (ADR 0066): a client that sends the whole Event
@@ -123,6 +125,7 @@ func (b eventBody) asEvent() event.Event {
 		OwnerTeam:       b.OwnerTeam,
 		FormURL:         b.FormURL,
 		Capacity:        b.Capacity,
+		WaitlistEnabled: b.WaitlistEnabled,
 		StartDate:       b.StartDate,
 		EndDate:         b.EndDate,
 		Linkedin:        b.Linkedin,

@@ -94,6 +94,8 @@ services:
       TICKET_CREATED_NOTIFICATION: ${TICKET_CREATED_NOTIFICATION:-off}
       # The Ticket's PDF with that mail (docs/ticket-created-notification.md).
       TICKET_PDF_ATTACHMENT: ${TICKET_PDF_ATTACHMENT:-off}
+      # The waiting list's mails (docs/event-capacity.md).
+      TICKET_STATUS_MAIL: ${TICKET_STATUS_MAIL:-off}
       # A published Event's new time or place (docs/event-updated-notification.md).
       EVENT_UPDATED_NOTIFICATION: ${EVENT_UPDATED_NOTIFICATION:-off}
       GOTENBERG_URL: ${GOTENBERG_URL:-http://gotenberg:3000}

@@ -1042,7 +1042,12 @@ func main() {
 	case ticketPDFAttachment:
 		ticketMailPDF = ticketPage
 	}
-	worker("ticket notification", startTicketCreatedNotification(workers, ticketNotificationOn, tickets, ticketnotify.NewPostgresQueue(pool), events, users, sky,
+	// The waiting list's mails (docs/event-capacity.md), on the same queue.
+	ticketStatusMail, err := ticketStatusMailOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	worker("ticket notification", startTicketCreatedNotification(workers, ticketNotificationOn, ticketStatusMail, tickets, ticketnotify.NewPostgresQueue(pool), events, users, sky,
 		ticketPageConfig, os.Getenv("PUBLIC_API_ORIGIN"), ticketMailPDF, log.Printf))
 	var eventMapMetrics interface{ Prometheus() string }
 	mapRegions := mapregion.NewPostgresStore(pool)

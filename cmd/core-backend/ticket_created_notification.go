@@ -25,6 +25,15 @@ func ticketPDFAttachmentOn(getenv func(string) string) (bool, error) {
 	return onOff(getenv, "TICKET_PDF_ATTACHMENT")
 }
 
+// ticketStatusMailOn reads TICKET_STATUS_MAIL (docs/event-capacity.md): on,
+// the waiting list's mails go ("Bekleme listesindesin", "Yer açıldı");
+// unset or off, none does, and a Ticket promoted off the list gets the new
+// Ticket's mail while that is on. It needs SkyMail's templates
+// (event.waitlist-joined, event.waitlist-promoted) seeded first.
+func ticketStatusMailOn(getenv func(string) string) (bool, error) {
+	return onOff(getenv, "TICKET_STATUS_MAIL")
+}
+
 // onOff reads an on/off switch: unset or off is off, on is on, anything
 // else is refused.
 func onOff(getenv func(string) string, name string) (bool, error) {
@@ -44,14 +53,20 @@ func onOff(getenv func(string) string, name string) (bool, error) {
 // queues nothing: turning it on later does not tell the Tickets written
 // meanwhile. pdf, when not nil (TICKET_PDF_ATTACHMENT=on), draws each
 // Ticket's PDF for its mail.
-func startTicketCreatedNotification(ctx context.Context, on bool, store *ticket.PostgresStore, queue ticketnotify.Queue, events *event.PostgresStore, users user.Store, sky *mail.SkyMail, page ticket.PageConfig, apiOrigin string, pdf ticketnotify.PDFs, logf func(string, ...any)) <-chan struct{} {
+//
+// statusOn (TICKET_STATUS_MAIL) adds the waiting list's mails to the same
+// queue and worker: the worker runs while either is on.
+func startTicketCreatedNotification(ctx context.Context, on, statusOn bool, store *ticket.PostgresStore, queue ticketnotify.Queue, events *event.PostgresStore, users user.Store, sky *mail.SkyMail, page ticket.PageConfig, apiOrigin string, pdf ticketnotify.PDFs, logf func(string, ...any)) <-chan struct{} {
 	off := make(chan struct{})
 	close(off)
 	store.NotifyCreated(false)
+	store.NotifyStatus(false)
 	events.NotifyTicketsOnPublish(false)
+	events.NotifyTicketStatus(false)
 	switch {
-	case !on:
+	case !on && !statusOn:
 		logf("ticket notification: off (TICKET_CREATED_NOTIFICATION is not on)")
+		logf("ticket status mail: off (TICKET_STATUS_MAIL is not on)")
 		return off
 	case sky == nil:
 		logf("ticket notification: off (SkyMail is not configured)")
@@ -61,6 +76,17 @@ func startTicketCreatedNotification(ctx context.Context, on bool, store *ticket.
 	if err != nil {
 		logf("ticket notification: OFF, %v", err)
 		return off
+	}
+	store.NotifyStatus(statusOn)
+	events.NotifyTicketStatus(statusOn)
+	if statusOn {
+		logf("ticket status mail: on (%s, %s)", mail.WaitlistJoinedType, mail.WaitlistPromotedType)
+	} else {
+		logf("ticket status mail: off (TICKET_STATUS_MAIL is not on)")
+	}
+	if !on {
+		logf("ticket notification: off (TICKET_CREATED_NOTIFICATION is not on)")
+		return svc.Run(ctx, logf)
 	}
 	store.NotifyCreated(true)
 	events.NotifyTicketsOnPublish(true)
