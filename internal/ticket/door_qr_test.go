@@ -73,7 +73,7 @@ func TestMintDoorQRDoorStaffOnly(t *testing.T) {
 	for name, p := range map[string]authz.Principal{
 		"door staff": f.staff, "team leader": weblabLead, "yk": yk,
 	} {
-		pass, err := f.svc.MintDoorQR(ctx, p, f.sess.ID)
+		pass, err := f.svc.MintDoorQR(ctx, p, f.sess.ID, doorqr.ClassDoor)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -87,11 +87,11 @@ func TestMintDoorQRDoorStaffOnly(t *testing.T) {
 	for name, p := range map[string]authz.Principal{
 		"other member": otherMember, "anonymous": {}, "forms": formsHop,
 	} {
-		if _, err := f.svc.MintDoorQR(ctx, p, f.sess.ID); !errors.Is(err, ticket.ErrForbidden) {
+		if _, err := f.svc.MintDoorQR(ctx, p, f.sess.ID, doorqr.ClassDoor); !errors.Is(err, ticket.ErrForbidden) {
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
-	if _, err := f.svc.MintDoorQR(ctx, f.staff, uuid.New()); !errors.Is(err, ticket.ErrNotFound) {
+	if _, err := f.svc.MintDoorQR(ctx, f.staff, uuid.New(), doorqr.ClassDoor); !errors.Is(err, ticket.ErrNotFound) {
 		t.Fatalf("unknown session: %v", err)
 	}
 }
@@ -107,10 +107,10 @@ func TestMintDoorQRRefusesAnotherEventsSession(t *testing.T) {
 	}
 	day := seedDay(t, f.events, other.ID, "Day 1")
 	sess := seedSession(t, f.events, day.ID, "Elsewhere")
-	if _, err := f.svc.MintDoorQR(ctx, f.staff, sess.ID); !errors.Is(err, ticket.ErrForbidden) {
+	if _, err := f.svc.MintDoorQR(ctx, f.staff, sess.ID, doorqr.ClassDoor); !errors.Is(err, ticket.ErrForbidden) {
 		t.Fatalf("cross-event mint: %v", err)
 	}
-	if _, err := f.svc.MintDoorQR(ctx, weblabLead, sess.ID); !errors.Is(err, ticket.ErrForbidden) {
+	if _, err := f.svc.MintDoorQR(ctx, weblabLead, sess.ID, doorqr.ClassDoor); !errors.Is(err, ticket.ErrForbidden) {
 		t.Fatalf("other team's leader: %v", err)
 	}
 }
@@ -134,7 +134,7 @@ func TestGuestCheckInAndMintOnlyWhileTheSessionIsOpen(t *testing.T) {
 	if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, guest); !errors.Is(err, ticket.ErrSessionClosed) {
 		t.Fatalf("before the window: %v", err)
 	}
-	if _, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID); !errors.Is(err, ticket.ErrSessionClosed) {
+	if _, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID, doorqr.ClassDoor); !errors.Is(err, ticket.ErrSessionClosed) {
 		t.Fatalf("mint before the window: %v", err)
 	}
 	schedule(at(-3*time.Hour), at(-2*time.Hour), false)
@@ -147,7 +147,7 @@ func TestGuestCheckInAndMintOnlyWhileTheSessionIsOpen(t *testing.T) {
 	}
 	// Within the grace before the start.
 	schedule(at(10*time.Minute), at(time.Hour), false)
-	if _, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID); err != nil {
+	if _, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID, doorqr.ClassDoor); err != nil {
 		t.Fatalf("mint within grace: %v", err)
 	}
 	if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, guest); err != nil {
@@ -192,7 +192,7 @@ func TestGuestDoorWindowIsTwelveHoursEachSideForMintAndCheckIn(t *testing.T) {
 		if _, err := f.events.UpdateSession(ctx, s); err != nil {
 			t.Fatal(err)
 		}
-		pass, mintErr := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID)
+		pass, mintErr := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID, doorqr.ClassDoor)
 		if !tc.open {
 			if !errors.Is(mintErr, ticket.ErrSessionClosed) {
 				t.Fatalf("%s: mint %v", tc.name, mintErr)
@@ -203,7 +203,7 @@ func TestGuestDoorWindowIsTwelveHoursEachSideForMintAndCheckIn(t *testing.T) {
 			if _, err := f.events.UpdateSession(ctx, open); err != nil {
 				t.Fatal(err)
 			}
-			valid, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID)
+			valid, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID, doorqr.ClassDoor)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -233,7 +233,7 @@ func TestGuestCheckInQRModeRequiresDoorQR(t *testing.T) {
 	if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, ticket.GuestCheckIn{Email: "ada@example.com"}); !errors.Is(err, ticket.ErrDoorQRRequired) {
 		t.Fatalf("no token: %v", err)
 	}
-	pass, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID)
+	pass, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID, doorqr.ClassDoor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestGuestCheckInRefusesExpiredAndForeignDoorQR(t *testing.T) {
 	t.Parallel()
 	f := newDoorFixture(t, doorqr.ModeQR)
 	ctx := context.Background()
-	pass, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID)
+	pass, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID, doorqr.ClassDoor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +296,7 @@ func TestGuestCheckInRefusesDoorQRAfterSessionMovesEvent(t *testing.T) {
 	t.Parallel()
 	f := newDoorFixture(t, doorqr.ModeQR)
 	ctx := context.Background()
-	pass, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID)
+	pass, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID, doorqr.ClassDoor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestGuestCheckInOpenModeTakesEmailAloneButChecksAToken(t *testing.T) {
 	if !errors.Is(err, ticket.ErrDoorQRInvalid) {
 		t.Fatalf("open, bad token: %v", err)
 	}
-	pass, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID)
+	pass, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID, doorqr.ClassDoor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,138 @@ func TestMemberSelfCheckInNeedsNoDoorQR(t *testing.T) {
 	if _, err := f.svc.Apply(ctx, member, f.ev.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.CheckInMe(ctx, member, f.sess.ID); err != nil {
+	if _, err := f.svc.CheckInMe(ctx, member, f.sess.ID, ""); err != nil {
 		t.Fatalf("member: %v", err)
+	}
+}
+
+// memberWithTicket registers a member on the fixture's Event.
+func memberWithTicket(t *testing.T, f doorFixture, id string) authz.Principal {
+	t.Helper()
+	member := authz.Principal{ID: uuid.MustParse(id).String()}
+	if _, err := f.svc.Apply(context.Background(), member, f.ev.ID); err != nil {
+		t.Fatal(err)
+	}
+	return member
+}
+
+// SESSION_QR_MODE=open keeps the static Session QR (no token) working for
+// sky-app versions that read only that, but a token that is sent is checked.
+func TestMemberSelfCheckInOpenModeTakesNoTokenButChecksOne(t *testing.T) {
+	t.Parallel()
+	f := newDoorFixtureWith(t, doorqr.Config{Mode: doorqr.ModeQR, SessionMode: doorqr.ModeOpen, MaxUses: 3, SessionGrace: 30 * time.Minute})
+	ctx := context.Background()
+	ada := memberWithTicket(t, f, "71111111-1111-1111-1111-111111111111")
+	bob := memberWithTicket(t, f, "72222222-2222-2222-2222-222222222222")
+	if _, err := f.svc.CheckInMe(ctx, ada, f.sess.ID, ""); err != nil {
+		t.Fatalf("open, no token: %v", err)
+	}
+	if _, err := f.svc.CheckInMe(ctx, bob, f.sess.ID, "v1.garbage"); !errors.Is(err, ticket.ErrDoorQRInvalid) {
+		t.Fatalf("open, bad token: %v", err)
+	}
+	pass, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID, doorqr.ClassDisplay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pass.SessionQRMode != "open" || pass.Use != "display" {
+		t.Fatalf("pass %+v", pass)
+	}
+	if _, err := f.svc.CheckInMe(ctx, bob, f.sess.ID, pass.Token); err != nil {
+		t.Fatalf("open, good token: %v", err)
+	}
+}
+
+// SESSION_QR_MODE=qr retires the static Session QR: check-in/me needs a
+// fresh door or attendance token of this Session, within its window.
+func TestMemberSelfCheckInQRModeRequiresARotatingToken(t *testing.T) {
+	t.Parallel()
+	f := newDoorFixtureWith(t, doorqr.Config{Mode: doorqr.ModeOpen, SessionMode: doorqr.ModeQR, MaxUses: 1, DisplayMaxUses: 2, SessionGrace: 30 * time.Minute})
+	ctx := context.Background()
+	ada := memberWithTicket(t, f, "71111111-1111-1111-1111-111111111111")
+	bob := memberWithTicket(t, f, "72222222-2222-2222-2222-222222222222")
+	cem := memberWithTicket(t, f, "73333333-3333-3333-3333-333333333333")
+	stranger := authz.Principal{ID: uuid.MustParse("74444444-4444-4444-4444-444444444444").String()}
+
+	if _, err := f.svc.CheckInMe(ctx, ada, f.sess.ID, ""); !errors.Is(err, ticket.ErrDoorQRRequired) {
+		t.Fatalf("static QR in qr mode: %v", err)
+	}
+	display, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID, doorqr.ClassDisplay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if display.SessionQRMode != "qr" || display.MaxUses != 2 {
+		t.Fatalf("display %+v", display)
+	}
+	// Someone without a Ticket gives the use back.
+	for range 3 {
+		if _, err := f.svc.CheckInMe(ctx, stranger, f.sess.ID, display.Token); !errors.Is(err, ticket.ErrNotFound) {
+			t.Fatalf("no ticket: %v", err)
+		}
+	}
+	if _, err := f.svc.CheckInMe(ctx, ada, f.sess.ID, display.Token); err != nil {
+		t.Fatalf("ada: %v", err)
+	}
+	if _, err := f.svc.CheckInMe(ctx, ada, f.sess.ID, display.Token); !errors.Is(err, ticket.ErrConflict) {
+		t.Fatalf("ada again: %v", err)
+	}
+	if _, err := f.svc.CheckInMe(ctx, bob, f.sess.ID, display.Token); !errors.Is(err, ticket.ErrDoorQRUsedUp) {
+		t.Fatalf("over the display cap: %v", err)
+	}
+	// The door screen's token works too, with its own cap.
+	door, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID, doorqr.ClassDoor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.CheckInMe(ctx, bob, f.sess.ID, door.Token); err != nil {
+		t.Fatalf("door token: %v", err)
+	}
+	// A photo of the screen sent home dies with the token.
+	f.advance(doorqr.DefaultTTL)
+	if _, err := f.svc.CheckInMe(ctx, cem, f.sess.ID, door.Token); !errors.Is(err, ticket.ErrDoorQRExpired) {
+		t.Fatalf("expired: %v", err)
+	}
+	// Another Session's token does not count here.
+	other := seedSession(t, f.events, f.sess.EventDayID, "Closing")
+	foreign, err := f.svc.MintDoorQR(ctx, f.staff, other.ID, doorqr.ClassDisplay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.CheckInMe(ctx, cem, f.sess.ID, foreign.Token); !errors.Is(err, ticket.ErrDoorQRInvalid) {
+		t.Fatalf("foreign: %v", err)
+	}
+}
+
+// With a token or in qr mode, check-in/me keeps to the Session's window, as
+// guest check-in does; open mode without a token is unchanged.
+func TestMemberSelfCheckInWindowAppliesWithTokens(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, mode := range []doorqr.Mode{doorqr.ModeOpen, doorqr.ModeQR} {
+		f := newDoorFixtureWith(t, doorqr.Config{SessionMode: mode, SessionGrace: 30 * time.Minute})
+		ada := memberWithTicket(t, f, "71111111-1111-1111-1111-111111111111")
+		pass, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID, doorqr.ClassDisplay)
+		if err != nil {
+			t.Fatal(err)
+		}
+		end := f.minted.Add(-time.Hour)
+		s := f.sess
+		s.EndTime = &end
+		if _, err := f.events.UpdateSession(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.svc.CheckInMe(ctx, ada, f.sess.ID, pass.Token); !errors.Is(err, ticket.ErrSessionClosed) {
+			t.Fatalf("%s, with token after the window: %v", mode, err)
+		}
+		_, err = f.svc.CheckInMe(ctx, ada, f.sess.ID, "")
+		switch mode {
+		case doorqr.ModeOpen:
+			if err != nil {
+				t.Fatalf("open, static QR after the window (unchanged): %v", err)
+			}
+		case doorqr.ModeQR:
+			if !errors.Is(err, ticket.ErrSessionClosed) {
+				t.Fatalf("qr, no token after the window: %v", err)
+			}
+		}
 	}
 }

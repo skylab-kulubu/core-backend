@@ -65,3 +65,21 @@ func TestDoorQRGateRefusesAModeTypo(t *testing.T) {
 		t.Fatal("accepted a mode typo")
 	}
 }
+
+// A typo in SESSION_QR_MODE stops core too, so it cannot quietly reopen the
+// static Session QR.
+func TestDoorQRGateRefusesASessionModeTypo(t *testing.T) {
+	t.Parallel()
+	passKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := doorQRGate(func(k string) string {
+		if k == doorqr.SessionModeEnv {
+			return "kapali"
+		}
+		return ""
+	}, passKey); err == nil {
+		t.Fatal("accepted a session mode typo")
+	}
+}

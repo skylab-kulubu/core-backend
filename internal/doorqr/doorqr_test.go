@@ -43,7 +43,10 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Config{Mode: ModeOpen, TTL: 60 * time.Second, MaxUses: 20, SessionGrace: 12 * time.Hour}
+	want := Config{
+		Mode: ModeOpen, SessionMode: ModeOpen, TTL: 60 * time.Second, MaxUses: 20, DisplayMaxUses: 400,
+		SessionGrace: 12 * time.Hour,
+	}
 	if cfg != want {
 		t.Fatalf("defaults %+v", cfg)
 	}
@@ -104,17 +107,22 @@ func TestConfigFromEnvSessionGraceOnlyNarrows(t *testing.T) {
 
 func TestConfigFromEnvReadsEverySetting(t *testing.T) {
 	env := map[string]string{
-		ModeEnv:         " qr ",
-		TTLEnv:          "90s",
-		MaxUsesEnv:      "30",
-		GuestURLEnv:     "https://example.test/kapi/{sessionId}",
-		SessionGraceEnv: "0s",
+		ModeEnv:           " qr ",
+		TTLEnv:            "90s",
+		MaxUsesEnv:        "30",
+		GuestURLEnv:       "https://example.test/kapi/{sessionId}",
+		SessionGraceEnv:   "0s",
+		SessionModeEnv:    "qr",
+		DisplayMaxUsesEnv: "250",
 	}
 	cfg, err := ConfigFromEnv(func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Config{Mode: ModeQR, TTL: 90 * time.Second, MaxUses: 30, GuestURL: env[GuestURLEnv], SessionGrace: 0}
+	want := Config{
+		Mode: ModeQR, SessionMode: ModeQR, TTL: 90 * time.Second, MaxUses: 30, DisplayMaxUses: 250,
+		GuestURL: env[GuestURLEnv], SessionGrace: 0,
+	}
 	if cfg != want {
 		t.Fatalf("config %+v", cfg)
 	}
@@ -133,6 +141,8 @@ func TestConfigFromEnvRefusesTyposAndOutOfRangeValues(t *testing.T) {
 		"url no session":   {GuestURLEnv: "https://example.test/kapi"},
 		"grace negative":   {SessionGraceEnv: "-1m"},
 		"grace too long":   {SessionGraceEnv: "24h"},
+		"session mode":     {SessionModeEnv: "closed"},
+		"display uses":     {DisplayMaxUsesEnv: "0"},
 	}
 	for name, env := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -467,5 +477,110 @@ func TestMetricsCountOutcomes(t *testing.T) {
 	nilGate.Record(true, OutcomeCheckedIn)
 	if nilGate.Prometheus() != "" {
 		t.Fatal("nil gate metrics")
+	}
+}
+
+func TestParseClass(t *testing.T) {
+	for raw, want := range map[string]Class{"": ClassDoor, "door": ClassDoor, " display ": ClassDisplay} {
+		if got, ok := ParseClass(raw); !ok || got != want {
+			t.Errorf("%q: %q %v", raw, got, ok)
+		}
+	}
+	for _, raw := range []string{"Display", "screen", "obs"} {
+		if _, ok := ParseClass(raw); ok {
+			t.Errorf("%q accepted", raw)
+		}
+	}
+}
+
+// A projection screen's token says so in a field the MAC covers, and has its
+// own, larger use cap; the door token keeps its original four fields.
+func TestDisplayTokenHasItsOwnCap(t *testing.T) {
+	g, _ := newGate(t, Config{MaxUses: 1, DisplayMaxUses: 3})
+	door, err := g.Mint(sessionID, eventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if door.Class != ClassDoor || door.MaxUses != 1 || strings.Count(door.Token, ".") != 3 {
+		t.Fatalf("door %+v", door)
+	}
+	display, err := g.MintFor(ClassDisplay, sessionID, eventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if display.Class != ClassDisplay || display.MaxUses != 3 || strings.Count(display.Token, ".") != 4 ||
+		!strings.Contains(display.Token, "."+DisplayField+".") || len(display.Token) > 42 {
+		t.Fatalf("display %+v (%d)", display, len(display.Token))
+	}
+	if err := admit(g, door.Token); err != nil {
+		t.Fatal(err)
+	}
+	if err := admit(g, door.Token); !errors.Is(err, ErrUsedUp) {
+		t.Fatalf("door second use: %v", err)
+	}
+	for i := range 3 {
+		if err := admit(g, display.Token); err != nil {
+			t.Fatalf("display use %d: %v", i+1, err)
+		}
+	}
+	if err := admit(g, display.Token); !errors.Is(err, ErrUsedUp) {
+		t.Fatalf("display fourth use: %v", err)
+	}
+}
+
+// The class cannot be changed on the way: a door token labelled display, or
+// a display token stripped of its label, no longer carries a valid MAC.
+func TestTokenClassCannotBeRelabelled(t *testing.T) {
+	g, _ := newGate(t, Config{})
+	door, err := g.Mint(sessionID, eventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	display, err := g.MintFor(ClassDisplay, sessionID, eventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := strings.Split(door.Token, ".")
+	relabelled := strings.Join([]string{d[0], d[1], d[2], DisplayField, d[3]}, ".")
+	p := strings.Split(display.Token, ".")
+	stripped := strings.Join([]string{p[0], p[1], p[2], p[4]}, ".")
+	otherLabel := strings.Join([]string{p[0], p[1], p[2], "b", p[4]}, ".")
+	for name, raw := range map[string]string{"door as display": relabelled, "display as door": stripped, "unknown label": otherLabel} {
+		if err := admit(g, raw); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// The genuine display token is bound to its Session and Event too.
+	if _, err := g.Admit(display.Token, uuid.New(), eventID); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("display, other session: %v", err)
+	}
+	if err := admit(g, display.Token); err != nil {
+		t.Fatalf("genuine display: %v", err)
+	}
+}
+
+func TestSelfCheckInMetricsAreSeparate(t *testing.T) {
+	g, _ := newGate(t, Config{SessionMode: ModeQR})
+	g.Record(true, OutcomeCheckedIn)
+	g.RecordSelf(false, OutcomeRequired)
+	g.RecordSelf(true, OutcomeCheckedIn)
+	g.RecordSelf(true, OutcomeCheckedIn)
+	text := g.Prometheus()
+	for _, want := range []string{
+		`skylab_guest_self_checkin_total{door_qr="present",outcome="checked_in"} 1`,
+		`skylab_session_self_checkin_total{door_qr="present",outcome="checked_in"} 2`,
+		`skylab_session_self_checkin_total{door_qr="absent",outcome="door_qr_required"} 1`,
+		`skylab_guest_self_checkin_mode{mode="open"} 1`,
+		`skylab_session_self_checkin_mode{mode="qr"} 1`,
+		`skylab_session_self_checkin_mode{mode="open"} 0`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %s in\n%s", want, text)
+		}
+	}
+	var nilGate *Gate
+	nilGate.RecordSelf(true, OutcomeCheckedIn)
+	if nilGate.SessionMode() != ModeOpen {
+		t.Fatal("nil gate session mode")
 	}
 }

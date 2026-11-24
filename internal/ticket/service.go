@@ -42,9 +42,14 @@ type Service interface {
 	// UndoCheckInByID is UndoCheckIn by the check-in's own id, which the
 	// door holds; ErrNotFound for a check-in of another Session.
 	UndoCheckInByID(ctx context.Context, p authz.Principal, sessionID, checkInID uuid.UUID) error
-	CheckInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (CheckIn, error)
+	// CheckInMe is a member's own check-in by the Session QR. doorToken is
+	// the scanned door or attendance QR's dq value; SESSION_QR_MODE=qr
+	// requires it (docs/guest-self-check-in.md).
+	CheckInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID, doorToken string) (CheckIn, error)
 	CheckInGuest(ctx context.Context, sessionID uuid.UUID, g GuestCheckIn) (CheckIn, error)
-	MintDoorQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorQR, error)
+	// MintDoorQR signs a door QR (doorqr.ClassDoor) or an attendance QR for a
+	// projection screen (doorqr.ClassDisplay).
+	MintDoorQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID, class doorqr.Class) (DoorQR, error)
 	CheckInUser(ctx context.Context, p authz.Principal, sessionID, userID uuid.UUID) (CheckIn, error)
 	// AuthorizeSessionDoor answers whether p may take check-ins at the
 	// Session's door (canUseDoor): ErrNotFound for no such Session,
@@ -1091,12 +1096,23 @@ func (s *service) sessionAndEvent(ctx context.Context, sessionID uuid.UUID) (eve
 	return sess, day.EventID, nil
 }
 
-func (s *service) CheckInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (CheckIn, error) {
+func (s *service) CheckInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID, doorToken string) (CheckIn, error) {
+	withToken := strings.TrimSpace(doorToken) != ""
+	ci, err := s.checkInMe(ctx, p, sessionID, doorToken)
+	s.door.RecordSelf(withToken, guestCheckInOutcome(err))
+	return ci, err
+}
+
+// checkInMe: without a token and in SESSION_QR_MODE=open it is the static
+// Session QR's check-in, unchanged. A token, or qr mode, adds what the door
+// QR proves: the Session's time window and a fresh code from the screen in
+// the room.
+func (s *service) checkInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID, doorToken string) (CheckIn, error) {
 	ownerID, err := uuid.Parse(p.ID)
 	if err != nil {
 		return CheckIn{}, ErrInvalid
 	}
-	eventID, err := s.ticketEventID(ctx, sessionID)
+	sess, eventID, err := s.sessionAndEvent(ctx, sessionID)
 	if err != nil {
 		return CheckIn{}, err
 	}
@@ -1107,11 +1123,29 @@ func (s *service) CheckInMe(ctx context.Context, p authz.Principal, sessionID uu
 	if err := s.openForCheckIn(&p, ev); err != nil {
 		return CheckIn{}, err
 	}
-	t, err := s.tickets.GetByOwnerEvent(ctx, ownerID, eventID)
+	withToken := strings.TrimSpace(doorToken) != ""
+	if (withToken || s.door.SessionMode() == doorqr.ModeQR) &&
+		!s.door.SessionOpen(sess.StartTime, sess.EndTime, sess.Cancelled) {
+		return CheckIn{}, ErrSessionClosed
+	}
+	use, err := s.admitDoorQR(doorToken, sessionID, eventID, s.door.SessionMode())
 	if err != nil {
 		return CheckIn{}, err
 	}
-	return s.addSessionCheckIn(ctx, t, sessionID)
+	t, err := s.tickets.GetByOwnerEvent(ctx, ownerID, eventID)
+	if err == nil {
+		var ci CheckIn
+		ci, err = s.addSessionCheckIn(ctx, t, sessionID)
+		if err == nil {
+			return ci, nil
+		}
+	}
+	// As for guests: only a check-in that happened (or already had) spends
+	// a place on the token.
+	if !errors.Is(err, ErrConflict) {
+		use.Release()
+	}
+	return CheckIn{}, err
 }
 
 func (s *service) CheckInGuest(ctx context.Context, sessionID uuid.UUID, g GuestCheckIn) (CheckIn, error) {
@@ -1144,7 +1178,7 @@ func (s *service) checkInGuest(ctx context.Context, sessionID uuid.UUID, g Guest
 	// The door QR is checked before any Ticket is looked up, so without one
 	// (in qr mode) the route says nothing about which e-mails are
 	// registered.
-	use, err := s.admitDoorQR(g.DoorToken, sessionID, eventID)
+	use, err := s.admitDoorQR(g.DoorToken, sessionID, eventID, s.door.Mode())
 	if err != nil {
 		return CheckIn{}, err
 	}
@@ -1171,11 +1205,13 @@ func (s *service) checkInGuestTicket(ctx context.Context, sessionID, eventID uui
 	return CheckIn{}, ErrNotFound
 }
 
-// admitDoorQR applies GUEST_SELF_CHECKIN_MODE: qr requires a valid token;
-// open takes none, but a token that is sent must be valid either way.
-func (s *service) admitDoorQR(token string, sessionID, eventID uuid.UUID) (doorqr.Use, error) {
+// admitDoorQR applies a self check-in mode (GUEST_SELF_CHECKIN_MODE for
+// guests, SESSION_QR_MODE for check-in/me): qr requires a valid token; open
+// takes none, but a token that is sent must be valid either way. Door and
+// display tokens are both accepted, each with its own use cap.
+func (s *service) admitDoorQR(token string, sessionID, eventID uuid.UUID, mode doorqr.Mode) (doorqr.Use, error) {
 	if strings.TrimSpace(token) == "" {
-		if s.door.Mode() == doorqr.ModeQR {
+		if mode == doorqr.ModeQR {
 			return doorqr.Use{}, ErrDoorQRRequired
 		}
 		return doorqr.Use{}, nil
@@ -1218,10 +1254,11 @@ func guestCheckInOutcome(err error) doorqr.Outcome {
 	}
 }
 
-// MintDoorQR signs a door QR for a Session. Whoever may take check-ins at the
-// Event's door may show one (canUseDoor: door staff, the owning team's
-// leaders, Privileged, team door scan).
-func (s *service) MintDoorQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorQR, error) {
+// MintDoorQR signs a door QR, or an attendance QR for a projection screen,
+// for a Session. Whoever may take check-ins at the Event's door may show one
+// (canUseDoor: door staff, the owning team's leaders, Privileged, team door
+// scan).
+func (s *service) MintDoorQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID, class doorqr.Class) (DoorQR, error) {
 	ev, err := s.authorizedDoorEvent(ctx, p, sessionID, true)
 	if err != nil {
 		return DoorQR{}, err
@@ -1237,13 +1274,16 @@ func (s *service) MintDoorQR(ctx context.Context, p authz.Principal, sessionID u
 	if !s.door.SessionOpen(sess.StartTime, sess.EndTime, sess.Cancelled) {
 		return DoorQR{}, ErrSessionClosed
 	}
-	pass, err := s.door.Mint(sessionID, ev.ID)
+	pass, err := s.door.MintFor(class, sessionID, ev.ID)
 	if err != nil {
 		return DoorQR{}, err
 	}
 	return DoorQR{
 		Token:               pass.Token,
 		URL:                 pass.URL,
+		Use:                 string(pass.Class),
+		MaxUses:             pass.MaxUses,
+		SessionQRMode:       string(s.door.SessionMode()),
 		SessionID:           sessionID,
 		EventID:             ev.ID,
 		IssuedAt:            pass.IssuedAt,
