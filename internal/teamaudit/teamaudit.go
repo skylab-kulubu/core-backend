@@ -78,6 +78,14 @@ const (
 	// ActionTicketPromote is an operator moving a waitlisted Ticket to
 	// active (docs/event-capacity.md), recorded as ActionTicketCancel.
 	ActionTicketPromote Action = "ticket.promote"
+	// ActionTicketImport is an operator's import of a list of attendees
+	// (docs/attendee-import.md), recorded as ActionTicketCancel but
+	// without a Ticket: the Event's team, the Event and the import's
+	// counts (State.Import), never a name or an e-mail address.
+	ActionTicketImport Action = "ticket.import"
+	// ActionTicketImportPreview is the import's preview, recorded as
+	// ActionTicketImport: what the list would do, nothing written.
+	ActionTicketImportPreview Action = "ticket.import.preview"
 	// The user.* actions are a person's account changed from the panel's
 	// person card (docs/user-accounts.md): the target is the person
 	// (TargetUserID), with no Group (GroupID and GroupPath empty). before
@@ -114,6 +122,7 @@ var Actions = []Action{
 	ActionGroupRoles, ActionGroupAttributes, ActionAppAssign, ActionAppUnassign,
 	ActionTermExtend, ActionTermHandover, ActionTermExpired,
 	ActionTicketResend, ActionTicketLinkRenew, ActionTicketCancel, ActionTicketRestore, ActionTicketPromote,
+	ActionTicketImport, ActionTicketImportPreview,
 	ActionUserEnable, ActionUserDisable, ActionUserPasswordSet, ActionUserPasswordMail,
 	ActionUserEmailChange, ActionUserEmailVerify, ActionUserEmailMail, ActionUserEmailPrimary,
 	ActionUserRequiredActions, ActionUserCredentialRemove, ActionUserIdentityUnlink,
@@ -322,6 +331,32 @@ type State struct {
 	CredentialType  string   `json:"credentialType,omitempty"`
 	Provider        string   `json:"provider,omitempty"`
 	Fields          []string `json:"fields,omitempty"`
+	// Import is a ticket.import row's counts; absent on every other row.
+	Import *ImportCounts `json:"import,omitempty"`
+}
+
+// ImportCounts are what an attendee import did (docs/attendee-import.md):
+// counts and the mail switch only, never a row's content.
+type ImportCounts struct {
+	// Rows are the list's rows, the header left out.
+	Rows int `json:"rows"`
+	// Created are the Tickets written active, Waitlisted those written on
+	// the waiting list (on a preview: that would be); Members of them went
+	// to an account holder, Guests to nobody's account.
+	Created    int `json:"created"`
+	Waitlisted int `json:"waitlisted"`
+	Members    int `json:"members"`
+	Guests     int `json:"guests"`
+	// Existing already had a Ticket on the Event (cancelled ones
+	// included); Full found the Event full with its waiting list off.
+	Existing int `json:"existing"`
+	Full     int `json:"full"`
+	// Invalid and Duplicates were left out of the list before anything
+	// was written.
+	Invalid    int `json:"invalid"`
+	Duplicates int `json:"duplicates"`
+	// Mail is whether the new Tickets' mail was asked for.
+	Mail bool `json:"mail"`
 }
 
 // Limits of what a row holds. A longer text is cut, so a long value never
@@ -447,7 +482,8 @@ func (r Record) normalize() (Record, string) {
 		}
 	case BasisEventEditor:
 		if _, err := uuid.Parse(r.Actor.ViaGroupID); err != nil ||
-			(r.Action != ActionTicketCancel && r.Action != ActionTicketRestore && r.Action != ActionTicketPromote) {
+			(r.Action != ActionTicketCancel && r.Action != ActionTicketRestore && r.Action != ActionTicketPromote &&
+				r.Action != ActionTicketImport && r.Action != ActionTicketImportPreview) {
 			return r, "invalid_basis"
 		}
 	default:
@@ -546,6 +582,10 @@ func (s *State) normalize() *State {
 	out.Provider = cut(s.Provider, MaxIdentifier)
 	out.RequiredActions = names(s.RequiredActions)
 	out.Fields = names(s.Fields)
+	if s.Import != nil {
+		counts := *s.Import
+		out.Import = &counts
+	}
 	for _, name := range RecordedAttributes {
 		if v, ok := s.Attributes[name]; ok {
 			if out.Attributes == nil {

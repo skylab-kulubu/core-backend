@@ -1897,6 +1897,42 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM information_schema.columns
 			WHERE table_schema = 'public' AND table_name = 'form_pull_watermarks' AND column_name = 'last_backfill_at'
 		  )`,
+	// The certificate mail queue (docs/certificate-mail.md): the table and
+	// its two unique indexes.
+	20261125101500: `
+		SELECT 1
+		WHERE to_regclass('public.certificate_mails') IS NOT NULL
+		  AND to_regclass('public.certificate_mails_issued_key') IS NOT NULL
+		  AND to_regclass('public.certificate_mails_pending_key') IS NOT NULL
+		  AND to_regclass('public.certificate_mail_resend_all') IS NOT NULL
+		  AND (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'certificate_mails'
+			  AND column_name IN ('first_tried_at', 'resend_scope')
+		  ) = 2`,
+	// An Event's external registration link and the attendee import
+	// (docs/attendee-import.md): the column, its check, and the audit
+	// action ticket.import with the basis event_editor.
+	20261125201700: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'external_registration_url'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events') AND conname = 'events_external_registration_url_check' AND convalidated
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.import.preview%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.import.preview%'
+		)`,
 	// The door's mails (docs/attendance-mail.md): the Event's two switches
 	// and its attendee note with its check,
 	// the queue's kind check and its two one-a-day/one-a-Session keys.

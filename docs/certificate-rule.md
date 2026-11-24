@@ -15,10 +15,40 @@ Tickets 01 (the data, the rule endpoints, the pure decision), 02 (eligibility ov
 | `count` | N ≥ 1, every required Session checked in, and counted check-ins ≥ the effective threshold |
 | `ratio` | (old) N ≥ 1, every required Session checked in, and check-ins / N ≥ the ratio, compared in floats as before |
 
-- **N** is the live counted Sessions: on a current day, not archived, not cancelled, `certificateCounted`. N = 0 issues nothing.
+- **N** is the live counted Sessions: on a current day, not archived, not cancelled, `certificateCounted`. N = 0 issues nothing, except on an Event with no live Session at all (below).
 - **Threshold.** `attendanceMinCount` null is the default, ⌈3N/4⌉, computed in integers as `(3N + 3) / 4` (N = 8 → 6, 4 → 3, 3 → 3). A set M applies as min(M, N): cancelling or uncounting Sessions never makes the rule impossible. M below 1 is refused; M above N is kept.
 - **`ratio` is kept, not written.** An Event that has it keeps it through every write that leaves the rule alone or sends it back unchanged (sky-app sends the whole Event). Choosing it, or a new ratio, is `400`. The panel offers to turn it into `count`. The down migration turns `count` back into `ratio` at 0.75.
 - The threshold belongs to `count` alone: any other rule stores none.
+
+## An Event with no Session
+
+An Event with no live Session (none, or every one cancelled or archived) has
+no Check-in to count: its door writes Venue entries ([venue-entry.md](venue-entry.md);
+`effectiveEntryMode` is `venue`). There the Event itself is the one counted
+unit and a Venue entry its attendance:
+
+- **N = 1**; a Ticket with a Venue entry on any day attended it (1), one
+  without did not (0). Several days' entries still count once.
+- `once`, `count` (whatever M: min(M, 1) = 1) and `ratio` issue to who
+  entered; `none` issues nothing, as always. No Session can be required.
+- `GET /v1/events/{id}/certificate-rule`, `GET …/certificates/summary` and
+  `GET …/certificates/attendance` answer `"sessionless": true` with
+  `countedTotal` 1; with a live Session it is `false` and nothing changes
+  (a Venue entry is still not counted there).
+- **Automatic finalization** closes it an hour after the Event's own end
+  (its end date, else a day after its start), within the same 7-day window,
+  once at least one active Ticket has a Venue entry. An Event nobody entered
+  is never closed by the clock (its publisher gets no "0 certificates" mail);
+  the organizer may still close it by hand.
+- Its certificates keep **no attendance snapshot**: "1 oturumdan 1'i" would
+  name a Session the Event never had, so the verification page shows no
+  attendance line.
+
+Adding a live Session turns the Event back into a Session Event: from then on
+only Check-ins count, as above.
+If every Session is cancelled (or archived), the Event becomes one with no
+Session: from then on the door's entries (Venue entries) are the measure, and
+the Check-ins of the cancelled Sessions no longer count.
 
 ## Session marks
 
@@ -90,7 +120,7 @@ The batch (`certificate_batches.justification`, migration `20261124000000`) is t
 
 ## Automatic attendance finalization
 
-An hour (`certificate.AutoFinalizeDelay`) after an Event's **last live Session** ends, core closes its attendance by itself, as `POST …/certificates/finalize` does, and queues the eligible Tickets' certificates; the issuance worker issues them and sends the `core.certificate` mail as before.
+An hour (`certificate.AutoFinalizeDelay`) after an Event's **last live Session** ends, core closes its attendance by itself, as `POST …/certificates/finalize` does, and queues the eligible Tickets' certificates; the issuance worker issues them and queues the `core.certificate` mail ([certificate-mail.md](certificate-mail.md)).
 
 - A Session's end is its end time, else its day's end, else the Event's end (the feedback mail's expression). Every live Session counts, counted or not.
 - **Due** when the Event is published and not archived, its rule is not `none`, its switch `attendanceAutoFinalize` is on, its attendance is not closed, it has a live Session, and that end + 1 h is past but no more than 7 days ago (`AutoFinalizeWindow`). An older Event is left to its organizer.

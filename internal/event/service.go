@@ -286,6 +286,9 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (_ Ev
 	if in, err = normalizeLocation(in); err != nil {
 		return Event{}, err
 	}
+	if in, err = normalizeExternalRegistration(in); err != nil {
+		return Event{}, err
+	}
 	if in, err = normalizeAttendeeNote(in); err != nil {
 		return Event{}, err
 	}
@@ -370,6 +373,9 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 		return Event{}, err
 	}
 	if in, err = normalizeLocation(in); err != nil {
+		return Event{}, err
+	}
+	if in, err = normalizeExternalRegistration(in); err != nil {
 		return Event{}, err
 	}
 	if in, err = normalizeAttendeeNote(in); err != nil {

@@ -42,6 +42,11 @@ type Admission struct {
 	// Ticket, so that the answer's decline cancels it. uuid.Nil for any
 	// other way: a Ticket it writes keeps none, one it reopens loses it.
 	FormResponse uuid.UUID
+	// Quiet queues no mail for the write: an attendee import whose
+	// operator turned its mail off (docs/attendee-import.md). The Ticket
+	// is written as without it; its mail can be sent later from the
+	// panel.
+	Quiet bool
 }
 
 // admit is the status a Ticket written under a, on an Event of c, takes,

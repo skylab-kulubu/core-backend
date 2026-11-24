@@ -2,8 +2,10 @@
 
 Core sends two mails through SkyMail: the welcome mail a new account receives
 and the certificate mail that follows an issued certificate. Both are posted to
-`/v1/mail_tasks/single`. The certificate mail is not awaited: a mail must not
-fail the request that produced it, so the caller is told nothing. The welcome
+`/v1/mail_tasks/single`. The certificate mail goes through core's queue,
+which reads SkyMail's answer and tries again under one Idempotency-Key
+([certificate-mail.md](certificate-mail.md)); it never fails the issuance
+that produced it. The welcome
 mail is sent by the user sync, which reads what became of it and marks the
 person welcomed ([user-sync.md](user-sync.md)).
 

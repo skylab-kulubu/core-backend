@@ -14,21 +14,41 @@ const autoFinalizeLock = 1499841308389431515
 
 // autoFinalizeDueSQL are the Events due at $1: published and current, the
 // rule issuing, the switch on, not closed, with a live Session, the last
-// live Session's end ($2 s before $1 or earlier, and within the $3 s
+// live Session's end (an Event with no live Session: its own end, once a
+// Ticket has a Venue entry) ($2 s before $1 or earlier, and within the $3 s
 // window). The Session's end is the feedback mail's sessionEndsSQL; every
 // live Session counts, not only the counted ones.
 const autoFinalizeDueSQL = `
-	SELECT e.id
-	FROM events e
-	JOIN event_days d ON d.event_id = e.id AND d.archived_at IS NULL
-	JOIN sessions s ON s.event_day_id = d.id AND s.archived_at IS NULL AND NOT s.cancelled
-	WHERE e.archived_at IS NULL AND e.status = 'published'
-	  AND e.attendance_rule <> 'none' AND e.attendance_auto_finalize
-	  AND NOT EXISTS (SELECT 1 FROM certificate_event_state f WHERE f.event_id = e.id)
-	GROUP BY e.id
-	HAVING max(` + sessionEndsSQL + `) + $2::float8 * interval '1 second' <= $1
-	   AND max(` + sessionEndsSQL + `) + $2::float8 * interval '1 second' > $1 - $3::float8 * interval '1 second'
-	ORDER BY max(` + sessionEndsSQL + `), e.id`
+	WITH ends AS (
+		SELECT e.id, max(` + sessionEndsSQL + `) AS ends_at
+		FROM events e
+		JOIN event_days d ON d.event_id = e.id AND d.archived_at IS NULL
+		JOIN sessions s ON s.event_day_id = d.id AND s.archived_at IS NULL AND NOT s.cancelled
+		WHERE e.archived_at IS NULL AND e.status = 'published'
+		  AND e.attendance_rule <> 'none' AND e.attendance_auto_finalize
+		  AND NOT EXISTS (SELECT 1 FROM certificate_event_state f WHERE f.event_id = e.id)
+		GROUP BY e.id
+		UNION ALL
+		-- An Event with no live Session closes at its own end, once someone
+		-- entered it (docs/certificate-rule.md, "An Event with no Session").
+		SELECT e.id, ` + eventEndsSQL + `
+		FROM events e
+		WHERE e.archived_at IS NULL AND e.status = 'published'
+		  AND e.attendance_rule <> 'none' AND e.attendance_auto_finalize
+		  AND NOT EXISTS (SELECT 1 FROM certificate_event_state f WHERE f.event_id = e.id)
+		  AND NOT EXISTS (
+			SELECT 1 FROM event_days d
+			JOIN sessions s ON s.event_day_id = d.id AND s.archived_at IS NULL AND NOT s.cancelled
+			WHERE d.event_id = e.id AND d.archived_at IS NULL)
+		  AND EXISTS (
+			SELECT 1 FROM venue_entries v
+			JOIN tickets t ON t.id = v.ticket_id AND t.status = 'active'
+			WHERE v.event_id = e.id)
+	)
+	SELECT id FROM ends
+	WHERE ends_at + $2::float8 * interval '1 second' <= $1
+	  AND ends_at + $2::float8 * interval '1 second' > $1 - $3::float8 * interval '1 second'
+	ORDER BY ends_at, id`
 
 // AutoFinalizeDue takes the pass's advisory lock in a transaction, reads the
 // Events due at now and calls each with them while it holds the lock: a

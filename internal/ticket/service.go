@@ -93,6 +93,7 @@ type Service interface {
 	ResendTicket(ctx context.Context, p authz.Principal, id uuid.UUID, requestKey string) (Resend, error)
 	RenewTicketLink(ctx context.Context, p authz.Principal, id uuid.UUID, notify bool, requestKey string) (Ticket, Resend, error)
 	EventDoor
+	AttendeeImport
 }
 
 // EventDoor is the Event's door without a Session: Venue entry

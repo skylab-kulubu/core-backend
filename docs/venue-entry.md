@@ -4,9 +4,12 @@ kapi-postalari tickets 01 and 02 (SPEC §4). CONTEXT: "Entry mode",
 "Venue entry".
 
 A **Venue entry** is a Ticket entering the venue on a day: one a Ticket a
-day. A **Check-in** is attendance at a Session. They are separate: a Venue
-entry is never counted for a certificate (the certificate rule reads
-Check-ins alone), and a Check-in never needs a Venue entry first.
+day. A **Check-in** is attendance at a Session. They are separate: on an
+Event with a live Session a Venue entry is never counted for a certificate
+(the certificate rule reads Check-ins alone), and a Check-in never needs a
+Venue entry first. On an Event with no live Session the Venue entry is the
+only attendance there is, and the certificate rule counts it
+([certificate-rule.md](certificate-rule.md), "An Event with no Session").
 
 ## The door's mode: `entryMode`
 

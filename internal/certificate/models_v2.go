@@ -195,6 +195,9 @@ type EventSummary struct {
 	CountedTotal int `json:"countedTotal"`
 	EffectiveMin int `json:"effectiveMin"`
 	BelowCount   int `json:"belowCount"`
+	// Sessionless: the Event has no live Session, so N is the Event itself
+	// (1) and a Venue entry is its attendance (docs/certificate-rule.md).
+	Sessionless bool `json:"sessionless"`
 	// AutoFinalizeAt is when the attendance closes by itself: an hour after
 	// the last live Session ends, while the rule issues, the Event's switch
 	// is on, it is published and not closed yet, and that time is within
@@ -202,6 +205,10 @@ type EventSummary struct {
 	// closed it, once closed: "manual" or "auto".
 	AutoFinalizeAt  *time.Time `json:"autoFinalizeAt,omitempty"`
 	FinalizedSource string     `json:"finalizedSource,omitempty"`
+	// MailQueuedCount and MailFailedCount are the active certificates whose
+	// latest mail waits or failed (docs/certificate-mail.md).
+	MailQueuedCount int `json:"mailQueuedCount"`
+	MailFailedCount int `json:"mailFailedCount"`
 }
 
 type PublicCertificate struct {
