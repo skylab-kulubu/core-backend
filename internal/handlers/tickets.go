@@ -11,6 +11,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/doorqr"
 	"github.com/skylab-kulubu/core-backend/internal/qr"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
@@ -431,6 +432,12 @@ type guestCheckInBody struct {
 	DoorToken string `json:"doorToken"`
 }
 
+// selfCheckInBody is check-in/me's optional body. sky-app's versions that
+// read only the static Session QR send none.
+type selfCheckInBody struct {
+	DoorToken string `json:"doorToken"`
+}
+
 type resolveCheckInBody struct {
 	PersonID string `json:"personId"`
 	Query    string `json:"query"`
@@ -445,7 +452,13 @@ func (h *TicketHandler) CheckInMe(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	ci, err := h.svc.CheckInMe(c.Context(), p, sessionID)
+	var body selfCheckInBody
+	if raw := bytes.TrimSpace(c.Body()); len(raw) > 0 {
+		if err := json.Unmarshal(raw, &body); err != nil {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+	}
+	ci, err := h.svc.CheckInMe(c.Context(), p, sessionID, body.DoorToken)
 	if err != nil {
 		return ticketError(c, err)
 	}
@@ -469,7 +482,8 @@ func (h *TicketHandler) CheckInGuest(c fiber.Ctx) error {
 }
 
 // MintDoorQR answers the door screen: a fresh signed door QR for the Session
-// (docs/guest-self-check-in.md).
+// (docs/guest-self-check-in.md). ?use=display mints the attendance QR for a
+// projection screen instead, with its own use cap.
 func (h *TicketHandler) MintDoorQR(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
@@ -479,7 +493,11 @@ func (h *TicketHandler) MintDoorQR(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	pass, err := h.svc.MintDoorQR(c.Context(), p, sessionID)
+	class, ok := doorqr.ParseClass(c.Query("use"))
+	if !ok {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	pass, err := h.svc.MintDoorQR(c.Context(), p, sessionID, class)
 	if err != nil {
 		return ticketError(c, err)
 	}

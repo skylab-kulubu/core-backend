@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/doorqr"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 )
 
@@ -112,8 +113,8 @@ func (a *afterCheckIn) UndoCheckInByID(ctx context.Context, p authz.Principal, s
 	return a.inner.UndoCheckInByID(ctx, p, sessionID, checkInID)
 }
 
-func (a *afterCheckIn) CheckInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (CheckIn, error) {
-	ci, err := a.inner.CheckInMe(ctx, p, sessionID)
+func (a *afterCheckIn) CheckInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID, doorToken string) (CheckIn, error) {
+	ci, err := a.inner.CheckInMe(ctx, p, sessionID, doorToken)
 	if err == nil {
 		a.fire(ctx, ci.TicketID)
 	}
@@ -148,8 +149,8 @@ func (a *afterCheckIn) ResolveAndCheckIn(ctx context.Context, p authz.Principal,
 	return ci, err
 }
 
-func (a *afterCheckIn) MintDoorQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorQR, error) {
-	return a.inner.MintDoorQR(ctx, p, sessionID)
+func (a *afterCheckIn) MintDoorQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID, class doorqr.Class) (DoorQR, error) {
+	return a.inner.MintDoorQR(ctx, p, sessionID, class)
 }
 
 func (a *afterCheckIn) DoorActivity(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorActivity, error) {

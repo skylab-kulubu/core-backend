@@ -1512,7 +1512,7 @@ func doorQRGate(getenv func(string) string, passKey *ecdsa.PrivateKey) (*doorqr.
 		return nil, err
 	}
 	gate := doorqr.NewGate(doorqr.DeriveKey(passKey.D.FillBytes(make([]byte, 32))), cfg)
-	log.Printf("guest self check-in: %s=%s", doorqr.ModeEnv, gate.Mode())
+	log.Printf("guest self check-in: %s=%s; session qr: %s=%s", doorqr.ModeEnv, gate.Mode(), doorqr.SessionModeEnv, gate.SessionMode())
 	return gate, nil
 }
 
