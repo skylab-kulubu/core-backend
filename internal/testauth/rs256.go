@@ -64,6 +64,10 @@ func (b *Bundle) Token(t *testing.T, claims jwt.MapClaims) string {
 	if _, ok := claims["exp"]; !ok {
 		claims["exp"] = time.Now().Add(time.Hour).Unix()
 	}
+	// Keycloak's access token type; a test of another type sets its own.
+	if _, ok := claims["typ"]; !ok {
+		claims["typ"] = "Bearer"
+	}
 	return b.Sign(t, claims)
 }
 

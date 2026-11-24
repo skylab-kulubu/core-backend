@@ -22,7 +22,7 @@ ADR 0066 and its 2026-10-19 addendum (e-skylab). An Event's `status` is `draft`,
 | `GET /v1/competitors/me`, `/v1/competitors/user/{id}`, `/v1/competitors/team/{team}`, the leaderboards, `?lifecycle=` | leave out a draft's Competitors for who may not see it (their own included) |
 | `GET /v1/events/{id}/certificates`, `…/certificates/summary`, `…/certificates/template`, `POST …/certificates/preview`, `GET …/certificate-batches`, `/v1/certificate-batches/{id}`, the Event's template binding | `404` unless the caller may see it; then the usual rules |
 | `GET /v1/tickets/{id}`, `GET /v1/tickets/user/{userId}/event/{eventId}` | their holder always reads their own (`status: "draft"`); anyone else `404` unless they may see the Event |
-| `GET /v1/tickets?userId=`, `?email=` | leave out a draft's Tickets for who may not see it (the holder's own query aside) |
+| `GET /v1/tickets?userId=`, `?email=`, `POST /v1/tickets/search` | leave out a draft's Tickets for who may not see it (the holder's own query aside) |
 | `GET /v1/dashboard/summary` | a draft is covered only for who may see it, listed in `eventStats` with `status: "draft"`; it never counts as `upcoming` or `live` (neither does a cancelled Event) |
 
 ## Writes

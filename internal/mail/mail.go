@@ -16,8 +16,6 @@ import (
 	"github.com/google/uuid"
 )
 
-const DefaultAPIOrigin = "https://api.yildizskylab.com/api/skymail"
-
 // Template keys SkyMail seeds for core. Both are system templates there: they
 // cannot be archived and their key cannot be renamed, so a mail addressed by key
 // survives a template being replaced, which a mail addressed by id does not.
@@ -52,23 +50,21 @@ const (
 	maxDiagnosticCode = 64
 )
 
-func APIOrigin(raw string) string {
-	if u := strings.TrimSpace(raw); u != "" {
-		return strings.TrimRight(u, "/")
-	}
-	return DefaultAPIOrigin
-}
+// ErrAPIOriginUnset stops core at startup when it would send mail with no
+// SkyMail address. There is no default: the old one, production's public
+// SkyMail, took a sandbox core's mail to a SkyMail that refuses its token,
+// and the mail was lost with no other trace (ADR-0016: every service names
+// the services it calls).
+var ErrAPIOriginUnset = errors.New("SKYMAIL_URL is not set: name this environment's SkyMail API (production and sandbox each have their own)")
 
-// DefaultOriginNotice is the startup line for an unset SKYMAIL_URL, empty
-// when it is set. The default is production's SkyMail: a core of another
-// realm (sandbox) has its token refused there and its mails are lost with
-// no other trace. Unset is not refused, so a production that relies on the
-// default keeps starting.
-func DefaultOriginNotice(raw string) string {
-	if strings.TrimSpace(raw) != "" {
-		return ""
+// APIOrigin is SKYMAIL_URL without its trailing slash, or ErrAPIOriginUnset
+// when it is empty.
+func APIOrigin(raw string) (string, error) {
+	u := strings.TrimSpace(raw)
+	if u == "" {
+		return "", ErrAPIOriginUnset
 	}
-	return "SKYMAIL_URL is not set: mail goes to " + DefaultAPIOrigin + " (production SkyMail); outside production set SKYMAIL_URL, or that SkyMail refuses this core's token"
+	return strings.TrimRight(u, "/"), nil
 }
 
 type TokenSource interface {

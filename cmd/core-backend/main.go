@@ -895,9 +895,6 @@ func main() {
 	var sky *mail.SkyMail
 	if base != "" && realm != "" && os.Getenv("KEYCLOAK_CLIENT_ID") != "" && os.Getenv("KEYCLOAK_CLIENT_SECRET") != "" {
 		sky = newSkyMail(base, realm, os.Getenv("KEYCLOAK_CLIENT_ID"), os.Getenv("KEYCLOAK_CLIENT_SECRET"), os.Getenv("SKYMAIL_URL"), skyMailTimeout)
-		if notice := mail.DefaultOriginNotice(os.Getenv("SKYMAIL_URL")); notice != "" {
-			log.Print(notice)
-		}
 		sky.TemplateKey = templateKey(os.LookupEnv, "SKYMAIL_WELCOME_TEMPLATE_KEY", mail.DefaultWelcomeTemplateKey)
 		sky.CertificateTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_CERTIFICATE_TEMPLATE_KEY", mail.DefaultCertificateTemplateKey)
 		// The publisher's mail when an Event's attendance closes by itself
@@ -1439,11 +1436,16 @@ const skyMailTimeout = 15 * time.Second
 // token with core's own service account. The token request uses the same
 // client as the post: without one, mail.ClientCredentials falls back to
 // http.DefaultClient, which never gives up, and a hung mail would hold the
-// user sync's pass (and so its lock) or the request that sent it.
+// user sync's pass (and so its lock) or the request that sent it. An unset
+// SKYMAIL_URL stops core here: it has no default.
 func newSkyMail(base, realm, clientID, clientSecret, skyMailURL string, timeout time.Duration) *mail.SkyMail {
+	origin, err := mail.APIOrigin(skyMailURL)
+	if err != nil {
+		log.Fatal(err)
+	}
 	client := &http.Client{Timeout: timeout}
 	return &mail.SkyMail{
-		BaseURL: mail.APIOrigin(skyMailURL),
+		BaseURL: origin,
 		HTTP:    client,
 		Tokens: mail.ClientCredentials{
 			TokenURL:     base + "/realms/" + realm + "/protocol/openid-connect/token",

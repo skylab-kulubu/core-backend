@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -158,32 +159,20 @@ func TestSkyMailCertificateNoopsWithoutTemplate(t *testing.T) {
 	}
 }
 
-func TestAPIOriginDefaultsToPublicSkymailAPI(t *testing.T) {
-	t.Parallel()
-	if got := APIOrigin(""); got != "https://api.yildizskylab.com/api/skymail" {
-		t.Fatalf("empty %q", got)
-	}
-	if got := APIOrigin("  "); got != "https://api.yildizskylab.com/api/skymail" {
-		t.Fatalf("blank %q", got)
-	}
-	if got := APIOrigin("https://mail.example.test/"); got != "https://mail.example.test" {
-		t.Fatalf("override %q", got)
-	}
-}
-
-// An unset SKYMAIL_URL falls back to production's SkyMail, where a
-// non-production core's token is refused: startup says so (ticket
-// post-cutover 19). A set one says nothing.
-func TestDefaultOriginNotice(t *testing.T) {
+// SKYMAIL_URL has no default: unset or blank is an error, never production's
+// public SkyMail (ADR-0016).
+func TestAPIOriginHasNoDefault(t *testing.T) {
 	t.Parallel()
 	for _, raw := range []string{"", "  "} {
-		got := DefaultOriginNotice(raw)
-		if !strings.Contains(got, "SKYMAIL_URL") || !strings.Contains(got, DefaultAPIOrigin) {
-			t.Fatalf("%q: notice %q", raw, got)
+		if got, err := APIOrigin(raw); !errors.Is(err, ErrAPIOriginUnset) || got != "" {
+			t.Fatalf("%q: %q %v", raw, got, err)
 		}
 	}
-	if got := DefaultOriginNotice("https://sandbox-api.example.test/api/skymail"); got != "" {
-		t.Fatalf("set: notice %q", got)
+	if !strings.Contains(ErrAPIOriginUnset.Error(), "SKYMAIL_URL") || strings.Contains(ErrAPIOriginUnset.Error(), "yildizskylab") {
+		t.Fatalf("message %q", ErrAPIOriginUnset)
+	}
+	if got, err := APIOrigin(" https://mail.example.test/ "); err != nil || got != "https://mail.example.test" {
+		t.Fatalf("set: %q %v", got, err)
 	}
 }
 
