@@ -6,8 +6,9 @@ closed") without knowing who reads them. Code: `internal/events`, wired in
 `cmd/core-backend/integration_events.go`.
 
 Queues core reads: `core.keycloak`, whose events wake the user sync (below;
-hub ticket R09). `core.forms`, which writes Tickets and feedback, comes with
-hub ticket R13.
+hub ticket R09), and, with its own switch, `core.forms`, whose events write
+Tickets, mark feedback invites answered and close feedback forms' reminders
+by the HTTP report's rule (below; hub ticket R13, rabbitmq-olaylar 17).
 
 ## Off by default
 
@@ -33,8 +34,16 @@ connected.
 | `RABBITMQ_VHOST` | `skylab` | The vhost ops sets up. |
 | `RABBITMQ_USERNAME` | none | Core's user, `core_a` or `core_b` (the rotation alternates them). Required when on. |
 | `RABBITMQ_PASSWORD` | none | Its password. Required when on. |
+| `EVENTS_FORMS_ENABLED` | `false` | `true` reads `core.forms` too, while `EVENTS_ENABLED=true`. Off, its events wait in the queue. Any other value stops core. On, it needs `FORMS_INTERNAL_URL` and core's service account (below), else core stops naming what is missing. |
+| `FORMS_INTERNAL_URL` | `ACCOUNT_ERASURE_FORMS_URL` | Forms' address on the internal network, for the single answer read of `core.forms` (and the pull, rabbitmq-olaylar 18). Unset: the Erasure command's Forms address. |
 
-In a deployment all five are OpenBao references (`kv/<env>/core/RABBITMQ_*`,
+`EVENTS_FORMS_ENABLED` is a switch of its own (Yusuf, 2026-11-24; the SPEC
+had proposed no new variable): production runs `EVENTS_ENABLED=true` for
+`core.keycloak` since 2026-11-22, and a release that reads `core.forms`
+must not open Forms' events by itself. Ops turns it on, same image, once
+Forms publishes (hub ticket B8).
+
+In a deployment the five `RABBITMQ_*` are OpenBao references (`kv/<env>/core/RABBITMQ_*`,
 ADR-0049). The password is sent as SASL PLAIN on the connection, never put in a
 URL, and never written to a log line, an error or a metric (an error that
 quoted it would show `[redacted]`). A setting core cannot read stops startup
@@ -212,6 +221,97 @@ unrecorded. So is an event whose part is off: the user sync's with
 `USER_SYNC_ENABLED=false`, the deletions' without Keycloak. The startup log
 says which parts are on.
 
+## `core.forms`: Forms' events
+
+Forms publishes CloudEvents 1.0 on `forms.events` from its outbox
+(ADR-0071; the contract Forms writes to: hub
+`notes/fatih-forms-rabbitmq-20261124.md` §2). Ops binds `core.forms` to
+`forms.response.*` and `forms.form.*` (and, for ADR-0075, to
+`forms.workflow_run.*` and `forms.attempt.*`). The default decoder reads the
+envelope; code: `internal/formsfeed`.
+
+| Type | `data` core reads | What core does |
+| --- | --- | --- |
+| `forms.response.created` | `formId`, `responseId`, `status` (`accepted`, `pending`, `declined`), `userId` (null for a guest), `hasGuest`, `submittedAt` (RFC 3339 with a zone), `hiddenFields` (name → value), `version` | the Ticket rule of the HTTP report ([form-response-tickets.md](form-response-tickets.md)) |
+| `forms.response.status_changed` | `formId`, `responseId`, `status`, `userId`, `version` (`nextFormId`, `returnedQuestionCount`, `reviewedAt` are ADR-0075's, read later) | the same rule, on the answer's state now |
+| `forms.form.updated` | `formId`, `status` (`open`, `closed`, `deleted`), `closesAt` (null or RFC 3339), `version` | the feedback reminders ([event-feedback.md](event-feedback.md): a closed form's are cancelled for good) |
+| any other (`forms.workflow_run.reopened`, `forms.attempt.updated` until ADR-0075's mail moves to core) | | unrelated: acked, not recorded |
+
+An event whose `source` is not `/forms`, whose `dataschema` names a version
+other than 1, or whose data lacks an id, a known status or a `version` goes
+to the DLQ. A `dataschema` that is absent is read as version 1.
+
+**Version order.** Events of one record may come out of order (ADR-0071
+§5). Core keeps the latest `version` it handled of each answer and form
+(`forms_record_versions`, migration `20261124160000`: kind, the record's
+id, the version, when; no personal data) in the event's transaction: an
+event of an older or equal version changes nothing (`outcome` `stale`). A
+`version` is a whole number (a row version) or an RFC 3339 time (Forms'
+`UpdatedAt`, read as its microseconds); a publisher uses one or the other.
+A row goes 30 days after its last change, hourly, with `consumed_events`.
+
+**One rule, two ways in.** An answer becomes the same
+`ticket.FormResponse` the HTTP report makes, and goes to the same
+`ticket.Service.RecordFormResponse`, with the forms service's authority (only
+Forms' RabbitMQ user may publish on `forms.events`, as only its service
+account may send the report): `submittedAt` against the registration
+closure (ADR-0071 karar 16), the `davet` hidden field as the feedback
+invite's code, a feedback form's answers marking invites and writing no
+Ticket, capacity and the waiting list ([event-capacity.md](event-capacity.md)),
+and whatever the rule does with a declined answer. A test runs the same
+answers both ways and compares the Tickets. During the overlap with the HTTP
+report (at most one to two days, Yusuf 2026-11-24) the rule is safe to
+repeat: the second way finds the Ticket there.
+
+**Not one transaction (a deviation on purpose).** The event's record in
+`consumed_events` and its version in `forms_record_versions` are written in
+the delivery's transaction, but the Ticket rule writes the Tickets (and
+queues their mail) through its own store, in transactions of its own: the
+idempotent consumer pattern's "the message id in the same transaction as
+the business change" does not hold here. What closes the gap is the rule
+being safe to repeat: when the Tickets are written and the delivery's
+transaction then fails (a lost connection, a crash before the ack), the
+broker hands the event over again and the rule finds the Tickets there,
+writing nothing and mailing nobody a second time. Moving the rule into the
+consumer's transaction would have split it from the HTTP report's, which
+is the one thing both ways must share.
+
+**Claim check.** An event never carries a guest's name or e-mail (ADR-0071
+karar 11). For an accepted answer to an application form (a current Event's
+application or extra form) core reads the answer from Forms when the event
+lacks what a Ticket needs: a guest's answer (`userId` null and `hasGuest`),
+and every `status_changed` (which carries no `submittedAt` or hidden
+fields):
+
+```http
+GET {FORMS_INTERNAL_URL}/internal/v1/forms/{formId}/responses/{responseId}
+Authorization: Bearer <core's service account token: aud ∋ forms, skyforms:responses:read-service>
+```
+
+It answers `forms.response.created`'s data with `guest`
+(`{"firstName", "lastName", "email"}`, null for a signed-in person's answer).
+The read is the answer's state now: its version, when newer, is kept. The
+name and e-mail live in memory for the call to the Ticket rule; no log
+line, metric, error or table holds them. A pending or declined answer, an
+answer to a feedback form, and a form core does not know are never read.
+
+**Outcomes.** A form no current Event lists and none uses for feedback is
+unrelated (not recorded, never read). Permanent, to the DLQ: data the rule
+refuses (`ticket.ErrInvalid`: a guest without a name), and a read that
+finds nothing (`404`: the answer was deleted, or Forms has no such route
+yet). Transient (1, 5, 30 seconds, then the DLQ): Forms down, `401`,
+`403` (core's account lacks the role: the realm's fix makes the next try
+go; `skylab_forms_answer_reads_total{result="forbidden"}`), `429`, `5xx`,
+the database. The daily pull (rabbitmq-olaylar 18) catches what an event
+missed.
+
+Each answer writes one line, `"event":"form_response"`, as the HTTP
+report's: `via` (`event`), `event_id`, `form_id`, `response_id`, `status`,
+`outcome` (the rule's, or `stale`, `gone`, `invalid`, `failed`),
+`tickets_written`, `listing_events`; never the `userId`, a name or an
+e-mail. A form's state writes `"event":"form_state"` with `form_id`,
+`status`, `outcome` and `reminders_cancelled`.
+
 ## `consumed_events`
 
 Migration `20261021153000` (expand only):
@@ -240,7 +340,9 @@ never the event's data or the password:
 outcome: processed, duplicate or unrelated), `events_retry`,
 `events_dead_lettered`, `events_settle_failed`,
 `events_record_cleanup_failed`, `keycloak_account_deleted_by_user`,
-`keycloak_user_deleted_outside_erasure`.
+`keycloak_user_deleted_outside_erasure`, `form_response` (`via` `event`),
+`form_response_submitted_at_ignored`, `form_state`,
+`forms_record_versions_cleanup_failed`.
 
 `/v1/metrics` (internal):
 
@@ -253,6 +355,9 @@ outcome: processed, duplicate or unrelated), `events_retry`,
 - `skylab_events_dlq_total{queue,reason="invalid_envelope|permanent|retries_exhausted|handler_panic"}`
 - `skylab_events_records_deleted_total`, `skylab_events_record_cleanup_failures_total`
 - `skylab_keycloak_users_deleted_outside_erasure_total` (with the consumer on)
+- with `core.forms` on: `skylab_forms_answers_total{via,outcome}`,
+  `skylab_forms_answer_reads_total{result="ok|not_found|forbidden|invalid|failed|off"}`,
+  `skylab_forms_form_states_total{outcome="processed|stale|failed"}`
 
 ## Tests
 
@@ -269,7 +374,14 @@ the broker drops the connection, a missing queue that leaves the others alone
 and is picked up once declared, a shutdown that returns the delivery in
 hand to its queue, Keycloak's provider format (no id; the same body twice is
 one event), and a consumer the broker cancels while both handlers are busy.
-`cmd/core-backend` tests which Keycloak events wake the user sync.
+`cmd/core-backend` tests which Keycloak events wake the user sync, the
+`EVENTS_FORMS_ENABLED` switch and that the forms events' authority passes the
+real authorizer. `internal/formsfeed` tests Forms' data, the version order
+(and `forms_record_versions` against PostgreSQL), the claim check with a
+fake Forms (a guest's name never in a log line), every way to the DLQ, the
+form state, and the same answers through an event and through the HTTP
+report's call ending in the same Tickets (room, a waiting list, full,
+pending, declined).
 
 ## Against the standard
 
@@ -293,6 +405,9 @@ spans or collector): the trace id only joins log lines.
 ## Rolling back
 
 `EVENTS_ENABLED=false` and a redeploy: core closes its connection and stops
-consuming; the events wait in the queues. The table stays and is cleaned up as
+consuming; the events wait in the queues. `EVENTS_FORMS_ENABLED=false` and a
+redeploy stops `core.forms` alone; its events wait, and the HTTP report keeps
+writing Tickets while it is there. `forms_record_versions`' down drops it;
+the code before reads no version. The table stays and is cleaned up as
 before; the migration's down drops it, and the code before this change does
 not read it.

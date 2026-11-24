@@ -1885,6 +1885,8 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM pg_trigger
 			WHERE tgrelid = to_regclass('public.venue_entries') AND tgname = 'venue_entries_require_active_writer' AND NOT tgisinternal
 		)`,
+	// core.forms' version order (docs/integration-events.md "core.forms").
+	20261124160000: `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'forms_record_versions'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

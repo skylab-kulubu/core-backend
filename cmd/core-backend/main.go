@@ -39,6 +39,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/eventreminder"
 	"github.com/skylab-kulubu/core-backend/internal/eventupdatenotify"
 	"github.com/skylab-kulubu/core-backend/internal/feedback"
+	"github.com/skylab-kulubu/core-backend/internal/formsfeed"
 	"github.com/skylab-kulubu/core-backend/internal/googlewallet"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/health"
@@ -1111,7 +1112,13 @@ func main() {
 		keycloakEventHandling.erase = erasePreferencesIn
 		keycloakEventHandling.wakeTeams = communicationPreferences.WakeTeamCleanup
 	}
-	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, keycloakEventHandling)
+	// core.forms' events (docs/integration-events.md "core.forms"), with
+	// EVENTS_FORMS_ENABLED=true: the HTTP report's Ticket rule, the feedback
+	// invites, the feedback forms' state.
+	formsEvents := formsEventsRecorder(os.Getenv, base, realm, &formsfeed.Recorder{
+		Events: events, Record: formsRecordFunc(ticketSvc), States: feedbackInvites.ReportFormState, Logf: log.Printf,
+	})
+	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, keycloakEventHandling, formsEvents)
 	worker("integration events", eventsStopped)
 	urlSvc := shorturl.NewService(urlStore, az)
 	githubActivity := githubActivityFromEnv(os.Getenv, az, log.Printf)
