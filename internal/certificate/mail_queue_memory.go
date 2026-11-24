@@ -109,6 +109,9 @@ func (s *MemoryStore) ResendEventMails(_ context.Context, eventID uuid.UUID, sco
 		if scope != ResendAll && (latest[id] == nil || latest[id].Status != MailFailed) {
 			continue
 		}
+		if scope == ResendAll && rec.cert.RecipientEmail == "" {
+			continue
+		}
 		if pending[id] {
 			out.AlreadyQueued++
 			continue

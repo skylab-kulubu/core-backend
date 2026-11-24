@@ -110,9 +110,9 @@ func (s *PostgresStore) ResendEventMails(ctx context.Context, eventID uuid.UUID,
 		WITH picked AS (
 			SELECT c.id FROM certificates c
 			WHERE c.event_id = $1 AND c.revoked_at IS NULL
-			  AND ($2 = 'all' OR (
+			  AND (($2 = 'all' AND c.recipient_email <> '') OR (
 				SELECT m.status FROM certificate_mails m
-				WHERE m.certificate_id = c.id
+				WHERE m.event_id = $1 AND m.certificate_id = c.id
 				ORDER BY m.created_at DESC, m.id DESC LIMIT 1) = 'failed')
 		), written AS (
 			INSERT INTO certificate_mails (id, certificate_id, event_id, reason, requested_by, resend_scope)

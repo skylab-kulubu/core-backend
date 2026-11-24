@@ -1904,7 +1904,12 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		WHERE to_regclass('public.certificate_mails') IS NOT NULL
 		  AND to_regclass('public.certificate_mails_issued_key') IS NOT NULL
 		  AND to_regclass('public.certificate_mails_pending_key') IS NOT NULL
-		  AND to_regclass('public.certificate_mail_resend_all') IS NOT NULL`,
+		  AND to_regclass('public.certificate_mail_resend_all') IS NOT NULL
+		  AND (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'certificate_mails'
+			  AND column_name IN ('first_tried_at', 'resend_scope')
+		  ) = 2`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
