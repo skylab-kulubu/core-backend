@@ -24,14 +24,21 @@ func (s *PostgresStore) CreateBatch(ctx context.Context, b Batch, ticketIDs []uu
 	}
 	defer tx.Rollback(ctx)
 	if b.Reason == "finalization" {
-		if _, err := tx.Exec(ctx, `INSERT INTO certificate_event_state (event_id,attendance_finalized_at,attendance_finalized_by) VALUES ($1,now(),$2)`, b.EventID, nullableUUIDPtr(b.RequestedBy)); err != nil {
-			if isUnique(err) {
-				return Batch{}, ErrConflict
-			}
+		// The state row's key (event_id) closes the attendance once: of a
+		// manual and an automatic finalization racing, or of two replicas,
+		// the second writes nothing and queues nothing.
+		tag, err := tx.Exec(ctx, `
+			INSERT INTO certificate_event_state (event_id,attendance_finalized_at,attendance_finalized_by,finalized_source)
+			VALUES ($1,now(),$2,$3) ON CONFLICT (event_id) DO NOTHING`,
+			b.EventID, nullableUUIDPtr(b.RequestedBy), finalizedSource(b))
+		if err != nil {
 			if subjectlock.IsInactiveAccountReference(err) {
 				return Batch{}, ErrForbidden
 			}
 			return Batch{}, err
+		}
+		if tag.RowsAffected() == 0 {
+			return Batch{}, ErrConflict
 		}
 	}
 	b.TotalCount = len(ticketIDs)
@@ -233,6 +240,19 @@ func (s *PostgresStore) AttendanceFinalizedAt(ctx context.Context, eventID uuid.
 	return &finalized, err
 }
 
+func (s *PostgresStore) AttendanceFinalization(ctx context.Context, eventID uuid.UUID) (*Finalization, error) {
+	var f Finalization
+	err := s.pool.QueryRow(ctx, `SELECT attendance_finalized_at, attendance_finalized_by, finalized_source FROM certificate_event_state WHERE event_id=$1`, eventID).
+		Scan(&f.At, &f.By, &f.Source)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
 func (s *PostgresStore) JobCounts(ctx context.Context, eventID uuid.UUID) (queued, failed int, err error) {
 	err = s.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status IN ('queued','running')),count(*) FILTER (WHERE status='failed') FROM certificate_jobs WHERE event_id=$1`, eventID).Scan(&queued, &failed)
 	return
@@ -269,4 +289,13 @@ func nullableUUIDPtr(id *uuid.UUID) any {
 		return nil
 	}
 	return *id
+}
+
+// finalizedSource is who a finalization batch closes the attendance as:
+// FinalizedManual unless it says FinalizedAuto.
+func finalizedSource(b Batch) string {
+	if b.FinalizedSource == FinalizedAuto {
+		return FinalizedAuto
+	}
+	return FinalizedManual
 }

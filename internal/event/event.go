@@ -91,15 +91,20 @@ type Event struct {
 	// AttendanceMinCount is the count rule's threshold M ("at least M of
 	// the N counted Sessions"); null is the default, ceil(3N/4). Any other
 	// rule has none (docs/certificate-rule.md).
-	AttendanceMinCount *int           `json:"attendanceMinCount,omitempty"`
-	Images             []GalleryImage `json:"images"`
-	ImageURLs          []string       `json:"imageUrls"`
-	DoorStaffIDs       []uuid.UUID    `json:"doorStaffIds,omitempty"`
-	MailListID         *uuid.UUID     `json:"mailListId,omitempty"`
-	ArchivedAt         *time.Time     `json:"archivedAt,omitempty"`
-	ArchivedBy         *uuid.UUID     `json:"archivedBy,omitempty"`
-	CreatedAt          time.Time      `json:"createdAt"`
-	UpdatedAt          time.Time      `json:"updatedAt"`
+	AttendanceMinCount *int `json:"attendanceMinCount,omitempty"`
+	// AttendanceAutoFinalize closes the attendance by itself an hour after
+	// the last live Session ends (docs/certificate-rule.md); on for a new
+	// Event and a copy, off for the Events that had ended when it came
+	// (migration 20261124010000). The organizer turns it off per Event.
+	AttendanceAutoFinalize bool           `json:"attendanceAutoFinalize"`
+	Images                 []GalleryImage `json:"images"`
+	ImageURLs              []string       `json:"imageUrls"`
+	DoorStaffIDs           []uuid.UUID    `json:"doorStaffIds,omitempty"`
+	MailListID             *uuid.UUID     `json:"mailListId,omitempty"`
+	ArchivedAt             *time.Time     `json:"archivedAt,omitempty"`
+	ArchivedBy             *uuid.UUID     `json:"archivedBy,omitempty"`
+	CreatedAt              time.Time      `json:"createdAt"`
+	UpdatedAt              time.Time      `json:"updatedAt"`
 
 	// Files and Videos are the Event's files and videos, in their
 	// organizers' order (media redesign ticket 22). Only an Event's detail

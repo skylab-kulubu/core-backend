@@ -147,15 +147,18 @@ type Batch struct {
 	// Justification is why a manual issue was given, required below the
 	// rule's threshold (docs/certificate-rule.md); with RequestedBy and
 	// CreatedAt it is the manual issue's audit record.
-	Justification *string    `json:"justification,omitempty"`
-	TotalCount    int        `json:"totalCount"`
-	QueuedCount   int        `json:"queuedCount"`
-	IssuedCount   int        `json:"issuedCount"`
-	FailedCount   int        `json:"failedCount"`
-	CreatedAt     time.Time  `json:"createdAt"`
-	StartedAt     *time.Time `json:"startedAt,omitempty"`
-	CompletedAt   *time.Time `json:"completedAt,omitempty"`
-	Jobs          []Job      `json:"jobs,omitempty"`
+	Justification *string `json:"justification,omitempty"`
+	// FinalizedSource is, on a finalization batch, who closes the
+	// attendance with it: FinalizedManual (the default) or FinalizedAuto.
+	FinalizedSource string     `json:"-"`
+	TotalCount      int        `json:"totalCount"`
+	QueuedCount     int        `json:"queuedCount"`
+	IssuedCount     int        `json:"issuedCount"`
+	FailedCount     int        `json:"failedCount"`
+	CreatedAt       time.Time  `json:"createdAt"`
+	StartedAt       *time.Time `json:"startedAt,omitempty"`
+	CompletedAt     *time.Time `json:"completedAt,omitempty"`
+	Jobs            []Job      `json:"jobs,omitempty"`
 }
 
 type Job struct {
@@ -192,6 +195,13 @@ type EventSummary struct {
 	CountedTotal int `json:"countedTotal"`
 	EffectiveMin int `json:"effectiveMin"`
 	BelowCount   int `json:"belowCount"`
+	// AutoFinalizeAt is when the attendance closes by itself: an hour after
+	// the last live Session ends, while the rule issues, the Event's switch
+	// is on, it is published and not closed yet, and that time is within
+	// AutoFinalizeWindow (docs/certificate-rule.md). FinalizedSource is who
+	// closed it, once closed: "manual" or "auto".
+	AutoFinalizeAt  *time.Time `json:"autoFinalizeAt,omitempty"`
+	FinalizedSource string     `json:"finalizedSource,omitempty"`
 }
 
 type PublicCertificate struct {
@@ -205,6 +215,26 @@ type PublicCertificate struct {
 	PDFURL        string     `json:"pdfUrl,omitempty"`
 	IssuedAt      time.Time  `json:"issuedAt"`
 	RevokedAt     *time.Time `json:"revokedAt,omitempty"`
+	// Attendance is the attendance the certificate was issued on, absent
+	// for one issued before core kept it. It names no Session, check-in
+	// time or manual issue.
+	Attendance *PublicAttendance `json:"attendance,omitempty"`
+}
+
+// PublicAttendance is a certificate's attendance as the verification page
+// shows it: "8 oturumdan 6'sı · 9 saat".
+type PublicAttendance struct {
+	Attended       int `json:"attended"`
+	Total          int `json:"total"`
+	ProgramMinutes int `json:"programMinutes"`
+}
+
+// publicAttendance is the snapshot as the public verification answers it.
+func publicAttendance(a *AttendanceSnapshot) *PublicAttendance {
+	if a == nil {
+		return nil
+	}
+	return &PublicAttendance{Attended: a.Attended, Total: a.CountedTotal, ProgramMinutes: a.ProgramMinutes}
 }
 
 type ShareInfo struct {
@@ -260,6 +290,9 @@ type JobStore interface {
 	RetryBatch(ctx context.Context, batchID uuid.UUID) error
 	FinalizeAttendance(ctx context.Context, eventID, by uuid.UUID) (time.Time, error)
 	AttendanceFinalizedAt(ctx context.Context, eventID uuid.UUID) (*time.Time, error)
+	// AttendanceFinalization is the Event's closed attendance: when, by
+	// whom and how; nil while it is open.
+	AttendanceFinalization(ctx context.Context, eventID uuid.UUID) (*Finalization, error)
 	JobCounts(ctx context.Context, eventID uuid.UUID) (queued, failed int, err error)
 }
 

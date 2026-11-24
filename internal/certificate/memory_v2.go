@@ -203,6 +203,7 @@ func (s *MemoryStore) CreateBatch(_ context.Context, batch Batch, ticketIDs []uu
 			return Batch{}, ErrConflict
 		}
 		s.finalizedAt[batch.EventID] = now
+		s.finalizedSource[batch.EventID] = finalizedSource(batch)
 	}
 	batch.CreatedAt = now
 	batch.TotalCount = len(ticketIDs)
@@ -367,7 +368,22 @@ func (s *MemoryStore) FinalizeAttendance(_ context.Context, eventID, _ uuid.UUID
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
 	s.finalizedAt[eventID] = now
+	s.finalizedSource[eventID] = FinalizedManual
 	return now, nil
+}
+
+func (s *MemoryStore) AttendanceFinalization(_ context.Context, eventID uuid.UUID) (*Finalization, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	at, ok := s.finalizedAt[eventID]
+	if !ok {
+		return nil, nil
+	}
+	source := s.finalizedSource[eventID]
+	if source == "" {
+		source = FinalizedManual
+	}
+	return &Finalization{At: at, Source: source}, nil
 }
 
 func (s *MemoryStore) AttendanceFinalizedAt(_ context.Context, eventID uuid.UUID) (*time.Time, error) {

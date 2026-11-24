@@ -1738,6 +1738,28 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		SELECT 1 FROM pg_constraint
 		WHERE conrelid = to_regclass('public.certificate_batches')
 		  AND conname = 'certificate_batches_justification_check' AND convalidated`,
+	// Automatic attendance finalization (docs/certificate-rule.md): the
+	// Event's switch, the finalization's source check and the batch reason
+	// check that takes 'rescan'.
+	20261124010000: `
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'attendance_auto_finalize'
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.certificate_event_state')
+			  AND conname = 'certificate_event_state_finalized_source_check' AND convalidated
+		  )
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.certificate_batches') AND conname = 'certificate_batches_reason_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%rescan%'
+		  )`,
+	// A certificate's attendance snapshot (docs/certificate-rule.md): the
+	// three columns' check, which names them.
+	20261124020000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.certificates')
+		  AND conname = 'certificates_attendance_snapshot_check' AND convalidated`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

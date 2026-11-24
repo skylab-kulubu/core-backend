@@ -7,13 +7,28 @@ import (
 	"github.com/google/uuid"
 )
 
+// eventEndsSQL is an Event's (e) end, the feedback mail's expression: its
+// end date, else a day after its start; NULL when it has neither.
+const eventEndsSQL = `COALESCE(e.end_date, e.start_date + interval '24 hours')`
+
+// sessionEndsSQL is a Session's (s, on day d of Event e) end, the feedback
+// mail's expression: its end time, else its day's end, else its Event's.
+const sessionEndsSQL = `COALESCE(s.end_time, d.end_date, ` + eventEndsSQL + `)`
+
+// programMinutesSQL is a Session's (s) program length in whole minutes, as
+// programMinutes reads it: 0 without both times or when it ends before it
+// starts.
+const programMinutesSQL = `COALESCE(GREATEST(0, floor(extract(epoch FROM s.end_time - s.start_time) / 60)), 0)::int`
+
 // liveSessionsSQL are the Event's ($1) live Sessions: on a current day, not
-// archived, not cancelled, with their two marks.
+// archived, not cancelled, with their two marks and their end.
 const liveSessionsSQL = `
 	SELECT s.id, s.title, s.certificate_counted, s.certificate_required,
-	       d.start_date, s.order_index, s.start_time
+	       d.start_date, s.order_index, s.start_time, ` + sessionEndsSQL + ` AS ends_at,
+	       ` + programMinutesSQL + ` AS program_minutes
 	FROM sessions s
 	JOIN event_days d ON d.id = s.event_day_id
+	JOIN events e ON e.id = d.event_id
 	WHERE d.event_id = $1 AND d.archived_at IS NULL
 	  AND s.archived_at IS NULL AND NOT s.cancelled`
 
@@ -24,9 +39,8 @@ const liveSessionsSQL = `
 func (s *PostgresStore) EventAttendance(ctx context.Context, eventID uuid.UUID) (Attendance, error) {
 	out := Attendance{Required: []RequiredSession{}, Tickets: []TicketAttendance{}}
 	rows, err := s.pool.Query(ctx, `
-		SELECT live.id, live.title, live.certificate_counted, live.certificate_required
+		SELECT live.id, live.title, live.certificate_counted, live.certificate_required, live.ends_at
 		FROM (`+liveSessionsSQL+`) live
-		WHERE live.certificate_counted OR live.certificate_required
 		ORDER BY live.start_date NULLS LAST, live.order_index, live.start_time NULLS LAST, live.id`, eventID)
 	if err != nil {
 		return Attendance{}, err
@@ -35,10 +49,12 @@ func (s *PostgresStore) EventAttendance(ctx context.Context, eventID uuid.UUID) 
 		var id uuid.UUID
 		var title string
 		var counted, required bool
-		if err := rows.Scan(&id, &title, &counted, &required); err != nil {
+		var ends *time.Time
+		if err := rows.Scan(&id, &title, &counted, &required, &ends); err != nil {
 			rows.Close()
 			return Attendance{}, err
 		}
+		out.addLiveSession(ends)
 		if counted {
 			out.CountedTotal++
 		}
@@ -55,10 +71,14 @@ func (s *PostgresStore) EventAttendance(ctx context.Context, eventID uuid.UUID) 
 		WITH live AS (`+liveSessionsSQL+`),
 		attended AS (
 			SELECT ci.ticket_id,
-			       count(DISTINCT ci.session_id) FILTER (WHERE live.certificate_counted) AS counted,
-			       array_agg(DISTINCT ci.session_id) FILTER (WHERE live.certificate_required) AS required
-			FROM ticket_checkins ci
-			JOIN tickets t ON t.id = ci.ticket_id AND t.event_id = $1
+			       count(*) FILTER (WHERE live.certificate_counted) AS counted,
+			       COALESCE(sum(live.program_minutes) FILTER (WHERE live.certificate_counted), 0)::int AS minutes,
+			       array_agg(ci.session_id) FILTER (WHERE live.certificate_required) AS required
+			FROM (
+				SELECT DISTINCT ci.ticket_id, ci.session_id
+				FROM ticket_checkins ci
+				JOIN tickets t ON t.id = ci.ticket_id AND t.event_id = $1
+			) ci
 			JOIN live ON live.id = ci.session_id
 			GROUP BY ci.ticket_id
 		),
@@ -80,7 +100,7 @@ func (s *PostgresStore) EventAttendance(ctx context.Context, eventID uuid.UUID) 
 		            THEN btrim(t.guest_first_name || ' ' || t.guest_last_name)
 		            ELSE btrim(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, ''))
 		       END,
-		       COALESCE(a.counted, 0),
+		       COALESCE(a.counted, 0), COALESCE(a.minutes, 0),
 		       ARRAY(SELECT live.id FROM live
 		             WHERE live.certificate_required AND NOT (live.id = ANY(COALESCE(a.required, '{}'::uuid[])))
 		             ORDER BY live.id),
@@ -104,7 +124,7 @@ func (s *PostgresStore) EventAttendance(ctx context.Context, eventID uuid.UUID) 
 		var activeSerial, revokedSerial *string
 		var activeIssued, revokedIssued, revokedAt *time.Time
 		var job string
-		if err := rows.Scan(&row.TicketID, &row.TicketType, &row.Name, &row.Attended, &row.MissingRequired,
+		if err := rows.Scan(&row.TicketID, &row.TicketType, &row.Name, &row.Attended, &row.ProgramMinutes, &row.MissingRequired,
 			&activeSerial, &activeIssued, &revokedSerial, &revokedIssued, &revokedAt, &job); err != nil {
 			return Attendance{}, err
 		}

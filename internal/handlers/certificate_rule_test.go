@@ -54,7 +54,8 @@ func TestCertificateRuleHTTP(t *testing.T) {
 
 	path := "/v1/events/" + eventID + "/certificate-rule"
 	status, rule := sendEventJSON(t, app, fiber.MethodGet, path, "")
-	if status != fiber.StatusOK || rule["rule"] != "count" || rule["minCount"] != nil || rule["countedTotal"] != float64(2) || rule["effectiveMin"] != float64(2) {
+	if status != fiber.StatusOK || rule["rule"] != "count" || rule["minCount"] != nil || rule["countedTotal"] != float64(2) || rule["effectiveMin"] != float64(2) ||
+		rule["autoFinalize"] != true {
 		t.Fatalf("read %d %v", status, rule)
 	}
 	if _, present := rule["minCount"]; !present {
@@ -70,9 +71,24 @@ func TestCertificateRuleHTTP(t *testing.T) {
 	if status != fiber.StatusOK || rule["minCount"] != float64(3) || rule["countedTotal"] != float64(3) || rule["effectiveMin"] != float64(3) {
 		t.Fatalf("write %d %v", status, rule)
 	}
+	if rule["autoFinalize"] != true {
+		t.Fatalf("a write without autoFinalize changed it: %v", rule)
+	}
 	_, read := sendEventJSON(t, app, fiber.MethodGet, "/v1/events/"+eventID, "")
 	if read["attendanceRule"] != "count" || read["attendanceMinCount"] != float64(3) {
 		t.Fatalf("event %v", read)
+	}
+	// The automatic finalization switch (ticket 03): off, then the Event
+	// says so; on again.
+	status, rule = sendEventJSON(t, app, fiber.MethodPut, path, `{"rule":"count","minCount":3,"sessions":[],"autoFinalize":false}`)
+	if status != fiber.StatusOK || rule["autoFinalize"] != false || rule["minCount"] != float64(3) {
+		t.Fatalf("switch off %d %v", status, rule)
+	}
+	if _, read := sendEventJSON(t, app, fiber.MethodGet, "/v1/events/"+eventID, ""); read["attendanceAutoFinalize"] != false {
+		t.Fatalf("event after the switch %v", read)
+	}
+	if status, rule = sendEventJSON(t, app, fiber.MethodPut, path, `{"rule":"count","minCount":3,"sessions":[],"autoFinalize":true}`); status != fiber.StatusOK || rule["autoFinalize"] != true {
+		t.Fatalf("switch on %d %v", status, rule)
 	}
 
 	for name, refused := range map[string]string{

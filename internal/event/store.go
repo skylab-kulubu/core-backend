@@ -137,5 +137,6 @@ type Store interface {
 	// and the listed Sessions' marks in one transaction: ErrNotFound when
 	// the Event is not current, ErrInvalid (nothing written) when a listed
 	// Session is not a current Session of the Event on a current day.
-	SetCertificateRule(ctx context.Context, eventID uuid.UUID, rule string, minCount *int, flags []SessionCertificateFlags) error
+	// autoFinalize nil keeps the automatic finalization switch.
+	SetCertificateRule(ctx context.Context, eventID uuid.UUID, rule string, minCount *int, autoFinalize *bool, flags []SessionCertificateFlags) error
 }
