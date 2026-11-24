@@ -3,6 +3,7 @@ package mail
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -39,6 +40,31 @@ type Notification struct {
 	// ExpiresAt is when what the notification is about ends: its inbox
 	// items go then. Nil, or not in the future, leaves it out.
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// Attachments go with the e-mail of a Notification to one person
+	// (SkyMail README "Posta eki"); none leaves the field out, so a body
+	// without one is what it was before.
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+// Attachment is one Mail attachment (ADR 0082; SkyMail README "Posta
+// eki"): a PDF or PNG with a service's mail to one person, at most
+// MaxAttachmentBytes decoded in all. SkyMail refuses anything else with
+// 400 attachment.*.
+type Attachment struct {
+	// Filename is what the recipient sees: never the person's name.
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	// ContentBase64 is the file, standard base64 with padding.
+	ContentBase64 string `json:"content_base64"`
+}
+
+// MaxAttachmentBytes is SkyMail's bound on a mail's attachments, decoded
+// and together: 512 KB.
+const MaxAttachmentBytes = 512 << 10
+
+// PDFAttachment is data as a PDF attachment named filename.
+func PDFAttachment(filename string, data []byte) Attachment {
+	return Attachment{Filename: filename, ContentType: "application/pdf", ContentBase64: base64.StdEncoding.EncodeToString(data)}
 }
 
 // NotificationRecipient is one person, by Keycloak subject. AllowedChannels
@@ -130,32 +156,35 @@ func answerCode(body []byte) string {
 // Notification to their subject (inbox and e-mail, as SkyMail's type says),
 // idempotent under idempotencyKey; a guest, who has no subject SkyMail could
 // take, by the type's e-mail template alone (/v1/mail_tasks/single).
-func (s *SkyMail) TicketCreated(ctx context.Context, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time) error {
-	return s.tellHolder(ctx, kindTicketCreated, TicketCreatedType, idempotencyKey, holder, vars, source, expiresAt)
+// attachments (the Ticket's PDF, docs/ticket-created-notification.md) go
+// with the e-mail either way; none sends the body of before.
+func (s *SkyMail) TicketCreated(ctx context.Context, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
+	return s.tellHolder(ctx, kindTicketCreated, TicketCreatedType, idempotencyKey, holder, vars, source, expiresAt, attachments)
 }
 
 // EventUpdated tells a Ticket holder that the Event's time or place changed,
 // the way TicketCreated tells of a new Ticket: a registered holder by a
 // Notification to their subject, a guest by the type's e-mail template.
 func (s *SkyMail) EventUpdated(ctx context.Context, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time) error {
-	return s.tellHolder(ctx, kindEventUpdated, EventUpdatedType, idempotencyKey, holder, vars, source, expiresAt)
+	return s.tellHolder(ctx, kindEventUpdated, EventUpdatedType, idempotencyKey, holder, vars, source, expiresAt, nil)
 }
 
 // tellHolder posts typ to a Ticket holder: a Notification to a registered
 // holder's subject under idempotencyKey, the type's template by address to a
 // guest. A guest's mail that went out with no answer is ErrMaybeDelivered.
-func (s *SkyMail) tellHolder(ctx context.Context, kind, typ, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time) error {
+func (s *SkyMail) tellHolder(ctx context.Context, kind, typ, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
 	if holder.Sub != uuid.Nil {
 		variables := make(map[string]any, len(vars))
 		for name, value := range vars {
 			variables[name] = value
 		}
 		return s.Notify(ctx, kind, idempotencyKey, Notification{
-			Type:       typ,
-			Recipients: []NotificationRecipient{{Sub: holder.Sub}},
-			Variables:  variables,
-			Source:     &source,
-			ExpiresAt:  expiresAt,
+			Type:        typ,
+			Recipients:  []NotificationRecipient{{Sub: holder.Sub}},
+			Variables:   variables,
+			Source:      &source,
+			ExpiresAt:   expiresAt,
+			Attachments: attachments,
 		})
 	}
 	if s == nil || strings.TrimSpace(s.BaseURL) == "" {
@@ -165,7 +194,11 @@ func (s *SkyMail) tellHolder(ctx context.Context, kind, typ, idempotencyKey stri
 	if err != nil || token == "" {
 		return &SendError{}
 	}
-	status, reached := s.postReached(ctx, kind, token, template{key: typ}.task(holder.Email, holder.FullName, vars))
+	task := template{key: typ}.task(holder.Email, holder.FullName, vars)
+	if len(attachments) > 0 {
+		task["attachments"] = attachments
+	}
+	status, reached := s.postReached(ctx, kind, token, task)
 	switch {
 	case succeeded(status):
 		return nil

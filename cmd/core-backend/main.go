@@ -987,8 +987,6 @@ func main() {
 	} else {
 		log.Printf("ticket page: on, closes %s after the Event", ticketPageConfig.Grace)
 	}
-	worker("ticket notification", startTicketCreatedNotification(workers, ticketNotificationOn, tickets, ticketnotify.NewPostgresQueue(pool), events, users, sky,
-		ticketPageConfig, os.Getenv("PUBLIC_API_ORIGIN"), log.Printf))
 	// A published Event's new time or place (docs/event-updated-notification.md):
 	// SkyMail tells its Ticket holders by inbox and e-mail.
 	eventUpdatedOn, err := eventUpdatedNotificationOn(os.Getenv)
@@ -1027,6 +1025,21 @@ func main() {
 	ticketPage := ticketpage.New(tickets, events, users, ticketQR, ticketPDF,
 		&ticketpage.MediaImages{Media: mediaStore, Blobs: blobs},
 		ticketpage.Config{Page: ticketPageConfig, APIOrigin: os.Getenv("PUBLIC_API_ORIGIN")})
+	// The Ticket's PDF with its mail (TICKET_PDF_ATTACHMENT): the ticket
+	// page's PDF, drawn by the worker just before each send.
+	ticketPDFAttachment, err := ticketPDFAttachmentOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var ticketMailPDF ticketnotify.PDFs
+	switch {
+	case ticketPDFAttachment && ticketPDF == nil:
+		log.Printf("ticket notification: PDF attachment off (TICKET_PDF_ATTACHMENT is on but there is no Gotenberg)")
+	case ticketPDFAttachment:
+		ticketMailPDF = ticketPage
+	}
+	worker("ticket notification", startTicketCreatedNotification(workers, ticketNotificationOn, tickets, ticketnotify.NewPostgresQueue(pool), events, users, sky,
+		ticketPageConfig, os.Getenv("PUBLIC_API_ORIGIN"), ticketMailPDF, log.Printf))
 	var eventMapMetrics interface{ Prometheus() string }
 	mapRegions := mapregion.NewPostgresStore(pool)
 	if mapWorker := startEventMaps(workers, worker, render, publicBlobs, mediaStore, mediaPurposes, decodeBudget, mapRegions); mapWorker != nil {
