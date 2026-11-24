@@ -40,8 +40,10 @@ person scanned at 20:00 and again at 01:00 has one entry (the second is
 - At the Event's door (and the day's list without `date`): the EventDay
   whose window holds the moment of the scan (its start up to its end, or
   24 hours from its start without an end) gives its start day and
-  `event_day_id`. With no such EventDay, an Event that lasts under 24 hours
-  gives its start day. Otherwise the scan's calendar day.
+  `event_day_id`. With no such EventDay, an Event that lasts 24 hours or
+  less (one with no end counts as 24 hours) gives its start day. Otherwise
+  the scan's calendar day: on an Event of several days, a scan between two
+  EventDays' windows has no `event_day_id`.
 - With a Session Check-in, or a scan at a Session's door: the Check-in's
   EventDay's start day, `event_day_id` that EventDay. An EventDay with no
   start falls back to the rule above at the Session's start (the moment of

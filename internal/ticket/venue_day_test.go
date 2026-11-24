@@ -3,6 +3,7 @@ package ticket_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -155,5 +156,87 @@ func TestListEntriesAsksTheDoorFirst(t *testing.T) {
 	}
 	if _, err := d.svc.ListEntries(context.Background(), d.staff, d.ev.ID, "bugün"); !errors.Is(err, ticket.ErrInvalid) {
 		t.Fatalf("staff, bad date: %v", err)
+	}
+}
+
+// dayDoor is an Event from start to end (end nil: none entered) with the
+// EventDays given as start/end pairs, and a member's Ticket.
+func dayDoor(t *testing.T, start time.Time, end *time.Time, days ...[2]time.Time) (*nightDoor, []event.Day, uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	d := &nightDoor{events: event.NewMemoryStore(), tickets: ticket.NewMemoryStore(), clock: &testClock{at: start}}
+	staff := uuid.New()
+	d.staff = authz.Principal{ID: staff.String()}
+	ev, err := d.events.Create(ctx, event.Event{Name: "Gecekodu", Location: "YTÜ", OwnerTeam: "WEBLAB",
+		StartDate: &start, EndDate: end, DoorStaffIDs: []uuid.UUID{staff}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.ev = ev
+	created := make([]event.Day, 0, len(days))
+	for i, window := range days {
+		from, to := window[0], window[1]
+		day, err := d.events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: fmt.Sprintf("%d. gece", i+1), StartDate: &from, EndDate: &to})
+		if err != nil {
+			t.Fatal(err)
+		}
+		created = append(created, day)
+	}
+	d.svc = ticket.NewService(d.tickets, d.events, authz.NewAuthorizer(authz.DefaultPolicy()), user.NewMemoryStore(), ticket.Clock(d.clock.now))
+	return d, created, d.member(t)
+}
+
+// An Event with no end entered (it lasts 24 hours by its dates) and one of
+// exactly 24 hours (19:00 → 19:00), with no EventDay: 20:00 and the next
+// 01:00 are one entry, on the start day; the second is 409.
+func TestDaylessEventOfADayIsOneVenueDay(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	whole := night(43)
+	for name, end := range map[string]*time.Time{"no end": nil, "exactly 24 hours": &whole} {
+		d, _, owner := dayDoor(t, night(19), end)
+		d.clock.set(night(20))
+		in, err := d.svc.EnterUser(ctx, d.staff, d.ev.ID, owner)
+		if err != nil {
+			t.Fatalf("%s, 20:00: %v", name, err)
+		}
+		if in.EntryDate != "2026-12-12" || in.EventDayID != nil {
+			t.Fatalf("%s: %+v", name, in)
+		}
+		d.clock.set(night(25))
+		if _, err := d.svc.EnterUser(ctx, d.staff, d.ev.ID, owner); !errors.Is(err, ticket.ErrConflict) {
+			t.Fatalf("%s, 01:00: %v", name, err)
+		}
+	}
+}
+
+// An Event of two nights (12 Dec 19:00 → 13 Dec 07:00, 13 Dec 19:00 →
+// 14 Dec 07:00): 01:00 on 14 Dec is the second night's (13 Dec, EventDay
+// 2). A scan in the gap between the two nights (13 Dec 12:00) is that
+// calendar day with no EventDay, as today.
+func TestMultiDayEventNights(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	end := night(55)
+	d, days, owner := dayDoor(t, night(19), &end,
+		[2]time.Time{night(19), night(31)}, [2]time.Time{night(43), night(55)})
+	second := d.member(t)
+
+	d.clock.set(night(49)) // 14 Dec 01:00
+	in, err := d.svc.EnterUser(ctx, d.staff, d.ev.ID, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.EntryDate != "2026-12-13" || in.EventDayID == nil || *in.EventDayID != days[1].ID {
+		t.Fatalf("second night: %+v", in)
+	}
+
+	d.clock.set(night(36)) // 13 Dec 12:00, between the nights
+	gap, err := d.svc.EnterUser(ctx, d.staff, d.ev.ID, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gap.EntryDate != "2026-12-13" || gap.EventDayID != nil {
+		t.Fatalf("gap: %+v", gap)
 	}
 }

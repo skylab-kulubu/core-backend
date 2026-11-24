@@ -139,8 +139,9 @@ const shortEvent = 24 * time.Hour
 // entryDay is the venue day at falls on (docs/venue-entry.md "The day"):
 // the start day (Europe/Istanbul) and id of the EventDay whose window holds
 // at (its start up to its end, or 24 hours without an end); else, on an
-// Event that lasts under 24 hours, the Event's start day; else at's
-// calendar day. A night that runs past midnight is one day.
+// Event that lasts 24 hours or less (one with no end does), the Event's
+// start day; else at's calendar day. A night that runs past midnight is
+// one day.
 func entryDay(ev event.Event, days []event.Day, at time.Time) (string, *uuid.UUID) {
 	for _, day := range days {
 		if day.ArchivedAt != nil || day.StartDate == nil || at.Before(*day.StartDate) {
@@ -156,7 +157,7 @@ func entryDay(ev event.Event, days []event.Day, at time.Time) (string, *uuid.UUI
 		}
 	}
 	if ev.StartDate != nil {
-		if end := ev.EndsAt(); end != nil && end.Sub(*ev.StartDate) < shortEvent {
+		if end := ev.EndsAt(); end != nil && end.Sub(*ev.StartDate) <= shortEvent {
 			return IstanbulDate(*ev.StartDate), nil
 		}
 	}
