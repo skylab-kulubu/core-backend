@@ -243,7 +243,11 @@ func (s *service) beginTicketAuditBasis(ctx context.Context, p authz.Principal, 
 			return nil, teamaudit.ErrUnavailable
 		}
 	}
-	after := teamaudit.State{TicketID: ticketID.String(), EventID: ev.ID.String()}
+	after := teamaudit.State{EventID: ev.ID.String()}
+	// An import (ticket.import) is about the Event, no one Ticket.
+	if ticketID != uuid.Nil {
+		after.TicketID = ticketID.String()
+	}
 	id, err := s.audit.Begin(ctx, teamaudit.Record{
 		Actor: actor, Action: action, GroupID: team.ID, GroupPath: team.Path, After: &after,
 	})

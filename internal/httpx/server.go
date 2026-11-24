@@ -842,6 +842,10 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/tickets/:id/restore", tickets.RestoreTicket)
 	// An operator's "Öne al" off the waiting list (docs/event-capacity.md).
 	app.Post("/v1/tickets/:id/promote", tickets.PromoteTicket)
+	// An operator's attendee import: a list from another product's form
+	// turned into Tickets, previewed first (docs/attendee-import.md).
+	app.Post("/v1/events/:eventId/attendee-imports/preview", tickets.PreviewImport)
+	app.Post("/v1/events/:eventId/attendee-imports", tickets.ImportAttendees)
 	app.Get("/v1/tickets", tickets.List)
 	app.Post(handlers.TicketSearchPath, tickets.Search)
 	// The forms service's account with ticket:forms reports each answer to its

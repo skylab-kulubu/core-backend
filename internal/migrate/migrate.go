@@ -1910,6 +1910,29 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE table_schema = 'public' AND table_name = 'certificate_mails'
 			  AND column_name IN ('first_tried_at', 'resend_scope')
 		  ) = 2`,
+	// An Event's external registration link and the attendee import
+	// (docs/attendee-import.md): the column, its check, and the audit
+	// action ticket.import with the basis event_editor.
+	20261125201700: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'external_registration_url'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events') AND conname = 'events_external_registration_url_check' AND convalidated
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.import.preview%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.import.preview%'
+		)`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

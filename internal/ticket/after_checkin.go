@@ -33,6 +33,14 @@ func (a *afterCheckIn) ApplyGuestJoining(ctx context.Context, p authz.Principal,
 	return a.inner.ApplyGuestJoining(ctx, p, eventID, g, joinWaitlist)
 }
 
+func (a *afterCheckIn) PreviewImport(ctx context.Context, p authz.Principal, eventID uuid.UUID, in ImportInput) (ImportReport, error) {
+	return a.inner.PreviewImport(ctx, p, eventID, in)
+}
+
+func (a *afterCheckIn) ImportAttendees(ctx context.Context, p authz.Principal, eventID uuid.UUID, in ImportInput) (ImportReport, error) {
+	return a.inner.ImportAttendees(ctx, p, eventID, in)
+}
+
 func (a *afterCheckIn) PromoteTicket(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error) {
 	return a.inner.PromoteTicket(ctx, p, id)
 }

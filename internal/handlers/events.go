@@ -37,7 +37,10 @@ type eventBody struct {
 	FormURL         string                 `json:"formUrl"`
 	FormAlias       *string                `json:"formAlias"`
 	ExtraFormURLs   *[]event.EventFormLink `json:"extraFormUrls"`
-	Capacity        int                    `json:"capacity"`
+	// ExternalRegistrationURL on create: an https address, none for none
+	// (docs/attendee-import.md).
+	ExternalRegistrationURL string `json:"externalRegistrationUrl"`
+	Capacity                int    `json:"capacity"`
 	// WaitlistEnabled on create; none is on (docs/event-capacity.md).
 	WaitlistEnabled *bool `json:"waitlistEnabled"`
 	// EntryMode on create: per_session, venue, or none for automatic
@@ -96,6 +99,8 @@ func eventError(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusConflict, "Conflict", eventStatusCode(err))
 	case errors.Is(err, event.ErrLocationInvalid):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "event_location_invalid")
+	case errors.Is(err, event.ErrExternalRegistrationURLInvalid):
+		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "external_registration_url_invalid")
 	case errors.Is(err, event.ErrInvalid):
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	default:
@@ -128,6 +133,9 @@ func (b eventBody) asEvent() event.Event {
 		OwnerTeam:       b.OwnerTeam,
 		FormURL:         b.FormURL,
 		Capacity:        b.Capacity,
+
+		ExternalRegistrationURL: b.ExternalRegistrationURL,
+
 		WaitlistEnabled: b.WaitlistEnabled,
 		EntryMode:       b.EntryMode,
 		StartDate:       b.StartDate,
