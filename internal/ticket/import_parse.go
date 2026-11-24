@@ -21,7 +21,7 @@ const (
 	// Microsoft Forms exports with long answers stays well under it.
 	MaxImportBytes = 2 << 20
 	// MaxImportRows is how many rows one import takes, the header left
-	// out (Luma's CSV import takes 1000 too).
+	// out.
 	MaxImportRows = 1000
 	// MaxImportName is the longest first or last name a row may carry, in
 	// characters.
