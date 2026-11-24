@@ -41,9 +41,12 @@ stays out too):
   cancelled, and the worker drops a Ticket that is no longer active), the
   publication's queue, the Event's cancellation and change mails, the
   feedback mails and their audience, the Event's SkyMail list;
-- certificates (eligibility, the manual issue; the attendance query of the
-  certificate stack follows when it lands), Competition candidates and
-  Entrants (a cancelled Ticket is no candidate and cannot be added);
+- certificates: the Event's attendance (`EventAttendance`, both queries, and
+  the memory store's) that the list, eligibility, the attendance snapshot,
+  the automatic finalization and the rescan read; the manual issue (with a
+  justification too, `404`) and a queued job whose Ticket was cancelled
+  since; Competition candidates and Entrants (a cancelled Ticket is no
+  candidate and cannot be added);
 - the dashboard's counts (applications per Event and per day).
 
 Every status is seen by: erasure and retention (a cancelled Ticket is still

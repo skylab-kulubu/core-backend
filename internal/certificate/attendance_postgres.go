@@ -33,7 +33,9 @@ const liveSessionsSQL = `
 	  AND s.archived_at IS NULL AND NOT s.cancelled`
 
 // EventAttendance reads the Event's attendance in two queries, however many
-// Tickets it has: the live Sessions, then every Ticket with its counted
+// Tickets it has (active ones only, docs/ticket-cancellation.md: a cancelled
+// or waitlisted Ticket is neither eligible, finalized, rescanned nor
+// listed): the live Sessions, then every Ticket with its counted
 // check-ins, missing required Sessions, name, certificates and latest job
 // (GROUP BY and LEFT JOINs; no query per Ticket).
 func (s *PostgresStore) EventAttendance(ctx context.Context, eventID uuid.UUID) (Attendance, error) {
@@ -77,7 +79,7 @@ func (s *PostgresStore) EventAttendance(ctx context.Context, eventID uuid.UUID) 
 			FROM (
 				SELECT DISTINCT ci.ticket_id, ci.session_id
 				FROM ticket_checkins ci
-				JOIN tickets t ON t.id = ci.ticket_id AND t.event_id = $1
+				JOIN tickets t ON t.id = ci.ticket_id AND t.event_id = $1 AND t.status = 'active'
 			) ci
 			JOIN live ON live.id = ci.session_id
 			GROUP BY ci.ticket_id
@@ -113,7 +115,7 @@ func (s *PostgresStore) EventAttendance(ctx context.Context, eventID uuid.UUID) 
 		LEFT JOIN certificates c ON c.event_id = $1 AND c.ticket_id = t.id AND c.revoked_at IS NULL
 		LEFT JOIN latest_revoked r ON r.ticket_id = t.id AND c.id IS NULL
 		LEFT JOIN latest_job j ON j.ticket_id = t.id
-		WHERE t.event_id = $1
+		WHERE t.event_id = $1 AND t.status = 'active'
 		ORDER BY t.created_at, t.id`, eventID)
 	if err != nil {
 		return Attendance{}, err
