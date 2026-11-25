@@ -225,12 +225,15 @@ func copySchedule(ctx context.Context, tx pgx.Tx, plan CopyPlan) error {
 // copyTemplateBinding binds the copy to the source's Event template, when
 // the copier may bind and the template may serve the copy's Owner team (a
 // current template of no team or of that team, as the binding rule says).
+// A template that belongs to the source Event (an Event template,
+// docs/certificate-event-templates.md) serves that Event only: the copy
+// skips it.
 func copyTemplateBinding(ctx context.Context, tx pgx.Tx, plan CopyPlan, skippedParts map[string]bool) error {
 	var templateID uuid.UUID
 	var fits bool
 	err := tx.QueryRow(ctx, `
 		SELECT b.template_id,
-			t.archived_at IS NULL AND upper(btrim(t.owner_team)) IN ('', upper(btrim($2)))
+			t.archived_at IS NULL AND t.event_id IS NULL AND upper(btrim(t.owner_team)) IN ('', upper(btrim($2)))
 		FROM certificate_template_bindings b
 		JOIN certificate_templates t ON t.id = b.template_id
 		WHERE b.scope = 'event' AND b.scope_key = $1`, plan.Source.String(), plan.Event.OwnerTeam).Scan(&templateID, &fits)

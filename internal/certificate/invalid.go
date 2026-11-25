@@ -59,4 +59,9 @@ const (
 	CodeBackgroundPDFPages      = "background_pdf_pages"
 	CodeRendererUnavailable     = "renderer_unavailable"
 	CodeRenderFailed            = "render_failed"
+	// CodeTemplateEventScoped is an Event template bound to another scope
+	// or another Event (400); CodeTemplateEventExists a second Event
+	// template for an Event (409, EventTemplateExistsError).
+	CodeTemplateEventScoped = "template_event_scoped"
+	CodeTemplateEventExists = "template_event_exists"
 )

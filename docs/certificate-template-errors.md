@@ -33,6 +33,8 @@ A layout needs the recipient's name (`recipientName`) and at least one of the ve
 | `background_pdf_pages` | A PDF background that is not exactly one page. |
 | `renderer_unavailable` | `503`: core runs without its PDF renderer (Gotenberg), cannot reach it, or it failed on its side (5xx). A later try may pass; an issuance job tries again. |
 | `render_failed` | The renderer refused the page (4xx) or answered no PDF. |
+| `template_event_scoped` | An Event template bound to a team, the club or another Event (`PUT /v1/certificate-template-bindings`); it serves its own Event only ([certificate-event-templates.md](certificate-event-templates.md)). |
+| `template_event_exists` | `409`: the Event has an Event template already (`POST /v1/events/{eventId}/certificate-template`). The answer's `templateId` is the current one, which the panel opens instead. |
 
 ## PDF backgrounds
 
