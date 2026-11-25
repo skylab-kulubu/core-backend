@@ -492,6 +492,12 @@ func (s *Service) remove(ctx context.Context, run *Run, apply, reconciled bool, 
 				failed = err
 			}
 			continue
+		case refusedForGood(err):
+			// Keycloak's console Groups (and any refusal core makes
+			// itself) stay refused however often it is tried: held, the
+			// run does not fail for it every day; ADMIN removes it by hand.
+			s.logf("management terms: a holder's removal is refused (%s); left to ADMIN", refusalCode(err))
+			continue
 		case err != nil:
 			s.logf("management terms: a holder's removal failed (%s); tried again at the next run", errorCode(err))
 			failed = err
@@ -505,6 +511,24 @@ func (s *Service) remove(ctx context.Context, run *Run, apply, reconciled bool, 
 		run.Removed++
 	}
 	return failed
+}
+
+// refusedForGood reports whether a removal's error is a refusal core made
+// itself, which no retry changes: a Group that grants Keycloak's admin
+// console (identity.RoleRuleError) or one core may not write
+// (identity.ErrForbidden).
+func refusedForGood(err error) bool {
+	var rule *identity.RoleRuleError
+	return errors.As(err, &rule) || errors.Is(err, identity.ErrForbidden)
+}
+
+// refusalCode names a refusal for a log line.
+func refusalCode(err error) string {
+	var rule *identity.RoleRuleError
+	if errors.As(err, &rule) {
+		return rule.Code
+	}
+	return "forbidden"
 }
 
 // weekly tells ADMIN, once a week, how many expired terms are still in

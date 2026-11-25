@@ -395,10 +395,9 @@ func (s *PostgresStore) Counts(ctx context.Context, now time.Time) (Counts, erro
 		SELECT count(*),
 			count(*) FILTER (WHERE ends_at IS NULL),
 			count(*) FILTER (WHERE expired_at IS NULL AND ends_at > $1 AND ends_at <= $2),
-			count(*) FILTER (WHERE expired_at IS NOT NULL OR ends_at <= $1),
-			count(*) FILTER (WHERE expired_at IS NOT NULL AND ends_at <= $3 AND expired_at <= $3)
-		FROM management_membership_terms WHERE ended_at IS NULL`, now, now.Add(WarnEarly), now.Add(-RemoveAfter)).
-		Scan(&c.Open, &c.Undated, &c.Expiring, &c.ExpiredInGroup, &c.RemovalDue); err != nil {
+			count(*) FILTER (WHERE expired_at IS NOT NULL OR ends_at <= $1)
+		FROM management_membership_terms WHERE ended_at IS NULL`, now, now.Add(WarnEarly)).
+		Scan(&c.Open, &c.Undated, &c.Expiring, &c.ExpiredInGroup); err != nil {
 		return c, err
 	}
 	var status *string

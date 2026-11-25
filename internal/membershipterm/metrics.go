@@ -12,12 +12,23 @@ import (
 func (s *Service) Refresh(ctx context.Context) {
 	readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	counts, err := s.config.Store.Counts(readCtx, s.now())
+	now := s.now()
+	counts, err := s.config.Store.Counts(readCtx, now)
+	var open []Term
+	if err == nil {
+		open, err = s.config.Store.Open(readCtx)
+	}
 	if err != nil {
 		if ctx.Err() == nil {
 			s.logf("management terms: gauges: %s", errorCode(err))
 		}
 		return
+	}
+	// The removal's own rule, as remove picks the terms.
+	for _, t := range open {
+		if _, ok := s.config.Rules.ScopeOf(t.GroupPath); ok && t.RemovalDue(now) {
+			counts.RemovalDue++
+		}
 	}
 	s.count(func() { s.counts, s.counted = counts, true })
 }

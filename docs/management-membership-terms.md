@@ -154,7 +154,10 @@ takes each due holder out, one at a time:
    without an actor's name;
 4. the term ends (`ended_at`).
 
-A holder already gone from the Group only has the term ended. A run whose
+A holder already gone from the Group only has the term ended. A removal
+core refuses for good (a Group that grants Keycloak's admin console:
+`keycloak_admin_group`) is held: logged, the term stays open, the run does
+not fail for it; ADMIN removes it in the console. A run whose
 Keycloak read failed (the reconcile step) takes nobody out: the terms may
 not say what Keycloak says. A removal that fails is logged and tried again
 at the next run; the run ends `failed` (`remove_failed`).
@@ -271,7 +274,7 @@ tables once an hour (every replica reports the same).
 |---|---|
 | `skylab_management_terms_mode{mode}` | 1 for the configured mode |
 | `skylab_management_terms_expired_in_group` | expired terms still open: the holder is still in the Group (as the daily job last saw it) |
-| `skylab_management_terms_removal_due` | of those, the terms due to leave ([Removal](#removal)): what the removal takes out at its next run, or would while it is off or a dry run |
+| `skylab_management_terms_removal_due` | of those, the terms due to leave ([Removal](#removal)), of Groups that still have terms (as the removal picks them): what the removal takes out at its next run, or would while it is off or a dry run |
 | `skylab_management_terms_auto_remove_mode{mode}` | 1 for the removal's configured mode |
 | `skylab_management_terms_open`, `_undated`, `_expiring` | open terms; those without an end; those within 14 days of it |
 | `skylab_management_terms_active_season` | 1 when the last scheduled ok run found an active season with an end ahead |

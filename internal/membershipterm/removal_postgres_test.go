@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/membershipterm"
 	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 )
@@ -169,4 +170,38 @@ func contains(text string, parts ...string) bool {
 		}
 	}
 	return true
+}
+
+// refusingRemover refuses every system removal as core refuses a Group
+// that grants Keycloak's admin console.
+type refusingRemover struct{ identity.Service }
+
+func (refusingRemover) RemoveMemberAsSystem(context.Context, string, string, uuid.UUID) error {
+	return &identity.RoleRuleError{Status: 403, Code: identity.CodeKeycloakAdminGroup}
+}
+
+// A removal core refuses for good (Keycloak's console Groups) is held: the
+// holder stays, the term stays open, and the run does not fail for it
+// every day.
+func TestARefusedRemovalDoesNotFailTheRun(t *testing.T) {
+	f := newFixture(t, membershipterm.ModeApply)
+	f.run(t, membershipterm.ModeApply)
+	f.setNow(termEnd.Add(time.Second))
+	f.run(t, membershipterm.ModeApply)
+	f.setNow(termEnd.Add(membershipterm.RemoveAfter + time.Second))
+
+	config := f.config
+	config.AutoRemove = membershipterm.ModeApply
+	svc, err := membershipterm.NewService(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.UseMemberships(refusingRemover{f.identity})
+	run := runWith(t, svc, membershipterm.ModeApply)
+	if run.Status != "ok" || run.Removed != 0 || run.Removal != membershipterm.ModeApply {
+		t.Fatalf("refused %+v", run)
+	}
+	if open := f.open(t); len(open) != 5 {
+		t.Fatalf("%d open terms", len(open))
+	}
 }

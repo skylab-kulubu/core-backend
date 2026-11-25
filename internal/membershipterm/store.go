@@ -134,8 +134,9 @@ type Counts struct {
 	// the Group (as last seen by the daily job).
 	ExpiredInGroup int
 	// RemovalDue are open terms whose holder is due to leave the Group
-	// (Term.RemovalDue): what the removal takes out at its next run, or
-	// would, while it is off or a dry run.
+	// (Term.RemovalDue, of a Group that still has terms: Rules.ScopeOf):
+	// what the removal takes out at its next run, or would, while it is
+	// off or a dry run. Service.Refresh counts it; the store leaves it 0.
 	RemovalDue    int
 	LastSuccess   *time.Time
 	LastRunFailed bool
