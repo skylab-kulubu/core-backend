@@ -31,22 +31,36 @@ type updateBefore struct {
 	// news to its Ticket holders. A draft's, a cancelled and an ended
 	// Event's changes tell nobody.
 	told bool
+	// details are the row's DetailDigests, read under the same lock: what
+	// a change of its other details is told against.
+	details map[string]string
 }
 
 // readUpdateBefore locks the Event's row and reads it; nil when there is no
 // such current Event (the Update then finds none either).
 func readUpdateBefore(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*updateBefore, error) {
 	var b updateBefore
+	var d Event
+	var note string
+	var extraRaw []byte
 	err := tx.QueryRow(ctx, `
 		SELECT e.start_date, e.end_date, e.location,
-			e.status = 'published' AND (`+endsAtSQL+` IS NULL OR `+endsAtSQL+` > now())
-		FROM events e WHERE e.id = $1 AND e.archived_at IS NULL FOR UPDATE`, id).Scan(&b.start, &b.end, &b.location, &b.told)
+			e.status = 'published' AND (`+endsAtSQL+` IS NULL OR `+endsAtSQL+` > now()),
+			COALESCE(e.name, ''), COALESCE(e.description, ''), COALESCE(e.attendee_note, ''), COALESCE(e.capacity, 0),
+			COALESCE(e.external_registration_url, ''), COALESCE(e.linkedin, ''), COALESCE(e.form_url, ''), e.extra_form_urls
+		FROM events e WHERE e.id = $1 AND e.archived_at IS NULL FOR UPDATE`, id).Scan(&b.start, &b.end, &b.location, &b.told,
+		&d.Name, &d.Description, &note, &d.Capacity, &d.ExternalRegistrationURL, &d.Linkedin, &d.FormURL, &extraRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	d.AttendeeNote = &note
+	if _, d.ExtraFormURLs, err = DecodeExtraForm(extraRaw); err != nil {
+		return nil, err
+	}
+	b.details = DetailDigests(d)
 	return &b, nil
 }
 
@@ -106,8 +120,13 @@ func (s *PostgresStore) noticeChanges(ctx context.Context, tx pgx.Tx, e Event, b
 		return err
 	}
 	var detailFields []string
-	if s.notifyChanged.Load() && before != nil && before.told && e.detailsBefore != nil {
-		detailFields = changedDetails(e.detailsBefore, DetailDigests(e))
+	if s.notifyChanged.Load() && before != nil && before.told {
+		after := DetailDigests(e)
+		if e.AttendeeNote == nil {
+			// Not sent: the write keeps the stored note.
+			after[FieldAttendeeNote] = before.details[FieldAttendeeNote]
+		}
+		detailFields = changedDetails(before.details, after)
 	}
 	fields := append(append([]string{}, timeFields...), detailFields...)
 	if len(fields) == 0 {
@@ -121,7 +140,7 @@ func (s *PostgresStore) noticeChanges(ctx context.Context, tx pgx.Tx, e Event, b
 	if len(detailFields) > 0 && e.notifyHolders != nil && *e.notifyHolders {
 		told = append(told, detailFields...)
 		for _, field := range detailFields {
-			beforeDetails[field] = e.detailsBefore[field]
+			beforeDetails[field] = before.details[field]
 		}
 	}
 	queued := len(told) > 0
