@@ -292,6 +292,23 @@ func (s *MemoryStore) ListDirectory(_ context.Context, q DirectoryQuery) (Direct
 	return page, nil
 }
 
+// FindBySchoolEmail is the active accounts whose school e-mail is email.
+func (s *MemoryStore) FindBySchoolEmail(_ context.Context, email string) ([]User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	want := strings.ToLower(strings.TrimSpace(email))
+	out := make([]User, 0)
+	if want == "" {
+		return out, nil
+	}
+	for _, u := range s.byID {
+		if u.AccountState == AccountActive && u.SchoolEmail != "" && strings.ToLower(u.SchoolEmail) == want {
+			out = append(out, withStudentCardStatus(u))
+		}
+	}
+	return out, nil
+}
+
 func (s *MemoryStore) FindByEmail(_ context.Context, email string) ([]User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

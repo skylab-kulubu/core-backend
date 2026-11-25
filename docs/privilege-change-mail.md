@@ -24,8 +24,13 @@ the person's Groups, before the write, bounded to 3 s; a read that fails lets
 the write go on without a notice and counts
 `skylab_privilege_notice_mail_precheck_errors_total`). A role mapping write
 that fails is read again: Keycloak writes client by client, so whatever did
-change is told. A change made in Keycloak's own console sends nothing until
-grup-yonetimi 10 brings those changes in through the same function.
+change is told. A change made in Keycloak's own console is told the same way
+once `KEYCLOAK_CONSOLE_AUDIT` is on ([console-audit.md](console-audit.md)):
+core reads it back within a minute and calls the same function; the mail's
+`ActorName` then reads "<name> (Keycloak konsolu)", or "Keycloak konsolu"
+for an account core cannot name (the master realm's), and `OccurredAt` is
+Keycloak's time of the change. A role mapped to a person directly is not
+told yet: it is recorded and logged (the template has no wording for it).
 
 Unlike the membership mail, opposite changes do not cancel out: an add and a
 removal before either notice went are both told, since a right held for a

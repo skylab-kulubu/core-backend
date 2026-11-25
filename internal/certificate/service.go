@@ -47,6 +47,11 @@ type Options struct {
 	// only with a Mailer that is a CertificateMailer; any other is sent to
 	// directly, as before.
 	Mails MailQueue
+	// MailPDF sends each certificate's PDF with its queued mail
+	// (CERTIFICATE_PDF_ATTACHMENT; docs/certificate-mail.md). It needs a
+	// Mailer that is a CertificateAttachmentMailer; a PDF over SkyMail's
+	// bound, or one that cannot be read, leaves the mail without it.
+	MailPDF bool
 }
 
 type service struct {
@@ -70,6 +75,8 @@ type service struct {
 	autoFinalize     AutoFinalizeStore
 	autoMetrics      autoFinalizeMetrics
 	mails            MailQueue
+	mailPDFOn        bool
+	mailPDF          mailPDFMetrics
 }
 
 // NewService preserves the original synchronous contract for existing embedders.
@@ -121,6 +128,7 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 		templates: opts.Templates, jobs: opts.Jobs, artifacts: opts.Artifacts,
 		assets: opts.Assets, legacyImmediate: opts.LegacyImmediate, media: opts.Media, privateArtifacts: opts.PrivateArtifacts,
 		attendance: opts.Attendance, autoFinalize: opts.AutoFinalize, mails: opts.Mails,
+		mailPDFOn: opts.MailPDF,
 	}
 }
 

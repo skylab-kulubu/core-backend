@@ -2,6 +2,7 @@ package certificate
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -131,8 +132,10 @@ func TestGotenbergRejectsMultiPagePDFBackground(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	g := &Gotenberg{BaseURL: srv.URL, HTTP: srv.Client()}
-	if _, err := g.PDFWithBackground(t.Context(), "<html>overlay</html>", []byte("%PDF-1.7 two pages")); err == nil {
-		t.Fatal("multi-page PDF background must be rejected")
+	_, err := g.PDFWithBackground(t.Context(), "<html>overlay</html>", []byte("%PDF-1.7 two pages"))
+	var refused *InvalidError
+	if !errors.As(err, &refused) || refused.Code != CodeBackgroundPDFPages {
+		t.Fatalf("multi-page PDF background: %v, want %s", err, CodeBackgroundPDFPages)
 	}
 	if converted {
 		t.Fatal("invalid background must not be rendered")

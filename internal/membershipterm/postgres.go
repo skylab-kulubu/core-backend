@@ -375,12 +375,17 @@ func (s *PostgresStore) FinishRun(ctx context.Context, r Run) error {
 	if weekly == "" {
 		weekly = WeeklyNotDue
 	}
+	removal := r.Removal
+	if removal == "" {
+		removal = ModeOff
+	}
 	_, err := s.pool.Exec(ctx, `
 		UPDATE management_term_runs SET finished_at = $2, status = $3, error_code = $4, season_found = $5,
-			backfilled = $6, dated = $7, ended = $8, warned_14d = $9, warned_1d = $10, expired = $11, mails = $12, weekly = $13
+			backfilled = $6, dated = $7, ended = $8, warned_14d = $9, warned_1d = $10, expired = $11, mails = $12, weekly = $13,
+			removal = $14, removed = $15
 		WHERE id = $1`,
 		r.ID, r.FinishedAt, r.Status, code, r.SeasonFound, r.Backfilled, r.Dated, r.Ended, r.Warned14d, r.Warned1d,
-		r.Expired, r.Mails, string(weekly))
+		r.Expired, r.Mails, string(weekly), string(removal), r.Removed)
 	return err
 }
 

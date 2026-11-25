@@ -93,7 +93,8 @@ non-empty `sub`. A Ticket QR is one (a Go test mirrors the rule).
   the JWKS by `kid`; for a `tk-*` kid, `evt` must be the selected Event and
   `exp` in the future. Offline, `exp` is all the device has: a code sent
   before the Event moved later may be refused offline; online core takes
-  it.
+  it. The queued scans go to core later with `scannedAt`
+  ([offline-door.md](offline-door.md)).
 - (d) The member's own Ticket QR in the app, from `/v1/tickets/me`
   (`qrToken`, ticket 03).
 

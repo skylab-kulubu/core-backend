@@ -244,16 +244,23 @@ func TestRecordNormalizeVia(t *testing.T) {
 	for _, via := range append([]Via{""}, Vias...) {
 		r := validRecord()
 		r.Via = via
+		if via == ViaConsole {
+			// The console's way goes with the console's basis only.
+			if _, bad := r.normalize(); bad != "invalid_basis" {
+				t.Errorf("console with a privileged basis: %q", bad)
+			}
+			r.Actor.Basis = BasisConsole
+		}
 		if _, bad := r.normalize(); bad != "" {
 			t.Errorf("%q: %s", via, bad)
 		}
 	}
 	r := validRecord()
-	r.Via = "console"
+	r.Via = "import"
 	if _, bad := r.normalize(); bad != "invalid_via" {
 		t.Fatalf("unknown way: %q", bad)
 	}
-	if got := r.withVia(WithVia(context.Background(), ViaInvitation)).Via; got != "console" {
+	if got := r.withVia(WithVia(context.Background(), ViaInvitation)).Via; got != "import" {
 		t.Fatalf("the context replaced the record's own way: %q", got)
 	}
 }
