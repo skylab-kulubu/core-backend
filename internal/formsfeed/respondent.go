@@ -99,7 +99,7 @@ func ResolveRespondents(userID *uuid.UUID, guest *Guest, answers map[string]stri
 //     question fills only what they leave empty (splitFullName);
 //   - without a first and a last name, no guest.
 //
-// K4 (pending Yusuf; the proposal): an e-mail that is a member's account's
+// K4 (Yusuf, 2026-11-25, as proposed): an e-mail that is a member's account's
 // is still a guest, as every guest Ticket is; matching it to the member is
 // later work. This is the one place it would change.
 func MappedGuest(m Mapping, answers map[string]string) (ticket.GuestInfo, bool) {
@@ -133,7 +133,7 @@ func MappedGuest(m Mapping, answers map[string]string) (ticket.GuestInfo, bool) 
 // splitFullName splits a full name at its spaces: the last word is the last
 // name, the words before it the first name.
 //
-// K3 (pending Yusuf; the proposal): a single word gives no name, so the
+// K3 (Yusuf, 2026-11-25, as proposed): a single word gives no name, so the
 // answer writes no Ticket and counts as mapping_incomplete. This is the one
 // place it would change.
 func splitFullName(full string) (first, last string, ok bool) {

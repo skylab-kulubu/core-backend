@@ -129,7 +129,7 @@ The guest from the answers (SPEC §5.3):
 - a full name question fills only what those leave empty: the last word is
   the last name, the words before it the first name.
 
-Two decisions wait for Yusuf (SPEC §11); the proposals are in, each in one
+Two decisions of Yusuf (SPEC §11, 2026-11-25, as proposed), each in one
 place:
 
 - **K3**, a full name of one word: no Ticket, counted `mapping_incomplete`
