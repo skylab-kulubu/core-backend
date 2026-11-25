@@ -78,7 +78,9 @@ func (s *service) mailAttachments(ctx context.Context, sender CertificateMailer,
 	}
 	readCtx, cancel := context.WithTimeout(ctx, MailPDFTimeout)
 	defer cancel()
-	data, err := s.mailPDFBytes(readCtx, m.Certificate)
+	// The PDF as GET /v1/certificates/{serial}/pdf reads it: a fresh row,
+	// so a certificate revoked since the claim (ErrNotFound) sends no file.
+	data, err := s.PDF(readCtx, m.Certificate.Serial)
 	if err == nil && len(data) == 0 {
 		err = errors.New("empty PDF")
 	}
@@ -93,19 +95,6 @@ func (s *service) mailAttachments(ctx context.Context, sender CertificateMailer,
 		return nil
 	}
 	return []mail.Attachment{mail.PDFAttachment(CertificatePDFFilename(m.Certificate.Serial), data)}
-}
-
-// mailPDFBytes reads c's PDF: from the artifact store, or for a certificate
-// issued before it, from its row.
-func (s *service) mailPDFBytes(ctx context.Context, c Certificate) ([]byte, error) {
-	if c.PDFKey != "" {
-		if s.artifacts == nil {
-			return nil, errors.New("no artifact store")
-		}
-		return s.artifacts.Read(ctx, c.PDFKey)
-	}
-	_, pdf, err := s.store.GetBySerial(ctx, c.Serial)
-	return pdf, err
 }
 
 // postMail sends m with attachments: through CertificateMailAttachments

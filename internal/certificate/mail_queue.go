@@ -253,11 +253,12 @@ func (s *service) deliverMail(ctx context.Context, sender CertificateMailer, m M
 	defer cancel()
 	err := s.postMail(sendCtx, sender, m, attachments)
 	var refused *mail.SendError
-	if attachments != nil && errors.As(err, &refused) && refused.Permanent() {
-		// SkyMail refused the body with the file (400 attachment.*, say):
-		// the verify link is in the mail, so it goes without. A refused
-		// request leaves no key behind, and the file is not part of the
-		// key's digest: the same key is free.
+	if attachments != nil && errors.As(err, &refused) && refused.Permanent() && strings.HasPrefix(refused.Code, "attachment.") {
+		// SkyMail refused the file (400 attachment.*): the verify link is
+		// in the mail, so it goes without. A refused request leaves no key
+		// behind, and the file is not part of the key's digest: the same key
+		// is free. Any other refusal is the body's own and settles the mail
+		// as before.
 		s.mailPDF.skip(pdfSkipRefused)
 		log.Printf("WARN certificate mail %s: SkyMail refused the mail with the PDF (%d %s); sent without it", m.ID, refused.Status, refused.Code)
 		err = s.postMail(sendCtx, sender, m, nil)

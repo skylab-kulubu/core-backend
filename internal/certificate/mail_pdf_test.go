@@ -222,6 +222,30 @@ func TestCertificateMailGoesWithoutThePDFItCannotCarry(t *testing.T) {
 	}
 }
 
+// A refusal that is not about the file (400 validation.error, say) is the
+// body's own: the mail fails as before, it is not sent again without the
+// file.
+func TestCertificateMailRefusedForItsBodyIsNotResentWithoutThePDF(t *testing.T) {
+	t.Parallel()
+	mailer := &fileMailer{withFile: &mail.SendError{Status: http.StatusBadRequest, Code: "validation.error"}}
+	f := mailSetupWith(t, mailer, &recRender{}, certificate.Options{MailPDF: true})
+	if n := f.process(t); n != 2 {
+		t.Fatalf("claimed %d", n)
+	}
+	files, _ := mailer.sends()
+	if len(files) != 2 || files[0] == nil || files[1] == nil {
+		t.Fatalf("sends %d", len(files))
+	}
+	for serial, state := range f.states(t) {
+		if state.Status != certificate.MailFailed || state.ErrorCode != "skymail_400" {
+			t.Fatalf("%s: %+v", serial, state)
+		}
+	}
+	if m := metricsOf(t, f.svc); !strings.Contains(m, `core_certificate_mail_pdf_skipped_total{reason="refused"} 0`) {
+		t.Fatalf("metrics\n%s", m)
+	}
+}
+
 // The file name is the serial's, ASCII alone: never a name, never a
 // Turkish letter.
 func TestCertificatePDFFilename(t *testing.T) {
