@@ -97,7 +97,7 @@ func (e *MappingQuestionMissingError) Error() string {
 }
 
 // Suggest is the mapping a form's identity fields give (SPEC §11 K5,
-// pending Yusuf's answer; the proposal): a form with identity fields
+// decided by Yusuf on 2026-11-25 as proposed): a form with identity fields
 // (props.identity firstName, lastName, email) already makes Forms send a
 // named guest, so the panel opens its mapping filled from them, and the
 // organizer may change it. A field more than one question claims is left
