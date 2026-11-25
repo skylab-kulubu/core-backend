@@ -25,7 +25,8 @@ type PostgresStore struct {
 	// notifyUpdated queues the change of a published Event's time or place
 	// for its Ticket holders (event_update_notifications,
 	// docs/event-updated-notification.md) in the transaction that writes
-	// it. Set at startup, read by every request: atomic.
+	// it, unless the editor said no. Set at startup, read by every
+	// request: atomic.
 	notifyUpdated atomic.Bool
 	// notifyTickets lets Publish queue a draft's Tickets' Notifications
 	// (event.ticket-created) when the publisher asks (NotifyTicketsOnPublish).
@@ -344,11 +345,11 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 	if err := lockFormPlaces(ctx, tx, e.formGuard); err != nil {
 		return Event{}, err
 	}
-	var before *updateBefore
-	if s.notifyUpdated.Load() {
-		if before, err = readUpdateBefore(ctx, tx, e.ID); err != nil {
-			return Event{}, err
-		}
+	// Read always: the editor's answer about telling the Ticket holders is
+	// recorded while the Notification is off too.
+	before, err := readUpdateBefore(ctx, tx, e.ID)
+	if err != nil {
+		return Event{}, err
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE events SET
@@ -402,7 +403,7 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 	if tag.RowsAffected() == 0 {
 		return Event{}, ErrNotFound
 	}
-	if err := queueUpdateNotification(ctx, tx, e.ID, before); err != nil {
+	if err := s.noticeChanges(ctx, tx, e, before); err != nil {
 		return Event{}, err
 	}
 	// A larger capacity, none, or the waiting list turned on frees places:
