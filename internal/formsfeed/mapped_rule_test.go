@@ -99,13 +99,13 @@ func TestTheHTTPReportOfAnAnonymousAnswerThroughTheMapping(t *testing.T) {
 	if got := report(third, ticket.FormResponseAccepted); got.Outcome != ticket.FormResponseMappingIncomplete {
 		t.Fatalf("one word: %+v", got)
 	}
-	// K6 (#460): the second accepted answer took the Ticket over, so the
-	// first one's decline no longer reaches it; the second's marks it and
-	// cancels nothing.
-	if got := report(first, ticket.FormResponseDeclined); got.Outcome != ticket.FormResponseNotAccepted {
-		t.Fatalf("the first answer declined: %+v", got)
+	// K6 (#460): the second accepted answer did not take the Ticket over
+	// (the first still stands), so its decline does not reach it; the
+	// first's marks it and cancels nothing.
+	if got := report(second, ticket.FormResponseDeclined); got.Outcome != ticket.FormResponseNotAccepted {
+		t.Fatalf("the second answer declined: %+v", got)
 	}
-	if got := report(second, ticket.FormResponseDeclined); got.Outcome != ticket.FormResponseFormsRejected || got.TicketsMarked != 1 {
+	if got := report(first, ticket.FormResponseDeclined); got.Outcome != ticket.FormResponseFormsRejected || got.TicketsMarked != 1 {
 		t.Fatalf("declined: %+v", got)
 	}
 	if held = tickets(w.ev.ID); len(held) != 1 || held[0].StatusOf() == ticket.StatusCancelled || held[0].FormsRejectedAt == nil {
