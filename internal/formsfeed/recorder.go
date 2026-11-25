@@ -66,7 +66,11 @@ type Recorder struct {
 	Forms  Reader
 	Record RecordFunc
 	// States nil leaves form states unhandled (unrelated).
-	States   FormStateFunc
+	States FormStateFunc
+	// Mapped nil leaves an answer that names nobody as before
+	// (no_respondent); set, such an accepted answer to a form an Event maps
+	// gets the guest the mapping builds (docs/form-mappings.md).
+	Mapped   *MappedGuests
 	Versions Versions
 	Now      func() time.Time
 	Logf     func(string, ...any)
@@ -148,6 +152,10 @@ type Origin struct {
 	// role is the form's, when the caller read it already (a pull reads
 	// it once for all its answers).
 	role formRole
+	// mappings are the form's mappings, when the caller read them already
+	// (a pull, which asked for their fields); mapped says it did.
+	mappings []Mapping
+	mapped   bool
 }
 
 // Response handles one answer and answers its outcome (a
@@ -171,6 +179,10 @@ type Origin struct {
 func (r *Recorder) Response(ctx context.Context, tx pgx.Tx, origin Origin, in Response, complete bool) (string, error) {
 	r.init()
 	in.Guest = nil
+	if origin.Via != ViaPull {
+		// Only a read core asked with fields carries answers.
+		in.Answers = nil
+	}
 	role := origin.role
 	if role == roleUnknown {
 		var err error
@@ -188,8 +200,20 @@ func (r *Recorder) Response(ctx context.Context, tx pgx.Tx, origin Origin, in Re
 	if !advanced {
 		return r.done(origin, in, OutcomeStale, ticket.FormResponseResult{}, nil)
 	}
-	if role == roleApplication && in.Status == StatusAccepted && (!complete || (in.UserID == nil && in.HasGuest)) {
-		got, err := r.read(ctx, in)
+	// An accepted answer to an application form that names nobody takes the
+	// mappings of the Events that list the form (docs/form-mappings.md).
+	var mappings []Mapping
+	if role == roleApplication && in.Status == StatusAccepted && in.UserID == nil && !in.HasGuest {
+		mappings = origin.mappings
+		if !origin.mapped {
+			if mappings, err = r.Mapped.Mappings(ctx, in.FormID); err != nil {
+				return r.done(origin, in, OutcomeFailed, ticket.FormResponseResult{}, fmt.Errorf("reading the form mappings: %w", err))
+			}
+		}
+	}
+	fields := MappedFields(mappings)
+	if role == roleApplication && in.Status == StatusAccepted && (!complete || (in.UserID == nil && in.HasGuest) || (len(fields) > 0 && in.Answers == nil)) {
+		got, err := r.read(ctx, in, fields)
 		if errors.Is(err, ErrNotFound) {
 			return r.done(origin, in, OutcomeGone, ticket.FormResponseResult{}, events.Permanent(err))
 		}
@@ -208,12 +232,18 @@ func (r *Recorder) Response(ctx context.Context, tx pgx.Tx, origin Origin, in Re
 	}
 	report := ticket.FormResponse{
 		FormID: in.FormID, ResponseID: in.ResponseID, Status: ticket.FormResponseStatus(in.Status),
-		UserID: in.UserID, SubmittedAt: in.SubmittedAt, Invite: in.Invite(),
+		SubmittedAt: in.SubmittedAt, Invite: in.Invite(),
 	}
-	if in.UserID == nil && in.Guest != nil {
-		report.Guest = &ticket.GuestInfo{FirstName: in.Guest.FirstName, LastName: in.Guest.LastName, Email: in.Guest.Email}
+	if in.Status != StatusAccepted || in.UserID != nil || in.Guest != nil {
+		// The read found someone after all, or the answer is no longer
+		// accepted: no mapping.
+		mappings = nil
 	}
-	result, err := r.Record(ctx, report)
+	respondents, unresolved := ResolveRespondents(in.UserID, in.Guest, in.Answers, mappings)
+	if unresolved != "" {
+		return r.done(origin, in, string(unresolved), ticket.FormResponseResult{}, nil)
+	}
+	result, err := RecordRespondents(ctx, r.Record, report, respondents)
 	switch {
 	case errors.Is(err, ticket.ErrInvalid), errors.Is(err, ticket.ErrForbidden):
 		return r.done(origin, in, OutcomeInvalid, result, events.Permanent(fmt.Errorf("the Ticket rule refused the answer: %w", err)))
@@ -223,13 +253,14 @@ func (r *Recorder) Response(ctx context.Context, tx pgx.Tx, origin Origin, in Re
 	return r.done(origin, in, string(result.Outcome), result, nil)
 }
 
-// read is the single answer read; a guest's answer must name the guest.
-func (r *Recorder) read(ctx context.Context, in Response) (Response, error) {
+// read is the single answer read, with the mapped questions' answers
+// (fields); a guest's answer must name the guest.
+func (r *Recorder) read(ctx context.Context, in Response, fields []string) (Response, error) {
 	if r.Forms == nil {
 		r.metrics.read("off")
 		return Response{}, errors.New("formsfeed: Forms' internal address is not set")
 	}
-	got, err := r.Forms.Response(ctx, in.FormID, in.ResponseID)
+	got, err := r.Forms.Response(ctx, in.FormID, in.ResponseID, fields...)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		r.metrics.read("not_found")

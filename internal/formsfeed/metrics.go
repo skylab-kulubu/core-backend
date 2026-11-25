@@ -16,6 +16,7 @@ var knownOutcomes = []string{
 	string(ticket.FormResponseNotListed), string(ticket.FormResponsePersonUnavailable), string(ticket.FormResponseEventCancelled),
 	string(ticket.FormResponseRegistrationClosed), string(ticket.FormResponseEventEnded), string(ticket.FormResponseFeedback),
 	string(ticket.FormResponseWaitlisted), string(ticket.FormResponseEventFull),
+	string(ticket.FormResponseMappedGuest), string(ticket.FormResponseMappingIncomplete),
 	OutcomeStale, OutcomeGone, OutcomeInvalid, OutcomeFailed,
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/events"
+	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
 
 const (
@@ -243,6 +244,17 @@ func (p *Puller) run(ctx context.Context, job PullJob, res *pullResult) (*time.T
 		return nil, fmt.Errorf("reading the Events: %w", err)
 	}
 	origin := Origin{Via: ViaPull, role: role}
+	if role == roleApplication {
+		// The form's mappings, read once for the job as its role is: their
+		// questions are asked with each page (fields), and each answer
+		// that names nobody is resolved by them (docs/form-mappings.md).
+		mappings, err := p.Recorder.Mapped.Mappings(ctx, job.FormID)
+		if err != nil {
+			return nil, fmt.Errorf("reading the form mappings: %w", err)
+		}
+		origin.mappings, origin.mapped = mappings, true
+		q.Fields = MappedFields(mappings)
+	}
 	// Without Forms' watermark the job's start is the form's: the next
 	// pass asks from there, and its window does not grow.
 	started := p.now().UTC()
@@ -260,7 +272,7 @@ func (p *Puller) run(ctx context.Context, job PullJob, res *pullResult) (*time.T
 			outcome, err := p.answer(ctx, origin, item)
 			res.items++
 			res.outcomes[outcome]++
-			if outcome == "recorded" || outcome == "waitlisted" {
+			if outcome == "recorded" || outcome == "waitlisted" || outcome == string(ticket.FormResponseMappedGuest) {
 				res.written++
 			}
 			if err != nil {

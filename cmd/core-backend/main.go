@@ -1162,6 +1162,16 @@ func main() {
 		formsRecorder.Forms = formsClient
 	}
 	formsEvents := formsEventsRecorder(os.Getenv, formsClient, formsRecorder)
+	// The form mappings (docs/form-mappings.md) build the guest of an
+	// answer that names nobody, by every way in (the HTTP report, the
+	// events, the pulls), with EVENTS_FORMS_ENABLED=true only: off, such an
+	// answer is no_respondent as before.
+	formMappingStore := formsfeed.NewPostgresMappings(pool)
+	var mappedGuests *formsfeed.MappedGuests
+	if formsEvents != nil {
+		mappedGuests = &formsfeed.MappedGuests{Store: formMappingStore, Events: events, Forms: formsClient}
+		formsRecorder.Mapped = mappedGuests
+	}
 	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, keycloakEventHandling, formsEvents)
 	formPulls := formsfeed.NewPostgresPulls(pool)
 	// The pulls share core.forms' switch (EVENTS_FORMS_ENABLED, the one
@@ -1174,7 +1184,6 @@ func main() {
 	formBackfills := &formsfeed.Backfills{Events: events, Authz: az, Queue: formPulls, On: formPuller != nil}
 	// The form mappings (docs/form-mappings.md): saved whatever the switch
 	// says; the questions are read with it on.
-	formMappingStore := formsfeed.NewPostgresMappings(pool)
 	formMappings := &formsfeed.Mappings{Events: events, Authz: az, Store: formMappingStore, On: formsEvents != nil}
 	if formsClient != nil {
 		formMappings.Forms = formsClient
@@ -1317,6 +1326,7 @@ func main() {
 		FeedbackReminders:      feedbackInvites,
 		FormBackfills:          formBackfills,
 		FormMappings:           formMappings,
+		FormResponseMapper:     formResponseMapper(mappedGuests),
 		Certificates:           certSvc,
 		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),
 		SkyPassWalletMetrics:   wallet,

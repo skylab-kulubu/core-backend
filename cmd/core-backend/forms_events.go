@@ -11,6 +11,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/formsfeed"
+	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
 
@@ -148,4 +149,13 @@ func (j joinedMetrics) Prometheus() string {
 		out += m.Prometheus()
 	}
 	return out
+}
+
+// formResponseMapper is the forms report's way through the form mappings,
+// or nil (an interface holding a nil pointer would not be nil).
+func formResponseMapper(m *formsfeed.MappedGuests) handlers.FormResponseMapper {
+	if m == nil {
+		return nil
+	}
+	return m
 }

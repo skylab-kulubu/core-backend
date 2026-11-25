@@ -75,7 +75,10 @@ type Deps struct {
 	// FormMappings serves the form mapping routes under
 	// /v1/events/{id}/forms/{formId} (docs/form-mappings.md); nil leaves
 	// them out.
-	FormMappings           handlers.FormMappings
+	FormMappings handlers.FormMappings
+	// FormResponseMapper runs the forms report through the form mappings
+	// (docs/form-mappings.md); nil takes it as before.
+	FormResponseMapper     handlers.FormResponseMapper
 	Media                  media.Service
 	URLs                   shorturl.Service
 	Certificates           certificate.Service
@@ -316,6 +319,9 @@ func New(deps Deps) *fiber.App {
 	seasons := handlers.NewSeasonHandler(deps.Seasons, deps.Events)
 	schedule := handlers.NewScheduleHandler(deps.Events)
 	tickets := handlers.NewTicketHandler(deps.Tickets)
+	if deps.FormResponseMapper != nil {
+		tickets.MapFormResponsesWith(deps.FormResponseMapper)
+	}
 	competitors := handlers.NewCompetitorHandler(deps.Competitors)
 	mediaH := handlers.NewMediaHandler(deps.Media).TrustProxies(trustedProxies)
 	urls := handlers.NewURLHandler(deps.URLs, deps.ParseToken, deps.URLAttributionGuard).TrustProxies(trustedProxies)

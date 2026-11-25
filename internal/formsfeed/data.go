@@ -148,13 +148,14 @@ func DecodeResponse(raw json.RawMessage) (Response, error) {
 		}
 		out.HiddenFields[name] = text
 	}
+	if in.Answers != nil {
+		// An object, even an empty one: Forms answered the fields asked.
+		out.Answers = map[string]string{}
+	}
 	for id, value := range in.Answers {
 		var text string
 		if json.Unmarshal(value, &text) != nil {
 			continue
-		}
-		if out.Answers == nil {
-			out.Answers = map[string]string{}
 		}
 		out.Answers[id] = text
 	}
