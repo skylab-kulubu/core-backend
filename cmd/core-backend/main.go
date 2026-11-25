@@ -1061,6 +1061,17 @@ func main() {
 	if mapWorker := startEventMaps(workers, worker, render, publicBlobs, mediaStore, mediaPurposes, decodeBudget, mapRegions); mapWorker != nil {
 		eventMapMetrics = mapWorker
 	}
+	// The certificate's PDF with its queued mail (CERTIFICATE_PDF_ATTACHMENT):
+	// read from storage just before each send.
+	certificatePDFAttachment, err := certificatePDFAttachmentOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if certificatePDFAttachment {
+		log.Printf("certificate mail: PDF attachment on")
+	} else {
+		log.Printf("certificate mail: PDF attachment off (CERTIFICATE_PDF_ATTACHMENT is not on)")
+	}
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
@@ -1071,6 +1082,7 @@ func main() {
 		Assets:           certificate.MediaAssets{Media: mediaStore, Blobs: blobs},
 		PrivateArtifacts: privateArtifacts,
 		Media:            media.NewLinker(mediaStore),
+		MailPDF:          certificatePDFAttachment,
 	})
 	worker("certificate issuance worker", certificate.MaintainIssuance(workers, certSvc, 2*time.Second, 10, func(err error) {
 		log.Printf("certificate issuance worker: %v", err)

@@ -51,9 +51,13 @@ const MailKeyLimit = 48 * time.Hour
 // a post, the template id's post): cmd/core-backend's skyMailTimeout.
 const MailSendTimeout = 15 * time.Second
 
-// mailRowBudget is the most one mail's send may take: the token and two
+// mailSendBudget is the most one mail's send may take: the token and two
 // posts. Each send runs under it.
-const mailRowBudget = 3 * MailSendTimeout
+const mailSendBudget = 3 * MailSendTimeout
+
+// mailRowBudget is the most one mail may take: reading its PDF
+// (CERTIFICATE_PDF_ATTACHMENT, at most MailPDFTimeout) and its send.
+const mailRowBudget = MailPDFTimeout + mailSendBudget
 
 // MailBatch is how many mails one claim takes (MaintainMails).
 const MailBatch = 5
@@ -219,9 +223,7 @@ func (s *service) ProcessMails(ctx context.Context, limit int) (int, error) {
 			}
 			continue
 		}
-		sendCtx, cancel := context.WithTimeout(ctx, mailRowBudget)
-		status, code, retryAt := s.deliverMail(sendCtx, sender, m)
-		cancel()
+		status, code, retryAt := s.deliverMail(ctx, sender, m)
 		if err := queue.FinishMail(ctx, m.ID, m.ClaimToken, status, code, retryAt); err != nil && !errors.Is(err, ErrLeaseLost) {
 			log.Printf("ERROR certificate mail %s: not settled, it waits for its lease to run out (%s)", m.ID, databaseErrorClass(err))
 		}
@@ -230,7 +232,9 @@ func (s *service) ProcessMails(ctx context.Context, limit int) (int, error) {
 }
 
 // deliverMail sends one claimed mail and says how it ends: sent, failed for
-// good, cancelled, or queued again at retryAt.
+// good, cancelled, or queued again at retryAt. With the PDF on, the
+// certificate's PDF goes along when it can (mailAttachments); a mail never
+// waits or fails for want of it.
 func (s *service) deliverMail(ctx context.Context, sender CertificateMailer, m Mail) (status, code string, retryAt time.Time) {
 	now := time.Now().UTC()
 	c := m.Certificate
@@ -244,7 +248,21 @@ func (s *service) deliverMail(ctx context.Context, sender CertificateMailer, m M
 		// SkyMail may have forgotten the key: a try could mail twice.
 		return MailFailed, "expired", now
 	}
-	err := sender.CertificateMail(ctx, MailIdempotencyKeyPrefix+m.ID.String(), c.RecipientEmail, c.RecipientName, certificateMailVars(c))
+	attachments := s.mailAttachments(ctx, sender, m)
+	sendCtx, cancel := context.WithTimeout(ctx, mailSendBudget)
+	defer cancel()
+	err := s.postMail(sendCtx, sender, m, attachments)
+	var refused *mail.SendError
+	if attachments != nil && errors.As(err, &refused) && refused.Permanent() && strings.HasPrefix(refused.Code, "attachment.") {
+		// SkyMail refused the file (400 attachment.*): the verify link is
+		// in the mail, so it goes without. A refused request leaves no key
+		// behind, and the file is not part of the key's digest: the same key
+		// is free. Any other refusal is the body's own and settles the mail
+		// as before.
+		s.mailPDF.skip(pdfSkipRefused)
+		log.Printf("WARN certificate mail %s: SkyMail refused the mail with the PDF (%d %s); sent without it", m.ID, refused.Status, refused.Code)
+		err = s.postMail(sendCtx, sender, m, nil)
+	}
 	if err == nil {
 		return MailSent, "", now
 	}
@@ -252,7 +270,6 @@ func (s *service) deliverMail(ctx context.Context, sender CertificateMailer, m M
 		return MailFailed, "mail_unconfigured", now
 	}
 	code = "skymail_unreachable"
-	var refused *mail.SendError
 	if errors.As(err, &refused) {
 		if refused.Status != 0 {
 			code = "skymail_" + strconv.Itoa(refused.Status)
