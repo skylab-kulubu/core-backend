@@ -17,7 +17,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Template keys SkyMail seeds for core. Both are system templates there: they
+// Template keys SkyNotify seeds for core. Both are system templates there: they
 // cannot be archived and their key cannot be renamed, so a mail addressed by key
 // survives a template being replaced, which a mail addressed by id does not.
 const (
@@ -28,8 +28,8 @@ const (
 // Values carried by the diagnostic lines. They are fixed and low cardinality:
 // nothing derived from a user, a template or a response body reaches the log.
 const (
-	eventCallFailed   = "skymail_call_failed"
-	eventUnconfigured = "skymail_template_unconfigured"
+	eventCallFailed   = "skynotify_call_failed"
+	eventUnconfigured = "skynotify_template_unconfigured"
 
 	kindWelcome     = "welcome"
 	kindCertificate = "certificate"
@@ -51,18 +51,18 @@ const (
 	maxDiagnosticCode = 64
 )
 
-// ErrAPIOriginUnset is an empty SKYMAIL_URL. There is no default: the old
-// one, production's public SkyMail, took a sandbox core's mail to a SkyMail
+// ErrAPIOriginUnset is an empty SKYNOTIFY_URL. There is no default: the old
+// one, production's public SkyNotify, took a sandbox core's mail to a SkyNotify
 // that refuses its token, and the mail was lost with no other trace
 // (ADR-0016: every service names the services it calls). Core does not stop
 // for it: mail is off, and every attempt says so (URLMissingLine).
-var ErrAPIOriginUnset = errors.New("SKYMAIL_URL is not set")
+var ErrAPIOriginUnset = errors.New("SKYNOTIFY_URL is not set")
 
-// URLMissingLine is the log line for an unset SKYMAIL_URL, at startup and at
+// URLMissingLine is the log line for an unset SKYNOTIFY_URL, at startup and at
 // every mail attempt. The release wizard looks for it and for the gauge.
-const URLMissingLine = "ERROR skymail_url_missing"
+const URLMissingLine = "ERROR skynotify_url_missing"
 
-// APIOrigin is SKYMAIL_URL without its trailing slash, or ErrAPIOriginUnset
+// APIOrigin is SKYNOTIFY_URL without its trailing slash, or ErrAPIOriginUnset
 // when it is empty.
 func APIOrigin(raw string) (string, error) {
 	u := strings.TrimSpace(raw)
@@ -74,24 +74,24 @@ func APIOrigin(raw string) (string, error) {
 
 var urlMissing atomic.Bool
 
-// MarkURLMissing records that this core was started without SKYMAIL_URL:
-// skylab_skymail_url_missing reads 1 from then on. It is true only the first
+// MarkURLMissing records that this core was started without SKYNOTIFY_URL:
+// skylab_skynotify_url_missing reads 1 from then on. It is true only the first
 // time, so startup says it once however many clients are built.
 func MarkURLMissing() bool { return urlMissing.CompareAndSwap(false, true) }
 
-// URLMissingPrometheus is the skylab_skymail_url_missing gauge, written
-// only while it is 1: core runs with mail off because SKYMAIL_URL is unset.
+// URLMissingPrometheus is the skylab_skynotify_url_missing gauge, written
+// only while it is 1: core runs with mail off because SKYNOTIFY_URL is unset.
 // A core with an address writes nothing, so no line means 0.
 func URLMissingPrometheus() string {
 	if !urlMissing.Load() {
 		return ""
 	}
-	return "# TYPE skylab_skymail_url_missing gauge\nskylab_skymail_url_missing 1\n"
+	return "# TYPE skylab_skynotify_url_missing gauge\nskylab_skynotify_url_missing 1\n"
 }
 
 // noBaseURL reports whether s cannot send for want of an address. A client
-// built without SKYMAIL_URL (URLMissing) says so on every attempt.
-func (s *SkyMail) noBaseURL() bool {
+// built without SKYNOTIFY_URL (URLMissing) says so on every attempt.
+func (s *SkyNotify) noBaseURL() bool {
 	if s == nil {
 		return true
 	}
@@ -118,9 +118,9 @@ func (s StaticToken) Token(context.Context) (string, error) {
 	return string(s), nil
 }
 
-type SkyMail struct {
+type SkyNotify struct {
 	BaseURL string
-	// URLMissing marks a client built without SKYMAIL_URL: mail is off and
+	// URLMissing marks a client built without SKYNOTIFY_URL: mail is off and
 	// every attempt logs URLMissingLine.
 	URLMissing             bool
 	TemplateID             uuid.UUID
@@ -152,7 +152,7 @@ type SkyMail struct {
 	// turns them off.
 	ManagementTermTemplateKey string
 	// FeedbackNotification sends a member's feedback mail as a Notification
-	// of the template's type (FEEDBACK_NOTIFICATION, ticket 13): SkyMail
+	// of the template's type (FEEDBACK_NOTIFICATION, ticket 13): SkyNotify
 	// sends it by e-mail and to the inbox. Off, it goes by address alone.
 	FeedbackNotification bool
 	// TeamPageNoticeTemplateKey addresses the team page notice
@@ -167,8 +167,8 @@ type SkyMail struct {
 	Logger                              *log.Logger
 }
 
-// template says which SkyMail template a send is aimed at. Only one of the two
-// fields ever travels in a request body: SkyMail stops looking at the key as
+// template says which SkyNotify template a send is aimed at. Only one of the two
+// fields ever travels in a request body: SkyNotify stops looking at the key as
 // soon as an id is present, so sending both would silently pin the mail to the
 // id and hide whichever addressing the deployment believed it was using.
 type template struct {
@@ -196,23 +196,23 @@ func (t template) task(recipient, fullName string, vars map[string]string) map[s
 	return body
 }
 
-func (s *SkyMail) welcomeTemplate() template {
+func (s *SkyNotify) welcomeTemplate() template {
 	if s == nil {
 		return template{}
 	}
 	return template{key: strings.TrimSpace(s.TemplateKey), id: s.TemplateID}
 }
 
-func (s *SkyMail) certificateTemplate() template {
+func (s *SkyNotify) certificateTemplate() template {
 	if s == nil {
 		return template{}
 	}
 	return template{key: strings.TrimSpace(s.CertificateTemplateKey), id: s.CertificateTemplateID}
 }
 
-// Configured reports whether at least one mail kind can be addressed. A SkyMail
+// Configured reports whether at least one mail kind can be addressed. A SkyNotify
 // that cannot address anything is not wired in as the mailer.
-func (s *SkyMail) Configured() bool {
+func (s *SkyNotify) Configured() bool {
 	return s.welcomeTemplate().configured() || s.certificateTemplate().configured()
 }
 
@@ -220,7 +220,7 @@ func (s *SkyMail) Configured() bool {
 // template key nor a template id. Startup is the only place that can say this
 // once: the send path returns silently, as it always has, and would otherwise
 // repeat the same line for every user who signs up.
-func (s *SkyMail) WarnUnconfiguredTemplates() {
+func (s *SkyNotify) WarnUnconfiguredTemplates() {
 	if s == nil {
 		return
 	}
@@ -237,10 +237,10 @@ func (s *SkyMail) WarnUnconfiguredTemplates() {
 	}
 }
 
-// send posts one mail task and tells its caller nothing: a mail SkyMail refuses
+// send posts one mail task and tells its caller nothing: a mail SkyNotify refuses
 // must not fail the request that triggered it. The refusal goes to the log
 // instead of being dropped, which is the whole point of this path.
-func (s *SkyMail) send(ctx context.Context, kind string, tpl template, recipient, fullName string, vars map[string]string) {
+func (s *SkyNotify) send(ctx context.Context, kind string, tpl template, recipient, fullName string, vars map[string]string) {
 	if s.noBaseURL() || !tpl.configured() {
 		return
 	}
@@ -250,7 +250,7 @@ func (s *SkyMail) send(ctx context.Context, kind string, tpl template, recipient
 	}
 	if tpl.key != "" {
 		status := s.post(ctx, kind, token, template{key: tpl.key}.task(recipient, fullName, vars))
-		// A key SkyMail does not know is the one refusal the id can still
+		// A key SkyNotify does not know is the one refusal the id can still
 		// answer, because the key may not be seeded yet. Every other status has
 		// already been warned about and is not worth a second request.
 		if status != http.StatusNotFound || tpl.id == uuid.Nil {
@@ -264,26 +264,26 @@ func (s *SkyMail) send(ctx context.Context, kind string, tpl template, recipient
 	s.post(ctx, kind, token, template{id: tpl.id}.task(recipient, fullName, vars))
 }
 
-// post sends one mail task and returns the status SkyMail answered with, or 0
+// post sends one mail task and returns the status SkyNotify answered with, or 0
 // when no answer came. A refusal is warned about here so that every send
 // shares one rule.
-func (s *SkyMail) post(ctx context.Context, kind, token string, task map[string]any) int {
+func (s *SkyNotify) post(ctx context.Context, kind, token string, task map[string]any) int {
 	status, _ := s.postReached(ctx, kind, token, task)
 	return status
 }
 
 // postReached is post that also says whether the request may have reached
-// SkyMail: false only when it surely did not (it could not be built, or the
+// SkyNotify: false only when it surely did not (it could not be built, or the
 // connection was never made), so the caller knows no mail task was written.
 // A request that went out and got no answer may have been taken.
-func (s *SkyMail) postReached(ctx context.Context, kind, token string, task map[string]any) (int, bool) {
+func (s *SkyNotify) postReached(ctx context.Context, kind, token string, task map[string]any) (int, bool) {
 	status, reached, _ := s.postTask(ctx, kind, token, "", task)
 	return status, reached
 }
 
 // postTask is postReached under an Idempotency-Key (none when empty), that
-// also returns the code of SkyMail's error body.
-func (s *SkyMail) postTask(ctx context.Context, kind, token, idempotencyKey string, task map[string]any) (int, bool, string) {
+// also returns the code of SkyNotify's error body.
+func (s *SkyNotify) postTask(ctx context.Context, kind, token, idempotencyKey string, task map[string]any) (int, bool, string) {
 	body, err := json.Marshal(task)
 	if err != nil {
 		return 0, false, ""
@@ -315,9 +315,9 @@ func (s *SkyMail) postTask(ctx context.Context, kind, token, idempotencyKey stri
 	return resp.StatusCode, true, answerCode(answer)
 }
 
-// neverConnected reports a request that failed before a connection to SkyMail
+// neverConnected reports a request that failed before a connection to SkyNotify
 // existed (the name did not resolve, the connection was refused), so nothing
-// of it reached SkyMail.
+// of it reached SkyNotify.
 func neverConnected(err error) bool {
 	var op *net.OpError
 	if errors.As(err, &op) && op.Op == "dial" {
@@ -327,7 +327,7 @@ func neverConnected(err error) bool {
 	return errors.As(err, &dns)
 }
 
-// succeeded holds the only definition of a delivered call: SkyMail answers 201
+// succeeded holds the only definition of a delivered call: SkyNotify answers 201
 // to a single send, 200 or 204 to the list calls, and anything outside 2xx means
 // no mail task row was written.
 func succeeded(status int) bool {
@@ -344,7 +344,7 @@ func sendReason(status int) string {
 	return reasonUpstreamError
 }
 
-// warn writes the one line every SkyMail diagnostic shares. It carries fixed
+// warn writes the one line every SkyNotify diagnostic shares. It carries fixed
 // values plus the remote status: never the recipient, the template, the token or
 // the response body, so the log stays safe to keep and to forward.
 func warn(logger *log.Logger, event, kind string, status int, reason, code string) {

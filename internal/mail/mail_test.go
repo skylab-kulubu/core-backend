@@ -18,7 +18,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
-func TestSkyMailWelcomePostsSingleTask(t *testing.T) {
+func TestSkyNotifyWelcomePostsSingleTask(t *testing.T) {
 	t.Parallel()
 	templateID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	var gotAuth, gotPath, gotBody string
@@ -32,7 +32,7 @@ func TestSkyMailWelcomePostsSingleTask(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	mailer := &SkyMail{
+	mailer := &SkyNotify{
 		BaseURL:    srv.URL,
 		TemplateID: templateID,
 		Tokens:     StaticToken("tok"),
@@ -65,21 +65,21 @@ func TestSkyMailWelcomePostsSingleTask(t *testing.T) {
 	}
 }
 
-func TestSkyMailWelcomeNoopsWithoutTemplate(t *testing.T) {
+func TestSkyNotifyWelcomeNoopsWithoutTemplate(t *testing.T) {
 	t.Parallel()
 	called := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	}))
 	t.Cleanup(srv.Close)
-	mailer := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}
+	mailer := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}
 	mailer.Welcome(t.Context(), user.User{Email: "a@b.c"})
 	if called {
 		t.Fatal("should not post")
 	}
 }
 
-func TestSkyMailWelcomeCarriesIdentity(t *testing.T) {
+func TestSkyNotifyWelcomeCarriesIdentity(t *testing.T) {
 	t.Parallel()
 	for _, schoolEmail := range []string{"", "ada@std.yildiz.edu.tr"} {
 		t.Run("school="+schoolEmail, func(t *testing.T) {
@@ -94,7 +94,7 @@ func TestSkyMailWelcomeCarriesIdentity(t *testing.T) {
 				w.WriteHeader(http.StatusCreated)
 			}))
 			t.Cleanup(srv.Close)
-			mailer := &SkyMail{BaseURL: srv.URL, TemplateKey: DefaultWelcomeTemplateKey, Tokens: StaticToken("tok"), HTTP: srv.Client()}
+			mailer := &SkyNotify{BaseURL: srv.URL, TemplateKey: DefaultWelcomeTemplateKey, Tokens: StaticToken("tok"), HTTP: srv.Client()}
 			u := testUser()
 			u.Username = "ada.lovelace2"
 			u.SchoolEmail = schoolEmail
@@ -116,7 +116,7 @@ func TestSkyMailWelcomeCarriesIdentity(t *testing.T) {
 	}
 }
 
-func TestSkyMailCertificatePostsSingleTask(t *testing.T) {
+func TestSkyNotifyCertificatePostsSingleTask(t *testing.T) {
 	t.Parallel()
 	templateID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 	var gotPath string
@@ -127,7 +127,7 @@ func TestSkyMailCertificatePostsSingleTask(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 	}))
 	t.Cleanup(srv.Close)
-	mailer := &SkyMail{
+	mailer := &SkyNotify{
 		BaseURL:               srv.URL,
 		CertificateTemplateID: templateID,
 		Tokens:                StaticToken("tok"),
@@ -145,22 +145,22 @@ func TestSkyMailCertificatePostsSingleTask(t *testing.T) {
 	}
 }
 
-func TestSkyMailCertificateNoopsWithoutTemplate(t *testing.T) {
+func TestSkyNotifyCertificateNoopsWithoutTemplate(t *testing.T) {
 	t.Parallel()
 	called := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	}))
 	t.Cleanup(srv.Close)
-	mailer := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}
+	mailer := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}
 	mailer.Certificate(t.Context(), "ada@example.com", "Ada", nil)
 	if called {
 		t.Fatal("should not post")
 	}
 }
 
-// SKYMAIL_URL has no default: unset or blank is an error, never production's
-// public SkyMail (ADR-0016).
+// SKYNOTIFY_URL has no default: unset or blank is an error, never production's
+// public SkyNotify (ADR-0016).
 func TestAPIOriginHasNoDefault(t *testing.T) {
 	t.Parallel()
 	for _, raw := range []string{"", "  "} {
@@ -168,7 +168,7 @@ func TestAPIOriginHasNoDefault(t *testing.T) {
 			t.Fatalf("%q: %q %v", raw, got, err)
 		}
 	}
-	if !strings.Contains(ErrAPIOriginUnset.Error(), "SKYMAIL_URL") || strings.Contains(ErrAPIOriginUnset.Error(), "yildizskylab") {
+	if !strings.Contains(ErrAPIOriginUnset.Error(), "SKYNOTIFY_URL") || strings.Contains(ErrAPIOriginUnset.Error(), "yildizskylab") {
 		t.Fatalf("message %q", ErrAPIOriginUnset)
 	}
 	if got, err := APIOrigin(" https://mail.example.test/ "); err != nil || got != "https://mail.example.test" {
@@ -240,8 +240,8 @@ func oversizedBody() string {
 
 type mailSend struct {
 	kind  string
-	build func(*httptest.Server, *log.Logger) *SkyMail
-	call  func(context.Context, *SkyMail)
+	build func(*httptest.Server, *log.Logger) *SkyNotify
+	call  func(context.Context, *SkyNotify)
 }
 
 // mailSendsByID exercises both single sends over the template id addressing, so
@@ -250,8 +250,8 @@ func mailSendsByID() []mailSend {
 	return []mailSend{
 		{
 			kind: "welcome",
-			build: func(srv *httptest.Server, logger *log.Logger) *SkyMail {
-				return &SkyMail{
+			build: func(srv *httptest.Server, logger *log.Logger) *SkyNotify {
+				return &SkyNotify{
 					BaseURL:    srv.URL,
 					TemplateID: welcomeTemplateID,
 					Tokens:     StaticToken(testAccessToken),
@@ -259,12 +259,12 @@ func mailSendsByID() []mailSend {
 					Logger:     logger,
 				}
 			},
-			call: func(ctx context.Context, m *SkyMail) { m.Welcome(ctx, testUser()) },
+			call: func(ctx context.Context, m *SkyNotify) { m.Welcome(ctx, testUser()) },
 		},
 		{
 			kind: "certificate",
-			build: func(srv *httptest.Server, logger *log.Logger) *SkyMail {
-				return &SkyMail{
+			build: func(srv *httptest.Server, logger *log.Logger) *SkyNotify {
+				return &SkyNotify{
 					BaseURL:               srv.URL,
 					CertificateTemplateID: certificateTemplateID,
 					Tokens:                StaticToken(testAccessToken),
@@ -272,14 +272,14 @@ func mailSendsByID() []mailSend {
 					Logger:                logger,
 				}
 			},
-			call: func(ctx context.Context, m *SkyMail) {
+			call: func(ctx context.Context, m *SkyNotify) {
 				m.Certificate(ctx, testRecipient, "Ada Lovelace", map[string]string{"EventName": "ARTLAB"})
 			},
 		},
 	}
 }
 
-func TestSkyMailSendWarnsOnRefusedStatus(t *testing.T) {
+func TestSkyNotifySendWarnsOnRefusedStatus(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name       string
@@ -376,7 +376,7 @@ func TestSkyMailSendWarnsOnRefusedStatus(t *testing.T) {
 					t.Fatalf("expected a single line, got: %s", got)
 				}
 				assertContainsAll(t, got, []string{
-					`"event":"skymail_call_failed"`,
+					`"event":"skynotify_call_failed"`,
 					`"level":"warn"`,
 					`"kind":"` + send.kind + `"`,
 					fmt.Sprintf(`"status":%d`, tc.status),
@@ -396,7 +396,7 @@ func TestSkyMailSendWarnsOnRefusedStatus(t *testing.T) {
 	}
 }
 
-func TestSkyMailSendAddressesTemplateByKeyBeforeID(t *testing.T) {
+func TestSkyNotifySendAddressesTemplateByKeyBeforeID(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name         string
@@ -424,7 +424,7 @@ func TestSkyMailSendAddressesTemplateByKeyBeforeID(t *testing.T) {
 				}))
 				t.Cleanup(srv.Close)
 				logger, out := captureWarnings()
-				mailer := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken(testAccessToken), HTTP: srv.Client(), Logger: logger}
+				mailer := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken(testAccessToken), HTTP: srv.Client(), Logger: logger}
 				if kind == "welcome" {
 					mailer.TemplateKey, mailer.TemplateID = tc.key, tc.id
 					mailer.Welcome(t.Context(), testUser())
@@ -451,7 +451,7 @@ func TestSkyMailSendAddressesTemplateByKeyBeforeID(t *testing.T) {
 				}
 				if tc.wantID == "" {
 					if _, ok := payload["template_id"]; ok {
-						t.Fatalf("key addressing carried an id, which SkyMail would prefer: %v", payload)
+						t.Fatalf("key addressing carried an id, which SkyNotify would prefer: %v", payload)
 					}
 				} else if payload["template_id"] != tc.wantID {
 					t.Fatalf("template_id = %v", payload["template_id"])
@@ -461,7 +461,7 @@ func TestSkyMailSendAddressesTemplateByKeyBeforeID(t *testing.T) {
 	}
 }
 
-func TestSkyMailSendFallsBackToTemplateIDOnceWhenKeyIsMissing(t *testing.T) {
+func TestSkyNotifySendFallsBackToTemplateIDOnceWhenKeyIsMissing(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name         string
@@ -515,7 +515,7 @@ func TestSkyMailSendFallsBackToTemplateIDOnceWhenKeyIsMissing(t *testing.T) {
 				raw, _ := io.ReadAll(r.Body)
 				bodies = append(bodies, string(raw))
 				// The first attempt is refused; anything that follows it is the
-				// fallback, and SkyMail accepts that one.
+				// fallback, and SkyNotify accepts that one.
 				if len(bodies) > 1 {
 					w.WriteHeader(http.StatusCreated)
 					return
@@ -526,7 +526,7 @@ func TestSkyMailSendFallsBackToTemplateIDOnceWhenKeyIsMissing(t *testing.T) {
 			t.Cleanup(srv.Close)
 			logger, out := captureWarnings()
 
-			(&SkyMail{
+			(&SkyNotify{
 				BaseURL:     srv.URL,
 				TemplateKey: tc.key,
 				TemplateID:  tc.id,
@@ -621,7 +621,7 @@ func TestClientCredentialsWarnsOnRefusedTokenStatus(t *testing.T) {
 				t.Fatalf("refused token = %q err = %v", token, err)
 			}
 			assertContainsAll(t, got, []string{
-				`"event":"skymail_call_failed"`,
+				`"event":"skynotify_call_failed"`,
 				`"level":"warn"`,
 				`"kind":"token"`,
 				fmt.Sprintf(`"status":%d`, tc.status),
@@ -640,39 +640,39 @@ func TestClientCredentialsWarnsOnRefusedTokenStatus(t *testing.T) {
 	}
 }
 
-func TestSkyMailWarnsOnceForUnconfiguredTemplates(t *testing.T) {
+func TestSkyNotifyWarnsOnceForUnconfiguredTemplates(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name       string
-		mailer     func(*log.Logger) *SkyMail
+		mailer     func(*log.Logger) *SkyNotify
 		configured bool
 		wantKinds  []string
 	}{
 		{
 			name:      "nothing addressable",
-			mailer:    func(logger *log.Logger) *SkyMail { return &SkyMail{Logger: logger} },
+			mailer:    func(logger *log.Logger) *SkyNotify { return &SkyNotify{Logger: logger} },
 			wantKinds: []string{"welcome", "certificate"},
 		},
 		{
 			name: "welcome key only",
-			mailer: func(logger *log.Logger) *SkyMail {
-				return &SkyMail{TemplateKey: DefaultWelcomeTemplateKey, Logger: logger}
+			mailer: func(logger *log.Logger) *SkyNotify {
+				return &SkyNotify{TemplateKey: DefaultWelcomeTemplateKey, Logger: logger}
 			},
 			configured: true,
 			wantKinds:  []string{"certificate"},
 		},
 		{
 			name: "certificate id only",
-			mailer: func(logger *log.Logger) *SkyMail {
-				return &SkyMail{CertificateTemplateID: certificateTemplateID, Logger: logger}
+			mailer: func(logger *log.Logger) *SkyNotify {
+				return &SkyNotify{CertificateTemplateID: certificateTemplateID, Logger: logger}
 			},
 			configured: true,
 			wantKinds:  []string{"welcome"},
 		},
 		{
 			name: "both addressable",
-			mailer: func(logger *log.Logger) *SkyMail {
-				return &SkyMail{
+			mailer: func(logger *log.Logger) *SkyNotify {
+				return &SkyNotify{
 					TemplateKey:            DefaultWelcomeTemplateKey,
 					CertificateTemplateKey: DefaultCertificateTemplateKey,
 					Logger:                 logger,
@@ -705,7 +705,7 @@ func TestSkyMailWarnsOnceForUnconfiguredTemplates(t *testing.T) {
 			}
 			for i, kind := range tc.wantKinds {
 				assertContainsAll(t, lines[i], []string{
-					`"event":"skymail_template_unconfigured"`,
+					`"event":"skynotify_template_unconfigured"`,
 					`"level":"warn"`,
 					`"kind":"` + kind + `"`,
 					`"reason":"template_unconfigured"`,
@@ -718,7 +718,7 @@ func TestSkyMailWarnsOnceForUnconfiguredTemplates(t *testing.T) {
 	}
 }
 
-func TestSkyMailWelcomeStaysSilentOnTheSendPathWhenUnconfigured(t *testing.T) {
+func TestSkyNotifyWelcomeStaysSilentOnTheSendPathWhenUnconfigured(t *testing.T) {
 	t.Parallel()
 	called := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -727,7 +727,7 @@ func TestSkyMailWelcomeStaysSilentOnTheSendPathWhenUnconfigured(t *testing.T) {
 	t.Cleanup(srv.Close)
 	logger, out := captureWarnings()
 
-	mailer := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken(testAccessToken), HTTP: srv.Client(), Logger: logger}
+	mailer := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken(testAccessToken), HTTP: srv.Client(), Logger: logger}
 	mailer.Welcome(t.Context(), testUser())
 	mailer.Certificate(t.Context(), testRecipient, "Ada Lovelace", nil)
 

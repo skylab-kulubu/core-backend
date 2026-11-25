@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// DefaultManagementTermTemplateKey is the SkyMail template of the
+// DefaultManagementTermTemplateKey is the SkyNotify template of the
 // management term mails (docs/management-membership-terms.md): the warning
 // 14 days and 1 day before a YK, DK or Team Leader membership's term ends,
 // the list of terms that expired that day and the weekly summary of those
@@ -16,15 +16,15 @@ const kindManagementTerm = "management_term"
 
 // ManagementTermConfigured reports whether the management term mails have
 // a template key; an empty key turns them off.
-func (s *SkyMail) ManagementTermConfigured() bool {
+func (s *SkyNotify) ManagementTermConfigured() bool {
 	return s != nil && strings.TrimSpace(s.ManagementTermTemplateKey) != ""
 }
 
 // ManagementTerm posts a management term mail by template key and reports
-// what SkyMail answered, as PrivilegeNotice does: the mail waits in core's
-// queue until SkyMail has taken it (internal/membershipterm). A refusal is
+// what SkyNotify answered, as PrivilegeNotice does: the mail waits in core's
+// queue until SkyNotify has taken it (internal/membershipterm). A refusal is
 // warned about in the log with the kind management_term and no recipient.
-func (s *SkyMail) ManagementTerm(ctx context.Context, recipient, fullName string, vars map[string]string) error {
+func (s *SkyNotify) ManagementTerm(ctx context.Context, recipient, fullName string, vars map[string]string) error {
 	if !s.ManagementTermConfigured() || s.noBaseURL() {
 		return ErrTemplateUnconfigured
 	}

@@ -286,7 +286,7 @@ func TestPassLeavesOthersAlone(t *testing.T) {
 
 // A mail that surely did not go and may go later (deferred, not sent) takes
 // its mark back for the next pass. One that may have gone keeps it, so nobody
-// gets it twice, and so does one SkyMail refused for good: it was tried, and
+// gets it twice, and so does one SkyNotify refused for good: it was tried, and
 // trying every pass would only repeat the refusal.
 func TestPassReleasesTheMarkOnlyWhenARetryCanHelp(t *testing.T) {
 	t.Parallel()

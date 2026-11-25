@@ -373,7 +373,7 @@ func (k *Keycloak) SetTemporaryPassword(ctx context.Context, id uuid.UUID, passw
 }
 
 // SendActionsMail is PUT /users/{id}/execute-actions-email: Keycloak mails
-// the person a link (SkyMail's keycloak.generic) that runs actions. Without
+// the person a link (SkyNotify's keycloak.generic) that runs actions. Without
 // an address Keycloak answers 400.
 func (k *Keycloak) SendActionsMail(ctx context.Context, id uuid.UUID, actions []string) error {
 	status, _, err := k.adminCall(ctx, "actions mail", http.MethodPut, userPath(id)+"/execute-actions-email", nil, actions, nil)
@@ -383,7 +383,7 @@ func (k *Keycloak) SendActionsMail(ctx context.Context, id uuid.UUID, actions []
 	return mailStatus("actions mail", status)
 }
 
-// SendVerificationMail is PUT /users/{id}/send-verify-email (SkyMail's
+// SendVerificationMail is PUT /users/{id}/send-verify-email (SkyNotify's
 // keycloak.verify-email).
 func (k *Keycloak) SendVerificationMail(ctx context.Context, id uuid.UUID) error {
 	status, _, err := k.adminCall(ctx, "verification mail", http.MethodPut, userPath(id)+"/send-verify-email", nil, nil, nil)

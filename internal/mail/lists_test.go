@@ -13,7 +13,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestSkyMailCreateListPostsName(t *testing.T) {
+func TestSkyNotifyCreateListPostsName(t *testing.T) {
 	t.Parallel()
 	listID := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
 	var gotPath, gotAuth, gotBody string
@@ -27,7 +27,7 @@ func TestSkyMailCreateListPostsName(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	id, err := (&SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}).CreateList(t.Context(), "GECEKODU SkyDays")
+	id, err := (&SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}).CreateList(t.Context(), "GECEKODU SkyDays")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,23 +46,23 @@ func TestSkyMailCreateListPostsName(t *testing.T) {
 	}
 }
 
-func TestSkyMailGetListNotFound(t *testing.T) {
+func TestSkyNotifyGetListNotFound(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	t.Cleanup(srv.Close)
 	logger, out := captureWarnings()
-	err := (&SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client(), Logger: logger}).GetList(t.Context(), uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd"))
+	err := (&SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client(), Logger: logger}).GetList(t.Context(), uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd"))
 	if out.String() != "" {
-		t.Fatalf("a list SkyMail no longer holds is a typed answer, not a warning: %s", out.String())
+		t.Fatalf("a list SkyNotify no longer holds is a typed answer, not a warning: %s", out.String())
 	}
 	if err != ErrListNotFound {
 		t.Fatalf("err %v", err)
 	}
 }
 
-func TestSkyMailDeleteList(t *testing.T) {
+func TestSkyNotifyDeleteList(t *testing.T) {
 	t.Parallel()
 	listID := uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd")
 	var gotMethod, gotPath string
@@ -72,7 +72,7 @@ func TestSkyMailDeleteList(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(srv.Close)
-	if err := (&SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}).DeleteList(t.Context(), listID); err != nil {
+	if err := (&SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}).DeleteList(t.Context(), listID); err != nil {
 		t.Fatal(err)
 	}
 	if gotMethod != http.MethodDelete || gotPath != "/v1/mailing_lists/"+listID.String() {
@@ -80,7 +80,7 @@ func TestSkyMailDeleteList(t *testing.T) {
 	}
 }
 
-func TestSkyMailAddRecipientPostsEmail(t *testing.T) {
+func TestSkyNotifyAddRecipientPostsEmail(t *testing.T) {
 	t.Parallel()
 	listID := uuid.MustParse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
 	var gotPath string
@@ -92,7 +92,7 @@ func TestSkyMailAddRecipientPostsEmail(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"11111111-1111-1111-1111-111111111111","full_name":"Ada","email":"ada@example.com"}`))
 	}))
 	t.Cleanup(srv.Close)
-	if err := (&SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}).AddRecipient(t.Context(), listID, ListRecipient{FullName: "Ada Lovelace", Email: "ada@example.com"}); err != nil {
+	if err := (&SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}).AddRecipient(t.Context(), listID, ListRecipient{FullName: "Ada Lovelace", Email: "ada@example.com"}); err != nil {
 		t.Fatal(err)
 	}
 	if gotPath != "/v1/mailing_lists/"+listID.String()+"/recipients" {
@@ -103,7 +103,7 @@ func TestSkyMailAddRecipientPostsEmail(t *testing.T) {
 	}
 }
 
-func TestSkyMailCreateListForbidden(t *testing.T) {
+func TestSkyNotifyCreateListForbidden(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/mailing_lists" {
@@ -113,12 +113,12 @@ func TestSkyMailCreateListForbidden(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	logger, out := captureWarnings()
-	_, err := (&SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client(), Logger: logger}).CreateList(t.Context(), "WEBLAB SkyDays")
+	_, err := (&SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client(), Logger: logger}).CreateList(t.Context(), "WEBLAB SkyDays")
 	if !errors.Is(err, ErrForbidden) {
 		t.Fatalf("err %v", err)
 	}
 	assertContainsAll(t, out.String(), []string{
-		`"event":"skymail_call_failed"`,
+		`"event":"skynotify_call_failed"`,
 		`"level":"warn"`,
 		`"kind":"list_create"`,
 		`"status":403`,
@@ -126,7 +126,7 @@ func TestSkyMailCreateListForbidden(t *testing.T) {
 	})
 }
 
-func TestSkyMailListWarnsWithoutNamingTheList(t *testing.T) {
+func TestSkyNotifyListWarnsWithoutNamingTheList(t *testing.T) {
 	t.Parallel()
 	listID := uuid.MustParse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
 	cases := []struct {
@@ -134,7 +134,7 @@ func TestSkyMailListWarnsWithoutNamingTheList(t *testing.T) {
 		kind     string
 		status   int
 		body     string
-		call     func(*SkyMail) error
+		call     func(*SkyNotify) error
 		wantWarn bool
 	}{
 		{
@@ -142,7 +142,7 @@ func TestSkyMailListWarnsWithoutNamingTheList(t *testing.T) {
 			kind:   "list_recipient_add",
 			status: http.StatusUnprocessableEntity,
 			body:   `{"error":"recipient_invalid"}`,
-			call: func(m *SkyMail) error {
+			call: func(m *SkyNotify) error {
 				return m.AddRecipient(t.Context(), listID, ListRecipient{FullName: "Ada Lovelace", Email: testRecipient})
 			},
 			wantWarn: true,
@@ -151,14 +151,14 @@ func TestSkyMailListWarnsWithoutNamingTheList(t *testing.T) {
 			name:     "list read refused",
 			kind:     "list_read",
 			status:   http.StatusBadGateway,
-			call:     func(m *SkyMail) error { return m.GetList(t.Context(), listID) },
+			call:     func(m *SkyNotify) error { return m.GetList(t.Context(), listID) },
 			wantWarn: true,
 		},
 		{
 			name:   "missing list stays a typed answer",
 			kind:   "list_delete",
 			status: http.StatusNotFound,
-			call:   func(m *SkyMail) error { return m.DeleteList(t.Context(), listID) },
+			call:   func(m *SkyNotify) error { return m.DeleteList(t.Context(), listID) },
 		},
 	}
 	for _, tc := range cases {
@@ -171,7 +171,7 @@ func TestSkyMailListWarnsWithoutNamingTheList(t *testing.T) {
 			t.Cleanup(srv.Close)
 			logger, out := captureWarnings()
 
-			if err := tc.call(&SkyMail{BaseURL: srv.URL, Tokens: StaticToken(testAccessToken), HTTP: srv.Client(), Logger: logger}); err == nil {
+			if err := tc.call(&SkyNotify{BaseURL: srv.URL, Tokens: StaticToken(testAccessToken), HTTP: srv.Client(), Logger: logger}); err == nil {
 				t.Fatal("refused list call returned no error")
 			}
 			got := out.String()
@@ -186,7 +186,7 @@ func TestSkyMailListWarnsWithoutNamingTheList(t *testing.T) {
 				return
 			}
 			assertContainsAll(t, got, []string{
-				`"event":"skymail_call_failed"`,
+				`"event":"skynotify_call_failed"`,
 				`"kind":"` + tc.kind + `"`,
 				fmt.Sprintf(`"status":%d`, tc.status),
 			})

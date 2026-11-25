@@ -1,11 +1,11 @@
 # News audience
 
-Who a News send (duyuru, haber) goes to, decided by core for SkyMail
+Who a News send (duyuru, haber) goes to, decided by core for SkyNotify
 (ADR 0067 in `skylab-kulubu/e-skylab`; sky_lab_genel
-`.scratch/duyuru-haber`, bilet 03, SPEC §5.8). SkyMail asks with its
+`.scratch/duyuru-haber`, bilet 03, SPEC §5.8). SkyNotify asks with its
 service account, core answers the recipients with their Primary e-mail,
 the categories they entered through and each one's own unsubscribe link,
-so SkyMail never holds the link key and never resolves Keycloak Groups for
+so SkyNotify never holds the link key and never resolves Keycloak Groups for
 this itself.
 
 Code: `internal/commpref` (`Audience`, `audience.go`), the route
@@ -19,7 +19,7 @@ table.
 `POST /v1/audiences/resolve[?countOnly=true][&after=<userId>][&limit=1..500]`
 
 Only a **service account** token holding core's client role
-`audience:read` (`resource_access.core.roles`; SkyMail's, bilet 04) is
+`audience:read` (`resource_access.core.roles`; SkyNotify's, bilet 04) is
 served. A person's token is refused `403 audience_service_only` whatever it
 carries; a service account without the role `403 audience_role_missing`.
 `Cache-Control: no-store` on every answer.
@@ -106,7 +106,7 @@ error that names the variable.
 - `categoryLabel`: "Kulüp geneli · Duyurular", or the categories' teams
   named so, "WEBLAB · Web Geliştirme, AIRLAB · Haberler".
 - `allowedChannels`: the channels the person's preferences allow for this
-  send, what SkyMail passes on as `allowed_channels` to
+  send, what SkyNotify passes on as `allowed_channels` to
   `POST /v1/notifications` (iletişim-servisi 06). Core keeps preferences for
   `email` alone today and leaves out whoever turned it off (`optedOut`), so
   it is `["email"]`; a channel joins when core keeps its preferences. The
@@ -114,7 +114,7 @@ error that names the variable.
 - `counts.total` = `members` + `followers` = the number of recipients over
   all pages.
 - `?countOnly=true` answers `counts` and `skipped` only (no `items`, no
-  `next`, no address): the live count of SkyMail's form. Its numbers are the
+  `next`, no address): the live count of SkyNotify's form. Its numbers are the
   list's.
 
 ### Pages
@@ -129,7 +129,7 @@ two pages that straddle a new snapshot may be missed or left in, never
 sent twice. That holds for a **person**, not for an **address**: if two
 accounts share an address, the lower user id keeps it on one page, and a
 later page computed after that person turned the category off (or on a
-new snapshot) may answer the other account with the same address. SkyMail
+new snapshot) may answer the other account with the same address. SkyNotify
 checks the address too before sending a News send (bilet 06).
 
 ### Errors
@@ -231,9 +231,9 @@ and counted nowhere; Keycloak does not answer such records for real users.
 
 ## Personal data
 
-The answer carries addresses and names, to SkyMail's service account only.
+The answer carries addresses and names, to SkyNotify's service account only.
 Core logs one JSON line per request with counts and no person:
-`{"event":"news_audience","client":"skymail","type":"teams","teams":1,"kind":"duyuru","visibility":"","count_only":false,"page":12,"total":12,"members":10,"followers":2,"not_member":0,"not_visible":0,"disabled":1,"no_email":0,"unverified":0,"opted_out":3,"duplicate_email":0}`.
+`{"event":"news_audience","client":"skynotify","type":"teams","teams":1,"kind":"duyuru","visibility":"","count_only":false,"page":12,"total":12,"members":10,"followers":2,"not_member":0,"not_visible":0,"disabled":1,"no_email":0,"unverified":0,"opted_out":3,"duplicate_email":0}`.
 Keycloak errors name a status, never a person or a Group. The unsubscribe
 links are never logged (see their section).
 
@@ -242,7 +242,7 @@ links are never logged (see their section).
 The route checks a service account and the role, not which client it is:
 whoever Keycloak maps `audience:read` to may call it, as with
 `consent:audience:read`. The control is the role mapping (bilet 04: only
-SkyMail's service account). A check on the client id would add defence in
+SkyNotify's service account). A check on the client id would add defence in
 depth; it is not done.
 
 ## Settings
@@ -286,7 +286,7 @@ Deviations (all):
 
 1. **The audience service signs the unsubscribe links**, not the sender:
    in Mailchimp and Ghost the mail system itself holds the subscription
-   and the link. Here the preference lives in core (Karar D3) and SkyMail
+   and the link. Here the preference lives in core (Karar D3) and SkyNotify
    must not hold its key.
 2. **Default inheritance down the team tree** (Y1, D5, approved for the
    audience 2026-10-12): a team's member
@@ -316,12 +316,12 @@ Deviations (all):
 
 ## Recipients
 
-The second question SkyMail asks (ADR 0072 karar 3 in
+The second question SkyNotify asks (ADR 0072 karar 3 in
 `skylab-kulubu/e-skylab`; sky_lab_genel `.scratch/abonelik-cikisi`, bilet
 01): not "who gets this News send" but, for recipients **a sender chose**
 (a list, a Keycloak Group, a form's respondents, an approved send), which
 of them are a person core knows, whether the mail may go to each in one
-category, and each one's unsubscribe link. SkyMail asks it at its one
+category, and each one's unsubscribe link. SkyNotify asks it at its one
 check point, when it queues a duyuru-stream send and again in every
 dispatch round right before sending. The routes above, the one-click
 route and `tracking:resolve` do not change.
@@ -336,7 +336,7 @@ reads.
 `POST /internal/v1/audiences/recipients:resolve`
 
 The same caller as the audience route: a **service account** token with
-core's client role `audience:read` (SkyMail's, already mapped by
+core's client role `audience:read` (SkyNotify's, already mapped by
 e-skylab-keycloak's reconcile; nothing new in Keycloak). A person's token
 is `403 recipients_resolve_service_only` whatever it carries; a service
 account without the role `403 recipients_resolve_role_missing`. It is an
@@ -376,7 +376,7 @@ Answer, one result per recipient in the order asked:
 
 - `matched: false` (alone): no account holds the address as a verified
   address (below), or no account (that is no service account) has the
-  sub. SkyMail treats it as an address without an account: its own
+  sub. SkyNotify treats it as an address without an account: its own
   record and its own link (ADR 0072 karar 4).
 - `unsubscribeUrl` only when `allowed`: the person's link for exactly
   this category (`Service.UnsubscribeURL(sub, email, [category])`, the
@@ -394,7 +394,7 @@ Answer, one result per recipient in the order asked:
 | 403 | `recipients_resolve_role_missing` | a service account without `audience:read` |
 | 404 | (bare) | through the public edge |
 | 503 | `communication_preferences_unavailable` | no link key set (`COMMUNICATION_PREFERENCE_KEY` or a newer version): no link can be signed |
-| 503 | `recipients_resolve_directory_unavailable` (`Retry-After: 30`) | the verified-address directory was never read, or is older than 15 minutes and Keycloak does not answer; or Keycloak's Group list does not answer a team category. SkyMail then writes no send (fail closed, ADR 0072) |
+| 503 | `recipients_resolve_directory_unavailable` (`Retry-After: 30`) | the verified-address directory was never read, or is older than 15 minutes and Keycloak does not answer; or Keycloak's Group list does not answer a team category. SkyNotify then writes no send (fail closed, ADR 0072) |
 
 ### Matching: verified addresses (ADR-0044)
 
@@ -454,7 +454,7 @@ What differs from the audience route:
 | Who picks the people | core, from the team tree and the preferences | the sender |
 | A default off (not a Member, a team not followed, a hidden team) | left out | allowed |
 | Address | the Primary e-mail only | any verified address (Primary, YTÜ-linked School, proven Personal) |
-| Unknown address | — | `matched: false`, SkyMail's own record applies |
+| Unknown address | — | `matched: false`, SkyNotify's own record applies |
 | Link | the categories the person entered through | the one category asked |
 
 ### The verified-address directory
@@ -496,12 +496,12 @@ whole realm in bulk and keeps them in memory:
   not answer). Known lag (ADR 0072 deviation 1): an account opened, or an
   address verified, in that window counts as no account; a person who had
   turned the category off in core and whose newly verified address is on
-  an operator's list gets that mail, with SkyMail's own link, which does
+  an operator's list gets that mail, with SkyNotify's own link, which does
   not carry the core opt-out. A Keycloak disable lags as long.
 - **Personal data.** The directory holds addresses and subs in core's
   memory only; it is never written or logged. One JSON line per question,
   counts only:
-  `{"event":"recipients_resolve","client":"skymail","scope":"team","kind":"duyuru","asked":1000,"matched":12,"allowed":10,"inactive":1,"opted_out":1,"ambiguous":0}`.
+  `{"event":"recipients_resolve","client":"skynotify","scope":"team","kind":"duyuru","asked":1000,"matched":12,"allowed":10,"inactive":1,"opted_out":1,"ambiguous":0}`.
   No address, sub or link is logged; Keycloak errors name a status only.
 - **One line per directory read**, counts only, from the read itself (so
   a refresh that fails in the background is seen too):
