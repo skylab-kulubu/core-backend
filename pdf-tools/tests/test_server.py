@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import statistics
 import threading
@@ -162,3 +163,23 @@ def test_each_endpoint_under_500_ms(client):
         median = statistics.median(times)
         print(f"{name}: median {median:.0f} ms, max {max(times):.0f} ms")
         assert median < 500, name
+    print(f"worker peak memory: {_worker_peak_kib()} KiB")
+
+
+def _worker_peak_kib() -> str:
+    """The workers' peak resident memory (Linux; the workers are this
+    process's children)."""
+    if not os.path.isdir("/proc"):
+        return "n/a"
+    peaks = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/status") as f:
+                status = dict(line.split(":", 1) for line in f if ":" in line)
+        except OSError:
+            continue
+        if int(status.get("PPid", "0").strip()) == os.getpid() and "VmHWM" in status:
+            peaks.append(status["VmHWM"].strip())
+    return ", ".join(peaks) or "n/a"
