@@ -48,7 +48,7 @@ func (s *PostgresStore) ClaimMails(ctx context.Context, limit int, lease time.Du
 		FROM picked, certificates c
 		WHERE m.id = picked.id AND c.id = m.certificate_id
 		RETURNING m.id, m.certificate_id, m.event_id, m.reason, m.attempts, m.first_tried_at,
-			c.serial, c.recipient_name, c.recipient_email, c.event_name, c.owner_team, c.verify_url, c.revoked_at`,
+			c.serial, c.recipient_name, c.recipient_email, c.event_name, c.owner_team, c.verify_url, c.revoked_at, c.pdf_key`,
 		limit, lease.Seconds(), token)
 	if err != nil {
 		return nil, err
@@ -59,7 +59,7 @@ func (s *PostgresStore) ClaimMails(ctx context.Context, limit int, lease time.Du
 		m := Mail{Status: MailQueued, ClaimToken: token}
 		c := &m.Certificate
 		if err := rows.Scan(&m.ID, &m.CertificateID, &m.EventID, &m.Reason, &m.Attempts, &m.FirstTriedAt,
-			&c.Serial, &c.RecipientName, &c.RecipientEmail, &c.EventName, &c.OwnerTeam, &c.VerifyURL, &c.RevokedAt); err != nil {
+			&c.Serial, &c.RecipientName, &c.RecipientEmail, &c.EventName, &c.OwnerTeam, &c.VerifyURL, &c.RevokedAt, &c.PDFKey); err != nil {
 			return nil, err
 		}
 		c.ID, c.EventID = m.CertificateID, m.EventID

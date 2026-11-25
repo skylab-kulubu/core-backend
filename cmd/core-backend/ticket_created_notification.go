@@ -25,6 +25,13 @@ func ticketPDFAttachmentOn(getenv func(string) string) (bool, error) {
 	return onOff(getenv, "TICKET_PDF_ATTACHMENT")
 }
 
+// certificatePDFAttachmentOn reads CERTIFICATE_PDF_ATTACHMENT
+// (docs/certificate-mail.md, "PDF"): on, the certificate's PDF goes with its
+// queued mail; unset or off, the mail goes without it.
+func certificatePDFAttachmentOn(getenv func(string) string) (bool, error) {
+	return onOff(getenv, "CERTIFICATE_PDF_ATTACHMENT")
+}
+
 // ticketStatusMailOn reads TICKET_STATUS_MAIL (docs/event-capacity.md,
 // docs/ticket-status-mail.md): on, the waiting list's mails go ("Bekleme
 // listesindesin", "Yer açıldı") and the cancellation's ("Biletin iptal

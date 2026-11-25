@@ -8,7 +8,7 @@ The send time does not change: an automatically closed attendance (an hour after
 
 - **Issued.** The issuance job writes one `issued` row for the certificate before it completes the job. A job claimed again after a crash finds its certificate and writes the row again, which the unique index `certificate_mails_issued_key` turns into nothing: one issued mail per certificate.
 - **A row holds ids** (certificate, Event, who asked for a resend), never an address or a name. The worker reads the certificate's recipient when it sends; a certificate erased meanwhile takes its rows with it (`ON DELETE CASCADE`), one with no address fails as `no_recipient`.
-- **Worker** `certificate mail` (`certificate.MaintainMails`): every 5 seconds, up to 5 due rows per claim (`MailBatch`). A claim holds its rows for every send at its longest (a token request and two posts, 3 × 15 s each) plus a minute, and counts the try (`claimed_until`, `claim_token`); the first try's time is kept (`first_tried_at`). Before each send the worker renews that row's lease for one send; a row whose lease ran out meanwhile is skipped, not sent, and the next claim takes it. Each send runs under a 45-second deadline. Only the lease holder settles a row.
+- **Worker** `certificate mail` (`certificate.MaintainMails`): every 5 seconds, up to 5 due rows per claim (`MailBatch`). A claim holds its rows for every mail at its longest (reading its PDF, at most 10 s, then a token request and two posts, 3 × 15 s each) plus a minute, and counts the try (`claimed_until`, `claim_token`); the first try's time is kept (`first_tried_at`). Before each send the worker renews that row's lease for one send; a row whose lease ran out meanwhile is skipped, not sent, and the next claim takes it. Each send runs under a 45-second deadline (the PDF's read has its own 10 seconds before it). Only the lease holder settles a row.
 - **Idempotency.** Each row goes to SkyMail's `POST /v1/mail_tasks/single` under `Idempotency-Key: core-certificate-mail:<row id>`, the same on every try: SkyMail answers a repeat with its first answer (it keeps a key 72 hours), so a try that got no answer is tried again without mailing twice. The id fallback (a key SkyMail does not know, `SKYMAIL_CERTIFICATE_TEMPLATE_ID` set) goes under `<key>:id`.
 - **Outcome.**
 
@@ -20,6 +20,16 @@ The send time does not change: an automatically closed attendance (an hour after
 | first tried more than 48 hours ago (`MailKeyLimit`; a worker stopped for days) | `failed`, `expired`, not sent: SkyMail keeps a key 72 hours, a later try could mail twice |
 | no `SKYMAIL_URL`, no template | `failed`, `mail_unconfigured` |
 | the certificate was revoked meanwhile | `cancelled`, `revoked` (nothing is sent) |
+
+## PDF
+
+`CERTIFICATE_PDF_ATTACHMENT=on` (unset or `off`: off, the mail as before) sends the certificate's PDF with its mail, the queued `issued` mail and every resend alike, the way `TICKET_PDF_ATTACHMENT` sends the Ticket's (SkyMail README "Posta eki", ADR 0082).
+
+- **The file** is the issued PDF itself, read before each send from the artifact store (`certificates/<serial>.pdf`), or from its row for a certificate issued before the store, under 10 seconds (`MailPDFTimeout`). It goes as `SKY-LAB-sertifika-<serial>.pdf`, `application/pdf`: ASCII letters, digits and `-`, never the person's name.
+- **Retries** read the same bytes again and post them under the same Idempotency-Key. SkyMail keeps attachments out of the key's digest, so a try with the file and one without are the same mail: no `422`, no second mail.
+- **Bounds.** SkyMail takes at most 2 files, 512 KB decoded together (`mail.MaxAttachmentBytes`); base64 makes that about 683 KB of the request, far under Graph `sendMail`'s 4 MB. A template with a large background image can draw a PDF over it; that mail goes without the file (below).
+- **Never a lost mail.** The mail goes without the file, with its verify link (`VerifyURL`, where the PDF is downloaded), and its outcome is what SkyMail says to it, when: the PDF is over 512 KB (`too_large`), it cannot be read in time (`read_failed`), or SkyMail refuses the body with it (`400`/`422`, `refused`; it is posted again at once without the file, under the same key, which a refused request leaves free). Each writes a `WARN certificate mail <row id>` line and counts `core_certificate_mail_pdf_skipped_total{reason="…"}`; a sent file counts `core_certificate_mail_pdf_attached_total` (`/v1/metrics`).
+- **Off,** or a Mailer that takes no files, the body is what it was: no `attachments` field.
 
 ## Resend
 
