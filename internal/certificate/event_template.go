@@ -215,8 +215,10 @@ func (s *service) CreateEventTemplate(ctx context.Context, p authz.Principal, ev
 		return Template{}, err
 	}
 	// The copy links the source's Media as they are: a Media may have
-	// several links.
-	if err := s.checkLayoutMedia(ctx, start.DraftLayout, Layout{}, ev.OwnerTeam); err != nil {
+	// several links. Its fonts are the source's: one archived since, or of
+	// a team the source's version was published for, stays as in the
+	// source (it prints from the copy's own version later).
+	if err := s.checkLayoutMedia(ctx, start.DraftLayout, Layout{}, start.DraftLayout, ev.OwnerTeam); err != nil {
 		return Template{}, err
 	}
 	created, err := s.templates.CreateTemplate(ctx, Template{

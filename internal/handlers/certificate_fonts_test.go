@@ -23,10 +23,12 @@ type fontService struct {
 	existing uuid.UUID
 	input    certificate.FontInput
 	team     string
+	template *uuid.UUID
 }
 
-func (s *fontService) ListFonts(_ context.Context, _ authz.Principal, team string) ([]certificate.Font, error) {
+func (s *fontService) ListFonts(_ context.Context, _ authz.Principal, team string, template *uuid.UUID) ([]certificate.Font, error) {
 	s.team = team
+	s.template = template
 	return []certificate.Font{{ID: s.existing, OwnerTeam: "ARTLAB", Family: "Brandon Grotesque", Weight: 700, Style: "normal", MissingTurkish: "ğı"}}, nil
 }
 
@@ -97,6 +99,13 @@ func TestCertificateFontsHTTP(t *testing.T) {
 	var listed []certificate.Font
 	if status != fiber.StatusOK || json.Unmarshal(raw, &listed) != nil || len(listed) != 1 || listed[0].MissingTurkish != "ğı" || svc.team != "artlab" {
 		t.Fatalf("list: %d %s", status, raw)
+	}
+	template := uuid.New()
+	if status, _, _, _ := call(fiber.MethodGet, "/v1/certificate-fonts?template="+template.String(), ""); status != fiber.StatusOK || svc.template == nil || *svc.template != template {
+		t.Fatalf("list by template: %d %v", status, svc.template)
+	}
+	if status, _, _, _ := call(fiber.MethodGet, "/v1/certificate-fonts?template=nope", ""); status != fiber.StatusBadRequest {
+		t.Fatalf("bad template: %d", status)
 	}
 	media := uuid.New()
 	status, created, _, _ := call(fiber.MethodPost, "/v1/certificate-fonts", `{"mediaId":"`+media.String()+`","ownerTeam":"WEBLAB"}`)

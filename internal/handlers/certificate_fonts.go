@@ -1,7 +1,10 @@
 package handlers
 
 import (
+	"strings"
+
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 )
 
@@ -12,13 +15,23 @@ const fontCacheControl = "private, max-age=86400"
 
 // ListFonts answers GET /v1/certificate-fonts?team={code}: the current
 // certificate fonts of the team and the club the caller may use
-// (docs/certificate-fonts.md); without team, the club's.
+// (docs/certificate-fonts.md); without team, the club's. With
+// ?template={id}, that template's editor's list: its team's and the club's,
+// and the fonts its draft keeps (draftOnly).
 func (h *CertificateHandler) ListFonts(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
 		return certError(c, err)
 	}
-	fonts, err := h.svc.ListFonts(c.Context(), p, c.Query("team"))
+	var templateID *uuid.UUID
+	if raw := strings.TrimSpace(c.Query("template")); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return certError(c, certificate.ErrInvalid)
+		}
+		templateID = &id
+	}
+	fonts, err := h.svc.ListFonts(c.Context(), p, c.Query("team"), templateID)
 	if err != nil {
 		return certError(c, err)
 	}

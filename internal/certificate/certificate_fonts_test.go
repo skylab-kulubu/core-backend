@@ -420,7 +420,7 @@ func TestFontUseRules(t *testing.T) {
 		}
 		return true
 	}
-	listed, err := f.service.ListFonts(ctx, fontsGecekoduMember, "gecekodu")
+	listed, err := f.service.ListFonts(ctx, fontsGecekoduMember, "gecekodu", nil)
 	if err != nil || !same(ids(listed), []uuid.UUID{club.ID, gece.ID}) {
 		t.Fatalf("GECEKODU member: %v %v", ids(listed), err)
 	}
@@ -433,16 +433,16 @@ func TestFontUseRules(t *testing.T) {
 	if _, err := f.service.FontFile(ctx, fontsGecekoduMember, art.ID); !errors.Is(err, certificate.ErrNotFound) {
 		t.Fatalf("GECEKODU member, ARTLAB file: %v", err)
 	}
-	if _, err := f.service.ListFonts(ctx, fontsGecekoduMember, "ARTLAB"); !errors.Is(err, certificate.ErrForbidden) {
+	if _, err := f.service.ListFonts(ctx, fontsGecekoduMember, "ARTLAB", nil); !errors.Is(err, certificate.ErrForbidden) {
 		t.Fatalf("GECEKODU member, ARTLAB list: %v", err)
 	}
-	if listed, err := f.service.ListFonts(ctx, fontsGecekoduMember, ""); err != nil || !same(ids(listed), []uuid.UUID{club.ID}) {
+	if listed, err := f.service.ListFonts(ctx, fontsGecekoduMember, "", nil); err != nil || !same(ids(listed), []uuid.UUID{club.ID}) {
 		t.Fatalf("GECEKODU member, the club's alone: %v %v", ids(listed), err)
 	}
-	if listed, err := f.service.ListFonts(ctx, fontsArtlabLeader, "ARTLAB"); err != nil || !same(ids(listed), []uuid.UUID{club.ID, art.ID}) {
+	if listed, err := f.service.ListFonts(ctx, fontsArtlabLeader, "ARTLAB", nil); err != nil || !same(ids(listed), []uuid.UUID{club.ID, art.ID}) {
 		t.Fatalf("ARTLAB Leader: %v %v", ids(listed), err)
 	}
-	if _, err := f.service.ListFonts(ctx, fontsArtlabMember, "ARTLAB"); !errors.Is(err, certificate.ErrForbidden) {
+	if _, err := f.service.ListFonts(ctx, fontsArtlabMember, "ARTLAB", nil); !errors.Is(err, certificate.ErrForbidden) {
 		t.Fatalf("ARTLAB member without a role: %v", err)
 	}
 	if _, err := f.service.FontFile(ctx, fontsArtlabMember, art.ID); !errors.Is(err, certificate.ErrNotFound) {
@@ -464,7 +464,7 @@ func TestFontUseRules(t *testing.T) {
 	if err := f.service.ArchiveFont(ctx, fontsArtlabLeader, art.ID); err != nil {
 		t.Fatalf("again: %v", err)
 	}
-	if listed, _ := f.service.ListFonts(ctx, fontsArtlabLeader, "ARTLAB"); !same(ids(listed), []uuid.UUID{club.ID}) {
+	if listed, _ := f.service.ListFonts(ctx, fontsArtlabLeader, "ARTLAB", nil); !same(ids(listed), []uuid.UUID{club.ID}) {
 		t.Fatalf("after archive: %v", ids(listed))
 	}
 	if _, err := f.service.FontFile(ctx, fontsArtlabLeader, art.ID); err != nil {
@@ -552,14 +552,17 @@ func TestLayoutHTMLEmbedsCertificateFonts(t *testing.T) {
 	f := newFontCertificates(t, newFontTools())
 	used := f.seed(t, "ARTLAB", "Art Serif", 400, certificate.FontStyleNormal)
 	unused := f.seed(t, "ARTLAB", "Art Sans", 400, certificate.FontStyleNormal)
-	layout := fontLayout(used.MediaID)
+	// Two elements in the font, at two weights: one face.
+	layout := fontLayout(used.MediaID, used.MediaID)
 	layout.Elements[2].FontStyle = certificate.FontStyleItalic
+	layout.Elements[3].FontStyle = certificate.FontStyleItalic
+	layout.Elements[3].FontWeight = 700
 	item, err := f.service.CreateTemplate(ctx, fontsArtlabLeader, certificate.TemplateDraft{Name: "ARTLAB", OwnerTeam: "ARTLAB", SourceKind: "sky", Layout: layout})
 	if err != nil {
 		t.Fatal(err)
 	}
 	family := "cf-" + used.MediaID.String()
-	face := `@font-face{font-family:'` + family + `';font-style:italic;font-weight:400;src:url(data:font/woff2;base64,` +
+	face := `@font-face{font-family:'` + family + `';font-style:italic;font-weight:1 1000;src:url(data:font/woff2;base64,` +
 		base64.StdEncoding.EncodeToString(checkedWOFF2("Art Serif")) + `) format('woff2')}`
 	check := func(label string) {
 		t.Helper()
@@ -669,5 +672,111 @@ func TestConversionUsesTheTeamsFonts(t *testing.T) {
 	// Someone who may not edit the template gets nothing of it.
 	if _, err := f.service.AssetText(ctx, fontsGecekoduMember, original.ID, &item.ID); err == nil {
 		t.Fatal("another team's template")
+	}
+}
+
+// An Event template copies a published template whose font was archived
+// since: it is created (201), the font kept as in the source.
+func TestEventTemplateKeepsTheSourcesArchivedFont(t *testing.T) {
+	ctx := context.Background()
+	f := newFontCertificates(t, newFontTools())
+	gece := f.seed(t, "GECEKODU", "Gece Sans", 400, certificate.FontStyleNormal)
+	leader := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU/LIDERLER"}}
+	item, err := f.service.CreateTemplate(ctx, leader, certificate.TemplateDraft{Name: "GECEKODU", OwnerTeam: "GECEKODU", SourceKind: "sky", Layout: fontLayout(gece.MediaID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.PublishTemplate(ctx, leader, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.ArchiveFont(ctx, leader, gece.ID); err != nil {
+		t.Fatal(err)
+	}
+	own, err := f.service.CreateEventTemplate(ctx, fontsGecekoduMember, f.gecekodu.ID, certificate.EventTemplateInput{From: item.ID.String()})
+	if err != nil {
+		t.Fatalf("Event template from the source: %v", err)
+	}
+	if got := own.DraftLayout.Elements[2].FontMediaID; got == nil || *got != gece.MediaID {
+		t.Fatalf("font: %+v", own.DraftLayout.Elements[2])
+	}
+	// Its draft saves as it is; its editor's list marks the archived font.
+	if _, err := f.service.UpdateTemplate(ctx, fontsGecekoduMember, own.ID, certificate.TemplateDraft{Name: own.Name, SourceKind: own.SourceKind, Layout: own.DraftLayout}); err != nil {
+		t.Fatalf("save the copy: %v", err)
+	}
+	listed, err := f.service.ListFonts(ctx, fontsGecekoduMember, "", &own.ID)
+	if err != nil || len(listed) != 1 || listed[0].ID != gece.ID || !listed[0].DraftOnly {
+		t.Fatalf("list: %+v %v", listed, err)
+	}
+}
+
+// A font's file, or a font upload, is no background and no image: refused
+// when the draft is saved (asset_type_unsupported).
+func TestFontMediaIsNoBackgroundNorImage(t *testing.T) {
+	ctx := context.Background()
+	f := newFontCertificates(t, newFontTools())
+	checked := f.seed(t, "ARTLAB", "Art Serif", 400, certificate.FontStyleNormal)
+	raw := f.upload(t, fontsArtlabLeader, "raw")
+	for name, id := range map[string]uuid.UUID{"checked file": checked.MediaID, "upload": raw} {
+		id := id
+		background := fontLayout()
+		background.BackgroundMediaID = &id
+		_, err := f.service.CreateTemplate(ctx, fontsArtlabLeader, certificate.TemplateDraft{Name: "A", OwnerTeam: "ARTLAB", SourceKind: "sky", Layout: background})
+		refusedWith(t, err, certificate.CodeAssetTypeUnsupported)
+		image := fontLayout()
+		image.Elements = append(image.Elements, certificate.Element{ID: "logo", Kind: "image", MediaID: &id, X: 10, Y: 10, Width: 100, Height: 100})
+		_, err = f.service.CreateTemplate(ctx, fontsArtlabLeader, certificate.TemplateDraft{Name: "A", OwnerTeam: "ARTLAB", SourceKind: "sky", Layout: image})
+		if err == nil {
+			t.Fatalf("%s as an image", name)
+		}
+		refusedWith(t, err, certificate.CodeAssetTypeUnsupported)
+	}
+}
+
+// A template's editor lists its team's and the club's fonts, and those its
+// draft keeps (an archived one, another team's) marked draftOnly; someone
+// who may not edit it gets nothing. Who may read a template that uses a
+// font reads its file, whatever team the font is.
+func TestTemplateFontsList(t *testing.T) {
+	ctx := context.Background()
+	f := newFontCertificates(t, newFontTools())
+	art := f.seed(t, "ARTLAB", "Art Serif", 400, certificate.FontStyleNormal)
+	gone := f.seed(t, "ARTLAB", "Art Sans", 400, certificate.FontStyleNormal)
+	club := f.seed(t, "", "Kulüp", 400, certificate.FontStyleNormal)
+	gece := f.seed(t, "GECEKODU", "Gece Sans", 400, certificate.FontStyleNormal)
+	item, err := f.service.CreateTemplate(ctx, fontsArtlabLeader, certificate.TemplateDraft{Name: "ARTLAB", OwnerTeam: "ARTLAB", SourceKind: "sky", Layout: fontLayout(gone.MediaID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.ArchiveFont(ctx, fontsArtlabLeader, gone.ID); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := f.service.ListFonts(ctx, fontsArtlabLeader, "", &item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[uuid.UUID]bool{}
+	for _, font := range listed {
+		got[font.ID] = font.DraftOnly
+	}
+	if len(got) != 3 || got[art.ID] || got[club.ID] || !got[gone.ID] {
+		t.Fatalf("list: %+v", listed)
+	}
+	if _, ok := got[gece.ID]; ok {
+		t.Fatal("another team's font offered")
+	}
+	if _, err := f.service.ListFonts(ctx, fontsGecekoduMember, "", &item.ID); err == nil {
+		t.Fatal("someone who may not edit the template")
+	}
+	// GECEKODU reads no ARTLAB font, but a GECEKODU template that uses one
+	// (a copy whose team changed) lets its readers load it.
+	if _, err := f.service.FontFile(ctx, fontsGecekoduMember, art.ID); !errors.Is(err, certificate.ErrNotFound) {
+		t.Fatalf("before: %v", err)
+	}
+	if _, err := f.store.CreateTemplate(ctx, certificate.Template{ID: uuid.New(), Name: "GECEKODU", OwnerTeam: "GECEKODU", SourceKind: "sky", DraftLayout: fontLayout(art.MediaID)}); err != nil {
+		t.Fatal(err)
+	}
+	leader := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU/LIDERLER"}}
+	if _, err := f.service.FontFile(ctx, leader, art.ID); err != nil {
+		t.Fatalf("a template that uses it: %v", err)
 	}
 }

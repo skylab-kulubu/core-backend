@@ -35,6 +35,10 @@ type Font struct {
 	UploadedBy     *uuid.UUID `json:"uploadedBy,omitempty"`
 	CreatedAt      time.Time  `json:"createdAt"`
 	ArchivedAt     *time.Time `json:"archivedAt,omitempty"`
+	// DraftOnly marks, in a template's list (ListFonts with a template), a
+	// font its draft uses that no new element may take: an archived one,
+	// or another team's (a copy's). The editor shows and keeps it.
+	DraftOnly bool `json:"draftOnly,omitempty"`
 }
 
 // FontInput adds a certificate font (POST /v1/certificate-fonts): the
@@ -137,9 +141,12 @@ func (s *service) mayUseFonts(p authz.Principal, team string) bool {
 		s.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: team}, authz.Update)
 }
 
-func (s *service) ListFonts(ctx context.Context, p authz.Principal, team string) ([]Font, error) {
+func (s *service) ListFonts(ctx context.Context, p authz.Principal, team string, templateID *uuid.UUID) ([]Font, error) {
 	if s.fonts == nil {
 		return nil, ErrInvalid
+	}
+	if templateID != nil {
+		return s.templateFonts(ctx, p, *templateID)
 	}
 	team = normalizeTeam(team)
 	teams := []string{}
@@ -156,6 +163,48 @@ func (s *service) ListFonts(ctx context.Context, p authz.Principal, team string)
 		return nil, ErrForbidden
 	}
 	return s.fonts.ListFonts(ctx, teams)
+}
+
+// templateFonts is the font list of a template's editor (who may edit it,
+// a Co-organizer included): the current fonts of its team and the club's,
+// then the fonts its draft uses that are none of those (DraftOnly).
+func (s *service) templateFonts(ctx context.Context, p authz.Principal, id uuid.UUID) ([]Font, error) {
+	if s.templates == nil {
+		return nil, ErrInvalid
+	}
+	item, err := s.templates.GetTemplate(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.allowTemplate(ctx, p, item, authz.Update); err != nil {
+		return nil, err
+	}
+	teams := []string{""}
+	if team := normalizeTeam(item.OwnerTeam); team != "" {
+		teams = append([]string{team}, teams...)
+	}
+	current, err := s.fonts.ListFonts(ctx, teams)
+	if err != nil {
+		return nil, err
+	}
+	var others []uuid.UUID
+	for _, id := range layoutFontIDs(item.DraftLayout) {
+		if !slices.ContainsFunc(current, func(f Font) bool { return f.MediaID == id }) {
+			others = append(others, id)
+		}
+	}
+	if len(others) == 0 {
+		return current, nil
+	}
+	used, err := s.fonts.FontsByMedia(ctx, others)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range used {
+		f.DraftOnly = true
+		current = append(current, f)
+	}
+	return current, nil
 }
 
 func (s *service) CreateFont(ctx context.Context, p authz.Principal, in FontInput) (Font, error) {
@@ -303,13 +352,43 @@ func (s *service) FontFile(ctx context.Context, p authz.Principal, id uuid.UUID)
 		return FontFile{}, err
 	}
 	if !s.mayUseFonts(p, font.OwnerTeam) {
-		return FontFile{}, ErrNotFound
+		readable, err := s.readsTemplateUsing(ctx, p, font.MediaID)
+		if err != nil {
+			return FontFile{}, err
+		}
+		if !readable {
+			return FontFile{}, ErrNotFound
+		}
 	}
 	data, err := readFontFile(ctx, s.decrypted(s.assets), font.MediaID)
 	if err != nil {
 		return FontFile{}, err
 	}
 	return FontFile{Data: data}, nil
+}
+
+// readsTemplateUsing is whether p may read a current template whose draft
+// or a published version uses the Media: the editor of a copy that kept
+// another team's font, or a Co-organizer, loads the font it prints in.
+func (s *service) readsTemplateUsing(ctx context.Context, p authz.Principal, mediaID uuid.UUID) (bool, error) {
+	using, ok := s.templates.(templatesUsingMedia)
+	if !ok {
+		return false, nil
+	}
+	items, err := using.TemplatesUsingMedia(ctx, mediaID)
+	if err != nil {
+		return false, err
+	}
+	for _, item := range items {
+		switch err := s.allowTemplate(ctx, p, item, authz.Read); {
+		case err == nil:
+			return true, nil
+		case errors.Is(err, ErrForbidden), errors.Is(err, ErrNotFound):
+		default:
+			return false, err
+		}
+	}
+	return false, nil
 }
 
 func (s *service) ArchiveFont(ctx context.Context, p authz.Principal, id uuid.UUID) error {
@@ -369,9 +448,11 @@ type fontFace struct {
 }
 
 // uploadedFontFace is the @font-face of the certificate font an element
-// uses, at the element's weight and style: the face is the file itself, so
-// the browser never makes a bolder or slanted copy of it. files keeps the
-// data URIs read so far (one read a file).
+// uses: one for the file (and the element's style), whatever the elements'
+// weights. It claims every weight (font-weight:1 1000), so the file itself
+// draws each, and the browser never makes a bolder copy of it; the style is
+// the element's, so it never slants it either. files keeps the data URIs
+// read so far (one read a file).
 func uploadedFontFace(ctx context.Context, assets AssetReader, mediaID uuid.UUID, el Element, files map[uuid.UUID]string) (fontFace, error) {
 	uri, ok := files[mediaID]
 	if !ok {
@@ -382,19 +463,14 @@ func uploadedFontFace(ctx context.Context, assets AssetReader, mediaID uuid.UUID
 		uri = "data:font/woff2;base64," + base64.StdEncoding.EncodeToString(data)
 		files[mediaID] = uri
 	}
-	weight := el.FontWeight
-	if weight == 0 {
-		weight = 400
-	}
 	style := FontStyleNormal
 	if el.FontStyle == FontStyleItalic {
 		style = FontStyleItalic
 	}
 	family := uploadedFontFamily(mediaID)
 	return fontFace{
-		key: family + "|" + strconv.Itoa(weight) + "|" + style,
-		css: `@font-face{font-family:'` + family + `';font-style:` + style + `;font-weight:` + strconv.Itoa(weight) +
-			`;src:url(` + uri + `) format('woff2')}`,
+		key: family + "|" + style,
+		css: `@font-face{font-family:'` + family + `';font-style:` + style + `;font-weight:1 1000;src:url(` + uri + `) format('woff2')}`,
 	}, nil
 }
 

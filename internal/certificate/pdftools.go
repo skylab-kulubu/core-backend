@@ -240,6 +240,10 @@ func (c *PDFToolsClient) post(ctx context.Context, path string, form []byte, con
 		return nil, c.busyWait(resp.Header.Get("Retry-After")), pdfToolsUnavailable(fmt.Errorf("pdf-tools: HTTP %d", resp.StatusCode))
 	case resp.StatusCode >= 500:
 		return nil, 0, pdfToolsUnavailable(fmt.Errorf("pdf-tools: HTTP %d", resp.StatusCode))
+	case resp.StatusCode == http.StatusNotFound:
+		// No such route: a pdf-tools older than the call (its image not yet
+		// the one with /v1/font/sanitize), not the input's fault.
+		return nil, 0, pdfToolsUnavailable(fmt.Errorf("pdf-tools: HTTP %d on %s", resp.StatusCode, path))
 	case resp.StatusCode >= 400:
 		return nil, 0, pdfToolsRefusal(body)
 	case resp.StatusCode != http.StatusOK || len(body) == 0 || len(body) > limit:

@@ -137,7 +137,9 @@ type Service interface {
 	ConvertAssetText(ctx context.Context, p authz.Principal, id uuid.UUID, req TextConversionRequest) (TextConversion, error)
 	// ListFonts, CreateFont, FontFile and ArchiveFont are the teams' and
 	// the club's certificate fonts (docs/certificate-fonts.md).
-	ListFonts(ctx context.Context, p authz.Principal, team string) ([]Font, error)
+	// ListFonts with templateID is that template's editor's list (team,
+	// club, and the fonts its draft keeps); else team's and the club's.
+	ListFonts(ctx context.Context, p authz.Principal, team string, templateID *uuid.UUID) ([]Font, error)
 	CreateFont(ctx context.Context, p authz.Principal, in FontInput) (Font, error)
 	FontFile(ctx context.Context, p authz.Principal, id uuid.UUID) (FontFile, error)
 	ArchiveFont(ctx context.Context, p authz.Principal, id uuid.UUID) error

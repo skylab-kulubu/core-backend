@@ -85,7 +85,7 @@ func TestPostgresCertificateFonts(t *testing.T) {
 	if s, expires := status(font.MediaID); s != media.StatusAttached || expires {
 		t.Fatalf("checked file: %s, expires %v", s, expires)
 	}
-	if listed, err := service.ListFonts(ctx, leader, "ARTLAB"); err != nil || len(listed) != 1 || listed[0].ID != font.ID || listed[0].MissingTurkish != "ğı" {
+	if listed, err := service.ListFonts(ctx, leader, "ARTLAB", nil); err != nil || len(listed) != 1 || listed[0].ID != font.ID || listed[0].MissingTurkish != "ğı" {
 		t.Fatalf("list: %+v %v", listed, err)
 	}
 
@@ -115,7 +115,7 @@ func TestPostgresCertificateFonts(t *testing.T) {
 	if err := service.ArchiveFont(ctx, leader, font.ID); err != nil {
 		t.Fatal(err)
 	}
-	if listed, err := service.ListFonts(ctx, leader, "ARTLAB"); err != nil || len(listed) != 0 {
+	if listed, err := service.ListFonts(ctx, leader, "ARTLAB", nil); err != nil || len(listed) != 0 {
 		t.Fatalf("list after archive: %+v %v", listed, err)
 	}
 	if s, _ := status(font.MediaID); s != media.StatusAttached {

@@ -216,6 +216,13 @@ func TestPDFToolsClientUnavailable(t *testing.T) {
 		_, err := contract.client(t).Render(context.Background(), onePagePDF(), 2000)
 		assertPDFToolsUnavailable(t, err)
 	})
+	t.Run("a pdf-tools without the route", func(t *testing.T) {
+		t.Parallel()
+		// An image older than /v1/font/sanitize answers 404: pdf-tools'
+		// side, not the font's.
+		_, err := (&pdfToolsContract{pages: 1}).client(t).SanitizeFont(context.Background(), []byte("OTTO font"))
+		assertPDFToolsUnavailable(t, err)
+	})
 	t.Run("unreachable", func(t *testing.T) {
 		t.Parallel()
 		srv := (&pdfToolsContract{}).server(t)

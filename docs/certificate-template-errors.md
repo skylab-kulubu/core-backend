@@ -28,7 +28,7 @@ A layout needs the recipient's name (`recipientName`) and at least one of the ve
 | `background_size_unknown` | An image background with a placement whose natural size core cannot read (PNG, JPEG, GIF, WebP, or an SVG with a `width` and `height` in px, pt, pc, mm, cm or in, or a `viewBox`), or a side under 0.001 px. |
 | `asset_empty` | A background or image Media has no bytes. |
 | `asset_too_large` | An image over 20 MB, or a template's assets over 50 MB together. |
-| `asset_type_unsupported` | A background that is neither an image nor a PDF, or an image element that is not an image. |
+| `asset_type_unsupported` | A background that is neither an image nor a PDF, or an image element that is not an image; when the draft is saved, a background, its original or an image that is a certificate font's file or a font upload ([certificate-fonts.md](certificate-fonts.md)). |
 | `asset_storage_unavailable` | Core runs without the storage the assets are copied to. |
 | `background_pdf_unreadable` | A PDF background that is not a PDF the renderer can read. |
 | `background_pdf_too_large` | A PDF background over 20 MB. |
@@ -38,7 +38,7 @@ A layout needs the recipient's name (`recipientName`) and at least one of the ve
 | `background_text_strip_failed` | pdf-tools could not remove the chosen text from the PDF (its `strip_incomplete`): the PDF was not changed. |
 | `background_pdf_no_text` | A text conversion of a PDF that has no text at all: its text was turned into outlines (Canva's and Illustrator's outline export) or it is a picture. The text list says which (`textMissing`). |
 | `renderer_unavailable` | `503`: core runs without its PDF renderer (Gotenberg), cannot reach it, or it failed on its side (5xx). A later try may pass; an issuance job tries again, at most five times. |
-| `pdf_tools_unavailable` | `503`: core runs without pdf-tools (`PDF_TOOLS_URL` unset), cannot reach it, it failed on its side (5xx), or it answered something that is not what it should (no PDF, no PNG). A later try may pass. A busy pdf-tools (503) gets one more try a moment later, then this. Only a placed PDF background and the asset routes of a PDF need pdf-tools; issuance never calls it. |
+| `pdf_tools_unavailable` | `503`: core runs without pdf-tools (`PDF_TOOLS_URL` unset), cannot reach it, it failed on its side (5xx), or it answered something that is not what it should (no PDF, no PNG, no WOFF2), or `404` for a route it does not have (an image older than the call). A later try may pass. A busy pdf-tools (503) gets one more try a moment later, then this. Only a placed PDF background and the asset routes of a PDF need pdf-tools; issuance never calls it. |
 | `render_failed` | The renderer refused the page (4xx) or answered no PDF. |
 | `template_event_scoped` | An Event template bound to a team, the club or another Event (`PUT /v1/certificate-template-bindings`); it serves its own Event only ([certificate-event-templates.md](certificate-event-templates.md)). |
 | `template_event_exists` | `409`: the Event has an Event template already (`POST /v1/events/{eventId}/certificate-template`). The answer's `templateId` is the current one, which the panel opens instead. |
@@ -47,7 +47,7 @@ A layout needs the recipient's name (`recipientName`) and at least one of the ve
 | `font_unsupported` | A variable font (`fvar`) or a font collection (TTC): one static face per file. |
 | `font_embedding_restricted` | A font whose embedding permission (OS/2 `fsType`) is Restricted License. |
 | `font_exists` | `409`: the team (or the club) has a current font of that family (in any case), weight and style. The answer's `fontId` is that font. |
-| `layout_font_out_of_scope` | A text element's `fontMediaId` is not a current certificate font of the template's team or the club's (an Event template: its Event's team), newly linked: another team's, an archived one, or a Media that is no font. A font the draft had already stays. |
+| `layout_font_out_of_scope` | A text element's `fontMediaId` is not a current certificate font of the template's team or the club's (an Event template: its Event's team), newly linked: another team's, an archived one, or a Media that is no font. A font the draft had already stays, and so does one a new Event template copies from its source. |
 
 ## Fonts
 
@@ -55,7 +55,7 @@ An element's `fontFamily` is one of the renderer's fonts (Arial, Helvetica, Carl
 
 A catalog font used by the layout's text is embedded in the page it prints (`@font-face`, WOFF2 data URIs, Google Fonts' latin and latin-ext subsets, which hold every Turkish letter); a font the layout does not use is not. Each has 400 and 700 and an italic 400; Great Vibes and Dancing Script have 400 alone. The files and each family's `OFL.txt` are in `internal/certificate/fonts/`.
 
-A certificate font a team or the club uploaded ([certificate-fonts.md](certificate-fonts.md)) is named by the element's `fontMediaId` (its checked WOFF2); `fontFamily` stays its name. The page embeds it as `@font-face{font-family:'cf-<mediaId>';font-style:<the element's>;font-weight:<the element's>;src:url(data:font/woff2;base64,…)}` and sets the element in `'cf-<mediaId>',` followed by `fontFamily`'s stack, so a letter the font lacks prints in the fallback. A `fontMediaId` on an image, a shape or the QR, or the zero id, is `layout_element_style_invalid`. A font no element uses is not on the page; a published version copies the file like an image (it counts toward the 50 MB).
+A certificate font a team or the club uploaded ([certificate-fonts.md](certificate-fonts.md)) is named by the element's `fontMediaId` (its checked WOFF2); `fontFamily` stays its name. The page embeds it once a file (and a style) as `@font-face{font-family:'cf-<mediaId>';font-style:<the element's>;font-weight:1 1000;src:url(data:font/woff2;base64,…)}` and sets the element in `'cf-<mediaId>',` followed by `fontFamily`'s stack, so a letter the font lacks prints in the fallback. A `fontMediaId` on an image, a shape or the QR, or the zero id, is `layout_element_style_invalid`. A font no element uses is not on the page; a published version copies the file like an image (it counts toward the 50 MB).
 
 A page with an embedded font fits its text (shrink-to-fit, the Owner team's short code) once the fonts are in (`document.fonts.ready`) and then sets `window.__certFitDone`; core asks Gotenberg to print it once `window.__certFitDone === true` (`waitForExpression`). Gotenberg checks every 100 ms until the request times out, which answers `503 renderer_unavailable` (tried again); the flag is set even when fitting fails. A page without embedded fonts is posted as before, with no wait.
 
