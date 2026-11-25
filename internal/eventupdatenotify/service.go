@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -55,6 +56,10 @@ type Queued struct {
 	BeforeStart    *time.Time
 	BeforeEnd      *time.Time
 	BeforeLocation string
+	// ToldFields are the fields (event.FieldStart, FieldEnd, FieldLocation)
+	// the changes the editor said to tell changed; only those are
+	// announced. Nil is a row an older release queued: all three.
+	ToldFields []string
 	// CreatedAt is the first change's time.
 	CreatedAt time.Time
 	Attempts  int
@@ -291,10 +296,16 @@ func (s *Service) event(ctx context.Context, claimed Queued) (event.Event, bool,
 }
 
 // changed says whether the Event's time (start or end) and its place are not
-// what they were before the first change.
+// what they were before the first change, counting only the fields the
+// editor said to tell (Queued.ToldFields): a change saved without telling
+// is not announced (docs/event-updated-notification.md#the-editors-choice).
 func changed(ev event.Event, claimed Queued) (timeChanged, placeChanged bool) {
-	timeChanged = !sameTime(ev.StartDate, claimed.BeforeStart) || !sameTime(ev.EndDate, claimed.BeforeEnd)
-	placeChanged = strings.TrimSpace(ev.Location) != strings.TrimSpace(claimed.BeforeLocation)
+	told := func(field string) bool {
+		return claimed.ToldFields == nil || slices.Contains(claimed.ToldFields, field)
+	}
+	timeChanged = (told(event.FieldStart) && !sameTime(ev.StartDate, claimed.BeforeStart)) ||
+		(told(event.FieldEnd) && !sameTime(ev.EndDate, claimed.BeforeEnd))
+	placeChanged = told(event.FieldLocation) && strings.TrimSpace(ev.Location) != strings.TrimSpace(claimed.BeforeLocation)
 	return timeChanged, placeChanged
 }
 

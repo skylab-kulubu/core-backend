@@ -210,7 +210,7 @@ func (s *service) CreateEventTemplate(ctx context.Context, p authz.Principal, ev
 	} else if !errors.Is(err, ErrNotFound) {
 		return Template{}, err
 	}
-	start, err := s.eventTemplateStart(ctx, ev, in.From)
+	start, err := s.eventTemplateStart(ctx, p, ev, in.From)
 	if err != nil {
 		return Template{}, err
 	}
@@ -234,8 +234,8 @@ func (s *service) CreateEventTemplate(ctx context.Context, p authz.Principal, ev
 }
 
 // eventTemplateStart is the source and draft layout a new Event template of
-// ev starts with (EventTemplateInput.From).
-func (s *service) eventTemplateStart(ctx context.Context, ev event.Event, from string) (Template, error) {
+// ev starts with (EventTemplateInput.From), as p may see the source.
+func (s *service) eventTemplateStart(ctx context.Context, p authz.Principal, ev event.Event, from string) (Template, error) {
 	switch strings.TrimSpace(from) {
 	case EventTemplateFromBlank:
 		return Template{SourceKind: "sky", DraftLayout: blankLayout()}, nil
@@ -247,7 +247,7 @@ func (s *service) eventTemplateStart(ctx context.Context, ev event.Event, from s
 		if err != nil {
 			return Template{}, err
 		}
-		return copiedStart(resolved.Template, resolved.Version.Layout), nil
+		return s.copiedStart(p, resolved.Template, resolved.Version.Layout), nil
 	}
 	id, err := uuid.Parse(strings.TrimSpace(from))
 	if err != nil {
@@ -262,15 +262,23 @@ func (s *service) eventTemplateStart(ctx context.Context, ev event.Event, from s
 	if item.PublishedVersion == nil || !fitsEvent(item, ev) {
 		return Template{}, ErrNotFound
 	}
-	return copiedStart(item, item.PublishedVersion.Layout), nil
+	return s.copiedStart(p, item, item.PublishedVersion.Layout), nil
 }
 
-func copiedStart(source Template, layout Layout) Template {
+// copiedStart starts a copy of source with layout. Its reference and edit
+// address (a Canva or Figma design) go with it only to who may read the
+// source template: a member who edits the Event but not the team template
+// gets the layout, not the link to the team's design.
+func (s *service) copiedStart(p authz.Principal, source Template, layout Layout) Template {
 	kind := source.SourceKind
 	if kind == "" {
 		kind = "sky"
 	}
-	return Template{SourceKind: kind, SourceRef: source.SourceRef, SourceEditURL: source.SourceEditURL, DraftLayout: layout}
+	start := Template{SourceKind: kind, DraftLayout: layout}
+	if s.authz.Allow(p, templateResource(source.OwnerTeam), authz.Read) {
+		start.SourceRef, start.SourceEditURL = source.SourceRef, source.SourceEditURL
+	}
+	return start
 }
 
 // eventTemplateName is "<Event name> sertifikası", cut to the 160 bytes a

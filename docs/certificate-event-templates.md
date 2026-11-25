@@ -16,7 +16,11 @@ An Event template is a certificate template that belongs to one Event (`certific
 
 ## Who may do what
 
-Every decision on an Event template follows its Event (one helper, `canEditEvent`: who may edit the Event, `Update` on its Owner team). Co-organizers (ADR-0092) change who may edit an Event; Event templates follow by that decision alone.
+Every decision on an Event template follows its Event: who may edit it (`canEditEvent`, `Update` on its Owner team), with the Owner team's template rule as the fallback (`canReadEventTemplates`, `canWriteEventTemplate`). Co-organizers (ADR-0092) change who may edit an Event. When they come, these places need updating as well, not only `canEditEvent`:
+
+- the fallbacks above, which read the Owner team's certificate workspace and template rule only;
+- `fitsEvent` and the Owner team check in `SetBinding`, which offer and accept the Owner team's and the club's templates only (ADR-0092 §5.8 adds the Co-organizer teams');
+- the `certificate_template_editor` upload rule, which looks for an Owner team the person edits Events of (an upload names no Event).
 
 | Action | Who |
 |---|---|
@@ -48,6 +52,8 @@ A certificate asset (`certificate_asset`, the `certificate_template_editor` uplo
 - `current`: the published layout of the template the Event uses now, with its source; an Event nothing resolves for starts blank.
 - `blank`: an empty A4 landscape page with the participant's name, the Event's name and the verification QR (`sourceKind` `sky`).
 - `<templateId>`: one of `choices`, its published layout; any other id is `404`.
+
+The source's reference and edit address (a Canva or Figma design) are copied only for who may read the source template; anyone else gets its layout with neither.
 
 The copy links the same Media as its source (a Media may have several links). Its name is "<Event name> sertifikası". A second one is `409 template_event_exists` with `templateId`.
 

@@ -181,8 +181,14 @@ func TestCreateEventTemplateFrom(t *testing.T) {
 	if current.EventID == nil || *current.EventID != f.gecekodu.ID || current.OwnerTeam != "GECEKODU" {
 		t.Fatalf("owner %v %q", current.EventID, current.OwnerTeam)
 	}
-	if current.Name != "Gece Kodu 2026 sertifikası" || current.SourceKind != "figma" || current.SourceEditURL != "https://figma.example/TEAM" {
-		t.Fatalf("name %q source %q %q", current.Name, current.SourceKind, current.SourceEditURL)
+	// The member does not read the team template: its layout, not the link
+	// to the team's design.
+	if current.Name != "Gece Kodu 2026 sertifikası" || current.SourceKind != "figma" || current.SourceEditURL != "" || current.SourceRef != "" {
+		t.Fatalf("name %q source %q %q %q", current.Name, current.SourceKind, current.SourceEditURL, current.SourceRef)
+	}
+	// Who reads it (ADMIN) gets the link too.
+	if linked := newEventTemplateFixture(t).create(t, adminMember, "current"); linked.SourceKind != "figma" || linked.SourceEditURL != "https://figma.example/TEAM" {
+		t.Fatalf("reader's copy %q %q", linked.SourceKind, linked.SourceEditURL)
 	}
 	if !reflect.DeepEqual(current.DraftLayout, versionedLayout("TEAM")) || current.PublishedVersion != nil {
 		t.Fatalf("layout %+v published %v", current.DraftLayout, current.PublishedVersion)

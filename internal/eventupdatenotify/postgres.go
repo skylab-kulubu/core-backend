@@ -38,8 +38,8 @@ func (q *PostgresQueue) Claim(ctx context.Context, now time.Time, lease time.Dur
 			ORDER BY n.next_attempt_at, n.created_at, n.id
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED)
-		RETURNING id, event_id, before_start_date, before_end_date, before_location, created_at, attempts, claimed_at`,
-		now, now.Add(lease)).Scan(&c.ID, &c.EventID, &c.BeforeStart, &c.BeforeEnd, &c.BeforeLocation, &c.CreatedAt, &c.Attempts, &c.ClaimedAt)
+		RETURNING id, event_id, before_start_date, before_end_date, before_location, told_fields, created_at, attempts, claimed_at`,
+		now, now.Add(lease)).Scan(&c.ID, &c.EventID, &c.BeforeStart, &c.BeforeEnd, &c.BeforeLocation, &c.ToldFields, &c.CreatedAt, &c.Attempts, &c.ClaimedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Queued{}, false, nil
 	}
