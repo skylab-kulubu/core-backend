@@ -111,6 +111,7 @@ func TestFormMappingAnswers(t *testing.T) {
 	}{
 		{formsfeed.ErrMappingEventNotFound, 404, ""},
 		{formsfeed.ErrMappingForbidden, 403, ""},
+		{formsfeed.ErrFormsAccessDenied, 403, "forms_access_denied"},
 		{formsfeed.ErrMappingNotListed, 404, "form_not_listed"},
 		{formsfeed.ErrMappingNotFound, 404, "mapping_not_found"},
 		{formsfeed.ErrFormGone, 404, "form_not_found"},

@@ -295,16 +295,58 @@ type Question struct {
 	Identity  string `json:"identity,omitempty"`
 }
 
-// Form is a form's title and questions (Forms' form read).
+// Form is a form's title and questions (Forms' form read), and who may see
+// it in Forms: its owner and collaborators, which core checks the panel's
+// caller against (docs/form-mappings.md).
 type Form struct {
 	FormID    uuid.UUID  `json:"formId"`
 	Title     string     `json:"title"`
 	Questions []Question `json:"questions"`
+	// Collaborators are the form's team in Forms (collaborators: a person's
+	// subject and role owner, editor or viewer; removed ones are left out
+	// by Forms). AccessListed is false when Forms sent no collaborators (a
+	// Forms before the field): nobody is let in then.
+	Collaborators []Collaborator `json:"-"`
+	AccessListed  bool           `json:"-"`
+}
+
+// Collaborator is one of a form's team in Forms.
+type Collaborator struct {
+	UserID uuid.UUID
+	Role   string
+}
+
+// Roles of a form's team in Forms.
+const (
+	RoleOwner  = "owner"
+	RoleEditor = "editor"
+	RoleViewer = "viewer"
+)
+
+// Edits reports whether the person whose subject is id is the form's owner
+// or an editor in Forms: who may read its questions and map it from core
+// (a viewer may not; orchestrator's decision, 2026-11-25). A Forms that
+// lists nobody (AccessListed false) lets nobody in: the safe side.
+func (f Form) Edits(id string) bool {
+	person, err := uuid.Parse(id)
+	if err != nil || person == uuid.Nil || !f.AccessListed {
+		return false
+	}
+	for _, c := range f.Collaborators {
+		if c.UserID == person && (c.Role == RoleOwner || c.Role == RoleEditor) {
+			return true
+		}
+	}
+	return false
 }
 
 type formJSON struct {
-	FormID    uuid.UUID `json:"formId"`
-	Title     string    `json:"title"`
+	FormID        uuid.UUID `json:"formId"`
+	Title         string    `json:"title"`
+	Collaborators *[]struct {
+		UserID uuid.UUID `json:"userId"`
+		Role   string    `json:"role"`
+	} `json:"collaborators"`
 	Questions []struct {
 		ID        string  `json:"id"`
 		Type      string  `json:"type"`
@@ -319,8 +361,9 @@ type formJSON struct {
 //	GET {base}/internal/v1/forms/{formId}
 //
 // answering {formId, title, questions: [{id, type, question, inputType,
-// identity}]}. 404 is ErrNotFound: the form is deleted, or Forms has no such
-// route yet. An item without an id is left out: nothing can map to it.
+// identity}], collaborators: [{userId, role}]} (forms-backend #43). 404 is ErrNotFound: the form is
+// deleted, or Forms has no such route yet. An item without an id is left
+// out: nothing can map to it.
 func (c *Client) Form(ctx context.Context, formID uuid.UUID) (Form, error) {
 	body, err := c.get(ctx, "/internal/v1/forms/"+formID.String())
 	if err != nil {
@@ -334,6 +377,12 @@ func (c *Client) Form(ctx context.Context, formID uuid.UUID) (Form, error) {
 		return Form{}, invalid("Forms answered another form")
 	}
 	out := Form{FormID: in.FormID, Title: in.Title, Questions: []Question{}}
+	if in.Collaborators != nil {
+		out.AccessListed = true
+		for _, c := range *in.Collaborators {
+			out.Collaborators = append(out.Collaborators, Collaborator{UserID: c.UserID, Role: strings.ToLower(strings.TrimSpace(c.Role))})
+		}
+	}
 	for _, q := range in.Questions {
 		if strings.TrimSpace(q.ID) == "" || len(q.ID) > MaxFieldLength {
 			continue
