@@ -163,10 +163,10 @@ def test_each_endpoint_under_500_ms(client):
         median = statistics.median(times)
         print(f"{name}: median {median:.0f} ms, max {max(times):.0f} ms")
         assert median < 500, name
-    print(f"worker peak memory: {_worker_peak_kib()} KiB")
+    print(f"worker peak memory: {_worker_peak()}")
 
 
-def _worker_peak_kib() -> str:
+def _worker_peak() -> str:
     """The workers' peak resident memory (Linux; the workers are this
     process's children)."""
     if not os.path.isdir("/proc"):
