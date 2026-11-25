@@ -248,3 +248,34 @@ func TestGotenbergScreenshot(t *testing.T) {
 		t.Fatal("no width")
 	}
 }
+
+// A certificate page that embeds fonts fits its text after they are in and
+// is printed once it says so; any other page is posted as before.
+func TestGotenbergWaitsForFittedText(t *testing.T) {
+	t.Parallel()
+	var got string
+	var has bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		_, has = r.MultipartForm.Value["waitForExpression"]
+		got = r.FormValue("waitForExpression")
+		_, _ = w.Write([]byte("%PDF-1.4 g"))
+	}))
+	t.Cleanup(srv.Close)
+	g := &Gotenberg{BaseURL: srv.URL, HTTP: srv.Client()}
+	for html, want := range map[string]string{
+		"<main>Ada</main><script>document.fonts.ready.then(function(){try{}finally{" + fitDoneFlag + "}})</script>": fitDoneExpression,
+		"<main>Ada</main><script>fit()</script>":                 "",
+		"<main>" + fitDoneFlag + "</main><script>fit()</script>": "",
+		"<html>ARTLAB</html>":                                    "",
+	} {
+		if _, err := g.PDF(t.Context(), html); err != nil {
+			t.Fatal(err)
+		}
+		if got != want || has != (want != "") {
+			t.Errorf("%s: waitForExpression %q (sent %v), want %q", html, got, has, want)
+		}
+	}
+}

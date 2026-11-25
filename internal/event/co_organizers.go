@@ -124,6 +124,31 @@ func CoOrganizerPersonExpiry(e Event) (time.Time, bool) {
 	}
 }
 
+// ErrCoOrganizerPersonDates refuses an edit by who edits the Event as one
+// of its Co-organizer people alone that would lengthen their own rights:
+// clearing the dates their end is read from, or moving it later
+// (docs/co-organizers.md). The Owner team and the Co-organizer teams are
+// not bound by it.
+var ErrCoOrganizerPersonDates = fmt.Errorf("event: a co-organizer person may not move the end of their rights later: %w", ErrForbidden)
+
+// checkCoOrganizerPersonDates applies ErrCoOrganizerPersonDates to p's edit
+// of existing into in: only when p's right to edit rests on a Co-organizer
+// person's seat (authz.ViaCoPerson), and only when existing has an end
+// (CoOrganizerPersonExpiry) that in would clear or move later.
+func (s *service) checkCoOrganizerPersonDates(p authz.Principal, existing, in Event) error {
+	before, bounded := CoOrganizerPersonExpiry(existing)
+	if !bounded {
+		return nil
+	}
+	if s.authz.EventVia(p, s.eventResource(existing, authz.TypeEvent)) != authz.ViaCoPerson {
+		return nil
+	}
+	if after, ok := CoOrganizerPersonExpiry(in); !ok || after.After(before) {
+		return ErrCoOrganizerPersonDates
+	}
+	return nil
+}
+
 // PublicCoOrganizerTeams are the codes of e's Co-organizer teams anyone may
 // see: those shown as Co-organizer, never a helper team; nil for none.
 func PublicCoOrganizerTeams(e Event) []string {

@@ -35,6 +35,10 @@ type PostgresStore struct {
 	// notifyTickets lets Publish queue a draft's Tickets' Notifications
 	// (event.ticket-created) when the publisher asks (NotifyTicketsOnPublish).
 	notifyTickets atomic.Bool
+	// notifyDoorStaff queues the mail a person added to an Event's door
+	// staff gets (DOOR_STAFF_MAIL, docs/door-staff-mail.md) in the write
+	// that adds them.
+	notifyDoorStaff atomic.Bool
 	// notifyStatus queues a Ticket promoted from the waiting list as
 	// event.waitlist-promoted (TICKET_STATUS_MAIL, NotifyTicketStatus);
 	// off, as the new Ticket's mail while notifyTickets is on.
@@ -754,10 +758,28 @@ func (s *PostgresStore) withGalleriesAndDoorStaff(ctx context.Context, events []
 }
 
 func (s *PostgresStore) replaceDoorStaff(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, ids []uuid.UUID) error {
-	if _, err := tx.Exec(ctx, `DELETE FROM event_door_staff WHERE event_id = $1`, eventID); err != nil {
+	rows, err := tx.Query(ctx, `DELETE FROM event_door_staff WHERE event_id = $1 RETURNING user_id`, eventID)
+	if err != nil {
+		return err
+	}
+	before, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
 		return err
 	}
 	seen := map[uuid.UUID]struct{}{}
+	for _, id := range before {
+		seen[id] = struct{}{}
+	}
+	var added []uuid.UUID
+	for _, id := range ids {
+		if _, ok := seen[id]; !ok && id != uuid.Nil && !slices.Contains(added, id) {
+			added = append(added, id)
+		}
+	}
+	if err := s.queueDoorStaffMail(ctx, tx, eventID, added); err != nil {
+		return err
+	}
+	seen = map[uuid.UUID]struct{}{}
 	for _, id := range ids {
 		if id == uuid.Nil {
 			continue
