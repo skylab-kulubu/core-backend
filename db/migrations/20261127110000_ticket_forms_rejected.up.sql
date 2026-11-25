@@ -17,5 +17,10 @@ ALTER TABLE tickets ADD COLUMN IF NOT EXISTS forms_rejected_at TIMESTAMPTZ;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS form_response_form_id UUID;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS form_response_status TEXT;
 ALTER TABLE tickets DROP CONSTRAINT IF EXISTS tickets_form_response_status_check;
+-- NOT VALID: no scan of tickets under the ALTER's lock. Every row before
+-- has NULL (the column is new), so it holds; new and changed rows are
+-- checked. No VALIDATE is needed; one may run later
+-- (ALTER TABLE tickets VALIDATE CONSTRAINT tickets_form_response_status_check,
+-- which takes only a SHARE UPDATE EXCLUSIVE lock).
 ALTER TABLE tickets ADD CONSTRAINT tickets_form_response_status_check
-    CHECK (form_response_status IS NULL OR form_response_status IN ('accepted', 'pending', 'declined'));
+    CHECK (form_response_status IS NULL OR form_response_status IN ('accepted', 'pending', 'declined')) NOT VALID;

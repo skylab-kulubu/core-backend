@@ -376,7 +376,7 @@ func (s *service) declineFormResponse(ctx context.Context, events []event.Event,
 		if t.StatusOf() == StatusCancelled || !listsEvent(listing, t.EventID) {
 			continue
 		}
-		marked, err := marks.MarkFormsRejected(ctx, t.ID, now)
+		marked, err := marks.MarkFormsRejected(ctx, t.ID, r.FormID, now)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}

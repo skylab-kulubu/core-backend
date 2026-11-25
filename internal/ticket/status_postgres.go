@@ -143,10 +143,11 @@ func (s *PostgresStore) FormResponseTickets(ctx context.Context, responseID uuid
 
 // MarkFormsRejected marks a Ticket that is not cancelled declined in
 // Forms (FormsRejectionStore); false when it is cancelled or marked.
-func (s *PostgresStore) MarkFormsRejected(ctx context.Context, id uuid.UUID, at time.Time) (bool, error) {
+func (s *PostgresStore) MarkFormsRejected(ctx context.Context, id, formID uuid.UUID, at time.Time) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE tickets SET forms_rejected_at = $2, form_response_status = 'declined', updated_at = now()
-		WHERE id = $1 AND status <> 'cancelled' AND forms_rejected_at IS NULL`, id, at.UTC())
+		UPDATE tickets SET forms_rejected_at = $2, form_response_status = 'declined',
+			form_response_form_id = COALESCE(form_response_form_id, $3), updated_at = now()
+		WHERE id = $1 AND status <> 'cancelled' AND forms_rejected_at IS NULL`, id, at.UTC(), nullableID(formID))
 	return tag.RowsAffected() > 0, err
 }
 
@@ -217,4 +218,12 @@ func (s *PostgresStore) statusOf(ctx context.Context, id uuid.UUID) (Status, err
 		return "", ErrNotFound
 	}
 	return status, err
+}
+
+// nullableID is id, or NULL for the nil UUID.
+func nullableID(id uuid.UUID) *uuid.UUID {
+	if id == uuid.Nil {
+		return nil
+	}
+	return &id
 }

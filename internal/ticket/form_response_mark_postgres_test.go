@@ -84,3 +84,37 @@ func TestFormDeclineMarksOnPostgres(t *testing.T) {
 		t.Fatalf("after the extra form %+v %v", got, err)
 	}
 }
+
+// A Ticket whose answer was kept before its form was (no
+// form_response_form_id) takes the form from its decline.
+func TestADeclineFillsAnOldTicketsFormOnPostgres(t *testing.T) {
+	e := newCapacityPG(t)
+	ctx := context.Background()
+	ev := e.event(t, 0, true)
+	formID := uuid.New()
+	ev.FormURL = formAddress(formID)
+	if _, err := e.events.Update(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+	svc := ticket.NewService(e.store, e.events, authz.NewAuthorizer(authz.DefaultPolicy()))
+	first := acceptedGuest(formID, "Ada", "Lovelace", "ada@example.com")
+	old, err := e.store.CreateAdmitted(ctx, ticket.Ticket{EventID: ev.ID, TicketType: ticket.Guest, GuestFirstName: "Ada", GuestLastName: "Lovelace", GuestEmail: "ada@example.com"}, ticket.Admission{FormResponse: first.ResponseID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Status = ticket.FormResponseDeclined
+	if got, err := svc.RecordFormResponse(ctx, formsService, first); err != nil || got.TicketsMarked != 1 {
+		t.Fatalf("decline %+v %v", got, err)
+	}
+	var kept *uuid.UUID
+	if err := e.pool.QueryRow(ctx, `SELECT form_response_form_id FROM tickets WHERE id = $1`, old.ID).Scan(&kept); err != nil || kept == nil || *kept != formID {
+		t.Fatalf("form %v %v", kept, err)
+	}
+	second := acceptedGuest(formID, "Ada", "Lovelace", "ada@example.com")
+	if _, err := svc.RecordFormResponse(ctx, formsService, second); err != nil {
+		t.Fatal(err)
+	}
+	if tickets, err := e.store.FormResponseTickets(ctx, second.ResponseID); err != nil || len(tickets) != 1 || tickets[0].FormsRejectedAt != nil {
+		t.Fatalf("the corrected answer's Tickets %+v %v", tickets, err)
+	}
+}
