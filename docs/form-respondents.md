@@ -40,6 +40,8 @@ cancelled nor ended.
 | accepted (no review, or approved) | Ticket by the one rule | kept as an accepted row (`source` `new`) | no second Ticket; a row of theirs goes |
 | pending (or flagged) | kept as a pending row | same | the Ticket stays; its `formsStatus` turns `pending` ("Forms'ta yeniden onay bekliyor"; `tickets.form_response_status`, #460) |
 | pending → accepted | Ticket; the row goes | the row turns accepted | `formsStatus` back to `accepted` |
+| declined → accepted again | as accepted | the Ticket takes the answer as the rule would: Forms' rejection mark goes, `formsStatus` `accepted` | same |
+| Returned: a corrected answer accepted | as accepted | the Ticket is taken over by the new answer (same form, the old one no longer accepted; #460) | same |
 | declined, archived, returned | the answer's rows go | same | the Ticket is marked `formsRejectedAt`, not cancelled (K6, [form-response-tickets.md](form-response-tickets.md)) |
 
 - With the setting on, an accepted answer that still earns no Ticket (the
@@ -47,7 +49,13 @@ cancelled nor ended.
   kept as an accepted row too: the organizer may send it, since closing
   applying stops only the automatic way.
 - An answer with no usable person (no e-mail address, no name: `mapping_incomplete`,
-  `no_respondent`; a signed-in person core cannot find) keeps no row.
+  `no_respondent`; a signed-in person core cannot find, or whose account is
+  blocked or erased) keeps no row. A signed-in person's account row is made
+  first if core has none yet (as the rule does before their Ticket): the
+  row's `user_id` names only an active account (database guard).
+- With the setting off the rule does not run on that Event, so a Ticket the
+  person already holds there takes the accepted answer by the rule's own
+  step (`ticket.Service.KeepFormRespondent`, #460's `KeepFormResponse`).
 - Turning the setting on later sends nobody by itself: the rows wait for the
   organizer.
 - A form listed by more than one current Event (from before the one-place
@@ -77,6 +85,18 @@ cancelled or ended Event, nor for a form another current Event lists
 
 It writes no Ticket and moves no watermark: answers after the link reach the
 routing above (event, HTTP report, daily pass). A repeat finds the same rows.
+
+Asked again while one waits or runs (the mapping first saved during the
+gathering, the button), the job is marked to run again from its first page:
+`requested_at` moves and the cursor goes; the running pass keeps neither
+its saved page nor its end (both check `requested_at`), and the job runs
+again at once. One waiting out a failure's back-off is due at once.
+
+A full pass (from the first page) keeps the counts of answers that name
+nobody usable on the Event's form (`event_form_collect_counts`, K3):
+`missingName` (no first and last name, a one-word full name),
+`missingEmail` (no plain address), `noPerson` (no sign-in, no named guest,
+no mapping); the next full pass replaces them.
 The job's line is the usual `"event":"form_pull"` with `kind` `collect`;
 outcomes `kept`, `ticketed`, `declined`, `gone`, `no_respondent`,
 `mapping_incomplete`, or why the job did nothing (`event_gone`,
@@ -91,10 +111,14 @@ gathering.
 
 ## The routes
 
-Every route is a person's who may edit the Event (authz `Update` on the
-Event, its Co-organizers included); a product's service account never is.
-`404` for no such current Event or a draft the caller may not edit, `403`
-otherwise. Errors are RFC 9457 problem details with `code`.
+The routes take the Event's Ticket rights, as its Ticket routes do (authz
+on the Event's Tickets, its Co-organizers included; #456): the list asks
+`Read` (who may see the Event's Tickets), the preview, the sending and a
+job ask `Assign` (who may add attendees), so a Co-organizer team that only
+lets its members see the Event sends no Ticket. A product's service
+account never may. `404` for no such current Event or a draft the caller
+may not see, `403` otherwise. Errors are RFC 9457 problem details with
+`code`.
 
 ### List
 
@@ -113,7 +137,8 @@ GET /v1/events/{id}/respondents?formId=&formsStatus=accepted|pending&q=&after=&l
   ],
   "nextCursor": null,
   "total": 1,
-  "collecting": false
+  "collecting": false,
+  "incomplete": {"missingName": 0, "missingEmail": 0, "noPerson": 0}
 }
 ```
 
@@ -124,7 +149,10 @@ GET /v1/events/{id}/respondents?formId=&formsStatus=accepted|pending&q=&after=&l
   `firstName`, `lastName`, `email` from core's account (empty for a person
   erased or blocked), and `q` does not search them.
 - `collecting` is true while a gathering of the Event's forms (of `formId`)
-  waits or runs: the panel says "Form yanıtları alınıyor".
+  waits or runs, not one waiting out a failure, and only with
+  `EVENTS_FORMS_ENABLED=true`: the panel says "Form yanıtları alınıyor".
+- `incomplete` sums the last full gatherings' counts (above) of the
+  Event's forms (of `formId`): the panel's "eksik ad" line.
 - `400 respondents_invalid`: an unknown `formsStatus`, a bad `formId`,
   `limit` or cursor.
 
@@ -170,6 +198,14 @@ pending row is `skipped` and stays; an id that is not the Event's row is
 Ticket's mail goes as any other's ([ticket-created-notification.md](ticket-created-notification.md)):
 at once on a published Event, at publishing on a draft.
 
+Each request writes a Team audit row ([team-audit.md](team-audit.md)), as
+an attendee import's: action `ticket.import` (the Event, no one Ticket),
+basis privileged, else the Leader, else the Event's editor, with the counts
+(`rows`, `created`, `waitlisted`, `full`, `existing`, `members`, `guests`;
+for `all: true` the rows selected, the job's own counts on the job). With
+the record on and no row, the request is refused before anything is
+written: `503 audit_unavailable`.
+
 `409 event_cancelled`, `409 event_ended`: the Event takes no Ticket now.
 `400 respondents_invalid`: neither 1–200 `ids` nor `all: true`.
 
@@ -180,7 +216,8 @@ GET /v1/events/{id}/respondents/ticket-jobs/{jobId}
 ```
 
 `200 {"jobId", "formId", "state": "queued|running|done|failed", "recorded", "waitlisted", "full", "skipped", "createdAt", "updatedAt"}`,
-`404 ticket_job_not_found`. A job that fails is tried five times, then
+`404 ticket_job_not_found`. A job goes on after the last row it finished,
+so a retry counts each row once. One that fails is tried five times, then
 `failed`; one whose Event was cancelled or ended meanwhile is `failed` at
 once. A finished job is kept 30 days. The worker runs whatever
 `EVENTS_FORMS_ENABLED` says; each run writes `"event":"respondent_ticket_job"`
@@ -208,7 +245,8 @@ Migration `20261127170000`:
 | Table / column | What | Kept |
 | --- | --- | --- |
 | `event_form_respondents` | `event_id`, `form_id`, `form_response_id` (one row an answer on an Event), `user_id` for a signed-in person (then no name or address), else `first_name`, `last_name`, `email`; `submitted_at`, `forms_status`, `source`, `created_at` | until the person holds a Ticket, the answer is declined, the Event lets the form go (same transaction), account erasure, or two years after the Event's end (retention rule `form_respondents`) |
-| `respondent_ticket_jobs` | a send-all job: Event, form, the organizer's subject, state, counts, the last row handled | 30 days after it finished |
+| `respondent_ticket_jobs` | a send-all job: Event, form, the organizer's subject, state, counts, the last row handled | 30 days after it finished; account erasure clears the subject |
+| `event_form_collect_counts` | an Event's form: the last full gathering's `missing_name`, `missing_email`, `no_person` | with the Event; the form let go takes it |
 | `events.form_responses_auto_ticket` | the setting | with the Event |
 | `form_pulls.kind = 'collect'` | the gathering | until done, at most a week |
 
@@ -220,13 +258,20 @@ Never an answer's text, an unmapped answer or anything else of Forms.
   mode, dry-run first.
 - **Account erasure:** `anonymize_core` deletes the person's rows, their
   account's and those of any of their addresses, and its proof keeps
-  `{"form_respondents_deleted": n}` ([account-lifecycle.md](account-lifecycle.md#service-erasure-steps)).
+  `{"form_respondents_deleted": n}` ([account-lifecycle.md](account-lifecycle.md#service-erasure-steps));
+  the person's send-all jobs and form pulls forget who asked
+  (`requested_by`).
 
 ## Rolling back
+
+**Before going back to the release before, turn `EVENTS_FORMS_ENABLED` off
+(and redeploy), then roll the image back.** That release runs every
+`form_pulls` job it finds, a waiting `collect` job as a backfill that
+writes Tickets; with the switch off it claims none.
 
 The release before neither reads nor writes any of it. The migration's down
 keeps every row and column; it puts back `form_pulls`' checks without
 `collect` (`NOT VALID`, so a waiting job stays) and parks a waiting collect
 job (`next_attempt_at = 'infinity'`), because the release before would run it
-as a backfill and write Tickets; up again puts it back. Without running the
-down, turn `EVENTS_FORMS_ENABLED` off first: nothing then claims a pull.
+as a backfill and write Tickets; up again puts it back. This release never
+moves a parked job (its cursor, retry and finish keep `infinity`).

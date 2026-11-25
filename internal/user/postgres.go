@@ -663,6 +663,10 @@ func (s *PostgresStore) anonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		`UPDATE certificate_template_bindings SET updated_by = NULL WHERE updated_by = $1`,
 		`UPDATE certificate_event_state SET attendance_finalized_by = NULL WHERE attendance_finalized_by = $1`,
 		`UPDATE certificate_batches SET requested_by = NULL WHERE requested_by = $1`,
+		// An organizer's form pulls and send-all jobs (docs/form-respondents.md)
+		// forget who asked.
+		`UPDATE form_pulls SET requested_by = NULL WHERE requested_by = $1`,
+		`UPDATE respondent_ticket_jobs SET requested_by = NULL WHERE requested_by = $1`,
 		`UPDATE account_deletion_requests SET requested_by = NULL WHERE requested_by = $1`,
 		// Competition actors (ADR-0068): the ledger keeps every score and
 		// reason, without who wrote or revoked it. Its append-only trigger

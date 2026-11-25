@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/formsfeed"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 )
 
 // FormRespondents serves an Event's Unticketed respondents
@@ -102,7 +103,7 @@ func (h *FormRespondentHandler) List(c fiber.Ctx) error {
 		next = &page.NextCursor
 	}
 	c.Set(fiber.HeaderCacheControl, "no-store")
-	return c.JSON(fiber.Map{"items": items, "nextCursor": next, "total": page.Total, "collecting": collecting})
+	return c.JSON(fiber.Map{"items": items, "nextCursor": next, "total": page.Total, "collecting": collecting, "incomplete": page.Incomplete})
 }
 
 // selectionJSON is the body of the preview and the send: {ids: [...]} or
@@ -197,6 +198,8 @@ func (h *FormRespondentHandler) error(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusConflict, "Conflict", "event_cancelled")
 	case errors.Is(err, formsfeed.ErrRespondentsEventEnded):
 		return problemCode(c, fiber.StatusConflict, "Conflict", "event_ended")
+	case errors.Is(err, teamaudit.ErrUnavailable):
+		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", auditUnavailableCode)
 	default:
 		return err
 	}

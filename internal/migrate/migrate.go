@@ -2125,6 +2125,8 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		SELECT 1
 		WHERE to_regclass('public.event_form_respondents_response_idx') IS NOT NULL
 		AND to_regclass('public.respondent_ticket_jobs_open_idx') IS NOT NULL
+		AND to_regclass('public.event_form_collect_counts') IS NOT NULL
+		AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'event_form_respondents_require_active_subject')
 		AND (
 			SELECT count(*) FROM information_schema.columns
 			WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'form_responses_auto_ticket'

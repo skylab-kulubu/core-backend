@@ -21,6 +21,9 @@ SET LOCAL lock_timeout = '5s';
 --     linked. It writes rows, never a Ticket.
 --   * respondent_ticket_jobs: an organizer's "send them all" (all: true),
 --     run in the background; counts only.
+--   * event_form_collect_counts: the last gathering's count of answers kept
+--     as nobody (an e-mail that is no address, no first and last name, no
+--     person at all; K3): numbers only, for the panel's "eksik ad".
 --
 -- The release before neither reads nor writes any of them.
 CREATE TABLE IF NOT EXISTS event_form_respondents (
@@ -87,4 +90,21 @@ COMMENT ON TABLE respondent_ticket_jobs IS
 -- twice finds the first.
 CREATE UNIQUE INDEX IF NOT EXISTS respondent_ticket_jobs_open_idx ON respondent_ticket_jobs (event_id, COALESCE(form_id, '00000000-0000-0000-0000-000000000000'::uuid))
     WHERE state IN ('queued', 'running');
+CREATE TABLE IF NOT EXISTS event_form_collect_counts (
+    event_id UUID NOT NULL REFERENCES events (id) ON DELETE CASCADE,
+    form_id UUID NOT NULL,
+    missing_name INTEGER NOT NULL DEFAULT 0,
+    missing_email INTEGER NOT NULL DEFAULT 0,
+    no_person INTEGER NOT NULL DEFAULT 0,
+    collected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (event_id, form_id)
+);
+
+-- user_id is a current-identity link, as event_door_staff's: only an
+-- active subject with no deletion marker may be named.
+DROP TRIGGER IF EXISTS event_form_respondents_require_active_subject ON event_form_respondents;
+CREATE TRIGGER event_form_respondents_require_active_subject
+    BEFORE INSERT OR UPDATE OF user_id ON event_form_respondents
+    FOR EACH ROW EXECUTE FUNCTION public.require_active_account_reference('user_id');
+
 CREATE INDEX IF NOT EXISTS respondent_ticket_jobs_due_idx ON respondent_ticket_jobs (next_attempt_at) WHERE state IN ('queued', 'running');

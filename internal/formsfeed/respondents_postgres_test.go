@@ -295,7 +295,7 @@ func TestAccountErasureDeletesTheRespondentRows(t *testing.T) {
 	w := newRespondentWorld(t, false, 0, true)
 	ctx := context.Background()
 	person := uuid.New()
-	if _, err := w.pool.Exec(ctx, `INSERT INTO users (id, email, account_state) VALUES ($1, 'ada@example.com', 'deletion_pending')`, person); err != nil {
+	if _, err := w.pool.Exec(ctx, `INSERT INTO users (id, email) VALUES ($1, 'ada@example.com')`, person); err != nil {
 		t.Fatal(err)
 	}
 	w.report(t, uuid.New(), ticket.FormResponseAccepted, "ada@example.com")
@@ -304,12 +304,70 @@ func TestAccountErasureDeletesTheRespondentRows(t *testing.T) {
 		VALUES ($1, $2, $3, $4, $5, 'pending', 'collect')`, uuid.New(), w.ev.ID, w.formID, uuid.New(), person); err != nil {
 		t.Fatal(err)
 	}
+	// The row names only an active account.
+	if _, err := w.pool.Exec(ctx, `INSERT INTO event_form_respondents (id, event_id, form_id, form_response_id, user_id, forms_status, source)
+		VALUES ($1, $2, $3, $4, $5, 'pending', 'collect')`, uuid.New(), w.ev.ID, w.formID, uuid.New(), uuid.New()); err == nil {
+		t.Fatal("a row named an account core does not have")
+	}
+	jobID, err := w.rs.Jobs.Enqueue(ctx, w.ev.ID, nil, &person, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.pool.Exec(ctx, `UPDATE users SET account_state = 'deletion_pending' WHERE id = $1`, person); err != nil {
+		t.Fatal(err)
+	}
 	counts, err := user.NewPostgresStore(w.pool).AnonymizeAccountCounted(ctx, person, time.Now(), []string{" Ada@Example.com "})
 	if err != nil || counts[user.FormRespondentsErasedCount] != 2 {
 		t.Fatalf("counts %v %v", counts, err)
 	}
 	if n := w.count(t, `SELECT count(*) FROM event_form_respondents`); n != 1 {
 		t.Fatalf("%d rows left", n)
+	}
+	if n := w.count(t, `SELECT count(*) FROM respondent_ticket_jobs WHERE id = $1 AND requested_by IS NULL`, jobID); n != 1 {
+		t.Fatal("the send-all job still names who asked")
+	}
+}
+
+// "Otomatik bilet gönder" off and the person holds a Ticket: Forms' decline
+// marks it (K6); the same answer accepted again clears the mark as the rule
+// would; after another decline, the holder's corrected answer (Returned)
+// takes the Ticket over. No row is kept for a Ticket holder.
+func TestAutoTicketOffKeepsTheAcceptedAnswerOnTheTicket(t *testing.T) {
+	w := newRespondentWorld(t, false, 0, true)
+	ctx := context.Background()
+	first, second := uuid.New(), uuid.New()
+	w.report(t, first, ticket.FormResponseAccepted, "ada@example.com")
+	rows := w.rows(t)
+	if len(rows) != 1 {
+		t.Fatalf("rows %+v", rows)
+	}
+	if res, _, err := w.rs.Send(ctx, w.editor, w.ev.ID, formsfeed.Selection{IDs: []uuid.UUID{rows[0].ID}}); err != nil || res.Recorded != 1 {
+		t.Fatalf("send %+v %v", res, err)
+	}
+	state := func() string {
+		t.Helper()
+		var s string
+		if err := w.pool.QueryRow(ctx, `SELECT COALESCE(form_response_id::text, '') || '|' || COALESCE(form_response_status, '') || '|' || (forms_rejected_at IS NOT NULL)::text
+			FROM tickets WHERE event_id = $1`, w.ev.ID).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	w.report(t, first, ticket.FormResponseDeclined, "ada@example.com")
+	if got := state(); got != first.String()+"|declined|true" {
+		t.Fatalf("after the decline %s", got)
+	}
+	w.report(t, first, ticket.FormResponseAccepted, "ada@example.com")
+	if got := state(); got != first.String()+"|accepted|false" {
+		t.Fatalf("accepted again %s", got)
+	}
+	w.report(t, first, ticket.FormResponseDeclined, "ada@example.com")
+	w.report(t, second, ticket.FormResponseAccepted, "ada@example.com")
+	if got := state(); got != second.String()+"|accepted|false" {
+		t.Fatalf("the corrected answer %s", got)
+	}
+	if n := len(w.rows(t)); n != 0 {
+		t.Fatalf("a Ticket holder was kept (%d)", n)
 	}
 }
 
@@ -336,6 +394,9 @@ func TestTheGatheringKeepsRowsAndWritesNoTicket(t *testing.T) {
 	// Ada holds a Ticket already.
 	w.report(t, uuid.New(), ticket.FormResponseAccepted, "ada@example.com")
 	person := uuid.New()
+	if _, err := w.pool.Exec(ctx, `INSERT INTO users (id, email) VALUES ($1, 'person@example.com')`, person); err != nil {
+		t.Fatal(err)
+	}
 	guest, ada := uuid.New(), uuid.New()
 	items := []formsfeed.Response{
 		{FormID: w.formID, ResponseID: guest, Status: formsfeed.StatusAccepted, HasGuest: true, Version: 1},
@@ -343,6 +404,7 @@ func TestTheGatheringKeepsRowsAndWritesNoTicket(t *testing.T) {
 		{FormID: w.formID, ResponseID: uuid.New(), Status: formsfeed.StatusAccepted, Version: 1, Answers: map[string]string{"n": "Linus Torvalds", "e": "linus@example.com"}},
 		{FormID: w.formID, ResponseID: uuid.New(), Status: formsfeed.StatusDeclined, Version: 1, Answers: map[string]string{"n": "Ken Thompson", "e": "ken@example.com"}},
 		{FormID: w.formID, ResponseID: ada, Status: formsfeed.StatusAccepted, Version: 1, Answers: map[string]string{"n": "Ada Lovelace", "e": "ada@example.com"}},
+		{FormID: w.formID, ResponseID: uuid.New(), Status: formsfeed.StatusAccepted, Version: 1, Answers: map[string]string{"n": "Cher", "e": "cher@example.com"}},
 	}
 	recorder := &formsfeed.Recorder{
 		Events: w.events, Record: w.record, Respondents: w.rs,
@@ -378,5 +440,11 @@ func TestTheGatheringKeepsRowsAndWritesNoTicket(t *testing.T) {
 	}
 	if n := w.count(t, `SELECT count(*) FROM form_pulls`); n != 0 {
 		t.Fatalf("%d jobs left", n)
+	}
+	// K3: the one-word name is counted for the panel, once however often
+	// the form is gathered.
+	page, _, err := w.rs.List(ctx, w.editor, w.ev.ID, formsfeed.RespondentQuery{})
+	if err != nil || page.Incomplete != (formsfeed.CollectCounts{MissingName: 1}) {
+		t.Fatalf("incomplete %+v %v", page.Incomplete, err)
 	}
 }

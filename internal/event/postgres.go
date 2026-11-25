@@ -410,10 +410,12 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 	}
 	// The Unticketed respondents of a form the Event let go go with it, in
 	// the same transaction (docs/form-respondents.md).
-	if _, err := tx.Exec(ctx, `
-		DELETE FROM event_form_respondents WHERE event_id = $1 AND NOT (form_id = ANY($2::uuid[]))`,
-		e.ID, ApplicationFormIDs(e)); err != nil {
-		return Event{}, err
+	for _, table := range []string{"event_form_respondents", "event_form_collect_counts"} {
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM `+table+` WHERE event_id = $1 AND NOT (form_id = ANY($2::uuid[]))`,
+			e.ID, ApplicationFormIDs(e)); err != nil {
+			return Event{}, err
+		}
 	}
 	// The Event's template follows its Owner team, in the same
 	// transaction (docs/certificate-event-templates.md#copy-and-team-change).

@@ -41,6 +41,13 @@ type Service interface {
 	// AdmitFormRespondent writes an Unticketed respondent's Ticket on the
 	// Event (docs/form-respondents.md); the caller checked who may.
 	AdmitFormRespondent(ctx context.Context, eventID uuid.UUID, r FormRespondent) (FormRespondentOutcome, error)
+	// KeepFormRespondent applies an accepted answer to the person's Ticket
+	// on the Event without writing one; EnsureFormRespondent makes sure core
+	// has a signed-in person's row; BeginFormRespondentSend opens the
+	// sending's Team audit row (docs/form-respondents.md).
+	KeepFormRespondent(ctx context.Context, eventID uuid.UUID, r FormRespondent) error
+	EnsureFormRespondent(ctx context.Context, userID uuid.UUID) (bool, error)
+	BeginFormRespondentSend(ctx context.Context, p authz.Principal, eventID uuid.UUID) (*FormRespondentSend, error)
 	Mine(ctx context.Context, p authz.Principal) ([]Ticket, error)
 	// MineIncluding is the holder's active Tickets and those of the other
 	// statuses include names (GET /v1/tickets/me?include=…).

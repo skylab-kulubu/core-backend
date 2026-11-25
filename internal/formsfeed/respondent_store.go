@@ -59,11 +59,22 @@ type RespondentQuery struct {
 	Limit       int
 }
 
-// RespondentPage is a page and the count of every row the query selects.
+// RespondentPage is a page and the count of every row the query selects,
+// with the last gatherings' counts of answers kept as nobody.
 type RespondentPage struct {
 	Items      []RespondentRow
 	NextCursor string
 	Total      int
+	Incomplete CollectCounts
+}
+
+// CollectCounts are a gathering's answers that name nobody usable (K3): an
+// e-mail that is no plain address, no first and last name (a one-word full
+// name too), or no person at all (no sign-in, no named guest, no mapping).
+type CollectCounts struct {
+	MissingName  int `json:"missingName"`
+	MissingEmail int `json:"missingEmail"`
+	NoPerson     int `json:"noPerson"`
 }
 
 // RespondentStore keeps the Unticketed respondents (PostgresRespondents).
@@ -89,10 +100,9 @@ type RespondentStore interface {
 	// Ticketed reports whether the person of the row holds a Ticket on its
 	// Event (as Keep reads it).
 	Ticketed(ctx context.Context, row RespondentRow) (bool, error)
-	// AcceptAgain keeps that the answer is accepted again on its Tickets
-	// marked pending (tickets.form_response_status), when the Ticket rule
-	// did not run (every Event's "Otomatik bilet gönder" off).
-	AcceptAgain(ctx context.Context, responseID uuid.UUID) error
+	// SaveCollectCounts keeps the last full gathering's counts of the
+	// Event's form (event_form_collect_counts), replacing the earlier ones.
+	SaveCollectCounts(ctx context.Context, eventID, formID uuid.UUID, c CollectCounts, now time.Time) error
 	// Counts is the preview's input over the rows selected (ids, or every
 	// row of the Event, of formID when set): accepted rows whose person
 	// holds no Ticket, accepted rows whose person holds one, pending rows.
@@ -231,6 +241,12 @@ func (s *PostgresRespondents) List(ctx context.Context, eventID uuid.UUID, q Res
 		eventID, q.FormID, q.FormsStatus, search).Scan(&page.Total); err != nil {
 		return RespondentPage{}, err
 	}
+	if err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(sum(missing_name), 0), COALESCE(sum(missing_email), 0), COALESCE(sum(no_person), 0)
+		FROM event_form_collect_counts WHERE event_id = $1 AND ($2::uuid IS NULL OR form_id = $2)`, eventID, q.FormID).
+		Scan(&page.Incomplete.MissingName, &page.Incomplete.MissingEmail, &page.Incomplete.NoPerson); err != nil {
+		return RespondentPage{}, err
+	}
 	// Keyset over (submitted_at NULLS LAST, id): a row without a time
 	// comes after every row with one.
 	var afterAt *time.Time
@@ -328,8 +344,12 @@ func (s *PostgresRespondents) Counts(ctx context.Context, eventID uuid.UUID, ids
 	return candidates, ticketed, pending, err
 }
 
-func (s *PostgresRespondents) AcceptAgain(ctx context.Context, responseID uuid.UUID) error {
-	_, err := s.pool.Exec(ctx, `UPDATE tickets SET form_response_status = 'accepted', updated_at = now()
-		WHERE form_response_id = $1 AND form_response_status = 'pending' AND status <> 'cancelled'`, responseID)
+func (s *PostgresRespondents) SaveCollectCounts(ctx context.Context, eventID, formID uuid.UUID, c CollectCounts, now time.Time) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO event_form_collect_counts (event_id, form_id, missing_name, missing_email, no_person, collected_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (event_id, form_id) DO UPDATE SET missing_name = EXCLUDED.missing_name,
+			missing_email = EXCLUDED.missing_email, no_person = EXCLUDED.no_person, collected_at = EXCLUDED.collected_at`,
+		eventID, formID, c.MissingName, c.MissingEmail, c.NoPerson, now.UTC())
 	return err
 }

@@ -130,6 +130,26 @@ func MappedGuest(m Mapping, answers map[string]string) (ticket.GuestInfo, bool) 
 	return ticket.GuestInfo{FirstName: first, LastName: last, Email: email}, true
 }
 
+// Why a mapped answer gives no guest (MappedGuestProblem): the panel's
+// counts of the gathering (K3).
+const (
+	ProblemMissingEmail = "missing_email"
+	ProblemMissingName  = "missing_name"
+)
+
+// MappedGuestProblem is why MappedGuest gives no guest from the answers:
+// ProblemMissingEmail for an e-mail that is no plain address, else
+// ProblemMissingName; "" when it gives one.
+func MappedGuestProblem(m Mapping, answers map[string]string) string {
+	if _, ok := MappedGuest(m, answers); ok {
+		return ""
+	}
+	if m.Email == "" || !plainAddress(strings.ToLower(strings.TrimSpace(answers[m.Email]))) {
+		return ProblemMissingEmail
+	}
+	return ProblemMissingName
+}
+
 // splitFullName splits a full name at its spaces: the last word is the last
 // name, the words before it the first name.
 //

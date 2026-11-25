@@ -9,6 +9,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/formsfeed"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 )
 
 type stubRespondents struct {
@@ -20,7 +21,8 @@ type stubRespondents struct {
 
 func (s *stubRespondents) List(_ context.Context, _ authz.Principal, _ uuid.UUID, q formsfeed.RespondentQuery) (formsfeed.RespondentPage, bool, error) {
 	s.query = q
-	return formsfeed.RespondentPage{Items: []formsfeed.RespondentRow{{ID: uuid.New(), FormsStatus: "pending", Source: "new", Email: "ada@example.com"}}, Total: 1}, true, s.err
+	return formsfeed.RespondentPage{Items: []formsfeed.RespondentRow{{ID: uuid.New(), FormsStatus: "pending", Source: "new", Email: "ada@example.com"}}, Total: 1,
+		Incomplete: formsfeed.CollectCounts{MissingName: 2}}, true, s.err
 }
 
 func (s *stubRespondents) Preview(_ context.Context, _ authz.Principal, _ uuid.UUID, sel formsfeed.Selection) (formsfeed.Preview, error) {
@@ -61,7 +63,8 @@ func TestRespondentRoutesAnswerTheContract(t *testing.T) {
 	form := uuid.NewString()
 
 	status, body := mappingCall(t, app, "GET", base+"?formId="+form+"&formsStatus=pending&limit=10", "")
-	if status != fiber.StatusOK || body["total"] != float64(1) || body["collecting"] != true || body["nextCursor"] != nil {
+	if status != fiber.StatusOK || body["total"] != float64(1) || body["collecting"] != true || body["nextCursor"] != nil ||
+		body["incomplete"].(map[string]any)["missingName"] != float64(2) {
 		t.Fatalf("list %d %v", status, body)
 	}
 	if stub.query.FormID == nil || stub.query.FormID.String() != form || stub.query.FormsStatus != "pending" || stub.query.Limit != 10 {
@@ -107,6 +110,7 @@ func TestRespondentRoutesAnswerTheContract(t *testing.T) {
 		formsfeed.ErrTicketJobNotFound:         {fiber.StatusNotFound, "ticket_job_not_found"},
 		formsfeed.ErrMappingForbidden:          {fiber.StatusForbidden, nil},
 		formsfeed.ErrMappingEventNotFound:      {fiber.StatusNotFound, nil},
+		teamaudit.ErrUnavailable:               {fiber.StatusServiceUnavailable, auditUnavailableCode},
 	} {
 		stub.err = err
 		status, body := mappingCall(t, app, "POST", base+"/tickets", `{"ids":["`+id+`"]}`)

@@ -64,7 +64,7 @@ func (q *memQueue) Claim(context.Context, time.Time) (PullJob, bool, error) {
 	return j, true, nil
 }
 
-func (q *memQueue) SaveCursor(_ context.Context, _ uuid.UUID, cursor string, _ time.Time) error {
+func (q *memQueue) SaveCursor(_ context.Context, _ PullJob, cursor string, _ time.Time) error {
 	q.cursors = append(q.cursors, cursor)
 	return nil
 }

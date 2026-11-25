@@ -73,20 +73,26 @@ type PullJob struct {
 // PullQueue is the jobs and the watermarks (PostgresPulls).
 type PullQueue interface {
 	// Backfill queues an organizer's gathering of the form (PullCollect);
-	// false when one is waiting already. Asked again within
-	// BackfillCooldown it is a *BackfillCooldownError, and nothing changes.
+	// false when one waits already, which then runs again from its start
+	// (Collect). Asked again within BackfillCooldown it is a
+	// *BackfillCooldownError, and nothing changes.
 	Backfill(ctx context.Context, formID, eventID, requestedBy uuid.UUID, now time.Time) (bool, error)
-	// Collect queues the gathering of a form an Event just linked, with
-	// no cooldown; false when one is waiting already. A form the daily
+	// Collect queues the gathering of a form an Event just linked (or whose
+	// mapping was first saved), with no cooldown; false when one waits or
+	// runs already: that one is asked to run again from its first page
+	// (requested_at moves, the cursor goes), so what changed since it
+	// started (a mapping saved meanwhile) is read too. A form the daily
 	// pass has not seen gets its watermark now.
 	Collect(ctx context.Context, formID, eventID uuid.UUID, now time.Time) (bool, error)
 	// Claim takes the next due job and keeps it from others for pullLease.
 	Claim(ctx context.Context, now time.Time) (PullJob, bool, error)
 	// SaveCursor keeps the next page's cursor of a running job and renews
-	// its lease from now.
-	SaveCursor(ctx context.Context, id uuid.UUID, cursor string, now time.Time) error
+	// its lease from now; nothing when the job was asked again since it was
+	// claimed (its requested_at moved).
+	SaveCursor(ctx context.Context, job PullJob, cursor string, now time.Time) error
 	// Finish deletes a done job and moves its form's watermark forward to
-	// watermark (nil leaves it).
+	// watermark (nil leaves it); a job asked again since it was claimed is
+	// kept and runs again at once.
 	Finish(ctx context.Context, job PullJob, watermark *time.Time, now time.Time) error
 	// Retry counts a failed try and sets the next.
 	Retry(ctx context.Context, id uuid.UUID, attempts int, next time.Time) error
@@ -131,14 +137,13 @@ func (s *PostgresPulls) Backfill(ctx context.Context, formID, eventID, requested
 	if err != nil {
 		return false, err
 	}
-	var id uuid.UUID
+	var queued bool
 	err = tx.QueryRow(ctx, `
 		INSERT INTO form_pulls (id, form_id, kind, event_id, requested_by, requested_at, next_attempt_at)
 		VALUES ($1, $2, 'collect', $3, $4, $5, $5)
-		ON CONFLICT (form_id, kind) DO NOTHING
-		RETURNING id`, uuid.New(), formID, eventID, requestedBy, now).Scan(&id)
-	queued := err == nil
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		ON CONFLICT (form_id, kind) DO UPDATE SET `+collectAgainSQL+`
+		RETURNING (xmax = 0)`, uuid.New(), formID, eventID, requestedBy, now).Scan(&queued)
+	if err != nil {
 		return false, err
 	}
 	return queued, tx.Commit(ctx)
@@ -156,15 +161,26 @@ func (s *PostgresPulls) Collect(ctx context.Context, formID, eventID uuid.UUID, 
 		ON CONFLICT (form_id) DO NOTHING`, formID, now, now.Add(CatchupEvery)); err != nil {
 		return false, err
 	}
-	tag, err := tx.Exec(ctx, `
+	var queued bool
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO form_pulls (id, form_id, kind, event_id, requested_at, next_attempt_at)
 		VALUES ($1, $2, 'collect', $3, $4, $4)
-		ON CONFLICT (form_id, kind) DO NOTHING`, uuid.New(), formID, eventID, now)
-	if err != nil {
+		ON CONFLICT (form_id, kind) DO UPDATE SET `+collectAgainSQL+`
+		RETURNING (xmax = 0)`, uuid.New(), formID, eventID, now).Scan(&queued); err != nil {
 		return false, err
 	}
-	return tag.RowsAffected() > 0, tx.Commit(ctx)
+	return queued, tx.Commit(ctx)
 }
+
+// collectAgainSQL asks a waiting or running gathering to run again from its
+// first page: requested_at moves (a run claimed before keeps neither its
+// cursor nor its end, SaveCursor and Finish), the cursor goes, and one
+// waiting out a failure's back-off is due at once. A running one keeps its
+// lease (no second run beside it); a parked one (the down migration) stays
+// parked.
+const collectAgainSQL = `requested_at = EXCLUDED.requested_at, cursor = NULL, event_id = EXCLUDED.event_id,
+		next_attempt_at = CASE WHEN form_pulls.attempts > 0 AND form_pulls.next_attempt_at <> 'infinity'
+			THEN LEAST(form_pulls.next_attempt_at, EXCLUDED.next_attempt_at) ELSE form_pulls.next_attempt_at END`
 
 // Collecting reports whether a gathering of the Event's form (any of its
 // forms for nil) waits or runs (CollectingReader).
@@ -173,7 +189,7 @@ func (s *PostgresPulls) Collecting(ctx context.Context, eventID uuid.UUID, formI
 	err := s.pool.QueryRow(ctx, `
 		SELECT EXISTS (SELECT 1 FROM form_pulls
 			WHERE kind IN ('collect', 'backfill') AND event_id = $1 AND ($2::uuid IS NULL OR form_id = $2)
-			  AND next_attempt_at <> 'infinity')`, eventID, formID).Scan(&collecting)
+			  AND attempts = 0 AND next_attempt_at <> 'infinity')`, eventID, formID).Scan(&collecting)
 	return collecting, err
 }
 
@@ -201,9 +217,17 @@ func (s *PostgresPulls) Claim(ctx context.Context, now time.Time) (PullJob, bool
 	return j, true, nil
 }
 
-func (s *PostgresPulls) SaveCursor(ctx context.Context, id uuid.UUID, cursor string, now time.Time) error {
-	_, err := s.pool.Exec(ctx, `UPDATE form_pulls SET cursor = NULLIF($2, ''), next_attempt_at = $3 WHERE id = $1`, id, cursor, now.Add(pullLease))
+func (s *PostgresPulls) SaveCursor(ctx context.Context, job PullJob, cursor string, now time.Time) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE form_pulls SET cursor = NULLIF($2, ''), next_attempt_at = `+notParkedSQL("$3")+`
+		WHERE id = $1 AND requested_at = $4`, job.ID, cursor, now.Add(pullLease), job.RequestedAt)
 	return err
+}
+
+// notParkedSQL sets next_attempt_at to value, unless the job is parked
+// ('infinity', the down migration's): that stays.
+func notParkedSQL(value string) string {
+	return `CASE WHEN next_attempt_at = 'infinity' THEN next_attempt_at ELSE ` + value + ` END`
 }
 
 func (s *PostgresPulls) Finish(ctx context.Context, job PullJob, watermark *time.Time, now time.Time) error {
@@ -212,8 +236,15 @@ func (s *PostgresPulls) Finish(ctx context.Context, job PullJob, watermark *time
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `DELETE FROM form_pulls WHERE id = $1`, job.ID); err != nil {
+	tag, err := tx.Exec(ctx, `DELETE FROM form_pulls WHERE id = $1 AND requested_at = $2`, job.ID, job.RequestedAt)
+	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 0 {
+		// Asked again while it ran: it runs again, from its first page.
+		if _, err := tx.Exec(ctx, `UPDATE form_pulls SET attempts = 0, next_attempt_at = `+notParkedSQL("$2")+` WHERE id = $1`, job.ID, now); err != nil {
+			return err
+		}
 	}
 	if watermark != nil {
 		if _, err := tx.Exec(ctx, `
@@ -228,7 +259,7 @@ func (s *PostgresPulls) Finish(ctx context.Context, job PullJob, watermark *time
 }
 
 func (s *PostgresPulls) Retry(ctx context.Context, id uuid.UUID, attempts int, next time.Time) error {
-	_, err := s.pool.Exec(ctx, `UPDATE form_pulls SET attempts = $2, next_attempt_at = $3 WHERE id = $1`, id, attempts, next)
+	_, err := s.pool.Exec(ctx, `UPDATE form_pulls SET attempts = $2, next_attempt_at = `+notParkedSQL("$3")+` WHERE id = $1`, id, attempts, next)
 	return err
 }
 

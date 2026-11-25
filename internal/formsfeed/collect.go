@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/events"
+	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
 
 // Collects queues the gathering of a form's answers (PullCollect) when an
@@ -150,7 +152,15 @@ func (p *Puller) collect(ctx context.Context, job PullJob, res *pullResult) erro
 			}
 		}
 		if page.NextCursor == "" {
-			return nil
+			if job.Cursor != "" {
+				// A run that went on from a saved page saw part of the
+				// form: its counts are not the form's.
+				return nil
+			}
+			return rs.Store.SaveCollectCounts(ctx, ev.ID, job.FormID, CollectCounts{
+				MissingName: res.outcomes[ProblemMissingName], MissingEmail: res.outcomes[ProblemMissingEmail],
+				NoPerson: res.outcomes["no_respondent"],
+			}, p.now())
 		}
 		if page.NextCursor == q.After {
 			return invalid("Forms' cursor did not move")
@@ -158,7 +168,7 @@ func (p *Puller) collect(ctx context.Context, job PullJob, res *pullResult) erro
 		if res.pages >= maxPagesPerRun {
 			return invalid("Forms' list goes on past %d pages", maxPagesPerRun)
 		}
-		if err := p.Queue.SaveCursor(ctx, job.ID, page.NextCursor, p.now()); err != nil {
+		if err := p.Queue.SaveCursor(ctx, job, page.NextCursor, p.now()); err != nil {
 			return err
 		}
 		q.After = page.NextCursor
@@ -206,16 +216,28 @@ func (p *Puller) keepCollected(ctx context.Context, rs *Respondents, eventID uui
 	}
 	respondents, unresolved := ResolveRespondents(item.UserID, guest, item.Answers, mappings)
 	if unresolved != "" {
-		return string(unresolved), nil
+		// K3: why the mapping gives no guest, for the panel's counts.
+		return MappedGuestProblem(mappings[0], item.Answers), nil
 	}
 	if len(respondents) == 0 || respondents[0].Source == RespondentNobody {
 		return "no_respondent", nil
 	}
 	row, ok := respondentRow(respondents[0], eventID, item.FormID, item.ResponseID, item.SubmittedAt, item.Status, SourceCollect)
 	if !ok {
-		return string("mapping_incomplete"), nil
+		// Forms' named guest without a usable address or name.
+		if guest == nil || !plainAddress(strings.ToLower(strings.TrimSpace(guest.Email))) {
+			return ProblemMissingEmail, nil
+		}
+		return ProblemMissingName, nil
 	}
-	kept, err := rs.Store.Keep(ctx, row)
+	if row.UserID != nil && rs.Tickets != nil {
+		if ok, err := rs.Tickets.EnsureFormRespondent(ctx, *row.UserID); err != nil {
+			return OutcomeFailed, err
+		} else if !ok {
+			return string(ticket.FormResponsePersonUnavailable), nil
+		}
+	}
+	kept, err := rs.keep(ctx, row)
 	switch {
 	case err != nil:
 		return OutcomeFailed, err

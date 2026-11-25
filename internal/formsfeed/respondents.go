@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -29,6 +30,9 @@ const (
 // Ticket rule (ticket.Service.AdmitFormRespondent).
 type RespondentTicketer interface {
 	AdmitFormRespondent(ctx context.Context, eventID uuid.UUID, r ticket.FormRespondent) (ticket.FormRespondentOutcome, error)
+	KeepFormRespondent(ctx context.Context, eventID uuid.UUID, r ticket.FormRespondent) error
+	EnsureFormRespondent(ctx context.Context, userID uuid.UUID) (bool, error)
+	BeginFormRespondentSend(ctx context.Context, p authz.Principal, eventID uuid.UUID) (*ticket.FormRespondentSend, error)
 }
 
 // CapacityFunc reads an Event's capacity now (event.ReadCapacity).
@@ -201,11 +205,6 @@ func (s *Respondents) Route(ctx context.Context, record RecordFunc, report ticke
 		if result, err = RecordRespondents(ctx, record, withOn, respondents); err != nil {
 			return result, err
 		}
-	} else if err := s.Store.AcceptAgain(ctx, report.ResponseID); err != nil {
-		// Every Event has the setting off: the rule does not run, so the
-		// pending status an earlier report left on a Ticket turns accepted
-		// here.
-		return result, err
 	}
 	if result.Outcome == ticket.FormResponsePersonUnavailable || result.Outcome == ticket.FormResponseFeedback {
 		return result, nil
@@ -224,7 +223,15 @@ func (s *Respondents) Route(ctx context.Context, record RecordFunc, report ticke
 			if !ok {
 				continue
 			}
-			got, err := s.Store.Keep(ctx, row)
+			if report.Status == ticket.FormResponseAccepted && !autoTicket(ev) && s.Tickets != nil {
+				// The rule did not run on this Event: a Ticket the person
+				// holds here takes the accepted answer as the rule would
+				// (Forms' rejection cleared, a Returned answer taken over).
+				if err := s.Tickets.KeepFormRespondent(ctx, ev.ID, rowRespondent(row)); err != nil {
+					return result, err
+				}
+			}
+			got, err := s.keep(ctx, row)
 			if err != nil {
 				return result, err
 			}
@@ -245,6 +252,32 @@ func (s *Respondents) Route(ctx context.Context, record RecordFunc, report ticke
 		result.Outcome = ticket.FormResponseRecorded
 	}
 	return result, nil
+}
+
+// rowRespondent is the row's person as the Ticket rule takes them.
+func rowRespondent(row RespondentRow) ticket.FormRespondent {
+	r := ticket.FormRespondent{FormID: row.FormID, ResponseID: row.ResponseID, UserID: row.UserID}
+	if row.UserID == nil {
+		r.Guest = &ticket.GuestInfo{FirstName: row.FirstName, LastName: row.LastName, Email: row.Email}
+	}
+	return r
+}
+
+// keep keeps the row (RespondentStore.Keep); a signed-in person core cannot
+// find, or whose account is blocked or erased, is not kept (the row names
+// only an active account, as the rule's Ticket does).
+func (s *Respondents) keep(ctx context.Context, row RespondentRow) (bool, error) {
+	if row.UserID != nil && s.Tickets != nil {
+		ok, err := s.Tickets.EnsureFormRespondent(ctx, *row.UserID)
+		if err != nil || !ok {
+			return false, err
+		}
+	}
+	kept, err := s.Store.Keep(ctx, row)
+	if subjectlock.IsInactiveAccountReference(err) {
+		return false, nil
+	}
+	return kept, err
 }
 
 // Refusals of the respondent routes (the handler's problem codes).
@@ -278,9 +311,13 @@ func (sel Selection) valid() bool {
 	return len(sel.IDs) > 0 && len(sel.IDs) <= MaxRespondentIDs
 }
 
-// editable reads the Event and checks the caller may edit it (a person,
-// never a product's service account), as the form mapping does.
-func (s *Respondents) editable(ctx context.Context, p authz.Principal, eventID uuid.UUID) (event.Event, error) {
+// operable reads the Event and checks the caller may do action on its
+// Tickets (authz TypeTicket on the Event, its Co-organizers included, as
+// the Event's Ticket routes; #456): Read for the list, Assign for the
+// preview, the sending and its job. A Co-organizer team that only lets its
+// members see the Event sends no Ticket. Never a product's service account.
+// A draft the caller may not see is ErrMappingEventNotFound.
+func (s *Respondents) operable(ctx context.Context, p authz.Principal, eventID uuid.UUID, action authz.Action) (event.Event, error) {
 	ev, err := s.Events.Get(ctx, eventID)
 	if errors.Is(err, event.ErrNotFound) {
 		return event.Event{}, ErrMappingEventNotFound
@@ -291,8 +328,8 @@ func (s *Respondents) editable(ctx context.Context, p authz.Principal, eventID u
 	if ev.ArchivedAt != nil {
 		return event.Event{}, ErrMappingEventNotFound
 	}
-	if p.ServiceAccount || s.Authz == nil || !s.Authz.Allow(p, event.AuthzResource(ev, authz.TypeEvent, s.now()), authz.Update) {
-		if ev.Status == event.StatusDraft {
+	if p.ServiceAccount || s.Authz == nil || !s.Authz.Allow(p, event.AuthzResource(ev, authz.TypeTicket, s.now()), action) {
+		if s.Authz == nil || !event.VisibleTo(s.Authz, &p, ev) {
 			return event.Event{}, ErrMappingEventNotFound
 		}
 		return event.Event{}, ErrMappingForbidden
@@ -320,7 +357,7 @@ const (
 // List is a page of the Event's Unticketed respondents, and whether a
 // gathering of its forms (of q's form) still runs.
 func (s *Respondents) List(ctx context.Context, p authz.Principal, eventID uuid.UUID, q RespondentQuery) (RespondentPage, bool, error) {
-	if _, err := s.editable(ctx, p, eventID); err != nil {
+	if _, err := s.operable(ctx, p, eventID, authz.Read); err != nil {
 		return RespondentPage{}, false, err
 	}
 	switch q.FormsStatus {
@@ -399,7 +436,7 @@ type Preview struct {
 // Preview counts what Send would do with the selection now. A count, not a
 // promise: a registration in between takes a place too.
 func (s *Respondents) Preview(ctx context.Context, p authz.Principal, eventID uuid.UUID, sel Selection) (Preview, error) {
-	ev, err := s.editable(ctx, p, eventID)
+	ev, err := s.operable(ctx, p, eventID, authz.Assign)
 	if err != nil {
 		return Preview{}, err
 	}
@@ -449,21 +486,33 @@ func (r *SendResult) add(o SendResult) {
 	r.Skipped += o.Skipped
 }
 
+// sent is what send did, with the audit row's counts.
+type sent struct {
+	SendResult
+	// handled is how many of the rows send finished, in order: on an
+	// error, the rows before it (a job goes on after them).
+	handled int
+	audit   ticket.FormRespondentSummary
+}
+
 // send writes the Tickets of rows one by one by the one Ticket rule. A row
 // whose person holds a Ticket after it (written now or before) goes; a
 // full Event's stays; a pending row is skipped and stays.
-func (s *Respondents) send(ctx context.Context, eventID uuid.UUID, rows []RespondentRow) (SendResult, error) {
-	var res SendResult
-	for _, row := range rows {
+func (s *Respondents) send(ctx context.Context, eventID uuid.UUID, rows []RespondentRow) (sent, error) {
+	var res sent
+	for i, row := range rows {
+		res.handled = i
+		res.audit.Rows++
+		if row.UserID != nil {
+			res.audit.Members++
+		} else {
+			res.audit.Guests++
+		}
 		if row.FormsStatus != RespondentAccepted {
 			res.Skipped++
 			continue
 		}
-		r := ticket.FormRespondent{FormID: row.FormID, ResponseID: row.ResponseID, UserID: row.UserID}
-		if row.UserID == nil {
-			r.Guest = &ticket.GuestInfo{FirstName: row.FirstName, LastName: row.LastName, Email: row.Email}
-		}
-		outcome, err := s.Tickets.AdmitFormRespondent(ctx, eventID, r)
+		outcome, err := s.Tickets.AdmitFormRespondent(ctx, eventID, rowRespondent(row))
 		switch {
 		case errors.Is(err, ticket.ErrEventCancelled):
 			return res, ErrRespondentsEventCancelled
@@ -477,27 +526,37 @@ func (s *Respondents) send(ctx context.Context, eventID uuid.UUID, rows []Respon
 		switch outcome {
 		case ticket.FormRespondentFull:
 			res.Full++
+			res.audit.Full++
 			continue
 		case ticket.FormRespondentRecorded:
 			res.Recorded++
+			res.audit.Recorded++
 		case ticket.FormRespondentWaitlisted:
 			res.Waitlisted++
+			res.audit.Waitlisted++
 		default:
 			res.Skipped++
+			res.audit.Existing++
 		}
 		if err := s.Store.Delete(ctx, row.ID); err != nil {
+			// The Ticket is written: the row is handled, its count kept.
+			res.handled = i + 1
 			return res, err
 		}
 	}
+	res.handled = len(rows)
 	return res, nil
 }
 
 // Send writes the selection's Tickets: up to MaxRespondentIDs ids now, all
 // of them as a background job (its id; one waiting job an Event and form,
 // so the same request again finds it). Sending the same ids again writes
-// no second Ticket: their rows went with the first.
+// no second Ticket: their rows went with the first. Each request writes a
+// Team audit row (ticket.import, as an attendee import); with the record
+// on and no row, it is refused (teamaudit.ErrUnavailable) before anything
+// is written.
 func (s *Respondents) Send(ctx context.Context, p authz.Principal, eventID uuid.UUID, sel Selection) (SendResult, *uuid.UUID, error) {
-	ev, err := s.editable(ctx, p, eventID)
+	ev, err := s.operable(ctx, p, eventID, authz.Assign)
 	if err != nil {
 		return SendResult{}, nil, err
 	}
@@ -507,12 +566,24 @@ func (s *Respondents) Send(ctx context.Context, p authz.Principal, eventID uuid.
 	if err := s.ticketable(ev); err != nil {
 		return SendResult{}, nil, err
 	}
+	audit, err := s.Tickets.BeginFormRespondentSend(ctx, p, eventID)
+	if err != nil {
+		return SendResult{}, nil, err
+	}
 	if sel.All {
 		var by *uuid.UUID
 		if id, err := uuid.Parse(p.ID); err == nil {
 			by = &id
 		}
+		// The row says what was asked: the accepted rows to send now; the
+		// job's counts are its own (GET …/ticket-jobs/{jobId}).
+		candidates, ticketed, pending, err := s.Store.Counts(ctx, eventID, nil, true, sel.FormID)
+		if err != nil {
+			audit.Finish(ctx, ticket.FormRespondentSummary{}, err)
+			return SendResult{}, nil, err
+		}
 		id, err := s.Jobs.Enqueue(ctx, eventID, sel.FormID, by, s.now().UTC())
+		audit.Finish(ctx, ticket.FormRespondentSummary{Rows: candidates + ticketed + pending}, err)
 		if err != nil {
 			return SendResult{}, nil, err
 		}
@@ -528,17 +599,19 @@ func (s *Respondents) Send(ctx context.Context, p authz.Principal, eventID uuid.
 	ids = slices.Compact(ids)
 	rows, err := s.Store.ByIDs(ctx, eventID, ids)
 	if err != nil {
+		audit.Finish(ctx, ticket.FormRespondentSummary{}, err)
 		return SendResult{}, nil, err
 	}
 	res, err := s.send(ctx, eventID, rows)
 	res.Skipped += len(ids) - len(rows)
+	audit.Finish(ctx, res.audit, err)
 	s.log("send", eventID, uuid.Nil, "done", res.Recorded+res.Waitlisted)
-	return res, nil, err
+	return res.SendResult, nil, err
 }
 
 // Job reads one of the Event's ticket jobs.
 func (s *Respondents) Job(ctx context.Context, p authz.Principal, eventID, jobID uuid.UUID) (TicketJob, error) {
-	if _, err := s.editable(ctx, p, eventID); err != nil {
+	if _, err := s.operable(ctx, p, eventID, authz.Assign); err != nil {
 		return TicketJob{}, err
 	}
 	return s.Jobs.Get(ctx, eventID, jobID)

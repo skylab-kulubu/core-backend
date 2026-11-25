@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -111,4 +113,106 @@ func (s *service) AdmitFormRespondent(ctx context.Context, eventID uuid.UUID, r 
 		return FormRespondentWaitlisted, nil
 	}
 	return FormRespondentRecorded, nil
+}
+
+// KeepFormRespondent applies an accepted answer to the Ticket the person
+// already holds on the Event, without writing one: the rule's
+// keepAcceptedAnswer (#460), for an Event whose "Otomatik bilet gönder" is
+// off. The answer accepted again clears Forms' rejection and is accepted
+// again; a newer answer of the same holder to the same form takes the
+// Ticket over when the Ticket's answer is no longer accepted (Returned). No
+// Ticket there: nothing.
+func (s *service) KeepFormRespondent(ctx context.Context, eventID uuid.UUID, r FormRespondent) error {
+	var t Ticket
+	var err error
+	switch {
+	case r.UserID != nil && *r.UserID != uuid.Nil:
+		t, err = s.tickets.GetByOwnerEvent(ctx, *r.UserID, eventID)
+	case r.Guest != nil:
+		email := normalizeGuest(*r.Guest).Email
+		if email == "" {
+			return nil
+		}
+		t, err = s.tickets.GetByGuestEvent(ctx, email, eventID)
+	default:
+		return nil
+	}
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	userID := r.UserID
+	if userID != nil && *userID == uuid.Nil {
+		userID = nil
+	}
+	return s.keepAcceptedAnswer(ctx, t, FormResponse{FormID: r.FormID, ResponseID: r.ResponseID, UserID: userID})
+}
+
+// EnsureFormRespondent makes sure core has the signed-in person's account
+// row before an Unticketed respondent names them (the row's user_id is a
+// current-identity link): as the rule does before it writes their Ticket.
+// False for a person core cannot find, or whose account is blocked or no
+// longer active.
+func (s *service) EnsureFormRespondent(ctx context.Context, userID uuid.UUID) (bool, error) {
+	if err := s.resolveApplyTarget(ctx, userID); err != nil {
+		if err := settledFormResponse(err); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+// FormRespondentSummary counts an organizer's sending of Unticketed
+// respondents' Tickets, for its Team audit row.
+type FormRespondentSummary struct {
+	Rows, Recorded, Waitlisted, Full, Existing, Members, Guests int
+}
+
+// FormRespondentSend is the Team audit row of one sending
+// (BeginFormRespondentSend); nil when the record is off.
+type FormRespondentSend struct {
+	s      *service
+	record *auditRecord
+}
+
+// BeginFormRespondentSend opens the Team audit row of an organizer's sending
+// of Unticketed respondents' Tickets (docs/form-respondents.md), as an
+// attendee import's (ticket.import: the Event, no one Ticket; privileged,
+// else the Leader, else the Event's editor). With the record on and no row,
+// the sending is refused (teamaudit.ErrUnavailable): no row, no Ticket.
+func (s *service) BeginFormRespondentSend(ctx context.Context, p authz.Principal, eventID uuid.UUID) (*FormRespondentSend, error) {
+	ev, err := s.events.Get(ctx, eventID)
+	if errors.Is(err, event.ErrNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	record, err := s.beginTicketAuditBasis(ctx, p, ev, teamaudit.ActionTicketImport, uuid.Nil, s.privilegedOperator(p), true)
+	if err != nil {
+		return nil, err
+	}
+	return &FormRespondentSend{s: s, record: record}, nil
+}
+
+// Finish writes the sending's outcome and counts to its row.
+func (a *FormRespondentSend) Finish(ctx context.Context, sum FormRespondentSummary, err error) {
+	if a == nil || a.record == nil {
+		return
+	}
+	outcome, code := teamaudit.OutcomeOK, ""
+	if err != nil {
+		outcome, code = teamaudit.OutcomeFailed, "failed"
+	}
+	after := a.record.after
+	after.Import = &teamaudit.ImportCounts{
+		Rows: sum.Rows, Created: sum.Recorded, Waitlisted: sum.Waitlisted, Members: sum.Members, Guests: sum.Guests,
+		Existing: sum.Existing, Full: sum.Full, Mail: true,
+	}
+	if ferr := a.s.audit.Finish(ctx, a.record.id, outcome, code, &after); ferr != nil {
+		a.s.logger.Printf("tickets: audit record %s stays pending", a.record.id)
+	}
 }

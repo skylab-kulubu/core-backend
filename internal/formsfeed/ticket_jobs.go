@@ -88,19 +88,27 @@ func scanTicketJob(row pgx.Row) (TicketJob, error) {
 }
 
 func (s *PostgresTicketJobs) Enqueue(ctx context.Context, eventID uuid.UUID, formID, requestedBy *uuid.UUID, now time.Time) (uuid.UUID, error) {
-	var id uuid.UUID
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO respondent_ticket_jobs (id, event_id, form_id, requested_by, next_attempt_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $5, $5)
-		ON CONFLICT (event_id, COALESCE(form_id, '00000000-0000-0000-0000-000000000000'::uuid)) WHERE state IN ('queued', 'running')
-		DO NOTHING
-		RETURNING id`, uuid.New(), eventID, formID, requestedBy, now).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
+	// The waiting job may finish between the insert that found it and the
+	// read: then the insert goes again (a few times at most).
+	for range 3 {
+		var id uuid.UUID
+		err := s.pool.QueryRow(ctx, `
+			INSERT INTO respondent_ticket_jobs (id, event_id, form_id, requested_by, next_attempt_at, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $5, $5)
+			ON CONFLICT (event_id, COALESCE(form_id, '00000000-0000-0000-0000-000000000000'::uuid)) WHERE state IN ('queued', 'running')
+			DO NOTHING
+			RETURNING id`, uuid.New(), eventID, formID, requestedBy, now).Scan(&id)
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return id, err
+		}
 		err = s.pool.QueryRow(ctx, `
 			SELECT id FROM respondent_ticket_jobs
 			WHERE event_id = $1 AND form_id IS NOT DISTINCT FROM $2 AND state IN ('queued', 'running')`, eventID, formID).Scan(&id)
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return id, err
+		}
 	}
-	return id, err
+	return uuid.Nil, errors.New("formsfeed: the ticket job could not be queued")
 }
 
 func (s *PostgresTicketJobs) Get(ctx context.Context, eventID, id uuid.UUID) (TicketJob, error) {
@@ -221,17 +229,20 @@ func (t *TicketJobs) RunOne(ctx context.Context) (bool, error) {
 			return true, t.Queue.Finish(ctx, job, JobDone, t.now())
 		}
 		res, err := t.Respondents.send(ctx, job.EventID, rows)
-		job.SendResult.add(res)
+		job.SendResult.add(res.SendResult)
+		if res.handled > 0 {
+			job.After = rows[res.handled-1].ID
+		}
 		if errors.Is(err, ErrRespondentsEventCancelled) || errors.Is(err, ErrRespondentsEventEnded) || errors.Is(err, ErrMappingEventNotFound) {
 			t.log(job, JobFailed, err)
 			return true, t.Queue.Finish(ctx, job, JobFailed, t.now())
 		}
 		if err != nil {
-			// The rows handled before the failure went; the job goes on
-			// from the page's start, where a repeat writes no second Ticket.
+			// The job goes on after the last row it finished (send counts
+			// exactly those rows): each counted once, and a repeat writes no
+			// second Ticket.
 			return true, t.retry(ctx, job, err)
 		}
-		job.After = rows[len(rows)-1].ID
 		if err := t.Queue.Progress(ctx, job, t.now()); err != nil {
 			return true, err
 		}

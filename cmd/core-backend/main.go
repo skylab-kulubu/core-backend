@@ -1181,7 +1181,7 @@ func main() {
 	// (they read no Forms).
 	formRespondents := &formsfeed.Respondents{
 		Store: formsfeed.NewPostgresRespondents(pool), Events: events, Authz: az, Tickets: ticketSvc,
-		Jobs: formsfeed.NewPostgresTicketJobs(pool), Pulls: formPulls,
+		Jobs: formsfeed.NewPostgresTicketJobs(pool),
 		Capacity: func(ctx context.Context, id uuid.UUID) (event.Capacity, error) {
 			return event.ReadCapacity(ctx, pool, id)
 		},
@@ -1190,6 +1190,10 @@ func main() {
 	if formsEvents != nil {
 		formsRecorder.Respondents = formRespondents
 		mappedGuests.Respondents = formRespondents
+		// Gatherings run only with the switch on: off, a job left in
+		// form_pulls must not hold the list's "collecting" nor a send-all
+		// job.
+		formRespondents.Pulls = formPulls
 	}
 	worker("respondent ticket jobs", (&formsfeed.TicketJobs{
 		Queue: formRespondents.Jobs, Respondents: formRespondents, Logf: log.Printf,

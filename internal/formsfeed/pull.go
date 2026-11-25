@@ -304,7 +304,7 @@ func (p *Puller) run(ctx context.Context, job PullJob, res *pullResult) (*time.T
 		if res.pages >= maxPagesPerRun {
 			return nil, invalid("Forms' list goes on past %d pages", maxPagesPerRun)
 		}
-		if err := p.Queue.SaveCursor(ctx, job.ID, page.NextCursor, p.now()); err != nil {
+		if err := p.Queue.SaveCursor(ctx, job, page.NextCursor, p.now()); err != nil {
 			return nil, err
 		}
 		q.After = page.NextCursor
