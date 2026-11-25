@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-
-	"github.com/skylab-kulubu/core-backend/internal/event"
 )
 
 // Anyone sees the Co-organizer teams shown outside the panel, by code and
@@ -39,5 +37,4 @@ func TestPublicCoOrganizerNames(t *testing.T) {
 			t.Fatalf("%s without Co-organizers %s", name, raw)
 		}
 	}
-	_ = event.StatusPublished
 }

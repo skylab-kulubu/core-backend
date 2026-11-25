@@ -18,11 +18,12 @@ func coOrganizerSnapshot(ev event.Event) []string {
 	return teams
 }
 
-// coOrganizerTeamOf reports whether team is one of ev's Co-organizer teams,
-// shown outside the panel or a helper (both manage the Event).
+// coOrganizerTeamOf reports whether team is one of ev's Co-organizer teams
+// shown outside the panel (co_organizer): a helper team's template is never
+// bound to the Event (its name would show on the certificate's design).
 func coOrganizerTeamOf(ev event.Event, team string) bool {
-	for _, co := range ev.CoOrganizers {
-		if normalizeTeam(co.Code) == normalizeTeam(team) {
+	for _, co := range event.PublicCoOrganizerTeams(ev) {
+		if normalizeTeam(co) == normalizeTeam(team) {
 			return true
 		}
 	}

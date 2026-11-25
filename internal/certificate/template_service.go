@@ -372,8 +372,9 @@ func (s *service) SetBinding(ctx context.Context, p authz.Principal, in Binding)
 		}
 	case item.OwnerTeam != "" && normalizeTeam(item.OwnerTeam) != normalizeTeam(owner):
 		// An Event's binding may also take a template of one of its
-		// Co-organizer teams (docs/co-organizers.md), for who may read that
-		// team's templates; any other team's stays refused as before.
+		// Co-organizer teams shown outside the panel (co_organizer, never a
+		// helper; docs/co-organizers.md), for who may read that team's
+		// templates; any other team's stays refused as before.
 		if ev == nil || !coOrganizerTeamOf(*ev, item.OwnerTeam) {
 			return Binding{}, ErrInvalid
 		}

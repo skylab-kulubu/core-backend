@@ -76,16 +76,19 @@ func TestCertificateWithoutCoOrganizers(t *testing.T) {
 	}
 }
 
-// An Event's binding takes a template of one of its Co-organizer teams,
-// for who may read that team's templates; another team's stays refused
-// (400, as before).
+// An Event's binding takes a template of one of its Co-organizer teams shown
+// outside the panel, for who may read that team's templates; a helper
+// team's, and another team's, stay refused (400, as before).
 func TestEventBindingTakesACoOrganizerTeamsTemplate(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	f := newAttendanceFixture(t, certificate.RuleCount)
 	if _, err := f.events.SetCoOrganizers(ctx, event.CoOrganizersWrite{
 		EventID: f.ev.ID, OwnerTeam: f.ev.OwnerTeam,
-		Teams: []event.CoOrganizerTeam{{Code: "WEBLAB", Management: event.ManagementLeaders, Visibility: event.VisibilityHelper}},
+		Teams: []event.CoOrganizerTeam{
+			{Code: "WEBLAB", Management: event.ManagementLeaders, Visibility: event.VisibilityCoOrganizer},
+			{Code: "GECEKODU", Management: event.ManagementLeaders, Visibility: event.VisibilityHelper},
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +103,7 @@ func TestEventBindingTakesACoOrganizerTeamsTemplate(t *testing.T) {
 		}
 		return item.ID
 	}
-	weblab, algolab := template("WEBLAB"), template("ALGOLAB")
+	weblab, algolab, gecekodu := template("WEBLAB"), template("ALGOLAB"), template("GECEKODU")
 	bind := func(p authz.Principal, id uuid.UUID) error {
 		_, err := f.svc.SetBinding(ctx, p, certificate.Binding{Scope: certificate.ScopeEvent, ScopeKey: f.ev.ID.String(), TemplateID: id})
 		return err
@@ -114,5 +117,9 @@ func TestEventBindingTakesACoOrganizerTeamsTemplate(t *testing.T) {
 	}
 	if err := bind(f.leader, algolab); !errors.Is(err, certificate.ErrInvalid) {
 		t.Fatalf("another team's template: %v", err)
+	}
+	gecekoduLeader := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU/LIDERLER"}}
+	if err := bind(gecekoduLeader, gecekodu); !errors.Is(err, certificate.ErrInvalid) {
+		t.Fatalf("a helper team's template: %v", err)
 	}
 }
