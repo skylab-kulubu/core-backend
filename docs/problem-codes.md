@@ -7,8 +7,13 @@ and may change. A client reads `code` first and falls back on the status only
 when there is none. Extension members next to `code` (`param`, `fields`,
 `max`, `registrationUrl`, …) say what to fix.
 
-Existing codes and statuses do not change: a new code is only added to an
-answer that had none. Codes of other areas are listed in their own documents
+Existing codes and statuses do not change; a new code goes on an answer that
+had none. That is still a change for a client that gives a codeless answer a
+meaning of its own (a bare `409` read as "already in", a title read instead
+of a code): such clients are updated first, then the code ships. The
+panel's door (core-frontend#187) reads `already_checked_in` and
+`ambiguous_match`; sky-app reads a bare `409` from Apply as "already
+registered", so that answer stays codeless. Codes of other areas are listed in their own documents
 (for example docs/certificate-template-errors.md,
 docs/attendee-import.md, docs/event-capacity.md). This document grows area by
 area; the Tickets and door section is the first.
