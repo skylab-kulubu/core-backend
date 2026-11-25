@@ -11,11 +11,12 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
-const templateCols = `id, name, owner_team, source_kind, source_ref, source_edit_url, draft_layout, system, archived_at, created_by, created_at, updated_at`
+const templateCols = `id, name, owner_team, event_id, source_kind, source_ref, source_edit_url, draft_layout, system, archived_at, created_by, created_at, updated_at`
 const versionCols = `id, template_id, version, layout, asset_manifest, checksum, published_by, published_at`
 
-func (s *PostgresStore) ListTemplates(ctx context.Context) ([]Template, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+templateCols+` FROM certificate_templates WHERE archived_at IS NULL ORDER BY system DESC, name`)
+func (s *PostgresStore) ListTemplates(ctx context.Context, filter TemplateFilter) ([]Template, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+templateCols+` FROM certificate_templates
+		WHERE archived_at IS NULL AND event_id IS NOT DISTINCT FROM $1 ORDER BY system DESC, name`, filter.EventID)
 	if err != nil {
 		return nil, err
 	}
@@ -67,9 +68,14 @@ func (s *PostgresStore) CreateTemplate(ctx context.Context, t Template) (Templat
 		return Template{}, err
 	}
 	created, err := scanTemplate(s.pool.QueryRow(ctx, `
-		INSERT INTO certificate_templates (id,name,owner_team,source_kind,source_ref,source_edit_url,draft_layout,system,created_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING `+templateCols,
-		t.ID, t.Name, t.OwnerTeam, t.SourceKind, t.SourceRef, t.SourceEditURL, raw, t.System, t.CreatedBy))
+		INSERT INTO certificate_templates (id,name,owner_team,event_id,source_kind,source_ref,source_edit_url,draft_layout,system,created_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING `+templateCols,
+		t.ID, t.Name, t.OwnerTeam, t.EventID, t.SourceKind, t.SourceRef, t.SourceEditURL, raw, t.System, t.CreatedBy))
+	if isUnique(err) {
+		// certificate_templates_one_per_event: the Event has a current
+		// Event template already.
+		return Template{}, ErrConflict
+	}
 	if subjectlock.IsInactiveAccountReference(err) {
 		return Template{}, ErrForbidden
 	}
@@ -236,7 +242,7 @@ type rowScanner interface {
 func scanTemplate(row rowScanner) (Template, error) {
 	var t Template
 	var raw []byte
-	err := row.Scan(&t.ID, &t.Name, &t.OwnerTeam, &t.SourceKind, &t.SourceRef, &t.SourceEditURL, &raw, &t.System, &t.ArchivedAt, &t.CreatedBy, &t.CreatedAt, &t.UpdatedAt)
+	err := row.Scan(&t.ID, &t.Name, &t.OwnerTeam, &t.EventID, &t.SourceKind, &t.SourceRef, &t.SourceEditURL, &raw, &t.System, &t.ArchivedAt, &t.CreatedBy, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return Template{}, err
 	}

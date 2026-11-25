@@ -2025,6 +2025,26 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		AND to_regclass('public.event_change_notice_choices') IS NOT NULL
 		AND to_regclass('public.event_change_notice_choices_event_idx') IS NOT NULL
 		AND to_regclass('public.event_change_notice_choices_decided_by_idx') IS NOT NULL`,
+	// Event templates (docs/certificate-event-templates.md): the column
+	// with its key to events, and the partial unique index of one current
+	// Event template per Event.
+	20261126173000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'certificate_templates' AND column_name = 'event_id'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.certificate_templates') AND contype = 'f'
+			  AND confrelid = to_regclass('public.events') AND confdeltype = 'r'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public' AND tablename = 'certificate_templates'
+			  AND indexname = 'certificate_templates_one_per_event'
+			  AND indexdef LIKE 'CREATE UNIQUE INDEX%(event_id)%archived_at IS NULL%'
+		)`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
