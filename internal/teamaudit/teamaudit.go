@@ -199,9 +199,11 @@ const (
 	// BasisNone: the actor has no basis for the change. Only a denied row
 	// (Writer.Deny) carries it: a write that is made always has one.
 	BasisNone Basis = "none"
-	// BasisSystem: core's own job made the change, no person
-	// (membership.term.expired only). Its actor is the nil subject, and
-	// Actor.Client names the job (SystemTermExpiry).
+	// BasisSystem: core's own job made the change, no person: the
+	// management term job marking a term expired (membership.term.expired,
+	// SystemTermExpiry) and taking its holder out of the Group 30 days
+	// after its end (member.remove, SystemTermRemoval). Its actor is the
+	// nil subject, and Actor.Client names the job.
 	BasisSystem Basis = "system"
 	// BasisEventEditor: the actor may edit the Event by the Event policy
 	// (a member of a team whose members edit its Events, GECEKODU) without
@@ -219,6 +221,11 @@ const (
 // SystemTermExpiry is the Client of the rows the management term job
 // writes (BasisSystem): the "aktör system:term-expiry" of grup-yonetimi 11.
 const SystemTermExpiry = "system:term-expiry"
+
+// SystemTermRemoval is the Client of the member.remove rows the management
+// term job writes when it takes an expired term's holder out of the Group,
+// 30 days after the term's end (ADR-0078 karar 3, 2026-11-24).
+const SystemTermRemoval = "system:term-removal"
 
 // Actor is who makes the change, as the request carries them.
 type Actor struct {
@@ -513,7 +520,10 @@ func (r Record) normalize() (Record, string) {
 			return r, "invalid_basis"
 		}
 	case BasisSystem:
-		if r.Actor.ID != uuid.Nil || r.Actor.ViaGroupID != "" || r.Action != ActionTermExpired {
+		// Each job its one action: the expiry mark, and the removal.
+		job := (r.Action == ActionTermExpired && r.Actor.Client == SystemTermExpiry) ||
+			(r.Action == ActionMemberRemove && r.Actor.Client == SystemTermRemoval)
+		if r.Actor.ID != uuid.Nil || r.Actor.ViaGroupID != "" || !job {
 			return r, "invalid_basis"
 		}
 	case BasisEventEditor:

@@ -1352,17 +1352,22 @@ func (s *service) addSessionCheckIn(ctx context.Context, t Ticket, sessionID uui
 		return CheckIn{}, err
 	}
 	if dup {
-		return CheckIn{}, ErrConflict
+		return CheckIn{}, s.duplicate(ctx, ErrAlreadyCheckedIn, t.ID, "", sessionID)
 	}
 	entry, err := s.venueEntryFor(ctx, t, day, sess, how)
 	if err != nil {
 		return CheckIn{}, err
 	}
+	scannedAt, late := s.scanned(ctx)
 	ci, err := s.tickets.AddCheckIn(ctx, CheckIn{
 		TicketID: t.ID, SessionID: sessionID, EventDayID: sess.EventDayID, Entry: entry,
+		ScannedAt: scannedAt, NoMail: late,
 	})
 	if err != nil {
-		return CheckIn{}, err
+		return CheckIn{}, s.duplicate(ctx, err, t.ID, "", sessionID)
+	}
+	if scannedAt != nil {
+		s.scans.recordOffline(nil)
 	}
 	if ci.EntryWritten {
 		s.scans.recordEntry(how.source)
@@ -1455,8 +1460,8 @@ func (s *service) CheckInGuest(ctx context.Context, sessionID uuid.UUID, g Guest
 }
 
 func (s *service) checkInGuest(ctx context.Context, sessionID uuid.UUID, g GuestCheckIn) (CheckIn, error) {
-	email := strings.TrimSpace(g.Email)
-	if email == "" {
+	email, key := strings.TrimSpace(g.Email), strings.TrimSpace(g.TicketKey)
+	if email == "" && key == "" {
 		return CheckIn{}, ErrInvalid
 	}
 	sess, eventID, err := s.sessionAndEvent(ctx, sessionID)
@@ -1481,17 +1486,53 @@ func (s *service) checkInGuest(ctx context.Context, sessionID uuid.UUID, g Guest
 	if err != nil {
 		return CheckIn{}, err
 	}
-	ci, err := s.checkInGuestTicket(ctx, sessionID, eventID, email)
+	withToken := strings.TrimSpace(g.DoorToken) != ""
+	ci, err := s.checkInGuestTicket(ctx, sessionID, eventID, email, key, withToken)
 	// Only a guest who is now checked in (or already was) spends a place on
 	// the token; an e-mail without a Ticket gives it back, so junk e-mails
 	// cannot use a door QR up. The route's per-address budget limits those.
 	if err != nil && !errors.Is(err, ErrConflict) {
 		use.Release()
 	}
+	if errors.Is(err, ErrNotFound) {
+		// Whoever has no Ticket is shown where to register, while the
+		// Event takes registrations. The token was checked first, so this
+		// tells nothing a stranger could not read on the Event's page.
+		// Without a token (open mode) a member's Ticket was not looked
+		// for: "register" could be wrong, so no link.
+		link := ""
+		if withToken {
+			link = registrationLink(ev)
+		}
+		return ci, &GuestNotFoundError{RegistrationURL: link}
+	}
 	return ci, err
 }
 
-func (s *service) checkInGuestTicket(ctx context.Context, sessionID, eventID uuid.UUID, email string) (CheckIn, error) {
+// checkInGuestTicket finds the Ticket of a self check-in on the page: by
+// its access key (any Ticket of the Event, a member's too), or by e-mail: a
+// guest Ticket written for it first, then the Ticket of the member whose
+// account e-mail (primary or school) it is.
+//
+// The key and the member's e-mail need a valid door or attendance token in
+// every mode (bilet-qr-ve-pdf 19): GUEST_SELF_CHECKIN_MODE=open keeps only
+// the guest's e-mail without one, as before. withToken says the token was
+// sent (admitDoorQR has checked it by now).
+func (s *service) checkInGuestTicket(ctx context.Context, sessionID, eventID uuid.UUID, email, key string, withToken bool) (CheckIn, error) {
+	if key != "" {
+		if !withToken {
+			return CheckIn{}, ErrDoorQRRequired
+		}
+		t, err := s.tickets.GetByAccessKey(ctx, key)
+		if err != nil {
+			return CheckIn{}, err
+		}
+		// Another Event's key finds nothing here, as an unknown one.
+		if t.EventID != eventID {
+			return CheckIn{}, ErrNotFound
+		}
+		return s.addSessionCheckIn(ctx, t, sessionID, selfEntry)
+	}
 	listed, err := s.tickets.ListByGuestEmail(ctx, email)
 	if err != nil {
 		return CheckIn{}, err
@@ -1501,7 +1542,66 @@ func (s *service) checkInGuestTicket(ctx context.Context, sessionID, eventID uui
 			return s.addSessionCheckIn(ctx, t, sessionID, selfEntry)
 		}
 	}
+	if !withToken {
+		// open mode without a token: the guest's e-mail alone, as before.
+		return CheckIn{}, ErrNotFound
+	}
+	return s.checkInMemberByEmail(ctx, sessionID, eventID, email)
+}
+
+// schoolEmailFinder finds active accounts by their school e-mail
+// (user.PostgresStore, user.MemoryStore).
+type schoolEmailFinder interface {
+	FindBySchoolEmail(ctx context.Context, email string) ([]user.User, error)
+}
+
+// checkInMemberByEmail checks in the member whose account e-mail is email
+// (primary, or school when the store reads it) and who holds a Ticket of
+// the Event; ErrNotFound for anyone else.
+func (s *service) checkInMemberByEmail(ctx context.Context, sessionID, eventID uuid.UUID, email string) (CheckIn, error) {
+	if s.users == nil {
+		return CheckIn{}, ErrNotFound
+	}
+	holders, err := s.users.FindByEmail(ctx, email)
+	if err != nil {
+		return CheckIn{}, err
+	}
+	if finder, ok := s.users.(schoolEmailFinder); ok {
+		school, err := finder.FindBySchoolEmail(ctx, email)
+		if err != nil {
+			return CheckIn{}, err
+		}
+		holders = append(holders, school...)
+	}
+	seen := map[uuid.UUID]bool{}
+	for _, u := range holders {
+		if seen[u.ID] {
+			continue
+		}
+		seen[u.ID] = true
+		t, err := s.tickets.GetByOwnerEvent(ctx, u.ID, eventID)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return CheckIn{}, err
+		}
+		return s.addSessionCheckIn(ctx, t, sessionID, selfEntry)
+	}
 	return CheckIn{}, ErrNotFound
+}
+
+// registrationLink is where to register for ev while it takes
+// registrations: its form, else its external registration link; "" once
+// registration has closed.
+func registrationLink(ev event.Event) string {
+	if !ev.RegistrationOpen {
+		return ""
+	}
+	if ev.FormURL != "" {
+		return ev.FormURL
+	}
+	return ev.ExternalRegistrationURL
 }
 
 // admitDoorQR applies a self check-in mode (GUEST_SELF_CHECKIN_MODE for

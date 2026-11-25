@@ -1191,7 +1191,8 @@ func main() {
 
 	// Management membership terms (docs/management-membership-terms.md,
 	// grup-yonetimi 11): YK, DK and Team Leader memberships end with the
-	// season; core warns, marks and lists, and never takes anyone out.
+	// season; core warns, marks and lists, and 30 days after the end takes
+	// the holder out (MANAGEMENT_TERMS_AUTO_REMOVE, off by default).
 	terms, err := startManagementTerms(workers, os.Getenv, managementTermsDeps{
 		pool: pool, dir: dir, seasons: seasons, users: users, sky: sky, audit: teamAudit, az: az,
 		rules: membershipterm.Rules{PrivilegedRoots: privilegedRoots, LeaderSubgroups: authzPolicy.LeaderSubgroups},

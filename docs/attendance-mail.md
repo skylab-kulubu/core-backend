@@ -136,6 +136,9 @@ rule), `Recorded` (`[{Title}]`, the receipts that went along), `Attended`,
 `MissingRequired`, `MissedRequired`, `NotCounted` (the mail's Sessions that do
 not count).
 
+A scan an offline door sends later queues these mails only when it was
+taken less than an hour before it reached core ([offline-door.md](offline-door.md#mails)).
+
 ## Turning it on
 
 1. Core with this release (`ATTENDANCE_MAIL` stays off).

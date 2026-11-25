@@ -58,6 +58,11 @@ type VenueEntry struct {
 	// ByUserID is the door staff who wrote it, when an active account.
 	ByUserID  *uuid.UUID `json:"-"`
 	CreatedAt time.Time  `json:"createdAt"`
+	// ScannedAt is when the door took the scan, when it sent it later
+	// (docs/offline-door.md); nil for a scan core took as it came.
+	ScannedAt *time.Time `json:"scannedAt,omitempty"`
+	// NoMail queues no door mail with it: a scan sent too late for one.
+	NoMail bool `json:"-"`
 }
 
 // DoorEntry is a Venue entry as the door shows it: the person's name, no
@@ -71,6 +76,7 @@ type DoorEntry struct {
 	Source     EntrySource `json:"source"`
 	Name       string      `json:"name"`
 	CreatedAt  time.Time   `json:"createdAt"`
+	ScannedAt  *time.Time  `json:"scannedAt,omitempty"`
 }
 
 // EntryConflictError is a second entry the same day: the name of who is
@@ -182,7 +188,7 @@ func (s *service) sessionEntryDate(ctx context.Context, eventID uuid.UUID, day e
 	if day.StartDate != nil {
 		return IstanbulDate(*day.StartDate), nil
 	}
-	at := s.now()
+	at := s.scanTime(ctx)
 	if sess.StartTime != nil {
 		at = *sess.StartTime
 	}
@@ -202,9 +208,10 @@ func (s *service) venueEntryFor(ctx context.Context, t Ticket, day event.Day, se
 		return nil, err
 	}
 	dayID := day.ID
+	scannedAt, late := s.scanned(ctx)
 	return &VenueEntry{
 		TicketID: t.ID, EventID: t.EventID, EntryDate: date,
-		EventDayID: &dayID, Source: how.source, ByUserID: how.by,
+		EventDayID: &dayID, Source: how.source, ByUserID: how.by, ScannedAt: scannedAt, NoMail: late,
 	}, nil
 }
 
@@ -225,12 +232,15 @@ func (s *service) enterAtSession(ctx context.Context, t Ticket, sessionID uuid.U
 	}
 	entry, err := s.tickets.AddVenueEntry(ctx, *want)
 	if err != nil {
-		return CheckIn{}, err
+		return CheckIn{}, s.duplicate(ctx, err, t.ID, want.EntryDate, sessionID)
+	}
+	if entry.ScannedAt != nil {
+		s.scans.recordOffline(nil)
 	}
 	s.scans.recordEntry(entry.Source)
 	return CheckIn{
 		ID: entry.ID, TicketID: t.ID, SessionID: sessionID, EventDayID: day.ID,
-		CreatedAt: entry.CreatedAt, Kind: KindEntry,
+		CreatedAt: entry.CreatedAt, ScannedAt: entry.ScannedAt, Kind: KindEntry,
 	}, nil
 }
 

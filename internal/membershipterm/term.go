@@ -3,11 +3,14 @@
 // membership of YK or DK (a Privileged root that is not ADMIN, or a Group
 // under one) or of a Team's LIDERLER/KOORDINATORLER ends with the season.
 //
-// The end is only marked (Yusuf, 2026-10-12 22:15): core warns the person
-// and those over them 14 days and 1 day before, writes expired_at when it
-// passes, records it and tells ADMIN; it never takes anyone out of a Group
-// by itself. Removing, extending and handing over are a person's, from the
-// panel. ADMIN and ordinary Team memberships have no term.
+// At the end the term is marked (Yusuf, 2026-10-12 22:15): core warns the
+// person and those over them 14 days and 1 day before, writes expired_at
+// when it passes, records it and tells ADMIN. Thirty days after the end
+// core takes the holder out of the Group itself (ADR-0078 karar 3, Yusuf
+// 2026-11-24), behind MANAGEMENT_TERMS_AUTO_REMOVE (off by default).
+// Extending and handing over are a person's, from the panel, and so is
+// removing before those 30 days. ADMIN and ordinary Team memberships have
+// no term.
 package membershipterm
 
 import (
@@ -43,10 +46,27 @@ const ModeEnv = "MANAGEMENT_TERMS_MODE"
 // default) or off.
 const WeeklySummaryEnv = "MANAGEMENT_TERMS_WEEKLY_SUMMARY"
 
+// AutoRemoveEnv names the removal's own mode (ADR-0078 karar 3,
+// 2026-11-24): an expired term's holder leaves the Group RemoveAfter past
+// the end. off (or unset, the default): nobody is taken out, as before.
+// dry-run: the daily job counts who would be. apply: the daily job takes
+// them out, when MANAGEMENT_TERMS_MODE is apply too. Any other value stops
+// core.
+const AutoRemoveEnv = "MANAGEMENT_TERMS_AUTO_REMOVE"
+
 // ModeFromEnv reads ModeEnv; any other value than off, dry-run or apply is
 // an error that names the variable.
 func ModeFromEnv(getenv func(string) string) (Mode, error) {
-	switch raw := strings.TrimSpace(getenv(ModeEnv)); raw {
+	return modeFromEnv(getenv, ModeEnv)
+}
+
+// AutoRemoveFromEnv reads AutoRemoveEnv as ModeFromEnv reads ModeEnv.
+func AutoRemoveFromEnv(getenv func(string) string) (Mode, error) {
+	return modeFromEnv(getenv, AutoRemoveEnv)
+}
+
+func modeFromEnv(getenv func(string) string, name string) (Mode, error) {
+	switch raw := strings.TrimSpace(getenv(name)); raw {
 	case "", string(ModeOff):
 		return ModeOff, nil
 	case string(ModeDryRun):
@@ -54,7 +74,7 @@ func ModeFromEnv(getenv func(string) string) (Mode, error) {
 	case string(ModeApply):
 		return ModeApply, nil
 	default:
-		return "", fmt.Errorf("%s must be off, dry-run or apply, not %q", ModeEnv, raw)
+		return "", fmt.Errorf("%s must be off, dry-run or apply, not %q", name, raw)
 	}
 }
 
@@ -187,6 +207,20 @@ const (
 	WarnEarly = 14 * 24 * time.Hour
 	WarnLate  = 24 * time.Hour
 )
+
+// RemoveAfter is how long after its end, and after it was marked expired,
+// an expired term's holder is taken out of the Group (ADR-0078 karar 3,
+// Yusuf 2026-11-24: 30 days, for an extension or a handover). Counting from
+// the mark too gives a term marked late (the terms turned on after its end)
+// its 30 days all the same.
+const RemoveAfter = 30 * 24 * time.Hour
+
+// RemovalDue reports whether the term's holder is taken out at now: an
+// open term marked expired, RemoveAfter past both its end and the mark.
+func (t Term) RemovalDue(now time.Time) bool {
+	return t.EndedAt == nil && t.EndsAt != nil && t.ExpiredAt != nil &&
+		!now.Before(t.EndsAt.Add(RemoveAfter)) && !now.Before(t.ExpiredAt.Add(RemoveAfter))
+}
 
 // MaxExtension bounds an extension when no later season is defined (Yusuf,
 // 2026-10-19: one year).
