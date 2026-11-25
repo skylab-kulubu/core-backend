@@ -21,7 +21,7 @@ func coOrganizerMailOn(getenv func(string) string) (bool, error) {
 // queues nothing: turning it on later tells none of the changes made
 // meanwhile.
 func startCoOrganizerMail(ctx context.Context, on bool, events *event.PostgresStore, queue coorganizermail.Queue, users user.Store,
-	leaders coorganizermail.Leaders, sky *mail.SkyMail, panelURL string, logf func(string, ...any)) <-chan struct{} {
+	leaders coorganizermail.Leaders, sky *mail.SkyNotify, panelURL string, logf func(string, ...any)) <-chan struct{} {
 	off := make(chan struct{})
 	close(off)
 	events.NotifyCoOrganizers(false)

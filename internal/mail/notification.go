@@ -273,7 +273,7 @@ func (s *SkyNotify) DoorStaffAdded(ctx context.Context, idempotencyKey string, s
 // CoOrganizerAddedType or CoOrganizerRemovedType): a person, or a team's
 // Leaders, by one Notification to their subjects (inbox and e-mail, as
 // SkyNotify's type says), idempotent under idempotencyKey.
-func (s *SkyMail) CoOrganizer(ctx context.Context, typ, idempotencyKey string, subs []uuid.UUID, vars map[string]string, source NotificationSource) error {
+func (s *SkyNotify) CoOrganizer(ctx context.Context, typ, idempotencyKey string, subs []uuid.UUID, vars map[string]string, source NotificationSource) error {
 	variables := make(map[string]any, len(vars))
 	for name, value := range vars {
 		variables[name] = value
