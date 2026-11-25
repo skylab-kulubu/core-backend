@@ -1,0 +1,6 @@
+# The tests' (image target "test" only):
+#   uv pip compile --generate-hashes --python-version 3.12 \
+#     --python-platform x86_64-manylinux_2_28 requirements-test.in -o requirements-test.txt
+-c requirements.txt
+pytest==9.2.0
+fonttools==4.68.0

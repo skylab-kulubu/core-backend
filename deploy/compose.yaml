@@ -207,6 +207,25 @@ services:
     ports:
       - "3000:3000"
 
+  # The PDF tools (pdf-tools/README.md): inspect, strip-text, place, render.
+  # Internal only, with the settings production runs it with.
+  pdf-tools:
+    build:
+      context: ../pdf-tools
+    profiles: ["certs"]
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    pids_limit: 64
+    mem_limit: 512m
+    cpus: 0.5
+    ports:
+      - "127.0.0.1:3010:8080"
+
 volumes:
   postgres_data:
   redis_data:
