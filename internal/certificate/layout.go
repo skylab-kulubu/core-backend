@@ -23,79 +23,77 @@ var cssColorPattern = regexp.MustCompile(`^(#[0-9a-fA-F]{3,8}|[a-zA-Z]{3,20}|rgb
 
 func ValidateLayout(layout Layout) error {
 	if layout.Width < 300 || layout.Width > 4000 || layout.Height < 300 || layout.Height > 4000 {
-		return ErrInvalid
+		return invalid(CodeLayoutSizeInvalid)
 	}
 	if layout.Orientation != "landscape" && layout.Orientation != "portrait" {
-		return ErrInvalid
+		return invalid(CodeLayoutOrientation)
 	}
 	if layout.BackgroundColor != "" && !cssColorPattern.MatchString(layout.BackgroundColor) {
-		return ErrInvalid
+		return invalid(CodeLayoutColorInvalid)
 	}
 	if len(layout.Elements) == 0 || len(layout.Elements) > maxLayoutElements {
-		return ErrInvalid
+		return invalid(CodeLayoutElementCount)
 	}
-	// A layout must name its recipient and its Event. The verification QR
-	// is optional (ADR-0040 addendum 2026-11-24): the default template keeps
-	// one, a template may drop it, and the certificate is still verified at
-	// its address by serial (yildizskylab.com/sertifika/{serial}). It must
-	// keep the QR or the serial, so a paper certificate can be verified.
-	required := map[string]bool{"recipientName": false, "eventName": false}
-	verifiable := false
+	// A layout must name its recipient. The Event's name is optional
+	// (ADR-0040 addendum 2026-11-25): a background may print it already. The
+	// verification QR is optional too (addendum 2026-11-24): the default
+	// template keeps one, a template may drop it, and the certificate is
+	// still verified at its address by serial
+	// (yildizskylab.com/sertifika/{serial}). It must keep the QR or the
+	// serial, so a paper certificate can be verified.
+	hasRecipient, verifiable := false, false
 	ids := make(map[string]struct{}, len(layout.Elements))
 	for _, el := range layout.Elements {
 		if strings.TrimSpace(el.ID) == "" || len(el.ID) > 80 {
-			return ErrInvalid
+			return invalid(CodeLayoutElementID)
 		}
 		if _, exists := ids[el.ID]; exists {
-			return ErrInvalid
+			return invalid(CodeLayoutElementID)
 		}
 		ids[el.ID] = struct{}{}
 		switch el.Kind {
 		case "staticText", "recipientName", "eventName", "eventDates", "issueDate", "ownerTeam", "serial", "verificationQr", "image", "shape":
 		default:
-			return ErrInvalid
+			return invalid(CodeLayoutElementKind)
 		}
-		if _, ok := required[el.Kind]; ok {
-			required[el.Kind] = true
-		}
-		if el.Kind == "verificationQr" || el.Kind == "serial" {
-			verifiable = true
-		}
-		if !finite(el.X, el.Y, el.Width, el.Height, el.FontSize, el.MinFontSize, el.LineHeight, el.LetterSpacing, el.BorderWidth, el.BorderRadius, el.Rotation, el.opacity()) ||
+		hasRecipient = hasRecipient || el.Kind == "recipientName"
+		verifiable = verifiable || el.Kind == "verificationQr" || el.Kind == "serial"
+		if !finite(el.X, el.Y, el.Width, el.Height) ||
 			el.X < 0 || el.Y < 0 || el.Width <= 0 || el.Height <= 0 ||
-			el.X+el.Width > layout.Width+0.01 || el.Y+el.Height > layout.Height+0.01 ||
+			el.X+el.Width > layout.Width+0.01 || el.Y+el.Height > layout.Height+0.01 {
+			return invalid(CodeLayoutOutOfBounds)
+		}
+		if !finite(el.FontSize, el.MinFontSize, el.LineHeight, el.LetterSpacing, el.BorderWidth, el.BorderRadius, el.Rotation, el.opacity()) ||
 			el.FontSize < 0 || el.FontSize > 300 || el.MinFontSize < 0 || el.MinFontSize > 300 ||
 			el.FontWeight < 0 || el.FontWeight > 1000 || el.LineHeight < 0 || el.LineHeight > 5 ||
 			el.LetterSpacing < -20 || el.LetterSpacing > 100 || el.BorderWidth < 0 || el.BorderWidth > 100 ||
 			el.BorderRadius < 0 || el.BorderRadius > 2000 ||
 			el.Rotation < -360 || el.Rotation > 360 || el.opacity() < 0 || el.opacity() > 1 {
-			return ErrInvalid
+			return invalid(CodeLayoutElementStyle)
 		}
 		for _, color := range []string{el.Color, el.BackgroundColor, el.BorderColor} {
 			if color != "" && !cssColorPattern.MatchString(color) {
-				return ErrInvalid
+				return invalid(CodeLayoutColorInvalid)
 			}
 		}
 		if el.Align != "" && el.Align != "left" && el.Align != "center" && el.Align != "right" {
-			return ErrInvalid
+			return invalid(CodeLayoutElementStyle)
 		}
 		if el.Kind == "image" && el.MediaID == nil {
-			return ErrInvalid
+			return invalid(CodeLayoutImageMissing)
 		}
 		if len(el.Text) > 4000 {
-			return ErrInvalid
+			return invalid(CodeLayoutTextTooLong)
 		}
 		if len(el.FontFamily) > 80 {
-			return ErrInvalid
+			return invalid(CodeLayoutElementStyle)
 		}
 	}
-	for _, present := range required {
-		if !present {
-			return ErrInvalid
-		}
+	if !hasRecipient {
+		return invalid(CodeLayoutRecipientMissing)
 	}
 	if !verifiable {
-		return ErrInvalid
+		return invalid(CodeLayoutNotVerifiable)
 	}
 	return nil
 }
@@ -207,27 +205,32 @@ func elementContent(ctx context.Context, el Element, data PreviewData, verifyURL
 		return "data:image/png;base64," + base64.StdEncoding.EncodeToString(png), true, nil
 	case "image":
 		if el.MediaID == nil {
-			return "", false, ErrInvalid
+			return "", false, invalid(CodeLayoutImageMissing)
 		}
 		uri, err := assetDataURI(ctx, assets, *el.MediaID)
 		return uri, true, err
 	case "shape":
 		return "", false, nil
 	default:
-		return "", false, ErrInvalid
+		return "", false, invalid(CodeLayoutElementKind)
 	}
 }
 
 func assetDataURI(ctx context.Context, assets AssetReader, id uuid.UUID) (string, error) {
 	if assets == nil {
-		return "", ErrInvalid
+		return "", invalid(CodeAssetStorageUnavailable)
 	}
 	asset, err := assets.ReadAsset(ctx, id)
 	if err != nil {
 		return "", err
 	}
-	if !strings.HasPrefix(asset.ContentType, "image/") || len(asset.Data) == 0 || len(asset.Data) > 20<<20 {
-		return "", ErrInvalid
+	switch {
+	case !strings.HasPrefix(asset.ContentType, "image/"):
+		return "", invalid(CodeAssetTypeUnsupported)
+	case len(asset.Data) == 0:
+		return "", invalid(CodeAssetEmpty)
+	case len(asset.Data) > 20<<20:
+		return "", invalid(CodeAssetTooLarge)
 	}
 	return "data:" + asset.ContentType + ";base64," + base64.StdEncoding.EncodeToString(asset.Data), nil
 }

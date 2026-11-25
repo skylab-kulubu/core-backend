@@ -32,6 +32,12 @@ func TestEventStatusRefusalsCarryTheirProblemCode(t *testing.T) {
 		{"finalize while running", func(c fiber.Ctx) error {
 			return certError(c, certificate.ErrConflict)
 		}, fiber.StatusConflict, ""},
+		{"template refused with a reason", func(c fiber.Ctx) error {
+			return certError(c, fmt.Errorf("publish: %w", &certificate.InvalidError{Code: certificate.CodeBackgroundPDFPages}))
+		}, fiber.StatusBadRequest, "background_pdf_pages"},
+		{"template refused without one", func(c fiber.Ctx) error {
+			return certError(c, certificate.ErrInvalid)
+		}, fiber.StatusBadRequest, ""},
 		{"competitor on a draft", func(c fiber.Ctx) error {
 			return competitorError(c, fmt.Errorf("%w: %w", competitor.ErrInvalid, event.ErrNotPublished))
 		}, fiber.StatusBadRequest, "event_not_published"},

@@ -161,16 +161,40 @@ func TestLayoutValidationRejectsUnknownOrMissingRequiredElements(t *testing.T) {
 	if !errors.Is(certificate.ValidateLayout(layout), certificate.ErrInvalid) {
 		t.Fatal("raw html must be rejected")
 	}
-	layout = versionedLayout("ok")
-	layout.Elements = layout.Elements[:2]
-	if !errors.Is(certificate.ValidateLayout(layout), certificate.ErrInvalid) {
-		t.Fatal("the Event's name must be required")
+	if got := problemCode(certificate.ValidateLayout(layout)); got != certificate.CodeLayoutElementKind {
+		t.Fatalf("raw html code = %q", got)
 	}
 	layout = versionedLayout("ok")
 	layout.Elements = []certificate.Element{layout.Elements[0], layout.Elements[2], layout.Elements[3]}
 	if !errors.Is(certificate.ValidateLayout(layout), certificate.ErrInvalid) {
 		t.Fatal("the recipient's name must be required")
 	}
+	if got := problemCode(certificate.ValidateLayout(layout)); got != certificate.CodeLayoutRecipientMissing {
+		t.Fatalf("missing recipient code = %q", got)
+	}
+}
+
+// The Event's name is optional (ADR-0040 addendum 2026-11-25): a background
+// may print it already. The recipient and the QR or the serial stay required.
+func TestLayoutWithoutEventNameIsValid(t *testing.T) {
+	layout := versionedLayout("ok")
+	layout.Elements = []certificate.Element{layout.Elements[0], layout.Elements[1], layout.Elements[3]}
+	if err := certificate.ValidateLayout(layout); err != nil {
+		t.Fatalf("a layout without the Event's name: %v", err)
+	}
+	layout.Elements = layout.Elements[:2]
+	if got := problemCode(certificate.ValidateLayout(layout)); got != certificate.CodeLayoutNotVerifiable {
+		t.Fatalf("neither QR nor serial: code = %q", got)
+	}
+}
+
+// problemCode is the code an InvalidError carries, "" for any other error.
+func problemCode(err error) string {
+	var refused *certificate.InvalidError
+	if errors.As(err, &refused) {
+		return refused.Code
+	}
+	return ""
 }
 
 // The verification QR is optional (ADR-0040 addendum 2026-11-24): a layout

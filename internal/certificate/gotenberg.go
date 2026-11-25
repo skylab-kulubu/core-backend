@@ -92,8 +92,13 @@ func (g *Gotenberg) Screenshot(ctx context.Context, html string, width, height, 
 }
 
 func (g *Gotenberg) PDFWithBackground(ctx context.Context, html string, background []byte) ([]byte, error) {
-	if g == nil || strings.TrimSpace(g.BaseURL) == "" || len(background) == 0 || len(background) > maxRenderedPDFBytes || !bytes.Contains(background[:min(len(background), 1024)], []byte("%PDF-")) {
-		return nil, ErrInvalid
+	switch {
+	case g == nil || strings.TrimSpace(g.BaseURL) == "":
+		return nil, invalid(CodeRendererUnavailable)
+	case len(background) > maxRenderedPDFBytes:
+		return nil, invalid(CodeBackgroundPDFTooLarge)
+	case !bytes.Contains(background[:min(len(background), 1024)], []byte("%PDF-")):
+		return nil, invalid(CodeBackgroundPDFUnreadable)
 	}
 	hash := sha256.Sum256(background)
 	if _, ok := g.validatedPDF.Load(hash); !ok {
@@ -107,7 +112,7 @@ func (g *Gotenberg) PDFWithBackground(ctx context.Context, html string, backgrou
 
 func (g *Gotenberg) convertHTML(ctx context.Context, html string, background []byte, header string, flags ...string) ([]byte, error) {
 	if g == nil || strings.TrimSpace(g.BaseURL) == "" {
-		return nil, ErrInvalid
+		return nil, invalid(CodeRendererUnavailable)
 	}
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
@@ -145,7 +150,10 @@ func (g *Gotenberg) convertHTML(ctx context.Context, html string, background []b
 			"omitBackground":      "true",
 			"watermarkSource":     "pdf",
 			"watermarkExpression": "background.pdf",
-			"watermarkOptions":    `{"scale":1,"opacity":1}`,
+			// Gotenberg reads the options as a map of strings and refuses
+			// a number (400): every value is quoted. pdfcpu draws a
+			// watermark on the diagonal unless the rotation is 0.
+			"watermarkOptions": `{"scale":"1","opacity":"1","rotation":"0"}`,
 		} {
 			if err := w.WriteField(key, value); err != nil {
 				return nil, err
@@ -177,18 +185,15 @@ func (g *Gotenberg) convertHTML(ctx context.Context, html string, background []b
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode >= 300 {
-		return nil, ErrInvalid
-	}
-	if len(body) == 0 || len(body) > maxRenderedPDFBytes || !bytes.HasPrefix(body, []byte("%PDF-")) {
-		return nil, ErrInvalid
+	if resp.StatusCode >= 300 || len(body) == 0 || len(body) > maxRenderedPDFBytes || !bytes.HasPrefix(body, []byte("%PDF-")) {
+		return nil, invalid(CodeRenderFailed)
 	}
 	return body, nil
 }
 
 func (g *Gotenberg) validateSinglePagePDF(ctx context.Context, background []byte) error {
 	if g == nil || strings.TrimSpace(g.BaseURL) == "" {
-		return ErrInvalid
+		return invalid(CodeRendererUnavailable)
 	}
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
@@ -214,18 +219,22 @@ func (g *Gotenberg) validateSinglePagePDF(ctx context.Context, background []byte
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil || resp.StatusCode >= 300 {
-		return ErrInvalid
+		// Gotenberg answers 400 for a file it cannot read.
+		return invalid(CodeBackgroundPDFUnreadable)
 	}
 	metadata := map[string]struct {
 		PageCount int    `json:"PageCount"`
 		MIMEType  string `json:"MIMEType"`
 	}{}
 	if err := json.Unmarshal(body, &metadata); err != nil {
-		return ErrInvalid
+		return invalid(CodeBackgroundPDFUnreadable)
 	}
 	item, ok := metadata["background.pdf"]
-	if !ok || item.PageCount != 1 || (item.MIMEType != "" && !strings.EqualFold(item.MIMEType, "application/pdf")) {
-		return ErrInvalid
+	if !ok || (item.MIMEType != "" && !strings.EqualFold(item.MIMEType, "application/pdf")) {
+		return invalid(CodeBackgroundPDFUnreadable)
+	}
+	if item.PageCount != 1 {
+		return invalid(CodeBackgroundPDFPages)
 	}
 	return nil
 }

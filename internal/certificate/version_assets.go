@@ -53,7 +53,7 @@ func (s *service) snapshotVersionAssets(ctx context.Context, versionID uuid.UUID
 		return manifest, nil
 	}
 	if s.assets == nil || s.artifacts == nil {
-		return nil, ErrInvalid
+		return nil, invalid(CodeAssetStorageUnavailable)
 	}
 	// The private copies this attempt has written, deleted if it fails.
 	var sealedKeys []string
@@ -70,8 +70,11 @@ func (s *service) snapshotVersionAssets(ctx context.Context, versionID uuid.UUID
 			return nil, err
 		}
 		total += len(asset.Data)
-		if len(asset.Data) == 0 || total > maxTemplateAssetBytes {
-			return nil, ErrInvalid
+		if len(asset.Data) == 0 {
+			return nil, invalid(CodeAssetEmpty)
+		}
+		if total > maxTemplateAssetBytes {
+			return nil, invalid(CodeAssetTooLarge)
 		}
 		// The version id is new on every publish, so no two attempts share
 		// a copy's key.

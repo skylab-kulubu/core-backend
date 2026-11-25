@@ -45,8 +45,11 @@ func (s *service) GetTemplate(ctx context.Context, p authz.Principal, id uuid.UU
 }
 
 func (s *service) CreateTemplate(ctx context.Context, p authz.Principal, in TemplateDraft) (Template, error) {
-	if s.templates == nil || !validTemplateDraft(in) {
+	if s.templates == nil {
 		return Template{}, ErrInvalid
+	}
+	if err := checkTemplateDraft(in); err != nil {
+		return Template{}, err
 	}
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: in.OwnerTeam}, authz.Create) {
 		return Template{}, ErrForbidden
@@ -63,8 +66,11 @@ func (s *service) CreateTemplate(ctx context.Context, p authz.Principal, in Temp
 }
 
 func (s *service) UpdateTemplate(ctx context.Context, p authz.Principal, id uuid.UUID, in TemplateDraft) (Template, error) {
-	if s.templates == nil || !validTemplateDraft(in) {
+	if s.templates == nil {
 		return Template{}, ErrInvalid
+	}
+	if err := checkTemplateDraft(in); err != nil {
+		return Template{}, err
 	}
 	existing, err := s.templates.GetTemplate(ctx, id)
 	if err != nil {
@@ -120,7 +126,7 @@ func (s *service) PublishTemplate(ctx context.Context, p authz.Principal, id uui
 		return TemplateVersion{}, err
 	}
 	if s.render == nil {
-		return TemplateVersion{}, ErrInvalid
+		return TemplateVersion{}, invalid(CodeRendererUnavailable)
 	}
 	sample := PreviewData{
 		RecipientName: "Örnek Katılımcı",
@@ -158,7 +164,7 @@ func (s *service) createVersion(ctx context.Context, p authz.Principal, item Tem
 		if err != nil {
 			return TemplateVersion{}, err
 		}
-		return TemplateVersion{}, ErrInvalid
+		return TemplateVersion{}, invalid(CodeRenderFailed)
 	}
 	checksum, err := LayoutChecksum(item.DraftLayout)
 	if err != nil {
@@ -175,7 +181,7 @@ func (s *service) PreviewTemplate(ctx context.Context, p authz.Principal, id uui
 		return nil, err
 	}
 	if s.render == nil {
-		return nil, ErrInvalid
+		return nil, invalid(CodeRendererUnavailable)
 	}
 	if sample.RecipientName == "" {
 		sample.RecipientName = "Ada Lovelace"
@@ -204,7 +210,7 @@ func (s *service) PreviewEvent(ctx context.Context, p authz.Principal, eventID u
 		return nil, ErrForbidden
 	}
 	if s.render == nil {
-		return nil, ErrInvalid
+		return nil, invalid(CodeRendererUnavailable)
 	}
 	resolved, err := s.resolveForEvent(ctx, ev)
 	if err != nil {
@@ -384,25 +390,27 @@ func (s *service) bindingOwner(ctx context.Context, p authz.Principal, scope, ke
 	}
 }
 
-func validTemplateDraft(in TemplateDraft) bool {
+// checkTemplateDraft is nil for a draft that may be saved, else an
+// InvalidError that says what to change.
+func checkTemplateDraft(in TemplateDraft) error {
 	if strings.TrimSpace(in.Name) == "" || len(strings.TrimSpace(in.Name)) > 160 {
-		return false
+		return invalid(CodeTemplateNameInvalid)
 	}
 	switch in.SourceKind {
 	case "upload", "canva", "figma", "sky":
 	default:
-		return false
+		return invalid(CodeTemplateSourceInvalid)
 	}
 	if len(in.SourceRef) > 500 || len(in.SourceEditURL) > 2000 {
-		return false
+		return invalid(CodeTemplateSourceInvalid)
 	}
 	if strings.TrimSpace(in.SourceEditURL) != "" {
 		parsed, err := url.ParseRequestURI(strings.TrimSpace(in.SourceEditURL))
 		if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
-			return false
+			return invalid(CodeTemplateSourceInvalid)
 		}
 	}
-	return ValidateLayout(in.Layout) == nil
+	return ValidateLayout(in.Layout)
 }
 
 func validScope(scope string) bool {
