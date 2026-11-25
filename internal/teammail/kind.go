@@ -9,7 +9,7 @@ import (
 )
 
 // Kind is which membership mail a change gets (Yusuf, 2026-10-12: every
-// Group's membership is mailed); each kind has its own SkyMail template.
+// Group's membership is mailed); each kind has its own SkyNotify template.
 type Kind = mail.MembershipKind
 
 const (

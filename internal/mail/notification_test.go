@@ -40,7 +40,7 @@ func notificationServer(t *testing.T, status int, answer string) (*httptest.Serv
 
 func TestTicketCreatedForAMemberPostsANotification(t *testing.T) {
 	srv, got := notificationServer(t, http.StatusCreated, `{}`)
-	sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok")}
+	sky := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok")}
 	sub := uuid.New()
 	end := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
 	err := sky.TicketCreated(context.Background(), "core:event.ticket-created:x:v1", TicketHolder{Sub: sub, Email: "unused@example.com"},
@@ -63,7 +63,7 @@ func TestTicketCreatedForAMemberPostsANotification(t *testing.T) {
 		t.Fatalf("recipients %v", c.body["recipients"])
 	}
 	r := recipients[0].(map[string]any)
-	// A required type: no allowed_channels, and no address (SkyMail reads
+	// A required type: no allowed_channels, and no address (SkyNotify reads
 	// the Primary e-mail from Keycloak).
 	if r["sub"] != sub.String() || len(r) != 1 {
 		t.Fatalf("recipient %v, want the subject alone", r)
@@ -78,7 +78,7 @@ func TestTicketCreatedForAMemberPostsANotification(t *testing.T) {
 
 func TestTicketCreatedForAGuestPostsTheTemplateByAddress(t *testing.T) {
 	srv, got := notificationServer(t, http.StatusCreated, `{}`)
-	sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok")}
+	sky := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok")}
 	if err := sky.TicketCreated(context.Background(), "k", TicketHolder{Email: "can@example.com", FullName: "Can Er"},
 		map[string]string{"EventName": "Gece"}, NotificationSource{Kind: "ticket", Ref: "x"}, nil, nil); err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestTicketCreatedForAGuestPostsTheTemplateByAddress(t *testing.T) {
 func TestNotifyReportsRefusalsAndLogsNoPerson(t *testing.T) {
 	srv, _ := notificationServer(t, http.StatusUnprocessableEntity, `{"error":"notification.idempotency_key_reused"}`)
 	var logs bytes.Buffer
-	sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), Logger: log.New(&logs, "", 0)}
+	sky := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok"), Logger: log.New(&logs, "", 0)}
 	past := time.Now().Add(-time.Hour)
 	err := sky.Notify(context.Background(), "ticket_created", "k", Notification{Type: TicketCreatedType, Recipients: []NotificationRecipient{{Sub: uuid.New()}}, ExpiresAt: &past})
 	var refused *SendError
@@ -108,25 +108,25 @@ func TestNotifyReportsRefusalsAndLogsNoPerson(t *testing.T) {
 
 func TestNotifyLeavesAPastExpiryOut(t *testing.T) {
 	srv, got := notificationServer(t, http.StatusCreated, `{}`)
-	sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok")}
+	sky := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok")}
 	past := time.Now().Add(-time.Hour)
 	if err := sky.Notify(context.Background(), "ticket_created", "k", Notification{Type: TicketCreatedType, Recipients: []NotificationRecipient{{Sub: uuid.New()}}, ExpiresAt: &past}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := (*got)[0].body["expires_at"]; ok {
-		t.Fatal("a past expiry must not be sent: SkyMail refuses it")
+		t.Fatal("a past expiry must not be sent: SkyNotify refuses it")
 	}
 }
 
-func TestNotifyWithoutSkyMailIsUnconfigured(t *testing.T) {
-	var sky *SkyMail
+func TestNotifyWithoutSkyNotifyIsUnconfigured(t *testing.T) {
+	var sky *SkyNotify
 	if err := sky.Notify(context.Background(), "k", "k", Notification{}); !errors.Is(err, ErrTemplateUnconfigured) {
 		t.Fatalf("err %v", err)
 	}
 }
 
 func TestTicketCreatedForAGuestIsNotTriedAgainWhenNoAnswerCame(t *testing.T) {
-	// The request reaches SkyMail, which closes the connection without an answer: it may have taken the mail.
+	// The request reaches SkyNotify, which closes the connection without an answer: it may have taken the mail.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		conn, _, err := w.(http.Hijacker).Hijack()
 		if err == nil {
@@ -134,17 +134,17 @@ func TestTicketCreatedForAGuestIsNotTriedAgainWhenNoAnswerCame(t *testing.T) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), Logger: log.New(io.Discard, "", 0)}
+	sky := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok"), Logger: log.New(io.Discard, "", 0)}
 	err := sky.TicketCreated(context.Background(), "k", TicketHolder{Email: "can@example.com"}, nil, NotificationSource{Kind: "ticket", Ref: "x"}, nil, nil)
 	if !errors.Is(err, ErrMaybeDelivered) {
 		t.Fatalf("err %v, want ErrMaybeDelivered", err)
 	}
 
-	// Never connected: nothing reached SkyMail, a later try is safe.
+	// Never connected: nothing reached SkyNotify, a later try is safe.
 	closed := httptest.NewServer(http.NotFoundHandler())
 	url := closed.URL
 	closed.Close()
-	sky = &SkyMail{BaseURL: url, Tokens: StaticToken("tok"), Logger: log.New(io.Discard, "", 0)}
+	sky = &SkyNotify{BaseURL: url, Tokens: StaticToken("tok"), Logger: log.New(io.Discard, "", 0)}
 	err = sky.TicketCreated(context.Background(), "k", TicketHolder{Email: "can@example.com"}, nil, NotificationSource{Kind: "ticket", Ref: "x"}, nil, nil)
 	var refused *SendError
 	if errors.Is(err, ErrMaybeDelivered) || !errors.As(err, &refused) || refused.Status != 0 {
@@ -154,7 +154,7 @@ func TestTicketCreatedForAGuestIsNotTriedAgainWhenNoAnswerCame(t *testing.T) {
 
 func TestNotifySendsAnEmptyChannelListAndLeavesANilOneOut(t *testing.T) {
 	srv, got := notificationServer(t, http.StatusCreated, `{}`)
-	sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok")}
+	sky := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok")}
 	none := []string{}
 	if err := sky.Notify(context.Background(), "k", "k", Notification{Type: "event.reminder", Recipients: []NotificationRecipient{
 		{Sub: uuid.New(), AllowedChannels: &none},
@@ -174,7 +174,7 @@ func TestNotifySendsAnEmptyChannelListAndLeavesANilOneOut(t *testing.T) {
 
 func TestEventUpdatedPostsItsTypeToAMemberAndItsTemplateToAGuest(t *testing.T) {
 	srv, got := notificationServer(t, http.StatusCreated, `{}`)
-	sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok")}
+	sky := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok")}
 	sub := uuid.New()
 	vars := map[string]string{"EventName": "Gece", "NewVenue": "Kongre Merkezi"}
 	source := NotificationSource{Kind: "event", Ref: "e"}
@@ -202,7 +202,7 @@ func TestEventUpdatedPostsItsTypeToAMemberAndItsTemplateToAGuest(t *testing.T) {
 
 func TestEventReminderPostsTheGivenTypeToAMemberAndItsTemplateToAGuest(t *testing.T) {
 	srv, got := notificationServer(t, http.StatusCreated, `{}`)
-	sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok")}
+	sky := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok")}
 	sub := uuid.New()
 	vars := map[string]string{"EventName": "Gece", "StartsAt": "25.11.2026 10:00"}
 	source := NotificationSource{Kind: "event", Ref: "e"}
@@ -225,9 +225,9 @@ func TestEventReminderPostsTheGivenTypeToAMemberAndItsTemplateToAGuest(t *testin
 	}
 }
 
-// A type not seeded yet is SkyMail's 422 notification.type_unknown: the
+// A type not seeded yet is SkyNotify's 422 notification.type_unknown: the
 // Notification waits in core's queue and passes once the seed has run.
-// Another 422 is SkyMail refusing the body itself.
+// Another 422 is SkyNotify refusing the body itself.
 func TestNotifyTakesAnUnknownTypeAsOneToTryAgain(t *testing.T) {
 	for answer, permanent := range map[string]bool{
 		`{"code":"notification.type_unknown","message":"There is no notification type of this key in use (GET /notification_types)."}`: false,
@@ -236,7 +236,7 @@ func TestNotifyTakesAnUnknownTypeAsOneToTryAgain(t *testing.T) {
 		`{"code":"ada@example.test"}`: true,
 	} {
 		srv, _ := notificationServer(t, http.StatusUnprocessableEntity, answer)
-		sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), Logger: log.New(io.Discard, "", 0)}
+		sky := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok"), Logger: log.New(io.Discard, "", 0)}
 		err := sky.Notify(context.Background(), "event_updated", "k", Notification{Type: EventUpdatedType, Recipients: []NotificationRecipient{{Sub: uuid.New()}}})
 		var refused *SendError
 		if !errors.As(err, &refused) || refused.Status != http.StatusUnprocessableEntity || refused.Permanent() != permanent {
@@ -245,7 +245,7 @@ func TestNotifyTakesAnUnknownTypeAsOneToTryAgain(t *testing.T) {
 	}
 }
 
-// The Ticket's PDF goes as SkyMail's Mail attachment (README "Posta eki"):
+// The Ticket's PDF goes as SkyNotify's Mail attachment (README "Posta eki"):
 // filename, content_type and standard base64, with the Notification of a
 // member and with a guest's /single alike, under the same key.
 func TestTicketCreatedCarriesThePDF(t *testing.T) {
@@ -255,7 +255,7 @@ func TestTicketCreatedCarriesThePDF(t *testing.T) {
 	for name, holder := range map[string]TicketHolder{"member": {Sub: uuid.New()}, "guest": {Email: "can@example.com", FullName: "Can Er"}} {
 		t.Run(name, func(t *testing.T) {
 			srv, got := notificationServer(t, http.StatusCreated, `{}`)
-			sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok")}
+			sky := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok")}
 			if err := sky.TicketCreated(context.Background(), "core:event.ticket-created:x:v1", holder, map[string]string{"EventName": "Gece"}, NotificationSource{Kind: "ticket", Ref: "x"}, nil, att); err != nil {
 				t.Fatal(err)
 			}
@@ -281,7 +281,7 @@ func TestTicketCreatedCarriesThePDF(t *testing.T) {
 func TestTicketCreatedWithoutAFileSendsNoAttachmentsField(t *testing.T) {
 	for name, holder := range map[string]TicketHolder{"member": {Sub: uuid.New()}, "guest": {Email: "can@example.com"}} {
 		srv, got := notificationServer(t, http.StatusCreated, `{}`)
-		sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok")}
+		sky := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok")}
 		if err := sky.TicketCreated(context.Background(), "k", holder, nil, NotificationSource{Kind: "ticket", Ref: "x"}, nil, nil); err != nil {
 			t.Fatal(err)
 		}

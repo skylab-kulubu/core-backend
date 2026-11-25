@@ -288,8 +288,8 @@ func TestServiceErasureTriesEveryServiceWhileOneIsUnavailable(t *testing.T) {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}
 	records := f.records()
-	if _, ok := records[user.DeletionStepEraseSkyMail]; !ok {
-		t.Fatal("skymail was not checkpointed in the same pass")
+	if _, ok := records[user.DeletionStepEraseSkyNotify]; !ok {
+		t.Fatal("skynotify was not checkpointed in the same pass")
 	}
 	if _, ok := records[user.DeletionStepEraseForms]; !ok {
 		t.Fatal("forms was not checkpointed in the same pass")
@@ -312,7 +312,7 @@ func TestServiceErasureTriesEveryServiceWhileOneIsUnavailable(t *testing.T) {
 		t.Fatalf("completed request = %+v", state)
 	}
 	for step, want := range map[user.DeletionStep]int{
-		user.DeletionStepEraseSkyMail: 1, user.DeletionStepEraseCMS: 2, user.DeletionStepEraseForms: 1,
+		user.DeletionStepEraseSkyNotify: 1, user.DeletionStepEraseCMS: 2, user.DeletionStepEraseForms: 1,
 	} {
 		if got := f.services[step].callCount(); got != want {
 			t.Fatalf("%s calls = %d, want %d: a completed step ran again", step, got, want)
@@ -338,7 +338,7 @@ func TestServiceErasureDefersInProgressAndBusyAnswersByTheClampedRetryAfter(t *t
 		{code: http.StatusTooManyRequests, retryAfter: "90", wait: 90 * time.Second},
 	} {
 		f := newErasureFixture(t)
-		f.services[user.DeletionStepEraseSkyMail].set(answerStatus(tc.code, tc.retryAfter))
+		f.services[user.DeletionStepEraseSkyNotify].set(answerStatus(tc.code, tc.retryAfter))
 		if worked, err := f.run(f.worker()); !worked || err == nil {
 			t.Fatalf("%d: worked=%v err=%v", tc.code, worked, err)
 		}
@@ -442,7 +442,7 @@ func TestServiceErasurePermanentRejectionGoesStraightToManualIntervention(t *tes
 	for _, code := range []int{http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound, http.StatusConflict} {
 		f := newErasureFixture(t)
 		f.services[user.DeletionStepEraseCMS].set(answerStatus(code, ""))
-		f.services[user.DeletionStepEraseSkyMail].set(answerStatus(http.StatusServiceUnavailable, "60"))
+		f.services[user.DeletionStepEraseSkyNotify].set(answerStatus(http.StatusServiceUnavailable, "60"))
 		if worked, err := f.run(f.worker()); !worked || err == nil {
 			t.Fatalf("%d: worked=%v err=%v", code, worked, err)
 		}
@@ -547,7 +547,7 @@ func TestServiceErasureStopsAtALostLease(t *testing.T) {
 
 	f := newErasureFixture(t)
 	thieves := make(chan user.DeletionRequest, 1)
-	f.services[user.DeletionStepEraseSkyMail].set(func(w http.ResponseWriter, r *http.Request) {
+	f.services[user.DeletionStepEraseSkyNotify].set(func(w http.ResponseWriter, r *http.Request) {
 		// The worker stalls past its lease; another worker claims the request.
 		claimed, ok, err := f.store.ClaimDeletionRequest(context.Background(), f.now.Add(10*time.Minute), time.Minute)
 		if err != nil || !ok {

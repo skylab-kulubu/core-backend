@@ -13,7 +13,7 @@ import (
 )
 
 // runProxy forwards PROXY_ROUTES ("listen=upstream,listen=upstream", e.g.
-// ":9001=http://skymail:3000") unchanged. POST /harness/hold?seconds=N on :9091 makes every
+// ":9001=http://skynotify:3000") unchanged. POST /harness/hold?seconds=N on :9091 makes every
 // proxy hold the answers to paths under PROXY_HOLD_PREFIXES (default: the erase route) N
 // seconds after the upstream answered: core can be killed while a service has already
 // committed, and Account Center's call to core's intake can time out after core accepted.

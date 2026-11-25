@@ -52,9 +52,9 @@ func eventMailError(c fiber.Ctx, err error) error {
 	case errors.Is(err, eventmail.ErrNoRecipients):
 		return problem(c, fiber.StatusUnprocessableEntity, "No mail recipients")
 	case errors.Is(err, eventmail.ErrUnavailable):
-		return problem(c, fiber.StatusServiceUnavailable, "Skymail is not configured")
+		return problem(c, fiber.StatusServiceUnavailable, "SkyNotify is not configured")
 	case errors.Is(err, mail.ErrForbidden):
-		return problemDetail(c, fiber.StatusForbidden, "Forbidden", mail.ErrForbidden.Error()+" / Skymail listesi yasak — core servis hesabına skymail:lists:write ver")
+		return problemDetail(c, fiber.StatusForbidden, "Forbidden", mail.ErrForbidden.Error()+" / SkyNotify listesi yasak — core servis hesabına skynotify:lists:write ver")
 	default:
 		var status *mail.StatusError
 		if errors.As(err, &status) {

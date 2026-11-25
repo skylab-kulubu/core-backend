@@ -72,11 +72,11 @@ The sync marks the row (`welcome_sent_at`) before it posts, in one conditional
 
 | Outcome (`mail.WelcomeOutcome`) | Meaning | The mark |
 | --- | --- | --- |
-| `sent` | SkyMail took the mail task (2xx) | kept |
-| `refused` | SkyMail refused the mail itself for good (400, 413, 422: an address or body it will not take) | kept: the mail was tried and warned about once; trying every pass would repeat the refusal |
-| `deferred` | SkyMail refused it for a reason about core's setup or its own state, which a fix can clear (401, 403: token, role or audience; 404: template not seeded; 409: template not publishable; 408, 429, 5xx; any other status) | taken back, the next pass sends again |
-| `not_sent` | nothing left core: no token, SkyMail could not be connected to | taken back |
-| `unknown` | the request went out and no answer came: SkyMail may have taken it | kept, so nobody gets the mail twice |
+| `sent` | SkyNotify took the mail task (2xx) | kept |
+| `refused` | SkyNotify refused the mail itself for good (400, 413, 422: an address or body it will not take) | kept: the mail was tried and warned about once; trying every pass would repeat the refusal |
+| `deferred` | SkyNotify refused it for a reason about core's setup or its own state, which a fix can clear (401, 403: token, role or audience; 404: template not seeded; 409: template not publishable; 408, 429, 5xx; any other status) | taken back, the next pass sends again |
+| `not_sent` | nothing left core: no token, SkyNotify could not be connected to | taken back |
+| `unknown` | the request went out and no answer came: SkyNotify may have taken it | kept, so nobody gets the mail twice |
 
 The post has its own 20-second bound and does not end with the pass: a
 shutdown during a post lets it finish instead of leaving its outcome unknown.
@@ -90,10 +90,10 @@ was left unmarked, so the sync sends it once Keycloak gives the address and the
 account is recent enough. A row with an e-mail that was opened after
 `WELCOME_MAIL_SINCE` by a path that sent no mail (the admin list, a ticket
 application, a read link) counts as welcomed; nothing in core tells it apart.
-SkyMail does: the one-time operator step
+SkyNotify does: the one-time operator step
 `ops/wizards/core-welcome-isaret-duzelt-20261020.sh` (hub repository) takes
 back the mark of such rows whose address has no `core.welcome` mail in
-SkyMail since the cutoff, and the sync then sends.
+SkyNotify since the cutoff, and the sync then sends.
 
 ## Settings
 
@@ -103,8 +103,8 @@ SkyMail since the cutoff, and the sync then sends.
 | `USER_SYNC_INTERVAL` | `5m` | Time between passes, a Go duration from `1m` to `24h`. |
 | `WELCOME_MAIL_SINCE` | `2026-10-19T00:00:00+03:00` | RFC 3339. Accounts Keycloak created before it get no Welcome mail. |
 
-The Welcome mail also needs SkyMail: `SKYMAIL_URL` (no default: unset, mail is off and every attempt logs `ERROR skymail_url_missing`) and a
-welcome template key or id ([skymail-templates.md](skymail-templates.md)).
+The Welcome mail also needs SkyNotify: `SKYNOTIFY_URL` (no default: unset, mail is off and every attempt logs `ERROR skynotify_url_missing`) and a
+welcome template key or id ([skynotify-templates.md](skynotify-templates.md)).
 Without them the sync still opens rows and assigns Sky numbers, marks nothing
 and says so at startup.
 
@@ -122,10 +122,10 @@ carry counts and a stage, never a person:
 {"event":"user_sync_failed","level":"warn","stage":"keycloak","seen":0,"errors":0}
 ```
 
-Every Welcome mail that does not go leaves `skymail_call_failed` with
+Every Welcome mail that does not go leaves `skynotify_call_failed` with
 `"kind":"welcome"` and a reason: `upstream_error` or `template_missing` with
-SkyMail's status, `token_unavailable`, `unreachable`, `no_answer`
-([skymail-templates.md](skymail-templates.md#what-a-refused-call-writes)).
+SkyNotify's status, `token_unavailable`, `unreachable`, `no_answer`
+([skynotify-templates.md](skynotify-templates.md#what-a-refused-call-writes)).
 
 `/v1/metrics`:
 

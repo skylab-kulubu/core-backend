@@ -255,24 +255,24 @@ func TestKeycloakGroupProtection(t *testing.T) {
 		{"nothing", map[string]any{}, nil, false},
 		{"a realm role", map[string]any{"realmMappings": []map[string]any{{"id": "r1", "name": "offline_access"}}}, nil, true},
 		{"a protected client role", clientMapping("core", map[string]any{"id": "x", "name": "groups:manage"}), nil, true},
-		{"client:admin", clientMapping("skymail", map[string]any{"id": "x", "name": "client:admin"}), nil, true},
-		{"a composite with realm-management", clientMapping("skymail", map[string]any{"id": "staff", "name": "staff", "composite": true}),
+		{"client:admin", clientMapping("skynotify", map[string]any{"id": "x", "name": "client:admin"}), nil, true},
+		{"a composite with realm-management", clientMapping("skynotify", map[string]any{"id": "staff", "name": "staff", "composite": true}),
 			map[string][]map[string]any{"staff": {{"id": "mu", "name": "manage-users", "clientRole": true, "containerId": "c-rm"}}}, true},
-		{"a composite two deep", clientMapping("skymail", map[string]any{"id": "outer", "name": "outer", "composite": true}),
+		{"a composite two deep", clientMapping("skynotify", map[string]any{"id": "outer", "name": "outer", "composite": true}),
 			map[string][]map[string]any{
 				"outer": {{"id": "inner", "name": "inner", "clientRole": true, "containerId": "c-forms", "composite": true}},
 				"inner": {{"id": "gm", "name": "groups:manage", "clientRole": true, "containerId": "c-core"}},
 			}, true},
-		{"a client composite holding a realm role", clientMapping("skymail", map[string]any{"id": "outer", "name": "outer", "composite": true}),
+		{"a client composite holding a realm role", clientMapping("skynotify", map[string]any{"id": "outer", "name": "outer", "composite": true}),
 			map[string][]map[string]any{"outer": {{"id": "admin", "name": "admin", "clientRole": false, "containerId": "e-skylab"}}}, true},
 		// client → realm → realm-management: the realm role is hidden from
 		// the composite walk; only the Group's effective realm roles show it.
-		{"client, realm, realm-management", clientMapping("skymail", map[string]any{"id": "bridge", "name": "bridge", "composite": true}),
+		{"client, realm, realm-management", clientMapping("skynotify", map[string]any{"id": "bridge", "name": "bridge", "composite": true}),
 			map[string][]map[string]any{
 				"bridge":  {{"id": "rmadmin", "name": "rmadmin", "clientRole": false, "composite": true, "containerId": "e-skylab"}},
 				"rmadmin": {{"id": "ra", "name": "realm-admin", "clientRole": true, "containerId": "c-rm"}},
 			}, true},
-		{"a mixed composite", clientMapping("skymail", map[string]any{"id": "mixed", "name": "mixed", "composite": true}),
+		{"a mixed composite", clientMapping("skynotify", map[string]any{"id": "mixed", "name": "mixed", "composite": true}),
 			map[string][]map[string]any{"mixed": {
 				{"id": "h", "name": "harmless", "clientRole": true, "containerId": "c-forms"},
 				{"id": "rmadmin", "name": "rmadmin", "clientRole": false, "containerId": "e-skylab"},

@@ -1,7 +1,7 @@
 # App assignments (Uygulamalar → Kullanıcılar ve gruplar)
 
 The admin panel's Uygulamalar page decides which Team, Sub-team, Leader group
-or person may use an app: SkyForms, SkyMail, the panel's own short links and
+or person may use an app: SkyForms, SkyNotify, the panel's own short links and
 certificates, a site's content reading. It is Microsoft Entra's Enterprise
 apps → an app → **Users and groups** → **Add user/group** → **Select a role**
 → **Assign** (and **Remove**), on Keycloak client roles
@@ -21,15 +21,15 @@ depends on it.
 `config/app-assignments.json`, carried in the binary and checked at startup
 (`authz.LoadApps`): per app its client, the name the panel shows,
 `assignmentRequired` (Entra's "Assignment required?", shown read-only), the
-roles the panel assigns and the ones its add drawer selects first (SkyMail's
-`skymail:access` + `skymail:templates:read`, "send for approval"). The roles
+roles the panel assigns and the ones its add drawer selects first (SkyNotify's
+`skynotify:access` + `skynotify:templates:read`, "send for approval"). The roles
 are exactly core's app roles (`authz.AppRoles`, [team-delegation.md](team-delegation.md#role-classes));
 `TestAppCatalogueIsAppRoles` fails when the two lists differ. Until ticket 03
 writes e-skylab-keycloak's `config/app-assignments.json` this file is core's
 own copy; then it is copied from there.
 
 "Assignment required" is enforced by each app through its own seat role
-(Forms' `skyforms:access`, SkyMail's `skymail:access`); Keycloak has no such
+(Forms' `skyforms:access`, SkyNotify's `skynotify:access`); Keycloak has no such
 switch for an OIDC client. The panel only shows it; it is changed in code
 (ticket 03).
 
@@ -154,7 +154,7 @@ Group counts. A person given Forms' seat is found by the picker at once.
 
 - The assignment mail to a person (GY05): `club.role-membership` speaks of a
   Privileged Group's management rights; an app assignment needs its own
-  template variables (app, role) in SkyMail. A follow-up.
+  template variables (app, role) in SkyNotify. A follow-up.
 - "Assignment required" and the role definitions: in code (ticket 03).
 - Access reviews: no review engine. YK looks at each app's people and Team
   assignments at the end of a season (GY13, ticket 15 §C); the "people only"
