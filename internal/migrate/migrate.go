@@ -1977,6 +1977,15 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT count(*) FROM information_schema.columns
 			WHERE table_schema = 'public' AND table_name = 'management_term_runs' AND column_name IN ('removal', 'removed')
 		) = 2`,
+	// The offline door's scan moment (docs/offline-door.md): the column on
+	// both door tables.
+	20261126102700: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND column_name = 'scanned_at'
+			  AND table_name IN ('ticket_checkins', 'venue_entries')
+		) = 2`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
