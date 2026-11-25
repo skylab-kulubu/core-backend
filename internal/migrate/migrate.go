@@ -1962,7 +1962,7 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 	// Keycloak console changes in the Team audit record
 	// (docs/console-audit.md): the event id column and its unique index,
 	// the console via and basis, the reader's cursor and the notice marker.
-	20261126003000: `
+	20261126110000: `
 		SELECT 1
 		WHERE EXISTS (
 			SELECT 1 FROM information_schema.columns
@@ -1973,6 +1973,7 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM pg_constraint
 			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
 			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%console%'
+			  AND pg_get_constraintdef(oid) LIKE '%member.remove%'
 		)
 		AND EXISTS (
 			SELECT 1 FROM pg_constraint

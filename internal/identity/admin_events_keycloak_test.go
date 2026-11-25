@@ -25,7 +25,7 @@ func TestKeycloakAdminEvents(t *testing.T) {
 		t.Fatalf("events %+v %v", events, err)
 	}
 	e := events[0]
-	if e.ID != "e1" || e.AuthRealmID != "master" || e.AuthUserID != "u-1" || e.RealmID != "r1" || e.ResourcePath != "users/u-2/groups/g-1" ||
+	if e.ID != "e1" || e.AuthRealmID != "master" || e.AuthClientID != "c-uuid" || e.AuthUserID != "u-1" || e.RealmID != "r1" || e.ResourcePath != "users/u-2/groups/g-1" ||
 		!strings.Contains(e.Representation, "/UYELER/YK") {
 		t.Fatalf("event %+v", e)
 	}

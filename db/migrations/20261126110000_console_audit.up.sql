@@ -12,6 +12,9 @@
 -- events (one row). privilege_notice_mails.via marks a notice of a console
 -- change, so the mail names the console as where it was made.
 --
+-- The basis check keeps 20261126101700's system clause (the term job's
+-- member.remove, MANAGEMENT_TERMS_AUTO_REMOVE) and adds console.
+--
 -- The release before this one runs on the new schema: it writes none of
 -- the new values, never reads the cursor, and sends a notice row as before
 -- (without the console's name).
@@ -52,7 +55,7 @@ ALTER TABLE team_audit_records ADD CONSTRAINT team_audit_records_actor_basis_che
     OR (actor_basis = 'none' AND actor_via_group_id IS NULL AND outcome = 'denied')
     OR (actor_basis = 'system' AND actor_via_group_id IS NULL
         AND actor_id = '00000000-0000-0000-0000-000000000000'
-        AND action = 'membership.term.expired')
+        AND action IN ('membership.term.expired', 'member.remove'))
     OR (actor_basis = 'event_editor' AND actor_via_group_id IS NOT NULL
         AND action IN ('ticket.cancel', 'ticket.restore', 'ticket.promote', 'ticket.import', 'ticket.import.preview'))
     OR (actor_basis = 'console' AND actor_via_group_id IS NULL AND via = 'console' AND outcome = 'ok'));

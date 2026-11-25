@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/consoleaudit"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
@@ -19,6 +20,10 @@ type consoleAuditConfig struct {
 	// Interval is KEYCLOAK_CONSOLE_AUDIT_INTERVAL: unset is
 	// consoleaudit.DefaultInterval.
 	Interval time.Duration
+	// AutomationClients is KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS: the
+	// internal ids of the clients the realm's reconcilers sign in with
+	// (the master realm's admin-cli), comma separated.
+	AutomationClients []string
 }
 
 // consoleAuditFromEnv reads the console audit's settings. A value that does
@@ -37,6 +42,17 @@ func consoleAuditFromEnv(getenv func(string) string) (consoleAuditConfig, error)
 		}
 		cfg.Interval = d
 	}
+	for _, raw := range strings.Split(getenv("KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS"), ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return consoleAuditConfig{}, fmt.Errorf("KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS must be client ids (UUIDs), comma separated, not %q", raw)
+		}
+		cfg.AutomationClients = append(cfg.AutomationClients, id.String())
+	}
 	return cfg, nil
 }
 
@@ -44,8 +60,11 @@ func consoleAuditFromEnv(getenv func(string) string) (consoleAuditConfig, error)
 // ctx is cancelled and answers its metrics and a channel that closes once
 // it has stopped. Off, or without Keycloak, nothing is read: turned on
 // later, it reads from that moment on.
+//
+// membership is the membership mail and the privilege notice, terms the
+// management membership terms, roles the privilege notice of role mappings.
 func startConsoleAudit(ctx context.Context, cfg consoleAuditConfig, dir identity.Directory, pool *pgxpool.Pool, audit teamaudit.ConsoleRecorder,
-	membership identity.MembershipNotifier, roles identity.GroupRolesNotifier, logf func(string, ...any)) (interface{ Prometheus() string }, <-chan struct{}) {
+	membership, terms identity.MembershipNotifier, roles identity.GroupRolesNotifier, logf func(string, ...any)) (interface{ Prometheus() string }, <-chan struct{}) {
 	off := make(chan struct{})
 	close(off)
 	if !cfg.On {
@@ -59,12 +78,17 @@ func startConsoleAudit(ctx context.Context, cfg consoleAuditConfig, dir identity
 	}
 	svc, err := consoleaudit.NewService(consoleaudit.Config{
 		Source: source, Store: consoleaudit.NewPostgresStore(pool), Audit: audit,
-		Membership: membership, Roles: roles, Interval: cfg.Interval, Logf: logf,
+		Membership: membership, Terms: terms, Roles: roles, AutomationClients: cfg.AutomationClients,
+		Interval: cfg.Interval, Logf: logf,
 	})
 	if err != nil {
 		logf("keycloak console audit: OFF, %v", err)
 		return consoleaudit.Off{}, off
 	}
-	logf("keycloak console audit: on (every %s; %s)", cfg.Interval, strings.Join(consoleaudit.ResourceTypes, ","))
+	automation := "none: a reconciler's changes are mailed as the console's"
+	if len(cfg.AutomationClients) > 0 {
+		automation = fmt.Sprintf("%d client(s) recorded as keycloak:reconcile, no mail", len(cfg.AutomationClients))
+	}
+	logf("keycloak console audit: on (every %s; %s; automation %s)", cfg.Interval, strings.Join(consoleaudit.ResourceTypes, ","), automation)
 	return svc, svc.Run(ctx)
 }

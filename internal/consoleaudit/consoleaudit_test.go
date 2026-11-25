@@ -108,9 +108,29 @@ type fixture struct {
 	store *consoleaudit.MemoryStore
 	audit *teamaudit.Memory
 	note  *notifier
+	terms *notifier
 	svc   *consoleaudit.Service
 	now   time.Time
 	logs  []string
+}
+
+// kcadmClient is the master realm's admin-cli, the reconcilers' client.
+const kcadmClient = "5b0e3c1a-1111-4222-8333-944455556666"
+
+// restart is a new process over the same store and record: it remembers
+// no event.
+func (f *fixture) restart(t *testing.T) {
+	t.Helper()
+	svc, err := consoleaudit.NewService(consoleaudit.Config{
+		Source: f.src, Store: f.store, Audit: f.audit, Membership: f.note, Terms: f.terms, Roles: f.note,
+		AutomationClients: []string{kcadmClient},
+		Now:               func() time.Time { return f.now },
+		Logf:              func(format string, args ...any) { f.logs = append(f.logs, fmt.Sprintf(format, args...)) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.svc = svc
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -123,19 +143,12 @@ func newFixture(t *testing.T) *fixture {
 		store: &consoleaudit.MemoryStore{},
 		audit: teamaudit.NewMemory(),
 		note:  &notifier{},
+		terms: &notifier{},
 		now:   start,
 	}
-	svc, err := consoleaudit.NewService(consoleaudit.Config{
-		Source: f.src, Store: f.store, Audit: f.audit, Membership: f.note, Roles: f.note,
-		Now:  func() time.Time { return f.now },
-		Logf: func(format string, args ...any) { f.logs = append(f.logs, fmt.Sprintf(format, args...)) },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.svc = svc
+	f.restart(t)
 	// The first pass only sets the cursor.
-	if err := svc.Pass(context.Background()); err != nil {
+	if err := f.svc.Pass(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if f.src.reads != 0 {
@@ -194,11 +207,17 @@ func TestPrivilegedMembershipFromTheMasterConsole(t *testing.T) {
 		t.Fatalf("notice %+v", m)
 	}
 
-	// Read again from the start (a cursor lost): no second row, no second
+	// The management terms hear of it too.
+	if len(f.terms.members) != 1 || !f.terms.members[0].Added {
+		t.Fatalf("terms %+v", f.terms.members)
+	}
+	// Read again from the start by a new process (a cursor lost, a
+	// restart): the record knows the event; no second row, no second
 	// notice.
 	if err := f.store.Save(context.Background(), consoleaudit.Cursor{Time: start.UnixMilli()}); err != nil {
 		t.Fatal(err)
 	}
+	f.restart(t)
 	f.pass(t)
 	if len(f.audit.Rows()) != 1 || len(f.note.members) != 1 {
 		t.Fatalf("read twice: rows %d, notices %d", len(f.audit.Rows()), len(f.note.members))
@@ -382,5 +401,70 @@ func TestAnotherCoreHoldsTheLock(t *testing.T) {
 	}
 	if !strings.Contains(f.svc.Prometheus(), `skylab_console_audit_pass_total{outcome="locked"} 1`) {
 		t.Fatal(f.svc.Prometheus())
+	}
+}
+
+// Keycloak stamps an event before its transaction commits: one that
+// commits after a later event was read appears behind the cursor. Each
+// pass reads the last two minutes again; the event is recorded and told
+// once, however often it is read.
+func TestAnEventCommittedLateIsRead(t *testing.T) {
+	f := newFixture(t)
+	f.src.add(event("later", start.Add(50*time.Second), "CLIENT", "UPDATE", "clients/"+formsUUID, "", admin, clubRealm))
+	f.pass(t)
+	rep := `{"id":"` + ykID + `","path":"/UYELER/YK"}`
+	f.src.add(event("earlier", start.Add(10*time.Second), "GROUP_MEMBERSHIP", "CREATE", "users/"+person.String()+"/groups/"+ykID, rep, admin, masterRealm))
+	f.pass(t)
+	f.pass(t)
+	if len(f.audit.Rows()) != 2 || len(f.note.members) != 1 {
+		t.Fatalf("rows %d, notices %d", len(f.audit.Rows()), len(f.note.members))
+	}
+	// A new process reads the window again: the record says duplicate.
+	f.restart(t)
+	f.pass(t)
+	if len(f.audit.Rows()) != 2 || len(f.note.members) != 1 {
+		t.Fatalf("after a restart: rows %d, notices %d", len(f.audit.Rows()), len(f.note.members))
+	}
+	if !strings.Contains(f.svc.Prometheus(), `skylab_console_audit_events_total{outcome="duplicate"} 2`) {
+		t.Fatal(f.svc.Prometheus())
+	}
+}
+
+// The realm's reconcilers (kcadm's admin-cli) are recorded apart and send
+// no mail; the management terms still hear of a membership.
+func TestReconcilerChangesAreRecordedWithoutMail(t *testing.T) {
+	f := newFixture(t)
+	membership := event("r1", start.Add(time.Second), "GROUP_MEMBERSHIP", "CREATE", "users/"+person.String()+"/groups/"+ykID, `{"id":"`+ykID+`","path":"/UYELER/YK"}`, admin, masterRealm)
+	membership.AuthClientID = kcadmClient
+	roles := event("r2", start.Add(2*time.Second), "CLIENT_ROLE_MAPPING", "CREATE", "groups/"+weblab+"/role-mappings/clients/"+formsUUID, `[{"name":"admin","clientRole":true,"containerId":"`+formsUUID+`"}]`, admin, masterRealm)
+	roles.AuthClientID = kcadmClient
+	direct := event("r3", start.Add(3*time.Second), "CLIENT_ROLE_MAPPING", "CREATE", "users/"+self.String()+"/role-mappings/clients/"+formsUUID, `[{"name":"admin","clientRole":true,"containerId":"`+formsUUID+`"}]`, admin, masterRealm)
+	direct.AuthClientID = kcadmClient
+	console := event("c1", start.Add(4*time.Second), "CLIENT_ROLE_MAPPING", "CREATE", "groups/"+weblab+"/role-mappings/clients/"+formsUUID, `[{"name":"admin","clientRole":true,"containerId":"`+formsUUID+`"}]`, admin, masterRealm)
+	console.AuthClientID = "77777777-0000-0000-0000-00000000c0c0"
+	for _, e := range []identity.AdminEvent{membership, roles, direct, console} {
+		f.src.add(e)
+	}
+	f.pass(t)
+	rows := f.audit.Rows()
+	if len(rows) != 4 {
+		t.Fatalf("rows %d", len(rows))
+	}
+	for _, r := range rows[:3] {
+		if r.Actor.Client != "keycloak:reconcile" || r.Via != teamaudit.ViaConsole {
+			t.Fatalf("reconciler row %+v", r)
+		}
+	}
+	if rows[3].Actor.Client != "keycloak:master" {
+		t.Fatalf("console row %+v", rows[3])
+	}
+	if len(f.note.members) != 0 || len(f.note.roles) != 1 {
+		t.Fatalf("mail notices: members %d, roles %d", len(f.note.members), len(f.note.roles))
+	}
+	if len(f.terms.members) != 1 {
+		t.Fatalf("terms %+v", f.terms.members)
+	}
+	if slices.ContainsFunc(f.logs, func(l string) bool { return strings.Contains(l, "directly") }) {
+		t.Fatalf("a reconciler's service account role was warned: %q", f.logs)
 	}
 }

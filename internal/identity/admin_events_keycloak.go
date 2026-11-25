@@ -18,10 +18,14 @@ import (
 // the representation of the change. Keycloak's details (a user name) and the
 // author's IP address are not read.
 type AdminEvent struct {
-	ID            string
-	Time          int64
-	RealmID       string
-	AuthRealmID   string
+	ID          string
+	Time        int64
+	RealmID     string
+	AuthRealmID string
+	// AuthClientID is the internal id (a UUID) of the client the author
+	// signed in with, in the author's realm: the console's
+	// security-admin-console, or kcadm's admin-cli.
+	AuthClientID  string
 	AuthUserID    string
 	OperationType string
 	ResourceType  string
@@ -54,8 +58,9 @@ func (k *Keycloak) AdminEvents(ctx context.Context, fromMillis int64, max int, r
 		Time        int64  `json:"time"`
 		RealmID     string `json:"realmId"`
 		AuthDetails *struct {
-			RealmID string `json:"realmId"`
-			UserID  string `json:"userId"`
+			RealmID  string `json:"realmId"`
+			ClientID string `json:"clientId"`
+			UserID   string `json:"userId"`
 		} `json:"authDetails"`
 		OperationType  string `json:"operationType"`
 		ResourceType   string `json:"resourceType"`
@@ -81,7 +86,7 @@ func (k *Keycloak) AdminEvents(ctx context.Context, fromMillis int64, max int, r
 			Representation: row.Representation, Error: row.Error,
 		}
 		if row.AuthDetails != nil {
-			e.AuthRealmID, e.AuthUserID = row.AuthDetails.RealmID, row.AuthDetails.UserID
+			e.AuthRealmID, e.AuthClientID, e.AuthUserID = row.AuthDetails.RealmID, row.AuthDetails.ClientID, row.AuthDetails.UserID
 		}
 		out = append(out, e)
 	}

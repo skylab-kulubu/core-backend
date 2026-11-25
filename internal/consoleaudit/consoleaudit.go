@@ -43,6 +43,12 @@ const (
 	// reads of one pass (the next pass goes on).
 	PageSize = 200
 	MaxPages = 10
+	// Overlap is how far back of the cursor each pass reads again. Keycloak
+	// stamps an admin event when the change is made, before its
+	// transaction commits: an event that commits after a later one has been
+	// read would fall behind the cursor. Rows are written once per event
+	// (keycloak_event_id), so reading it again writes and mails nothing.
+	Overlap = 2 * time.Minute
 	// Retention is how long Keycloak keeps admin events (ADR-0062): a
 	// cursor older than RetentionWarn may have missed some.
 	Retention     = 30 * 24 * time.Hour
@@ -82,11 +88,6 @@ func (c Cursor) advance(e identity.AdminEvent) Cursor {
 	return c
 }
 
-// seen reports whether e is at or before c.
-func (c Cursor) seen(e identity.AdminEvent) bool {
-	return e.Time < c.Time || (e.Time == c.Time && slices.Contains(c.IDs, e.ID))
-}
-
 // ErrLocked is a pass another core holds.
 var ErrLocked = errors.New("consoleaudit: another core reads")
 
@@ -99,24 +100,38 @@ type Store interface {
 	Save(ctx context.Context, c Cursor) error
 }
 
-// Config is what the reader needs. Membership and Roles may be nil (the
-// membership mail and the privilege notice off): the rows are written all
-// the same.
+// Config is what the reader needs. Membership, Terms and Roles may be nil
+// (the membership mail, the management terms and the privilege notice off):
+// the rows are written all the same.
 type Config struct {
-	Source     Source
-	Store      Store
-	Audit      teamaudit.ConsoleRecorder
+	Source Source
+	Store  Store
+	Audit  teamaudit.ConsoleRecorder
+	// Membership tells the membership mail and the privilege notice of a
+	// membership change; Terms the management membership terms (no mail of
+	// its own on a change). Roles is the privilege notice of a role mapping.
 	Membership identity.MembershipNotifier
+	Terms      identity.MembershipNotifier
 	Roles      identity.GroupRolesNotifier
-	Interval   time.Duration
-	Now        func() time.Time
-	Logf       func(string, ...any)
+	// AutomationClients are the clients (their internal ids, in the
+	// author's realm) the realm's reconcilers sign in with: kcadm's
+	// admin-cli of the master realm. Their changes are recorded as
+	// keycloak:reconcile and send no mail (Yusuf, 2026-11-25).
+	AutomationClients []string
+	Interval          time.Duration
+	Now               func() time.Time
+	Logf              func(string, ...any)
 }
 
 // Service reads the console's changes.
 type Service struct {
 	cfg  Config
 	self uuid.UUID
+
+	// recent are the events this process handled lately, by id, with their
+	// time: the overlap reads them again each pass, and they are skipped
+	// here without asking the database.
+	recent map[string]int64
 
 	mu      sync.Mutex
 	events  map[string]int
@@ -141,7 +156,7 @@ func NewService(cfg Config) (*Service, error) {
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
 	}
-	return &Service{cfg: cfg, events: map[string]int{}, passes: map[string]int{}}, nil
+	return &Service{cfg: cfg, recent: map[string]int64{}, events: map[string]int{}, passes: map[string]int{}}, nil
 }
 
 // Outcomes of one event (skylab_console_audit_events_total).
@@ -156,6 +171,7 @@ const (
 	passLocked           = "locked"
 	clientConsoleMaster  = "keycloak:master"
 	clientConsoleRealm   = "keycloak:realm"
+	clientReconcile      = "keycloak:reconcile"
 	unknownGroupPath     = "/"
 	compositesPathSuffix = "/composites"
 )
@@ -199,37 +215,51 @@ func (s *Service) pass(ctx context.Context) error {
 		s.count(func() { s.gaps++ })
 		s.cfg.Logf("keycloak console audit: WARN the last event read is %d days old; Keycloak keeps %d days, so changes may have been missed", int(age.Hours()/24), int(Retention.Hours()/24))
 	}
+	from := max(0, cursor.Time-Overlap.Milliseconds())
+	handled := map[string]bool{}
 	for page := 0; page < MaxPages; page++ {
-		events, err := s.cfg.Source.AdminEvents(ctx, cursor.Time, PageSize, ResourceTypes)
+		events, err := s.cfg.Source.AdminEvents(ctx, from, PageSize, ResourceTypes)
 		if err != nil {
 			return fmt.Errorf("consoleaudit: read: %w", err)
 		}
-		fresh := 0
 		for _, e := range events {
-			if cursor.seen(e) {
+			if handled[e.ID] {
 				continue
 			}
-			fresh++
+			handled[e.ID] = true
+			if _, done := s.recent[e.ID]; done {
+				continue
+			}
 			if err := s.handle(ctx, e); err != nil {
-				// The cursor stays before e: the next pass reads it again.
+				// The cursor stays at or before e: the next pass reads it
+				// again.
 				if saveErr := s.cfg.Store.Save(ctx, cursor); saveErr != nil {
 					return saveErr
 				}
 				return err
 			}
+			s.recent[e.ID] = e.Time
 			cursor = cursor.advance(e)
-		}
-		if fresh == 0 && len(events) == PageSize {
-			// A full page all at one millisecond, every event read: step
-			// past it rather than read the same page for ever.
-			s.cfg.Logf("keycloak console audit: WARN more than %d events at one millisecond; stepping past it", PageSize)
-			cursor = Cursor{Time: cursor.Time + 1}
 		}
 		if err := s.cfg.Store.Save(ctx, cursor); err != nil {
 			return fmt.Errorf("consoleaudit: cursor: %w", err)
 		}
 		if len(events) < PageSize {
 			break
+		}
+		next := events[len(events)-1].Time
+		if next <= from {
+			// A full page all at one millisecond: step past it rather than
+			// read the same page for ever.
+			s.cfg.Logf("keycloak console audit: WARN more than %d events at one millisecond; stepping past it", PageSize)
+			next = from + 1
+		}
+		from = next
+	}
+	// What the overlap can no longer reach is forgotten.
+	for id, at := range s.recent {
+		if at < cursor.Time-2*Overlap.Milliseconds() {
+			delete(s.recent, id)
 		}
 	}
 	s.count(func() {
@@ -262,8 +292,12 @@ func (s *Service) handle(ctx context.Context, e identity.AdminEvent) error {
 		s.countEvent(outcomeUnsupported)
 		return nil
 	}
+	automation := e.AuthClientID != "" && slices.Contains(s.cfg.AutomationClients, e.AuthClientID)
 	c.record.Actor = teamaudit.Actor{ID: actor, Basis: teamaudit.BasisConsole, Client: clientConsoleRealm}
-	if e.AuthRealmID != "" && e.AuthRealmID != e.RealmID {
+	switch {
+	case automation:
+		c.record.Actor.Client = clientReconcile
+	case e.AuthRealmID != "" && e.AuthRealmID != e.RealmID:
 		c.record.Actor.Client = clientConsoleMaster
 	}
 	c.record.Via = teamaudit.ViaConsole
@@ -278,7 +312,7 @@ func (s *Service) handle(ctx context.Context, e identity.AdminEvent) error {
 		return nil
 	}
 	s.countEvent(outcomeRecorded)
-	s.notify(ctx, c, actor.String(), at)
+	s.notify(ctx, c, actor.String(), at, automation)
 	return nil
 }
 
@@ -292,23 +326,36 @@ type change struct {
 	add bool
 }
 
-func (s *Service) notify(ctx context.Context, c change, actor string, at time.Time) {
+// notify tells of a new row. A reconciler's change (automation) is told to
+// the management terms only: it sends no mail.
+func (s *Service) notify(ctx context.Context, c change, actor string, at time.Time, automation bool) {
 	switch c.record.Action {
 	case teamaudit.ActionMemberAdd, teamaudit.ActionMemberRemove:
-		if s.cfg.Membership == nil || c.group.Path == unknownGroupPath {
+		if c.group.Path == unknownGroupPath {
 			return
 		}
-		s.cfg.Membership.MembershipChanged(ctx, identity.MembershipChange{
+		notifier := identity.JoinMembershipNotifiers(s.cfg.Membership, s.cfg.Terms)
+		if automation {
+			notifier = s.cfg.Terms
+		}
+		if notifier == nil {
+			return
+		}
+		notifier.MembershipChanged(ctx, identity.MembershipChange{
 			UserID: c.record.TargetUserID, Group: c.group, Added: c.add, ActorID: actor, Console: true, At: at,
 		})
 	case teamaudit.ActionGroupRoles:
-		if s.cfg.Roles == nil || c.group.Path == unknownGroupPath {
+		if automation || s.cfg.Roles == nil || c.group.Path == unknownGroupPath {
 			return
 		}
 		s.cfg.Roles.GroupRolesChanged(ctx, identity.GroupRolesChange{
 			Group: c.group, Added: c.added, Removed: c.removed, ActorID: actor, Console: true, At: at,
 		})
 	case teamaudit.ActionUserRoles:
+		if automation {
+			// The reconcilers map service accounts' roles by design.
+			return
+		}
 		// The groups-only model has no direct role: told in the log until
 		// the notice has a template for it (docs/console-audit.md).
 		s.count(func() { s.direct++ })

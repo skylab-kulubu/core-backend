@@ -2,7 +2,8 @@
 -- the console rows with their event ids (the via and basis checks narrow
 -- again, so those rows cannot stay). The action check stays wide, as the
 -- earlier migrations' downs leave it: no row of the new actions outlives
--- the console rows, which are the only ones that write them.
+-- the console rows, which are the only ones that write them. The basis check
+goes back to 20261126101700's (the term job's member.remove stays).
 SET LOCAL lock_timeout = '5s';
 
 ALTER TABLE privilege_notice_mails DROP CONSTRAINT IF EXISTS privilege_notice_mails_via_check;
@@ -20,7 +21,7 @@ ALTER TABLE team_audit_records ADD CONSTRAINT team_audit_records_actor_basis_che
     OR (actor_basis = 'none' AND actor_via_group_id IS NULL AND outcome = 'denied')
     OR (actor_basis = 'system' AND actor_via_group_id IS NULL
         AND actor_id = '00000000-0000-0000-0000-000000000000'
-        AND action = 'membership.term.expired')
+        AND action IN ('membership.term.expired', 'member.remove'))
     OR (actor_basis = 'event_editor' AND actor_via_group_id IS NOT NULL
         AND action IN ('ticket.cancel', 'ticket.restore', 'ticket.promote', 'ticket.import', 'ticket.import.preview')));
 

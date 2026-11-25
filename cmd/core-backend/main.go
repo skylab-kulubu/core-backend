@@ -1012,15 +1012,6 @@ func main() {
 	// The Team audit record (docs/team-audit.md): Group writes, and the
 	// ticket actions of the panel (docs/ticket-resend.md).
 	teamAudit := teamaudit.NewPostgres(pool)
-	// Keycloak's console changes in the same record (docs/console-audit.md,
-	// KEYCLOAK_CONSOLE_AUDIT): read back from Keycloak's admin events.
-	consoleAudit, err := consoleAuditFromEnv(os.Getenv)
-	if err != nil {
-		log.Fatal(err)
-	}
-	consoleAuditMetrics, consoleAuditStopped := startConsoleAudit(workers, consoleAudit, dir, pool, teamAudit,
-		teamMembership, groupRolesNotice, log.Printf)
-	worker("keycloak console audit", consoleAuditStopped)
 	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites, ticketQR, doorScans, ticketPageConfig, teamAudit)
 	var ticketPDF ticketpage.Renderer
 	if g, ok := render.(*certificate.Gotenberg); ok && g != nil {
@@ -1231,6 +1222,16 @@ func main() {
 		TeamPage:              &identity.TeamPageVisibility{Consents: consents},
 	})
 	terms.UseMemberships(identityService)
+	// Keycloak's console changes in the same record (docs/console-audit.md,
+	// KEYCLOAK_CONSOLE_AUDIT): read back from Keycloak's admin events and
+	// told as the panel's are, the management terms included.
+	consoleAudit, err := consoleAuditFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	consoleAuditMetrics, consoleAuditStopped := startConsoleAudit(workers, consoleAudit, dir, pool, teamAudit,
+		teamMembership, managementTermsNotifier(terms), groupRolesNotice, log.Printf)
+	worker("keycloak console audit", consoleAuditStopped)
 	userAccounts := identity.NewUserAccounts(identity.UserAccountOptions{
 		Accounts: accountDir, People: dir, Users: users, Authz: az,
 		PrivilegedRoots: privilegedRoots, Audit: teamAudit, YTUProvider: ytuIdentityProvider,
