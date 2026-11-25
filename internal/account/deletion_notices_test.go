@@ -19,7 +19,7 @@ import (
 )
 
 // The deletion notices (docs/account-lifecycle.md, "Deletion notices"): the
-// person is told once that their request was received, once SkyMail has
+// person is told once that their request was received, once SkyNotify has
 // erased them, and once that their account was deleted, with the addresses
 // read before the identity goes. A notice that fails never holds the
 // erasure back.
@@ -34,7 +34,7 @@ type sentNotice struct {
 	vars           map[string]string
 }
 
-// noticeMailer is SkyMail for the notices: each send is a saga event.
+// noticeMailer is SkyNotify for the notices: each send is a saga event.
 type noticeMailer struct {
 	events *sagaEvents
 	mu     sync.Mutex
@@ -157,7 +157,7 @@ func testDeletionNoticesGoOnceEachInTheirPlace(t *testing.T, store erasureTestSt
 	}
 	want := []string{
 		"disable_identity", "logout_sessions", "read_addresses", "erase_contact_consents", "erase_skypass_wallet",
-		"erase_communication_preferences", "erase_app_preferences", "erase_skymail", "erase_cms", "erase_forms",
+		"erase_communication_preferences", "erase_app_preferences", "erase_skynotify", "erase_cms", "erase_forms",
 		"notice:" + receivedKey, "notice:" + receivedKey,
 		"anonymize_core", "erase_staged_uploads", "delete_identity",
 		"notice:" + completedKey, "notice:" + completedKey,
@@ -209,26 +209,26 @@ func TestDeletionDeadlineDayIsThirtyDaysLaterInIstanbul(t *testing.T) {
 	}
 }
 
-// The received notice waits for SkyMail's erasure: sent after it, it is the
-// mail SkyMail keeps no record of. A pass whose SkyMail call fails sends
+// The received notice waits for SkyNotify's erasure: sent after it, it is the
+// mail SkyNotify keeps no record of. A pass whose SkyNotify call fails sends
 // nothing; the pass that erases sends it once, and later passes do not.
-func TestDeletionNoticeReceivedWaitsForSkyMailAndGoesOnce(t *testing.T) {
+func TestDeletionNoticeReceivedWaitsForSkyNotifyAndGoesOnce(t *testing.T) {
 	t.Parallel()
 	f := newSagaFixture(t, user.NewMemoryStore())
 	mailer, logs := &noticeMailer{events: f.events}, &noticeLog{}
 	f.config.Notices = f.notices(mailer, logs)
-	f.answer(user.DeletionStepEraseSkyMail, answerStatus(http.StatusServiceUnavailable, "60"))
+	f.answer(user.DeletionStepEraseSkyNotify, answerStatus(http.StatusServiceUnavailable, "60"))
 	f.answer(user.DeletionStepEraseCMS, answerStatus(http.StatusServiceUnavailable, "60"))
 	worker := f.saga()
 	if worked, err := f.run(worker); !worked || err == nil {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}
 	if n := len(mailer.sent); n != 0 {
-		t.Fatalf("%d notices before SkyMail erased the person", n)
+		t.Fatalf("%d notices before SkyNotify erased the person", n)
 	}
 
 	f.now = f.now.Add(time.Minute)
-	f.answer(user.DeletionStepEraseSkyMail, answerCompleted(map[string]int64{"queue_rows_cleared": 1}))
+	f.answer(user.DeletionStepEraseSkyNotify, answerCompleted(map[string]int64{"queue_rows_cleared": 1}))
 	if worked, err := f.run(worker); !worked || err == nil {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}
@@ -255,7 +255,7 @@ func TestDeletionNoticeReceivedWaitsForSkyMailAndGoesOnce(t *testing.T) {
 	f.assertNoPersonalData(logs.all()...)
 }
 
-// A notice SkyMail refuses is logged, without an address, and never tried
+// A notice SkyNotify refuses is logged, without an address, and never tried
 // again; the erasure completes as if it had gone.
 func TestDeletionNoticeThatFailsDoesNotHoldTheErasure(t *testing.T) {
 	t.Parallel()
@@ -280,7 +280,7 @@ func TestDeletionNoticeThatFailsDoesNotHoldTheErasure(t *testing.T) {
 		t.Fatalf("log %v, want one line per notice", lines)
 	}
 	for _, line := range lines {
-		if !strings.Contains(line, "sent=0 failed=2: mail: SkyMail answered 503") {
+		if !strings.Contains(line, "sent=0 failed=2: mail: SkyNotify answered 503") {
 			t.Fatalf("line %q", line)
 		}
 	}
@@ -404,7 +404,7 @@ func TestDeletionNoticeReceivedIsClaimedOnlyWithItsAddresses(t *testing.T) {
 	f.config.Notices = notices
 	f.answer(user.DeletionStepEraseCMS, answerStatus(http.StatusServiceUnavailable, "60"))
 	worker := f.saga()
-	// SkyMail erases the person; the state cannot be read: nothing sent.
+	// SkyNotify erases the person; the state cannot be read: nothing sent.
 	if worked, err := f.run(worker); !worked || err == nil {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}

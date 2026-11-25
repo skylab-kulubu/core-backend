@@ -251,24 +251,24 @@ func TestTemplateKeyDefaultsToTheSeededKeyAndAnEmptyValueOptsOut(t *testing.T) {
 		return value, ok
 	}
 	welcome := func() string {
-		return templateKey(lookup, "SKYMAIL_WELCOME_TEMPLATE_KEY", mail.DefaultWelcomeTemplateKey)
+		return templateKey(lookup, "SKYNOTIFY_WELCOME_TEMPLATE_KEY", mail.DefaultWelcomeTemplateKey)
 	}
 
 	if got := welcome(); got != "core.welcome" {
 		t.Fatalf("unset key = %q", got)
 	}
-	if got := templateKey(lookup, "SKYMAIL_CERTIFICATE_TEMPLATE_KEY", mail.DefaultCertificateTemplateKey); got != "core.certificate" {
+	if got := templateKey(lookup, "SKYNOTIFY_CERTIFICATE_TEMPLATE_KEY", mail.DefaultCertificateTemplateKey); got != "core.certificate" {
 		t.Fatalf("unset certificate key = %q", got)
 	}
 
-	values["SKYMAIL_WELCOME_TEMPLATE_KEY"] = "  core.welcome.next  "
+	values["SKYNOTIFY_WELCOME_TEMPLATE_KEY"] = "  core.welcome.next  "
 	if got := welcome(); got != "core.welcome.next" {
 		t.Fatalf("explicit key = %q", got)
 	}
 
 	// An empty variable is the documented way back to the template id while the
 	// keys are being seeded; it must not be read as "unset" and defaulted.
-	values["SKYMAIL_WELCOME_TEMPLATE_KEY"] = ""
+	values["SKYNOTIFY_WELCOME_TEMPLATE_KEY"] = ""
 	if got := welcome(); got != "" {
 		t.Fatalf("emptied key = %q", got)
 	}
@@ -321,7 +321,7 @@ func TestAccountErasureStartupRefusesAMissingServiceSettingByName(t *testing.T) 
 	}
 
 	values["ACCOUNT_ERASURE_WORKER_ENABLED"] = "true"
-	values["ACCOUNT_ERASURE_SKYMAIL_URL"] = "http://skymail-backend:8080"
+	values["ACCOUNT_ERASURE_SKYNOTIFY_URL"] = "http://skynotify-backend:8080"
 	values["ACCOUNT_ERASURE_CMS_URL"] = "http://cms-backend:8080"
 	values["ACCOUNT_ERASURE_FORMS_URL"] = "http://forms-backend:8080"
 	values["ACCOUNT_ERASURE_CLIENT_ID"] = "core-erasure"
@@ -346,7 +346,7 @@ func TestAccountErasureStartupRefusesAMissingServiceSettingByName(t *testing.T) 
 // A Keycloak that stops answering must not hold the Welcome mail of a first
 // login for ever: the mail runs inside that request, and a token request on
 // http.DefaultClient has no timeout.
-func TestSkyMailTokenRequestEndsAtItsTimeout(t *testing.T) {
+func TestSkyNotifyTokenRequestEndsAtItsTimeout(t *testing.T) {
 	t.Parallel()
 	var path atomic.Value
 	keycloak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -359,9 +359,9 @@ func TestSkyMailTokenRequestEndsAtItsTimeout(t *testing.T) {
 		keycloak.CloseClientConnections()
 		keycloak.Close()
 	})
-	sky := newSkyMail(keycloak.URL, "e-skylab", "core", "secret", "https://mail.example", 200*time.Millisecond)
+	sky := newSkyNotify(keycloak.URL, "e-skylab", "core", "secret", "https://mail.example", 200*time.Millisecond)
 	if sky.HTTP == nil || sky.HTTP.Timeout != 200*time.Millisecond {
-		t.Fatalf("SkyMail client %+v, want the timeout", sky.HTTP)
+		t.Fatalf("SkyNotify client %+v, want the timeout", sky.HTTP)
 	}
 
 	done := make(chan error, 1)

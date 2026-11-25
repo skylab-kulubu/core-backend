@@ -18,8 +18,8 @@ import (
 const PersonTeamsPath = "/internal/v1/users/:sub/teams"
 
 // personTeamsCaller reports whether a service account may ask, each with a
-// core client role it already holds: SkyMail with audience:read (Team mail,
-// ADR-0067 addendum of 2026-11-08), a role only SkyMail's service account
+// core client role it already holds: SkyNotify with audience:read (Team mail,
+// ADR-0067 addendum of 2026-11-08), a role only SkyNotify's service account
 // holds; Forms with users:read (a form's owner team, ADR-0075 addendum of
 // 2026-11-08), and only Forms: users:read is shared (profile reads), so
 // another product's service account holding it is refused.

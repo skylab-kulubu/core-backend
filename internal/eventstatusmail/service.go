@@ -45,7 +45,7 @@ const (
 	dateLayout   = "02.01.2006 15:04"
 )
 
-// Mailer posts one status mail to one recipient (mail.SkyMail).
+// Mailer posts one status mail to one recipient (mail.SkyNotify).
 type Mailer interface {
 	EventStatusConfigured(kind mail.EventStatusKind) bool
 	EventStatus(ctx context.Context, kind mail.EventStatusKind, recipient, fullName string, vars map[string]string) error
@@ -208,7 +208,7 @@ func (s *Service) deliver(ctx context.Context, claimed event.StatusMail, report 
 		var refused *mail.SendError
 		switch {
 		case errors.As(err, &refused) && refused.Permanent():
-			// SkyMail refuses this one (an address it does not take): the
+			// SkyNotify refuses this one (an address it does not take): the
 			// same body would be refused again.
 			report.Rejected++
 			s.count("rejected")
@@ -383,7 +383,7 @@ func (s *Service) Run(ctx context.Context, logf func(string, ...any)) <-chan str
 			case err != nil && ctx.Err() == nil:
 				logf("event status mail: queue: %v", err)
 			case report.any():
-				logf("event status mail: %d mails done (%d dropped, %d expired, %d off), %d retried later; %d sent, %d skipped, %d refused by SkyMail",
+				logf("event status mail: %d mails done (%d dropped, %d expired, %d off), %d retried later; %d sent, %d skipped, %d refused by SkyNotify",
 					report.Mails, report.Dropped, report.Expired, report.Off, report.Retried, report.Sent, report.Skipped, report.Rejected)
 			}
 			select {

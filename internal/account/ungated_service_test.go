@@ -38,7 +38,7 @@ func TestErasureSagaWaitsForTheTokenWindowBeforeCallingAnUngatedService(t *testi
 	if got := f.services[user.DeletionStepEraseCMS].callCount(); got != 0 {
 		t.Fatalf("cms called %d times inside the token window", got)
 	}
-	want := []user.DeletionStep{user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions, user.DeletionStepEraseContactConsents, user.DeletionStepEraseSkyPassWallet, user.DeletionStepEraseCommunicationPreferences, user.DeletionStepEraseAppPreferences, user.DeletionStepEraseSkyMail, user.DeletionStepEraseForms}
+	want := []user.DeletionStep{user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions, user.DeletionStepEraseContactConsents, user.DeletionStepEraseSkyPassWallet, user.DeletionStepEraseCommunicationPreferences, user.DeletionStepEraseAppPreferences, user.DeletionStepEraseSkyNotify, user.DeletionStepEraseForms}
 	if got := f.checkpoints(); !slices.Equal(got, want) {
 		t.Fatalf("checkpoints = %v, want %v", got, want)
 	}
@@ -64,7 +64,7 @@ func TestErasureSagaWaitsForTheTokenWindowBeforeCallingAnUngatedService(t *testi
 	if cms := f.records()[user.DeletionStepEraseCMS]; !cms.CompletedAt.Equal(start.Add(6 * time.Minute)) {
 		t.Fatalf("cms proof = %+v", cms)
 	}
-	for event, want := range map[string]int{"erase_skymail": 1, "erase_cms": 1, "erase_forms": 1, "disable_identity": 1, "logout_sessions": 1} {
+	for event, want := range map[string]int{"erase_skynotify": 1, "erase_cms": 1, "erase_forms": 1, "disable_identity": 1, "logout_sessions": 1} {
 		if got := f.events.count(event); got != want {
 			t.Fatalf("%s ran %d times, want %d: %v", event, got, want, f.events.list())
 		}
@@ -86,23 +86,23 @@ func testTokenWindowCountsFromTheIdentityCheckpoints(t *testing.T, store erasure
 	f := newSagaFixture(t, store)
 	blocked := f.now
 	// The worker reaches the request ten minutes after the block, and
-	// SkyMail asks for a minute.
+	// SkyNotify asks for a minute.
 	f.now = blocked.Add(10 * time.Minute)
 	closed := f.now
-	f.answer(user.DeletionStepEraseSkyMail, answerStatus(http.StatusServiceUnavailable, "60"))
+	f.answer(user.DeletionStepEraseSkyNotify, answerStatus(http.StatusServiceUnavailable, "60"))
 	worker := f.sagaWith(withRegistryWaits(f.group()))
 	if worked, err := f.run(worker); !worked || err == nil {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}
 	state := f.state()
-	if state.LastErrorCode != "erase_skymail_failed" || state.AttemptCount != 0 || !state.NextAttemptAt.Equal(closed.Add(time.Minute)) {
+	if state.LastErrorCode != "erase_skynotify_failed" || state.AttemptCount != 0 || !state.NextAttemptAt.Equal(closed.Add(time.Minute)) {
 		t.Fatalf("first pass request = %+v", state)
 	}
 
 	// The next pass reads the identity checkpoints from the store: the wait
 	// still ends six minutes after the disable, not after the block.
 	f.now = state.NextAttemptAt
-	f.answer(user.DeletionStepEraseSkyMail, answerCompleted(map[string]int64{"skymail_rows_erased": 1}))
+	f.answer(user.DeletionStepEraseSkyNotify, answerCompleted(map[string]int64{"skynotify_rows_erased": 1}))
 	if worked, err := f.run(worker); !worked || err == nil {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}

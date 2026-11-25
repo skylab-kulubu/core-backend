@@ -12,7 +12,7 @@ EOSQL
 }
 create keycloak keycloak "$KEYCLOAK_DB_PASSWORD"
 create super_skylab super_skylab "$CORE_DB_PASSWORD"
-create skymail skymail "$SKYMAIL_DB_PASSWORD"
+create skynotify skynotify "$SKYNOTIFY_DB_PASSWORD"
 create skylab_cms skylab_cms "$CMS_DB_PASSWORD"
 create forms forms_db "$FORMS_DB_PASSWORD"
 create account_center account_center "$ACCOUNT_CENTER_DB_PASSWORD"

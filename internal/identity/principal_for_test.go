@@ -87,7 +87,7 @@ func newPrincipalRealm(t *testing.T) principalRealm {
 			t.Fatal(err)
 		}
 	}
-	if err := m.SetGroupClientRoles(ctx, r.ids["/UYELER/ARGE/SECURE"], []identity.ClientRole{{ClientID: "skymail", Role: "skymail:lists:read"}}); err != nil {
+	if err := m.SetGroupClientRoles(ctx, r.ids["/UYELER/ARGE/SECURE"], []identity.ClientRole{{ClientID: "skynotify", Role: "skynotify:lists:read"}}); err != nil {
 		t.Fatal(err)
 	}
 	r.yk, r.dk, r.leader, r.none = uuid.New(), uuid.New(), uuid.New(), uuid.New()

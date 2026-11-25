@@ -135,7 +135,7 @@ func TestGotenbergFailureSendsWithoutThePDF(t *testing.T) {
 	}
 }
 
-func TestPDFOverSkyMailsBoundGoesWithoutAndLogsNoPerson(t *testing.T) {
+func TestPDFOverSkyNotifysBoundGoesWithoutAndLogsNoPerson(t *testing.T) {
 	e := newEnv(t)
 	big := append(append([]byte{}, aPDF...), make([]byte, mail.MaxAttachmentBytes)...)
 	pdf := &fakePDF{data: big}
@@ -152,12 +152,12 @@ func TestPDFOverSkyMailsBoundGoesWithoutAndLogsNoPerson(t *testing.T) {
 		t.Fatalf("PDF drawn %d times: a size is no Gotenberg failure, the next Ticket's is drawn", len(pdf.keys))
 	}
 	line := logs.String()
-	if !strings.Contains(line, "over SkyMail's 512 KB") || strings.Contains(line, "can@example.com") || strings.Contains(line, "Can") {
+	if !strings.Contains(line, "over SkyNotify's 512 KB") || strings.Contains(line, "can@example.com") || strings.Contains(line, "Can") {
 		t.Fatalf("log %q", line)
 	}
 }
 
-// A retry draws the PDF again and keeps the key: SkyMail answers the first
+// A retry draws the PDF again and keeps the key: SkyNotify answers the first
 // try's replay and keeps its file.
 func TestRetryDrawsThePDFAgainUnderTheSameKey(t *testing.T) {
 	e := newEnv(t)
@@ -181,7 +181,7 @@ func TestRetryDrawsThePDFAgainUnderTheSameKey(t *testing.T) {
 	}
 }
 
-// SkyMail refusing the body with the file (400 attachment.*) is no reason to
+// SkyNotify refusing the body with the file (400 attachment.*) is no reason to
 // lose the mail: it goes again at once without it, under the same key.
 func TestRefusedAttachmentSendsTheMailWithoutIt(t *testing.T) {
 	e := newEnv(t)

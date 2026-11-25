@@ -103,7 +103,7 @@ func TestPostgresReadersReadTheRestoreWindowAndThePeopleInTheSnapshots(t *testin
 	dumpedAt := time.Date(2026, 9, 20, 3, 0, 0, 0, time.UTC)
 
 	// Live core: requests completed before, at and after T; open requests
-	// whose SkyMail or CMS step ran before or after T.
+	// whose SkyNotify or CMS step ran before or after T.
 	live := server
 	if err := migrate.Apply(ctx, live); err != nil {
 		t.Fatal(err)
@@ -126,8 +126,8 @@ func TestPostgresReadersReadTheRestoreWindowAndThePeopleInTheSnapshots(t *testin
 	complete("after", dumpedAt.Add(time.Hour))
 	complete("before", dumpedAt.Add(-time.Hour))
 	complete("atT", dumpedAt)
-	open("openAfter", "erase_skymail", dumpedAt.Add(time.Minute))
-	open("openBefore", "erase_skymail", dumpedAt.Add(-time.Minute))
+	open("openAfter", "erase_skynotify", dumpedAt.Add(time.Minute))
+	open("openBefore", "erase_skynotify", dumpedAt.Add(-time.Minute))
 	open("openOtherStep", "erase_cms", dumpedAt.Add(time.Minute))
 
 	livePool, err := erasurereplay.OpenReadOnly(ctx, "DATABASE_URL", live.Config().ConnString())
@@ -147,7 +147,7 @@ func TestPostgresReadersReadTheRestoreWindowAndThePeopleInTheSnapshots(t *testin
 	if !slices.Equal(completed, want) {
 		t.Fatalf("completed since T = %+v, want %+v", completed, want)
 	}
-	openIDs, err := liveRequests.OpenWithStepSince(ctx, user.DeletionStepEraseSkyMail, dumpedAt)
+	openIDs, err := liveRequests.OpenWithStepSince(ctx, user.DeletionStepEraseSkyNotify, dumpedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestPostgresReadersReadTheRestoreWindowAndThePeopleInTheSnapshots(t *testin
 	// Together, through the live saga's union: three addresses.
 	var records []erasurereplay.Record
 	report, err := erasurereplay.Replay{
-		Service: skymail, DumpedAt: dumpedAt, Requests: &fakeRequests{completed: []erasurereplay.Request{
+		Service: skynotify, DumpedAt: dumpedAt, Requests: &fakeRequests{completed: []erasurereplay.Request{
 			{ID: uuid.New(), SubjectID: person}, {ID: uuid.New(), SubjectID: onlyLong}, {ID: uuid.New(), SubjectID: stranger}, {ID: uuid.New(), SubjectID: anonymized},
 		}},
 		Core: core, Keycloak: keycloak,

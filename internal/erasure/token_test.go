@@ -183,7 +183,7 @@ func TestClientCredentialsFailureNamesTheStatusButNoSecret(t *testing.T) {
 	endpoint := newTokenEndpoint(t)
 	endpoint.set(http.StatusUnauthorized, 300)
 	tokens := &erasure.ClientCredentials{
-		TokenURL: endpoint.server.URL, ClientID: "core-erasure", Secret: fixedSecret("s3cr3t-value-never-printed").read, Scope: "account-erase-skymail",
+		TokenURL: endpoint.server.URL, ClientID: "core-erasure", Secret: fixedSecret("s3cr3t-value-never-printed").read, Scope: "account-erase-skynotify",
 	}
 	_, err := tokens.Token(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "401") {
@@ -210,7 +210,7 @@ func TestClientCredentialsReadsTheSecretFromConfigurationForEveryTokenRequest(t 
 	now := time.Date(2026, 9, 25, 3, 0, 0, 0, time.UTC)
 	tokens := &erasure.ClientCredentials{
 		TokenURL: endpoint.server.URL, ClientID: "core-erasure", Secret: secret.read,
-		Scope: "account-erase-skymail", Now: func() time.Time { return now },
+		Scope: "account-erase-skynotify", Now: func() time.Time { return now },
 	}
 	ctx := context.Background()
 
