@@ -13,11 +13,12 @@ ADR 0066 and its 2026-10-19 addendum (e-skylab), ticket 06. A copy takes the sou
   "includeCompetitions": false,
   "includeExternalRegistration": false,
   "includeAttendeeNote": false,
+  "includeCertificateTemplate": true,
   "ownerTeam": "ALGOLAB"
 }
 ```
 
-`id`, `name` (trimmed) and `startDate` are required (`400` otherwise). `ownerTeam` is optional: none (or the source's own) keeps the source's Owner team.
+`id`, `name` (trimmed) and `startDate` are required (`400` otherwise). `ownerTeam` is optional: none (or the source's own) keeps the source's Owner team. `includeCertificateTemplate` is optional and on by default: left out or `true` copies the certificate template, `false` leaves it out (named `certificateTemplate` in `skipped` when the source has one).
 
 | Answer | When |
 |---|---|
@@ -44,7 +45,8 @@ Who: whoever may see the source (a draft: who may edit it, ADR 0066) and create 
 | Season | the current Season the new start falls in, the narrowest when several do (a Season without an end runs on; one without a start covers nothing); none when none | not the source's: a copy is usually for the next term |
 | Cover | yes, the same Media | left out (`cover`) when the Media's rules or the Team media library refuse it |
 | Certificate rule (`attendanceRule`, ratio) | yes | |
-| Event template binding (`scope=event`) | yes | left out (`certificateTemplate`) when the caller may not bind templates for the team (`certificate:binding:manage` or the team's Leader) or the template is archived or another team's |
+| Event template (the source's own certificate template; [certificate-event-templates.md](certificate-event-templates.md#copy-and-team-change)) | yes, as a new, independent Event template of the copy: the copy's Owner team, the name "<copy's name> sertifikası", the same draft; when it was published, its latest version becomes the copy's version 1 (the same layout, asset copies and checksum; nothing is rendered again), and the copy is bound to it when the source was bound to its own. A draft-only template is copied and binds nothing. The design's link (Canva or Figma `sourceRef`, `sourceEditUrl`) comes along only for who may read the source template (the template rule of its Owner team), else both are empty | left out (`certificateTemplate`) with `includeCertificateTemplate: false`, or when the database refuses its Media (one deleted since: the draft's, or the published version's); the Event copy goes on |
+| Team or club template binding (`scope=event`) | yes | left out (`certificateTemplate`) with `includeCertificateTemplate: false`, when the caller may not bind templates for the team (`certificate:binding:manage` or the team's Leader), or the template is archived or another team's |
 | Days, Sessions | the current ones | archived ones are not; a Session is never cancelled in the copy, and has no feedback form (its `feedbackAutoSend` comes along); Sessions get new ids, so old Session QR codes do not check anyone in to the copy |
 | Door staff | only with `includeDoorStaff`, and only those whose accounts are active | left out (`doorStaff`) when the caller may not assign them (`event:manage`, or a Leader of the copy's Owner team: [co-organizers.md](co-organizers.md)) |
 | Competitions and their stages | only with `includeCompetitions`; the current ones, each a `draft` with its name, description and entrant mode; stages with position, name, strategy, config and config version, dates moved | left out (`competitions`) when the caller may not manage Competitions in the team; never copied: entrants, members, submissions, adjustments, results, cancel reasons, archived Competitions |

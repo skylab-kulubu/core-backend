@@ -226,7 +226,8 @@ const (
 	// BasisEventEditor: the actor may edit the Event by the Event policy
 	// (a member of a team whose members edit its Events, GECEKODU; one of
 	// its Co-organizers, docs/co-organizers.md) without being Privileged or
-	// a Leader of the Event's team or a Team above it. A Ticket's
+	// a Leader of the Event's team or a Team above it. A copy's
+	// co_organizer.add rows (reason "copy") by a Co-organizer carry it. A Ticket's
 	// cancellation and its taking back (docs/ticket-cancellation.md), its
 	// promotion and import, and its resend and link renewal by a
 	// Co-organizer carry it; Actor.ViaGroupID names the Event's team.
@@ -392,6 +393,12 @@ type State struct {
 	Management string `json:"management,omitempty"`
 	Visibility string `json:"visibility,omitempty"`
 	PersonID   string `json:"personId,omitempty"`
+	// Changes is how many changes a refused write of the list asked for
+	// (its one denied row); Reason is why a row was written without a
+	// write of the list ("copy": an Event's copy carried it). Absent on
+	// every other row.
+	Changes int    `json:"changes,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 	// Import is a ticket.import row's counts; absent on every other row.
 	Import *ImportCounts `json:"import,omitempty"`
 	// Operation and ResourceType are Keycloak's names of a console change
@@ -556,7 +563,7 @@ func (r Record) normalize() (Record, string) {
 		if _, err := uuid.Parse(r.Actor.ViaGroupID); err != nil ||
 			(r.Action != ActionTicketCancel && r.Action != ActionTicketRestore && r.Action != ActionTicketPromote &&
 				r.Action != ActionTicketImport && r.Action != ActionTicketImportPreview &&
-				r.Action != ActionTicketResend && r.Action != ActionTicketLinkRenew) {
+				r.Action != ActionTicketResend && r.Action != ActionTicketLinkRenew && r.Action != ActionCoOrganizerAdd) {
 			return r, "invalid_basis"
 		}
 	case BasisConsole:
@@ -663,6 +670,10 @@ func (s *State) normalize() *State {
 	}
 	out.Management = cut(s.Management, MaxIdentifier)
 	out.Visibility = cut(s.Visibility, MaxIdentifier)
+	if s.Changes > 0 {
+		out.Changes = s.Changes
+	}
+	out.Reason = cut(s.Reason, MaxIdentifier)
 	if s.Resend > 0 {
 		out.Resend = s.Resend
 	}

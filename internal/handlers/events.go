@@ -13,6 +13,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 )
 
 type EventHandler struct {
@@ -98,6 +99,9 @@ func eventError(c fiber.Ctx, err error) error {
 		return problemWithFields(c, fiber.StatusConflict, "Conflict", "Conflict", "form_in_use", formInUseFields(inUse))
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
+	case errors.Is(err, teamaudit.ErrUnavailable):
+		// A copy's Co-organizer rows could not be opened: no copy was made.
+		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", auditUnavailableCode)
 	case errors.Is(err, event.ErrCoOrganizerPersonDates):
 		return problemCode(c, fiber.StatusForbidden, "Forbidden", "co_organizer_person_dates")
 	case errors.Is(err, event.ErrForbidden):
@@ -482,6 +486,9 @@ type copyBody struct {
 	// IncludeCoOrganizerPeople copies the source's Co-organizer people
 	// (docs/co-organizers.md); its Co-organizer teams always come along.
 	IncludeCoOrganizerPeople bool `json:"includeCoOrganizerPeople"`
+	// IncludeCertificateTemplate false leaves the certificate template
+	// out (its Event template and binding); none copies it.
+	IncludeCertificateTemplate *bool `json:"includeCertificateTemplate"`
 }
 
 // Copy copies an Event's structure into a new draft: POST
@@ -501,14 +508,15 @@ func (h *EventHandler) Copy(c fiber.Ctx) error {
 	if err := c.Bind().Body(&body); err != nil || body.ID == nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	copied, fresh, err := h.svc.Copy(c.Context(), p, id, event.CopyInput{
-		ID:                  *body.ID,
-		Name:                body.Name,
-		StartDate:           body.StartDate,
-		IncludeDoorStaff:    body.IncludeDoorStaff,
-		IncludeCompetitions: body.IncludeCompetitions,
-		OwnerTeam:           body.OwnerTeam,
-
+	// The Co-organizers a copy carries are recorded (docs/co-organizers.md).
+	copied, fresh, err := h.svc.Copy(auditContext(c, p), p, id, event.CopyInput{
+		ID:                          *body.ID,
+		Name:                        body.Name,
+		StartDate:                   body.StartDate,
+		IncludeDoorStaff:            body.IncludeDoorStaff,
+		IncludeCompetitions:         body.IncludeCompetitions,
+		OwnerTeam:                   body.OwnerTeam,
+		SkipCertificateTemplate:     body.IncludeCertificateTemplate != nil && !*body.IncludeCertificateTemplate,
 		IncludeExternalRegistration: body.IncludeExternalRegistration,
 		IncludeAttendeeNote:         body.IncludeAttendeeNote,
 		IncludeCoOrganizerPeople:    body.IncludeCoOrganizerPeople,

@@ -101,9 +101,9 @@ Who: `ManageOrganizers` (Privileged and the Owner team's Leaders; never a Co-org
 - `co_organizer.add`, `co_organizer.remove`: a team or a person added or removed; `co_organizer.change`: a team's `management` or `visibility` changed (one row, before and after).
 - Target: the Event's Owner team's Group; an Event without an Owner team has none (`group_id` NULL, `group_path` empty). Before/after: `eventId` and the team's `code`, `management`, `visibility`, or the person's `personId` alone; never a name.
 - Basis: `privileged`, or `leader` with the Team whose Leader group grants it (the Owner team or a Team above it).
-- A write `ManageOrganizers` refuses is recorded `denied` (basis `none`, `forbidden`), a row for each change it asked for, or one `co_organizer.change` row naming the Event when its lists cannot be read. A validation refusal (`400`) or the switch off (`co_organizers_disabled`) writes no row.
+- A write `ManageOrganizers` refuses is recorded as one `denied` `co_organizer.change` row per request (basis `none`, `forbidden`): the Event and `changes`, how many changes it asked for (0 when its lists cannot be read). A validation refusal (`400`) or the switch off (`co_organizers_disabled`) writes no row.
 - The rows decide against the lists as the request read them: a write whose lists changed meanwhile is `409` and writes nothing, so a row never names a change that was not made.
-- A copy that carries the Co-organizers writes no row (the copy is a new Event, its list is the source's).
+- A copy that carries Co-organizers writes a `co_organizer.add` row for each team and person it carries, `reason: "copy"`, against the copy's Owner team, opened before the copy (`503 audit_unavailable` and no copy when one cannot be). Basis: `privileged`, `leader` (the copy's Owner team or a Team above it), else `event_editor` through the copy's Owner team (a Co-organizer copying; migration `20261127115000`). A person the copy leaves out (an account no longer active) has the row `failed` `inactive_person`. A copy carrying none writes no row.
 
 ## Mails
 
@@ -151,7 +151,7 @@ Before turning it on: SkyNotify seeds both types with their templates and inbox 
 - The Co-organizer teams come along with their `management` and `visibility`, but the one that is the copy's Owner team, while `EVENT_CO_ORGANIZERS_WRITE` is on (off, a copy has none, as before).
 - `includeCoOrganizerPeople: true` also copies the people whose accounts are active (not being erased), for who may change the copy's list (`ManageOrganizers` on the copy: Privileged and its Owner team's Leaders, with the switch on); anyone else gets `"coOrganizerPeople"` in `skipped` when the source has people. The copier is the rows' `added_by`.
 - A Co-organizer of the source (`viewer.via` `coTeam` or `coPerson`) who may not create Events in its Owner team copies it **into the Owner team** (`ownerTeam` left out or the source's), never into their own (`403`), and only while they still manage the copy: a Co-organizer team's seat does (its team comes along), a Co-organizer person does not (their row comes along only for who manages the list), so their copy is `403`.
-- The certificate template binding and the Competitions are decided on the copy as it will be (its Owner team and the Co-organizer teams it gets): a Co-organizer team's Leader brings them too.
+- Who may bind the copy's certificate template and create its Competitions is decided on the copy as it will be (its Owner team and the Co-organizer teams it gets): a Co-organizer team's Leader may. The Event template comes along as [certificate-event-templates.md](certificate-event-templates.md#copy-and-team-change) says; a bound team template comes along only when it fits the copy's Owner team (a club template or that team's, the copy's rule): any other, a Co-organizer team's included, is left out and named `skipped` (`certificateTemplate`).
 
 ## In the Event JSON
 
@@ -176,7 +176,7 @@ Only the `co_organizer` teams are ever named outside the panel (`event.PublicCoO
 
 ## Data
 
-`event_co_organizers` (migration `20261126151000`): `event_id` (the Event's rows go with it), `team_code` or `user_id` (one of them), `management` and `visibility` (both on a team row, none on a person row; the checks enforce it), `added_by` (an id alone; the name is read when shown) and `added_at`. A team and a person are each once on an Event. `user_id` and `added_by` are current-identity links, guarded like `event_door_staff.user_id`. The audit record and the mails: above (ticket 05; migration `20261127110000`).
+`event_co_organizers` (migration `20261126151000`): `event_id` (the Event's rows go with it), `team_code` or `user_id` (one of them), `management` and `visibility` (both on a team row, none on a person row; the checks enforce it), `added_by` (an id alone; the name is read when shown) and `added_at`. A team and a person are each once on an Event. `user_id` and `added_by` are current-identity links, guarded like `event_door_staff.user_id`. The audit record and the mails: above (ticket 05; migration `20261127115000`).
 
 - **Retention** (`co_organizer_people`, [retention-sweep.md](retention-sweep.md); rule set v11): a person row goes 90 days after the Event's end, as door staff; an Event with no date is counted, never changed. The rights end 30 days after the Event, before. A team row lives with the Event.
 - **Account erasure**: the person's rows go; `added_by` of the rows they added is cleared, the rows stay.

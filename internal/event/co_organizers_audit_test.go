@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -128,8 +129,18 @@ func TestCoOrganizerChangesRefusedAndUnrecorded(t *testing.T) {
 	}
 	rows := w.audit.Rows()
 	if len(rows) != 1 || rows[0].Outcome != teamaudit.OutcomeDenied || rows[0].Actor.Basis != teamaudit.BasisNone ||
-		rows[0].Action != teamaudit.ActionCoOrganizerAdd || rows[0].After.Code != "GECEKODU" || rows[0].ErrorCode != "forbidden" {
+		rows[0].Action != teamaudit.ActionCoOrganizerChange || rows[0].After.Changes != 1 || rows[0].After.Code != "" ||
+		rows[0].After.EventID != w.ev.ID.String() || rows[0].ErrorCode != "forbidden" {
 		t.Fatalf("denied %+v", rows)
+	}
+	// Several changes refused: still one row, naming how many.
+	if _, err := w.svc.SetOrganizers(w.ctx(co), co, w.ev.ID, event.OrganizersInput{
+		Teams: []event.OrganizerTeamInput{{Code: "GECEKODU"}, {Code: "WEBLAB"}}, People: []uuid.UUID{uuid.New()},
+	}); !errors.Is(err, event.ErrForbidden) {
+		t.Fatal(err)
+	}
+	if rows := w.audit.Rows(); len(rows) != 2 || rows[1].After.Changes != 3 {
+		t.Fatalf("one denied row per request %+v", rows)
 	}
 
 	yk := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/YK"}}
@@ -145,5 +156,59 @@ func TestCoOrganizerChangesRefusedAndUnrecorded(t *testing.T) {
 	// Without an actor in the request nothing is recorded, so nothing is written.
 	if _, err := w.svc.SetOrganizers(context.Background(), yk, w.ev.ID, event.OrganizersInput{Teams: []event.OrganizerTeamInput{{Code: "WEBLAB"}}}); !errors.Is(err, teamaudit.ErrUnavailable) {
 		t.Fatalf("no actor: %v", err)
+	}
+}
+
+// A copy that carries the Co-organizers records each as a co_organizer.add
+// row (reason copy) against the copy's Owner team: its Leader as leader, a
+// Co-organizer who copies as an event editor through that team. A copy
+// that carries none records nothing.
+func TestCopyCarryingCoOrganizersIsAudited(t *testing.T) {
+	t.Parallel()
+	w := newAuditWorld(t)
+	yk := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/YK"}}
+	person := uuid.New()
+	if _, err := w.svc.SetOrganizers(w.ctx(yk), yk, w.ev.ID, event.OrganizersInput{
+		Teams: []event.OrganizerTeamInput{{Code: "WEBLAB"}}, People: []uuid.UUID{person},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(w.audit.Rows())
+	start := listClock().Add(30 * 24 * time.Hour)
+	owner := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/SANAT/ARTLAB/LIDERLER"}}
+	copied, _, err := w.svc.Copy(w.ctx(owner), owner, w.ev.ID, event.CopyInput{ID: uuid.New(), Name: "Hack 2", StartDate: &start, IncludeCoOrganizerPeople: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := w.audit.Rows()[before:]
+	if len(rows) != 2 {
+		t.Fatalf("copy rows %+v", rows)
+	}
+	for _, row := range rows {
+		if row.Action != teamaudit.ActionCoOrganizerAdd || row.Outcome != teamaudit.OutcomeOK || row.After.Reason != "copy" ||
+			row.After.EventID != copied.Event.ID.String() || row.Actor.Basis != teamaudit.BasisLeader || row.GroupPath != "/UYELER/SANAT/ARTLAB" {
+			t.Fatalf("copy row %+v %+v", row, row.After)
+		}
+	}
+	if rows[0].After.Code != "WEBLAB" || rows[1].After.PersonID != person.String() {
+		t.Fatalf("what was carried %+v %+v", rows[0].After, rows[1].After)
+	}
+
+	co := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	before = len(w.audit.Rows())
+	if _, _, err := w.svc.Copy(w.ctx(co), co, w.ev.ID, event.CopyInput{ID: uuid.New(), Name: "Hack 3", StartDate: &start}); err != nil {
+		t.Fatal(err)
+	}
+	rows = w.audit.Rows()[before:]
+	if len(rows) != 1 || rows[0].Actor.Basis != teamaudit.BasisEventEditor || rows[0].Actor.ViaGroupID != "8a0c7f2e-0000-4000-8000-000000000001" {
+		t.Fatalf("a Co-organizer's copy %+v", rows)
+	}
+
+	before = len(w.audit.Rows())
+	if _, _, err := w.svc.Copy(w.ctx(yk), yk, w.noTeam.ID, event.CopyInput{ID: uuid.New(), Name: "Kulüp 2", StartDate: &start}); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.audit.Rows()) != before {
+		t.Fatalf("a copy carrying nothing wrote %+v", w.audit.Rows()[before:])
 	}
 }

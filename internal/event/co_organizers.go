@@ -276,11 +276,12 @@ func (s *service) SetOrganizers(ctx context.Context, p authz.Principal, id uuid.
 		return Organizers{}, err
 	}
 	if !s.canManageOrganizers(p, e) {
-		// Recorded (denied) with what it asked for, when that can be read.
-		var changes []organizerChange
+		// Recorded (denied) with how many changes it asked for, when its
+		// lists can be read.
+		changes := 0
 		if teams, err := s.coOrganizerTeams(e.OwnerTeam, in.Teams); err == nil {
 			if people, err := coOrganizerPeople(in.People); err == nil {
-				changes = organizerChanges(e, teams, people)
+				changes = len(organizerChanges(e, teams, people))
 			}
 		}
 		s.denyOrganizers(ctx, e, changes)
