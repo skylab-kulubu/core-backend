@@ -50,6 +50,8 @@ const (
 	CodeLayoutImageMissing      = "layout_image_missing"
 	CodeLayoutRecipientMissing  = "layout_recipient_name_missing"
 	CodeLayoutNotVerifiable     = "layout_not_verifiable"
+	CodeLayoutPlacementInvalid  = "layout_background_placement_invalid"
+	CodeBackgroundSizeUnknown   = "background_size_unknown"
 	CodeAssetEmpty              = "asset_empty"
 	CodeAssetTooLarge           = "asset_too_large"
 	CodeAssetTypeUnsupported    = "asset_type_unsupported"

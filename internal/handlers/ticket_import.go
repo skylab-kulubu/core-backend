@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
@@ -44,6 +45,15 @@ func importError(c fiber.Ctx, err error) error {
 		return problemDetailCode(c, fiber.StatusBadRequest, "Bad Request", "Listede satır yok.", "import_empty")
 	case errors.Is(err, ticket.ErrImportNoEmail):
 		return problemDetailCode(c, fiber.StatusBadRequest, "Bad Request", "Listede e-posta sütunu bulunamadı.", "import_no_email_column")
+	case errors.Is(err, ticket.ErrImportAmbiguousEmail):
+		var amb *ticket.ImportAmbiguousEmailError
+		columns := []string{}
+		if errors.As(err, &amb) {
+			columns = amb.Columns
+		}
+		return problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
+			"Listede birden çok e-posta sütunu var: "+strings.Join(columns, ", ")+". Yalnız birini bırakın.",
+			"import_ambiguous_email_column", fiber.Map{"columns": columns})
 	case errors.Is(err, ticket.ErrImportUnreadable):
 		return problemDetailCode(c, fiber.StatusBadRequest, "Bad Request", "Liste okunamadı.", "import_unreadable")
 	default:
