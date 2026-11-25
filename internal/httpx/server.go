@@ -36,6 +36,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
 	"github.com/skylab-kulubu/core-backend/internal/subjectrequest"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
+	"github.com/skylab-kulubu/core-backend/internal/ticketimage"
 	"github.com/skylab-kulubu/core-backend/internal/ticketpage"
 	"github.com/skylab-kulubu/core-backend/internal/ticketqr"
 	"github.com/skylab-kulubu/core-backend/internal/user"
@@ -156,6 +157,9 @@ type Deps struct {
 	// TicketPage answers the ticket page's public routes
 	// (/v1/public/tickets/{key}, docs/ticket-page.md). Nil serves none.
 	TicketPage *ticketpage.Service
+	// TicketImages answers /v1/events/{id}/ticket-image, the image of the
+	// PDF ticket's band (docs/ticket-image.md). Nil serves none.
+	TicketImages *ticketimage.Service
 	// MapRegions are the club's map regions (/v1/map-regions,
 	// docs/event-map.md). Nil serves none.
 	MapRegions *mapregion.Service
@@ -763,6 +767,11 @@ func New(deps Deps) *fiber.App {
 	app.Put("/v1/events/:id/videos/order", events.OrderFiles(event.Videos))
 	app.Put("/v1/events/:id/videos/:mediaId/poster", events.SetVideoPoster)
 	app.Delete("/v1/events/:id/videos/:mediaId/poster", events.ClearVideoPoster)
+	if deps.TicketImages != nil {
+		ticketImages := handlers.NewTicketImageHandler(deps.TicketImages)
+		app.Get("/v1/events/:id/ticket-image", ticketImages.Get)
+		app.Put("/v1/events/:id/ticket-image", ticketImages.Put)
+	}
 	app.Get("/v1/events/:eventId/days", schedule.ListDays)
 	app.Post("/v1/events/:eventId/applications/me", tickets.Apply)
 	app.Post("/v1/events/:eventId/applications/users/:userId", tickets.ApplyForOther)

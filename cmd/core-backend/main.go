@@ -65,6 +65,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/teamcode"
 	"github.com/skylab-kulubu/core-backend/internal/teammail"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
+	"github.com/skylab-kulubu/core-backend/internal/ticketimage"
 	"github.com/skylab-kulubu/core-backend/internal/ticketnotify"
 	"github.com/skylab-kulubu/core-backend/internal/ticketpage"
 	"github.com/skylab-kulubu/core-backend/internal/ticketqr"
@@ -1036,6 +1037,10 @@ func main() {
 		&ticketpage.MediaImages{Media: mediaStore, Blobs: blobs},
 		ticketpage.Config{Page: ticketPageConfig, APIOrigin: os.Getenv("PUBLIC_API_ORIGIN")})
 	ticketPage.Entries = tickets
+	// The image of the PDF ticket's band (docs/ticket-image.md).
+	ticketImages := &ticketimage.Service{Store: &ticketimage.PostgresStore{Pool: pool}, Events: events, Authz: az,
+		Linker: media.NewLinker(mediaStore), Media: mediaStore, Address: media.ConfiguredAddresses().Object}
+	ticketPage.TicketImages = ticketImages.Store
 	// The Ticket's PDF with its mail (TICKET_PDF_ATTACHMENT): the ticket
 	// page's PDF, drawn by the worker just before each send.
 	ticketPDFAttachment, err := ticketPDFAttachmentOn(os.Getenv)
@@ -1358,6 +1363,7 @@ func main() {
 		MemoryMetrics:             memory,
 		EventMapMetrics:           eventMapMetrics,
 		CertificateMetrics:        certificateMetrics,
+		TicketImages:              ticketImages,
 		MapRegions:                &mapregion.Service{Store: mapRegions, Authz: az, Address: media.ConfiguredAddresses().Object},
 	})
 
