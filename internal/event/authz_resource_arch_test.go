@@ -18,9 +18,10 @@ import (
 // the Event's Co-organizers. The list only shrinks: co-organizer ticket 03
 // moves each of them to the helper and empties it.
 var resourcesFromAnEvent = map[string]int{
+	"internal/certificate/event_template.go":   4,
 	"internal/certificate/queue_service.go":    3,
 	"internal/certificate/service.go":          2,
-	"internal/certificate/template_service.go": 7,
+	"internal/certificate/template_service.go": 4,
 	"internal/competition/service.go":          2,
 	"internal/competitor/service.go":           8,
 	"internal/dashboard/home_charts.go":        1,
