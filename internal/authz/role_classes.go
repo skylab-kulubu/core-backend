@@ -68,7 +68,7 @@ func SiteClients() []string {
 //     form:manage, response:manage and feedback:manage only open Forms'
 //     screens (forms-backend decides every form by its collaborators or
 //     skyforms:*, which is an admin role);
-//   - SkyMail's access and template reading: opening SkyMail and offering a
+//   - SkyNotify's access and template reading: opening SkyNotify and offering a
 //     mail for approval, which an approver still sends;
 //   - every Site client's content:read: reading.
 //
@@ -93,8 +93,8 @@ func AppRoles() []RoleRef {
 		{Client: "forms", Role: "skyforms:form:manage"},
 		{Client: "forms", Role: "skyforms:response:manage"},
 		{Client: "forms", Role: "skyforms:feedback:manage"},
-		{Client: "skymail", Role: "skymail:access"},
-		{Client: "skymail", Role: "skymail:templates:read"},
+		{Client: "skynotify", Role: "skynotify:access"},
+		{Client: "skynotify", Role: "skynotify:templates:read"},
 	}
 	for _, site := range SiteClients() {
 		out = append(out, RoleRef{Client: site, Role: "content:read"})
@@ -134,10 +134,10 @@ func AdminRoles() []RoleRef {
 	for _, role := range []string{"skyforms:*", "skyforms:feedback:*", "skyforms:read-all", "skyforms:account:erase"} {
 		out = append(out, RoleRef{Client: "forms", Role: role})
 	}
-	for _, role := range []string{"skymail:templates:write", "skymail:lists:read", "skymail:lists:write",
-		"skymail:mails:read", "skymail:mails:write", "skymail:mails:send", "skymail:mails:approve",
-		"skymail:system-mails:read", "skymail:announcements:send", "skymail:account:erase"} {
-		out = append(out, RoleRef{Client: "skymail", Role: role})
+	for _, role := range []string{"skynotify:templates:write", "skynotify:lists:read", "skynotify:lists:write",
+		"skynotify:mails:read", "skynotify:mails:write", "skynotify:mails:send", "skynotify:mails:approve",
+		"skynotify:system-mails:read", "skynotify:announcements:send", "skynotify:account:erase"} {
+		out = append(out, RoleRef{Client: "skynotify", Role: role})
 	}
 	out = append(out,
 		RoleRef{Client: "place", Role: "place:admin"},

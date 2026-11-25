@@ -12,14 +12,14 @@ import (
 
 // startEventStatusMail starts the worker that sends the Event status mails
 // (docs/event-cancel.md, ticket 14) until ctx is cancelled, and answers a
-// channel that closes once it has stopped. Without SkyMail it is off; the
-// cancellation still queues its mail, sent once SkyMail is configured. A
+// channel that closes once it has stopped. Without SkyNotify it is off; the
+// cancellation still queues its mail, sent once SkyNotify is configured. A
 // mail whose template key is empty is done with unsent.
-func startEventStatusMail(ctx context.Context, events *event.PostgresStore, tickets ticket.Store, users user.Store, sky *mail.SkyMail, logf func(string, ...any)) <-chan struct{} {
+func startEventStatusMail(ctx context.Context, events *event.PostgresStore, tickets ticket.Store, users user.Store, sky *mail.SkyNotify, logf func(string, ...any)) <-chan struct{} {
 	off := make(chan struct{})
 	close(off)
 	if sky == nil {
-		logf("event status mail: off (SkyMail is not configured)")
+		logf("event status mail: off (SkyNotify is not configured)")
 		return off
 	}
 	svc, err := eventstatusmail.NewService(eventstatusmail.Config{Queue: events, Events: events, Tickets: tickets, Users: users, Mail: sky})

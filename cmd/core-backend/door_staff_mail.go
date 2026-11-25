@@ -17,10 +17,10 @@ func doorStaffMailOn(getenv func(string) string) (bool, error) {
 
 // startDoorStaffMail starts the worker that tells a person added to an
 // Event's door staff until ctx is cancelled, and answers a channel that
-// closes once it has stopped. Off, or without SkyMail, adding a person
+// closes once it has stopped. Off, or without SkyNotify, adding a person
 // queues nothing: turning it on later tells none of the people added
 // meanwhile.
-func startDoorStaffMail(ctx context.Context, on bool, events *event.PostgresStore, queue doorstaffmail.Queue, users user.Store, sky *mail.SkyMail, panelURL string, logf func(string, ...any)) <-chan struct{} {
+func startDoorStaffMail(ctx context.Context, on bool, events *event.PostgresStore, queue doorstaffmail.Queue, users user.Store, sky *mail.SkyNotify, panelURL string, logf func(string, ...any)) <-chan struct{} {
 	off := make(chan struct{})
 	close(off)
 	events.NotifyDoorStaff(false)
@@ -29,7 +29,7 @@ func startDoorStaffMail(ctx context.Context, on bool, events *event.PostgresStor
 		logf("door staff mail: off (DOOR_STAFF_MAIL is not on)")
 		return off
 	case sky == nil:
-		logf("door staff mail: off (SkyMail is not configured)")
+		logf("door staff mail: off (SkyNotify is not configured)")
 		return off
 	}
 	svc, err := doorstaffmail.NewService(doorstaffmail.Config{Queue: queue, Events: events, Users: users, Mail: sky, PanelURL: panelURL})

@@ -66,7 +66,7 @@ func parseErasureManualStepOptions(args []string, errOut io.Writer) (erasureManu
 	flags := flag.NewFlagSet(erasureManualStepCommandName, flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	request := flags.String("request", "", "the deletion request's id (request_id), never the subject")
-	service := flags.String("service", "", "the service whose erasure the operator carried out: skymail, cms or forms")
+	service := flags.String("service", "", "the service whose erasure the operator carried out: skynotify, cms or forms")
 	counts := flags.String("counts", "", `what the operator's change reported, as the service would: {"actor_columns_replaced":2}`)
 	if err := flags.Parse(args); err != nil {
 		return erasureManualStepOptions{}, 2
@@ -83,7 +83,7 @@ func parseErasureManualStepOptions(args []string, errOut io.Writer) (erasureManu
 	}
 	var ok bool
 	if options.service, ok = erasure.ServiceNamed(strings.TrimSpace(*service)); !ok {
-		fmt.Fprintln(errOut, "--service must be skymail, cms or forms")
+		fmt.Fprintln(errOut, "--service must be skynotify, cms or forms")
 		return erasureManualStepOptions{}, 2
 	}
 	if strings.TrimSpace(*counts) == "" {

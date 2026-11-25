@@ -53,7 +53,7 @@ stays out too):
 - the mails: "Biletin hazır" (a queued one is dropped when the Ticket is
   cancelled, and the worker drops a Ticket that is no longer active), the
   publication's queue, the Event's cancellation and change mails, the
-  feedback mails and their audience, the Event's SkyMail list;
+  feedback mails and their audience, the Event's SkyNotify list;
 - certificates: the Event's attendance (`EventAttendance`, both queries, and
   the memory store's) that the list, eligibility, the attendance snapshot,
   the automatic finalization and the rescan read; the manual issue (with a

@@ -50,8 +50,8 @@
       "serviceAccountsEnabled": true
     },
     {
-      "clientId": "skymail",
-      "name": "SkyMail",
+      "clientId": "skynotify",
+      "name": "SkyNotify",
       "enabled": true,
       "publicClient": true,
       "standardFlowEnabled": true,
@@ -60,11 +60,11 @@
       ]
     },
     {
-      "clientId": "skymail-backend",
-      "name": "SkyMail backend",
+      "clientId": "skynotify-backend",
+      "name": "SkyNotify backend",
       "enabled": true,
       "publicClient": false,
-      "secret": "__SKYMAIL_SERVICE_CLIENT_SECRET__",
+      "secret": "__SKYNOTIFY_SERVICE_CLIENT_SECRET__",
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": true
@@ -120,8 +120,8 @@
       ]
     },
     {
-      "clientId": "harness-skymail",
-      "name": "Harness end-user token for skymail",
+      "clientId": "harness-skynotify",
+      "name": "Harness end-user token for skynotify",
       "description": "Test-only public client: a direct grant gives a person's token for one service (old-JWT scenario and seeding).",
       "enabled": true,
       "publicClient": true,
@@ -129,11 +129,11 @@
       "directAccessGrantsEnabled": true,
       "protocolMappers": [
         {
-          "name": "aud-skymail",
+          "name": "aud-skynotify",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
           "config": {
-            "included.client.audience": "skymail",
+            "included.client.audience": "skynotify",
             "access.token.claim": "true",
             "id.token.claim": "false",
             "introspection.token.claim": "true"
@@ -224,15 +224,15 @@
           "name": "certificate:issue"
         }
       ],
-      "skymail": [
+      "skynotify": [
         {
-          "name": "skymail:access"
+          "name": "skynotify:access"
         },
         {
-          "name": "skymail:mails:read"
+          "name": "skynotify:mails:read"
         },
         {
-          "name": "skymail:mails:send"
+          "name": "skynotify:mails:send"
         }
       ],
       "harness-cms": [

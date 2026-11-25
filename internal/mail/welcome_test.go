@@ -40,75 +40,75 @@ func TestWelcomeOutcomes(t *testing.T) {
 	u := testUser()
 	tests := []struct {
 		name      string
-		mailer    func(t *testing.T) (*SkyMail, *atomic.Int32)
+		mailer    func(t *testing.T) (*SkyNotify, *atomic.Int32)
 		want      WelcomeOutcome
 		wantPosts int
 		wantLog   string
 	}{
-		{name: "sent", want: WelcomeSent, wantPosts: 1, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+		{name: "sent", want: WelcomeSent, wantPosts: 1, mailer: func(t *testing.T) (*SkyNotify, *atomic.Int32) {
 			srv, posts := welcomeServer(t, func(int) int { return http.StatusCreated })
-			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+			return &SkyNotify{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
 		}},
-		{name: "refused", want: WelcomeRefused, wantPosts: 1, wantLog: `"status":422,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+		{name: "refused", want: WelcomeRefused, wantPosts: 1, wantLog: `"status":422,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyNotify, *atomic.Int32) {
 			srv, posts := welcomeServer(t, func(int) int { return http.StatusUnprocessableEntity })
-			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+			return &SkyNotify{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
 		}},
-		{name: "refused 400", want: WelcomeRefused, wantPosts: 1, wantLog: `"status":400,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+		{name: "refused 400", want: WelcomeRefused, wantPosts: 1, wantLog: `"status":400,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyNotify, *atomic.Int32) {
 			srv, posts := welcomeServer(t, func(int) int { return http.StatusBadRequest })
-			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+			return &SkyNotify{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
 		}},
-		{name: "deferred 401", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":401,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+		{name: "deferred 401", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":401,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyNotify, *atomic.Int32) {
 			srv, posts := welcomeServer(t, func(int) int { return http.StatusUnauthorized })
-			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+			return &SkyNotify{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
 		}},
-		{name: "deferred 403", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":403,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+		{name: "deferred 403", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":403,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyNotify, *atomic.Int32) {
 			srv, posts := welcomeServer(t, func(int) int { return http.StatusForbidden })
-			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+			return &SkyNotify{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
 		}},
-		{name: "deferred 409", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":409,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+		{name: "deferred 409", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":409,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyNotify, *atomic.Int32) {
 			srv, posts := welcomeServer(t, func(int) int { return http.StatusConflict })
-			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+			return &SkyNotify{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
 		}},
-		{name: "refused 413", want: WelcomeRefused, wantPosts: 1, wantLog: `"status":413,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+		{name: "refused 413", want: WelcomeRefused, wantPosts: 1, wantLog: `"status":413,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyNotify, *atomic.Int32) {
 			srv, posts := welcomeServer(t, func(int) int { return http.StatusRequestEntityTooLarge })
-			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+			return &SkyNotify{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
 		}},
-		{name: "deferred 503", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":503,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+		{name: "deferred 503", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":503,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyNotify, *atomic.Int32) {
 			srv, posts := welcomeServer(t, func(int) int { return http.StatusServiceUnavailable })
-			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+			return &SkyNotify{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
 		}},
-		{name: "deferred 429", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":429,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+		{name: "deferred 429", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":429,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyNotify, *atomic.Int32) {
 			srv, posts := welcomeServer(t, func(int) int { return http.StatusTooManyRequests })
-			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+			return &SkyNotify{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
 		}},
-		{name: "template not seeded", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":404,"reason":"template_missing"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+		{name: "template not seeded", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":404,"reason":"template_missing"`, mailer: func(t *testing.T) (*SkyNotify, *atomic.Int32) {
 			srv, posts := welcomeServer(t, func(int) int { return http.StatusNotFound })
-			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+			return &SkyNotify{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
 		}},
-		{name: "unknown key falls back to the id", want: WelcomeSent, wantPosts: 2, wantLog: `"reason":"template_key_missing_fallback_to_id"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+		{name: "unknown key falls back to the id", want: WelcomeSent, wantPosts: 2, wantLog: `"reason":"template_key_missing_fallback_to_id"`, mailer: func(t *testing.T) (*SkyNotify, *atomic.Int32) {
 			srv, posts := welcomeServer(t, func(n int) int {
 				if n == 1 {
 					return http.StatusNotFound
 				}
 				return http.StatusCreated
 			})
-			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", TemplateID: uuid.New(), Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+			return &SkyNotify{BaseURL: srv.URL, TemplateKey: "core.welcome", TemplateID: uuid.New(), Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
 		}},
-		{name: "no token", want: WelcomeNotSent, wantLog: `"reason":"token_unavailable"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+		{name: "no token", want: WelcomeNotSent, wantLog: `"reason":"token_unavailable"`, mailer: func(t *testing.T) (*SkyNotify, *atomic.Int32) {
 			srv, posts := welcomeServer(t, func(int) int { return http.StatusCreated })
-			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: tokenFailure{}, HTTP: srv.Client()}, posts
+			return &SkyNotify{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: tokenFailure{}, HTTP: srv.Client()}, posts
 		}},
-		{name: "no template", want: WelcomeNotSent, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+		{name: "no template", want: WelcomeNotSent, mailer: func(t *testing.T) (*SkyNotify, *atomic.Int32) {
 			srv, posts := welcomeServer(t, func(int) int { return http.StatusCreated })
-			return &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+			return &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
 		}},
-		{name: "unreachable", want: WelcomeNotSent, wantLog: `"reason":"unreachable"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+		{name: "unreachable", want: WelcomeNotSent, wantLog: `"reason":"unreachable"`, mailer: func(t *testing.T) (*SkyNotify, *atomic.Int32) {
 			srv, posts := welcomeServer(t, func(int) int { return http.StatusCreated })
 			base := srv.URL
 			srv.Close()
-			return &SkyMail{BaseURL: base, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: &http.Client{Timeout: 2 * time.Second}}, posts
+			return &SkyNotify{BaseURL: base, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: &http.Client{Timeout: 2 * time.Second}}, posts
 		}},
-		{name: "no answer", want: WelcomeUnknown, wantPosts: 1, wantLog: `"reason":"no_answer"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+		{name: "no answer", want: WelcomeUnknown, wantPosts: 1, wantLog: `"reason":"no_answer"`, mailer: func(t *testing.T) (*SkyNotify, *atomic.Int32) {
 			posts := new(atomic.Int32)
 			release := make(chan struct{})
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -119,7 +119,7 @@ func TestWelcomeOutcomes(t *testing.T) {
 				}
 			}))
 			t.Cleanup(func() { close(release); srv.CloseClientConnections(); srv.Close() })
-			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: &http.Client{Timeout: 200 * time.Millisecond}}, posts
+			return &SkyNotify{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: &http.Client{Timeout: 200 * time.Millisecond}}, posts
 		}},
 	}
 	for _, tc := range tests {

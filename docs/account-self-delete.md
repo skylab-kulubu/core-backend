@@ -95,7 +95,7 @@ in errors or logs.
 
 Configuration reuses what Core already has: the realm issuer and
 `KEYCLOAK_CLIENT_ID`/`KEYCLOAK_CLIENT_SECRET`, the same client Core uses for
-its SkyMail client-credentials token. `KEYCLOAK_CLIENT_ID` must be `core`,
+its SkyNotify client-credentials token. `KEYCLOAK_CLIENT_ID` must be `core`,
 the audience sky-account adds; Core warns at startup otherwise. Without the
 client credentials the sudo proof is refused (`401`) and Core says so at
 startup.
@@ -207,7 +207,7 @@ order the statuses it reads by `updatedAt`.
 
 `completed` means all thirteen erasure steps are checkpointed: the person's contact
 consents are deleted, their SkyPass Wallet passes withdrawn, their communication
-preferences and App preferences deleted, SkyMail, CMS and
+preferences and App preferences deleted, SkyNotify, CMS and
 Forms each confirmed the Erasure command, core is anonymized together with its
 guest data, and the Keycloak identity is deleted last (ADR-0051, the saga in
 [`account-lifecycle.md`](account-lifecycle.md#durable-erasure-flow)). While a

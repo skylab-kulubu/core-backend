@@ -4,8 +4,8 @@
 # on a copy of core's database. Then the service databases are restored from the backup taken
 # before scenario 1 and erasure is replayed into them for every completed request.
 #
-# CMS and Forms are restored while stopped. SkyMail follows its own restore procedure
-# (skymail-backend docs/data-lifecycle.md, "Backup and restore"; account-erasure ticket 16):
+# CMS and Forms are restored while stopped. SkyNotify follows its own restore procedure
+# (skynotify-backend docs/data-lifecycle.md, "Backup and restore"; account-erasure ticket 16):
 #   1. MAIL_SENDER=paused and a redeploy; GET /v1/mail_tasks/summary answers sender_paused true;
 #   2. pg_restore, with the restore instant written down just before it;
 #   3. a deploy on the restored database, still paused;
@@ -28,7 +28,7 @@
 #
 # A service answers a request it holds a receipt for with that receipt and does nothing again.
 # So the "emails": [] replay must not reach a restored service before replay-from-backup does:
-# its receipt would make the replay a no-op. SkyMail therefore gets replay-from-backup as its
+# its receipt would make the replay a no-op. SkyNotify therefore gets replay-from-backup as its
 # step 5 (its procedure says so), and the "emails": [] replay only afterwards, answered from the
 # replay's receipts. CMS and Forms get the "emails": [] replay first, as before, and
 # replay-from-backup after it answers 200 and changes nothing there: CMS holds no e-mail-keyed
@@ -71,35 +71,35 @@ replay_command() { # replay_command SERVICE BASE_URL REQUEST SUBJECT
     --data "$(jq -cn --arg r "$3" --arg s "$4" '{request_id: $r, subject_id: $s, emails: []}')"
 }
 
-# --- SkyMail's restore procedure ------------------------------------------------------------------
-# skymail_redeploy paused|on: recreates SkyMail with MAIL_SENDER=paused, or with no MAIL_SENDER at
+# --- SkyNotify's restore procedure ------------------------------------------------------------------
+# skynotify_redeploy paused|on: recreates SkyNotify with MAIL_SENDER=paused, or with no MAIL_SENDER at
 # all, as a Dokploy redeploy with the changed environment does; waits for /ready.
-skymail_redeploy() {
-  save_logs skymail
+skynotify_redeploy() {
+  save_logs skynotify
   if [[ $1 == paused ]]; then
-    MAIL_SENDER=paused dc up -d --no-deps skymail >/dev/null 2>&1
+    MAIL_SENDER=paused dc up -d --no-deps skynotify >/dev/null 2>&1
   else
-    (unset MAIL_SENDER; dc up -d --no-deps skymail >/dev/null 2>&1)
+    (unset MAIL_SENDER; dc up -d --no-deps skynotify >/dev/null 2>&1)
   fi
-  wait_until 120 3 service_ready http://skymail:3000/ready
+  wait_until 120 3 service_ready http://skynotify:3000/ready
 }
-# skymail_env_sender: MAIL_SENDER as the running container has it, "unset" when it has none.
-skymail_env_sender() {
+# skynotify_env_sender: MAIL_SENDER as the running container has it, "unset" when it has none.
+skynotify_env_sender() {
   local value
-  value=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$(dc ps -q skymail)" | sed -n 's/^MAIL_SENDER=//p')
+  value=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$(dc ps -q skynotify)" | sed -n 's/^MAIL_SENDER=//p')
   printf '%s' "${value:-unset}"
 }
-skymail_logged() { docker logs "$(dc ps -q skymail)" 2>&1 | grep -qF "$1"; } # skymail_logged TEXT
-# skymail_sender_paused: sender_paused of GET /v1/mail_tasks/summary, read as the bystander p8.
-skymail_sender_paused() {
-  http GET "http://skymail:3000/v1/mail_tasks/summary" -H "Authorization: Bearer $(user_token p8 skymail)"
+skynotify_logged() { docker logs "$(dc ps -q skynotify)" 2>&1 | grep -qF "$1"; } # skynotify_logged TEXT
+# skynotify_sender_paused: sender_paused of GET /v1/mail_tasks/summary, read as the bystander p8.
+skynotify_sender_paused() {
+  http GET "http://skynotify:3000/v1/mail_tasks/summary" -H "Authorization: Bearer $(user_token p8 skynotify)"
   if [[ $HTTP_STATUS == 200 ]]; then jq -r '.sender_paused' <<<"$HTTP_BODY"; else printf 'status %s' "$HTTP_STATUS"; fi
 }
-# queue_close_restored ARGS...: the subcommand in SkyMail's own container, as `docker exec` runs it
+# queue_close_restored ARGS...: the subcommand in SkyNotify's own container, as `docker exec` runs it
 # in production. Sets QCR_OUT (counts and times only) and QCR_RC.
 QCR_OUT='' QCR_RC=''
 queue_close_restored() {
-  QCR_OUT=$(dc exec -T skymail /app/skymail-backend queue-close-restored "$@" 2>&1)
+  QCR_OUT=$(dc exec -T skynotify /app/skynotify-backend queue-close-restored "$@" 2>&1)
   QCR_RC=$?
   printf '$ queue-close-restored %s\n%s\nexit %s\n\n' "$*" "$QCR_OUT" "$QCR_RC" >>"$EVIDENCE/s11-queue-close-restored.txt"
 }
@@ -119,7 +119,7 @@ queue_row_hash() {
   local id=$1 expr="to_jsonb(q)" column
   shift
   for column in "$@"; do expr="$expr - '$column'"; done
-  pg skymail "SELECT md5(($expr)::text) FROM mail_queue q WHERE id = '$id'"
+  pg skynotify "SELECT md5(($expr)::text) FROM mail_queue q WHERE id = '$id'"
 }
 
 # erased_addresses: the school and personal addresses of every person whose request is completed,
@@ -135,10 +135,10 @@ erased_addresses() {
 # erased_list: erased_addresses as a SQL list of literals.
 erased_list() { erased_addresses | awk '{ printf "%s'\''%s'\''", (NR > 1 ? "," : ""), $0 }'; }
 
-# skymail_erased_email_keyed: counts, never addresses, of SkyMail's e-mail-keyed rows of the people
+# skynotify_erased_email_keyed: counts, never addresses, of SkyNotify's e-mail-keyed rows of the people
 # erased after the dump: "recipients/list memberships/queue rows to them/Mail onayı recipients".
-skymail_erased_email_keyed() {
-  pg skymail "
+skynotify_erased_email_keyed() {
+  pg skynotify "
     WITH erased(email) AS (SELECT unnest(ARRAY[$(erased_list)]::text[]))
     SELECT (SELECT count(*) FROM recipients WHERE lower(email) IN (SELECT email FROM erased)) || '/' ||
            (SELECT count(*) FROM mailing_list_recipients m JOIN recipients r ON r.id = m.recipient_id
@@ -302,26 +302,26 @@ queue_rows_hash() {
   local ids=$1 expr="to_jsonb(q)" column
   shift
   for column in "$@"; do expr="$expr - '$column'"; done
-  pg skymail "SELECT md5(coalesce(string_agg(($expr)::text, ',' ORDER BY q.id), '')) || '/' || count(*) FROM mail_queue q WHERE id IN ($ids)"
+  pg skynotify "SELECT md5(coalesce(string_agg(($expr)::text, ',' ORDER BY q.id), '')) || '/' || count(*) FROM mail_queue q WHERE id IN ($ids)"
 }
-# bystander_rows_hash / bystander_rows_count MAIL: SkyMail's recipient, list membership and Mail
+# bystander_rows_hash / bystander_rows_count MAIL: SkyNotify's recipient, list membership and Mail
 # onayı recipient rows of the addresses MAIL (a SQL list).
 bystander_rows_hash() {
-  pg skymail "SELECT md5(
+  pg skynotify "SELECT md5(
       coalesce((SELECT string_agg(to_jsonb(r)::text, ',' ORDER BY to_jsonb(r)::text) FROM recipients r WHERE lower(r.email) IN ($1)), '') || '|' ||
       coalesce((SELECT string_agg(to_jsonb(m)::text, ',' ORDER BY to_jsonb(m)::text) FROM mailing_list_recipients m
                 JOIN recipients r ON r.id = m.recipient_id WHERE lower(r.email) IN ($1)), '') || '|' ||
       coalesce((SELECT string_agg(to_jsonb(a)::text, ',' ORDER BY to_jsonb(a)::text) FROM mail_approval_recipients a WHERE lower(a.email) IN ($1)), ''))"
 }
 bystander_rows_count() {
-  pg skymail "SELECT (SELECT count(*) FROM recipients WHERE lower(email) IN ($1)) || '/' ||
+  pg skynotify "SELECT (SELECT count(*) FROM recipients WHERE lower(email) IN ($1)) || '/' ||
     (SELECT count(*) FROM mailing_list_recipients m JOIN recipients r ON r.id = m.recipient_id WHERE lower(r.email) IN ($1)) || '/' ||
     (SELECT count(*) FROM mail_approval_recipients WHERE lower(email) IN ($1))"
 }
 receipts_hash() { # receipts_hash DB: md5 and count of the service's receipts
   pg "$1" "SELECT md5(coalesce(string_agg(to_jsonb(r)::text, ',' ORDER BY to_jsonb(r)::text), '')) || '/' || count(*) FROM account_erasure_receipts r"
 }
-skymail_log_since() { docker logs --since "$1" "$(dc ps -q skymail)" 2>&1; }
+skynotify_log_since() { docker logs --since "$1" "$(dc ps -q skynotify)" 2>&1; }
 forms_erase_runs() { pg forms_db "SELECT count(*) FROM harness_erase_runs"; }
 # forms_puts FILE: how many erase PUTs the Forms stub counted for the requests in FILE (id per line).
 forms_puts() {
@@ -349,7 +349,7 @@ leaks() { grep -ciFf <(leak_needles | grep .) "$1" || true; }
 
 scenario_11() {
   local migrations db request subject service url replayed=0 first_not_200=0 bodies_cleared=0 p
-  scenario_begin S11 'rollback rehearsal: down migrations refuse after deletions; backup restore with SkyMail paused, its restored queue closed unsent; core replay-from-backup with the paired core and Keycloak dumps erases the erased people'\''s SkyMail data again, e-mail-keyed rows included; no restored mail sent'
+  scenario_begin S11 'rollback rehearsal: down migrations refuse after deletions; backup restore with SkyNotify paused, its restored queue closed unsent; core replay-from-backup with the paired core and Keycloak dumps erases the erased people'\''s SkyNotify data again, e-mail-keyed rows included; no restored mail sent'
   migrations=$(core_migrations_dir)
   check 'core migrations of the built commit are at hand' test -n "$migrations"
 
@@ -367,39 +367,39 @@ scenario_11() {
     eq "$(pg core_rehearsal "SELECT count(*) FROM account_deletion_requests")" "$(pg super_skylab "SELECT count(*) FROM account_deletion_requests")"
   pg postgres "DROP DATABASE core_rehearsal" >/dev/null
 
-  check 'the pre-deletion backup exists' test -f "$STATE/backups/$S11_BACKUP/skymail.dump"
+  check 'the pre-deletion backup exists' test -f "$STATE/backups/$S11_BACKUP/skynotify.dump"
   check 'the backup holds the core and Keycloak dumps paired with the service dumps' \
     test -s "$STATE/backups/$S11_BACKUP/super_skylab.dump" -a -s "$STATE/backups/$S11_BACKUP/keycloak.dump"
-  log "  dumped at: core $(dumped_at super_skylab), Keycloak $(dumped_at keycloak), SkyMail $(dumped_at skymail), CMS $(dumped_at skylab_cms), Forms $(dumped_at forms_db)"
-  check 'the pair was dumped first: core, then Keycloak, then SkyMail, CMS, Forms (T_core <= T_keycloak <= T_service)' \
-    not_after "$(dumped_at super_skylab)" "$(dumped_at keycloak)" "$(dumped_at skymail)" "$(dumped_at skylab_cms)" "$(dumped_at forms_db)"
+  log "  dumped at: core $(dumped_at super_skylab), Keycloak $(dumped_at keycloak), SkyNotify $(dumped_at skynotify), CMS $(dumped_at skylab_cms), Forms $(dumped_at forms_db)"
+  check 'the pair was dumped first: core, then Keycloak, then SkyNotify, CMS, Forms (T_core <= T_keycloak <= T_service)' \
+    not_after "$(dumped_at super_skylab)" "$(dumped_at keycloak)" "$(dumped_at skynotify)" "$(dumped_at skylab_cms)" "$(dumped_at forms_db)"
 
-  # SkyMail step 1: pause, redeploy, see it paused, before the dump lands.
-  check 'SkyMail redeployed with MAIL_SENDER=paused' skymail_redeploy paused
-  check 'the running SkyMail container has MAIL_SENDER=paused' eq "$(skymail_env_sender)" paused
-  check 'SkyMail logged at startup that its sender is paused' \
-    wait_until 20 2 skymail_logged 'Mail sender paused by MAIL_SENDER=paused'
-  check 'GET /v1/mail_tasks/summary answers sender_paused true before the restore' eq "$(skymail_sender_paused)" true
+  # SkyNotify step 1: pause, redeploy, see it paused, before the dump lands.
+  check 'SkyNotify redeployed with MAIL_SENDER=paused' skynotify_redeploy paused
+  check 'the running SkyNotify container has MAIL_SENDER=paused' eq "$(skynotify_env_sender)" paused
+  check 'SkyNotify logged at startup that its sender is paused' \
+    wait_until 20 2 skynotify_logged 'Mail sender paused by MAIL_SENDER=paused'
+  check 'GET /v1/mail_tasks/summary answers sender_paused true before the restore' eq "$(skynotify_sender_paused)" true
 
-  # Step 2: the restore. SkyMail keeps running, paused (its API stays up); CMS and Forms stop.
+  # Step 2: the restore. SkyNotify keeps running, paused (its API stays up); CMS and Forms stop.
   local restored_at
   dc stop cms forms >/dev/null 2>&1
   sleep 1
   restored_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   log "  restore instant $restored_at"
-  for db in skymail skylab_cms forms_db; do
+  for db in skynotify skylab_cms forms_db; do
     PGPASSWORD=$POSTGRES_PASSWORD pg_restore -h postgres -U postgres -d "$db" --clean --if-exists --no-owner \
-      --role="$(case $db in skymail) echo skymail ;; skylab_cms) echo skylab_cms ;; forms_db) echo forms ;; esac)" \
+      --role="$(case $db in skynotify) echo skynotify ;; skylab_cms) echo skylab_cms ;; forms_db) echo forms ;; esac)" \
       "$STATE/backups/$S11_BACKUP/$db.dump" 2>"$EVIDENCE/s11-restore-$db.log" || true
   done
-  check 'the restore brought p1 back into SkyMail (its data predates the erasure)' test -n "$(pii_hits skymail p1)"
+  check 'the restore brought p1 back into SkyNotify (its data predates the erasure)' test -n "$(pii_hits skynotify p1)"
   check 'the restored databases hold no receipt of any later request' \
-    eq "$(pg skymail "SELECT count(*) FROM account_erasure_receipts")/$(pg skylab_cms "SELECT count(*) FROM account_erasure_receipts")/$(pg forms_db "SELECT count(*) FROM account_erasure_receipts")" 0/0/0
+    eq "$(pg skynotify "SELECT count(*) FROM account_erasure_receipts")/$(pg skylab_cms "SELECT count(*) FROM account_erasure_receipts")/$(pg forms_db "SELECT count(*) FROM account_erasure_receipts")" 0/0/0
 
   # Step 3: the deploy on the restored database, still paused (the environment did not change).
-  dc restart skymail >/dev/null 2>&1
-  check 'SkyMail is back on the restored database' wait_until 120 3 service_ready http://skymail:3000/ready
-  check 'still sender_paused true after the deploy' eq "$(skymail_sender_paused)" true
+  dc restart skynotify >/dev/null 2>&1
+  check 'SkyNotify is back on the restored database' wait_until 120 3 service_ready http://skynotify:3000/ready
+  check 'still sender_paused true after the deploy' eq "$(skynotify_sender_paused)" true
   dc start cms forms >/dev/null 2>&1
   wait_until 120 3 service_ready http://cms:5000/health/ready
   wait_until 60 2 service_ready http://forms:8080/api/health
@@ -408,23 +408,23 @@ scenario_11() {
   # among them, and another person's row (the bystander p8's). They are made due now: a running
   # sender would send them within its 10-second tick.
   local restored_pending restored_ids restored_list addresses baseline bystander_row bystander_content
-  restored_pending=$(pg skymail "SELECT count(*) FROM mail_queue WHERE status IN ('pending', 'processing')")
-  restored_ids=$(pg skymail "SELECT id FROM mail_queue WHERE status IN ('pending', 'processing') ORDER BY id")
+  restored_pending=$(pg skynotify "SELECT count(*) FROM mail_queue WHERE status IN ('pending', 'processing')")
+  restored_ids=$(pg skynotify "SELECT id FROM mail_queue WHERE status IN ('pending', 'processing') ORDER BY id")
   restored_list=$(awk '{ printf "%s'\''%s'\''", (NR > 1 ? "," : ""), $0 }' <<<"$restored_ids")
-  note "the restore brought back $restored_pending pending SkyMail queue row(s)"
+  note "the restore brought back $restored_pending pending SkyNotify queue row(s)"
   check 'the restore brought back pending queue rows' ge "$restored_pending" 1
   [[ -n $restored_list ]] || restored_list="'00000000-0000-0000-0000-000000000000'"
   addresses=$(mktemp)
-  pg skymail "SELECT DISTINCT lower(recipient_email) FROM mail_queue WHERE id IN ($restored_list)" >"$addresses"
+  pg skynotify "SELECT DISTINCT lower(recipient_email) FROM mail_queue WHERE id IN ($restored_list)" >"$addresses"
   baseline=$(mailpit_to "$addresses")
-  pg skymail "UPDATE mail_queue SET next_attempt_at = now() WHERE id IN ($restored_list)" >/dev/null
-  bystander_row=$(pg skymail "SELECT id FROM mail_queue WHERE id IN ($restored_list) AND lower(recipient_email) = lower('${P_PERSONAL[p8]}')")
+  pg skynotify "UPDATE mail_queue SET next_attempt_at = now() WHERE id IN ($restored_list)" >/dev/null
+  bystander_row=$(pg skynotify "SELECT id FROM mail_queue WHERE id IN ($restored_list) AND lower(recipient_email) = lower('${P_PERSONAL[p8]}')")
   check "one restored row is the bystander p8's own (a third person's mail)" test -n "$bystander_row"
   bystander_content=$(queue_row_hash "$bystander_row" status error)
   log "  paused with the restored rows due; waiting past two dispatcher ticks"
   sleep 25
   check 'paused, the due restored rows stay pending' \
-    eq "$(pg skymail "SELECT count(*) FROM mail_queue WHERE id IN ($restored_list) AND status = 'pending'")" "$restored_pending"
+    eq "$(pg skynotify "SELECT count(*) FROM mail_queue WHERE id IN ($restored_list) AND status = 'pending'")" "$restored_pending"
   check 'paused, no mail of the restored queue reached mailpit' eq "$(mailpit_to "$addresses")" "$baseline"
 
   # Mail queued after the restore: the control. The close must leave it, the unpaused sender send it.
@@ -432,14 +432,14 @@ scenario_11() {
   control_to=$(mktemp)
   printf '%s\n' "$S11_CONTROL_TO" >"$control_to"
   control_task=$(uuid_of "s11-control-task-$restored_at") control_row=$(uuid_of "s11-control-row-$restored_at")
-  pg skymail "
+  pg skynotify "
     INSERT INTO mail_tasks (id, sent_by, template_id, body_variables)
     VALUES ('$control_task', '${P_ID[p8]}', '$(uuid_of p8-template)', '{}'::jsonb);
     INSERT INTO mail_queue (id, task_id, recipient_full_name, recipient_email, subject, body, status, attempts, next_attempt_at)
     VALUES ('$control_row', '$control_task', 'Harness kontrol', '$S11_CONTROL_TO', 'Geri yüklemeden sonra',
             'Geri yüklemeden sonra kuyruğa girdi.', 'pending', 0, now());" >/dev/null
   check 'a control mail is queued after the restore instant' \
-    eq "$(pg skymail "SELECT created_at > '$restored_at'::timestamptz FROM mail_queue WHERE id = '$control_row'")" t
+    eq "$(pg skynotify "SELECT created_at > '$restored_at'::timestamptz FROM mail_queue WHERE id = '$control_row'")" t
 
   # Step 4: close the restored queue, a dry run first.
   queue_close_restored --before "$restored_at"
@@ -449,15 +449,15 @@ scenario_11() {
     eq "$(qcr_line pending)/$(qcr_line processing)" "$restored_pending/0"
   check 'the dry run leaves the mail queued since the restore alone' eq "$(qcr_line 'queued at or after --before, left alone')" 1
   check 'the dry run changed no row' \
-    eq "$(pg skymail "SELECT count(*) FROM mail_queue WHERE status = 'pending'")" "$((restored_pending + 1))"
+    eq "$(pg skynotify "SELECT count(*) FROM mail_queue WHERE status = 'pending'")" "$((restored_pending + 1))"
   queue_close_restored --before "$restored_at" --apply
   check "queue-close-restored --apply exits 0 ($QCR_RC)" eq "$QCR_RC" 0
   check '--apply says it closed without sending' grep -qF "closed without sending, error \"$RESTORE_NOT_SENT\"" <<<"$QCR_OUT"
   check '--apply closed every restored row' eq "$(qcr_line pending)/$(qcr_line processing)" "$restored_pending/0"
   check "every restored row is failed with error '$RESTORE_NOT_SENT', attempts as they were (0)" \
-    eq "$(pg skymail "SELECT count(*) FROM mail_queue WHERE id IN ($restored_list) AND status = 'failed' AND error = '$RESTORE_NOT_SENT' AND attempts = 0")" "$restored_pending"
+    eq "$(pg skynotify "SELECT count(*) FROM mail_queue WHERE id IN ($restored_list) AND status = 'failed' AND error = '$RESTORE_NOT_SENT' AND attempts = 0")" "$restored_pending"
   check 'the control mail queued after the restore is still pending' \
-    eq "$(pg skymail "SELECT status FROM mail_queue WHERE id = '$control_row'")" pending
+    eq "$(pg skynotify "SELECT status FROM mail_queue WHERE id = '$control_row'")" pending
   queue_close_restored --before "$restored_at"
   check 'run again, it finds nothing to close' eq "$QCR_RC/$(qcr_line pending)/$(qcr_line processing)" 0/0/0
   local bystander_closed
@@ -497,30 +497,30 @@ scenario_11() {
   check "every completed request replayed with emails [] to CMS and Forms ($replayed of $((completed * 2)) answered 200)" eq "$replayed" "$((completed * 2))"
   check 'every emails [] replay answered 200 at once, none 202' eq "$first_not_200" 0
 
-  # 5b. SkyMail: core's replay-from-backup with the pair (ADR-0053), before any other replay
+  # 5b. SkyNotify: core's replay-from-backup with the pair (ADR-0053), before any other replay
   # reaches it. First what the restore brought back of the people erased after the dump.
-  local skymail_t before_keyed before_rows names bystander_mail named_ids plain_ids
+  local skynotify_t before_keyed before_rows names bystander_mail named_ids plain_ids
   local bystander_static bystander_named bystander_plain
   local -A closed_row_of
-  skymail_t=$(dumped_at skymail)
-  before_keyed=$(skymail_erased_email_keyed)
-  before_rows=$(rows_holding_erased skymail)
-  note "the restored SkyMail holds, of the $completed people erased after the dump: recipients/list memberships/queue rows to them/Mail onayı recipients $before_keyed; rows holding their addresses $before_rows"
-  check 'the restore brought back their e-mail-keyed SkyMail rows (every kind > 0)' all_positive "$before_keyed"
-  check 'SkyMail holds no receipt before the replay (its dump predates every request)' \
-    eq "$(pg skymail "SELECT count(*) FROM account_erasure_receipts")" 0
+  skynotify_t=$(dumped_at skynotify)
+  before_keyed=$(skynotify_erased_email_keyed)
+  before_rows=$(rows_holding_erased skynotify)
+  note "the restored SkyNotify holds, of the $completed people erased after the dump: recipients/list memberships/queue rows to them/Mail onayı recipients $before_keyed; rows holding their addresses $before_rows"
+  check 'the restore brought back their e-mail-keyed SkyNotify rows (every kind > 0)' all_positive "$before_keyed"
+  check 'SkyNotify holds no receipt before the replay (its dump predates every request)' \
+    eq "$(pg skynotify "SELECT count(*) FROM account_erasure_receipts")" 0
   for p in "${PERSONS[@]}"; do
     [[ $(pg super_skylab "SELECT status FROM account_deletion_requests WHERE subject_id = '${P_ID[$p]}'") == completed ]] || continue
-    closed_row_of[$p]=$(pg skymail "SELECT id FROM mail_queue WHERE id IN ($restored_list)
+    closed_row_of[$p]=$(pg skynotify "SELECT id FROM mail_queue WHERE id IN ($restored_list)
       AND lower(recipient_email) IN (lower('${P_SCHOOL[$p]}'), lower('${P_PERSONAL[$p]}'))")
   done
   # The bystander p8's rows: the recipient, list membership and Mail onayı recipient must stay as
   # they are; of the mail to p8, the rows naming an erased person lose their subject and body only.
   bystander_mail="lower('${P_SCHOOL[p8]}'), lower('${P_PERSONAL[p8]}')"
   names=$(for p in "${!closed_row_of[@]}"; do printf "%s'%%%s%%'" "${names_sep:-}" "$(full_name "$p")"; names_sep=,; done)
-  named_ids=$(pg skymail "SELECT coalesce(string_agg(quote_literal(id), ',' ORDER BY id), quote_literal('00000000-0000-0000-0000-000000000000')) FROM mail_queue
+  named_ids=$(pg skynotify "SELECT coalesce(string_agg(quote_literal(id), ',' ORDER BY id), quote_literal('00000000-0000-0000-0000-000000000000')) FROM mail_queue
     WHERE lower(recipient_email) IN ($bystander_mail) AND (subject || ' ' || body || ' ' || coalesce(body_html, '')) ILIKE ANY (ARRAY[$names])")
-  plain_ids=$(pg skymail "SELECT coalesce(string_agg(quote_literal(id), ',' ORDER BY id), quote_literal('00000000-0000-0000-0000-000000000000')) FROM mail_queue
+  plain_ids=$(pg skynotify "SELECT coalesce(string_agg(quote_literal(id), ',' ORDER BY id), quote_literal('00000000-0000-0000-0000-000000000000')) FROM mail_queue
     WHERE lower(recipient_email) IN ($bystander_mail) AND id NOT IN ($named_ids)")
   bystander_static=$(bystander_rows_hash "$bystander_mail")
   bystander_named=$(queue_rows_hash "$named_ids" subject body body_html updated_at)
@@ -546,30 +546,30 @@ scenario_11() {
   check 'core is on the snapshots network for the replay' grep -qw -- "$SNAPSHOT_NET" <<<"$(snapshot_networks "$core_ctr")"
 
   replay_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  log "  replay-from-backup --service skymail --dumped-at $skymail_t (the SkyMail dump's instant)"
-  replay_from_backup skymail "$skymail_t"
-  check "replay-from-backup --service skymail, dry run: $(replay_summary)" replay_dry_run_ok "$completed"
-  check 'the dry run sent nothing: no receipt, the same e-mail-keyed rows, no erasure in SkyMail'"'"'s log' \
-    eq "$(pg skymail "SELECT count(*) FROM account_erasure_receipts")|$(skymail_erased_email_keyed)|$(rows_holding_erased skymail)|$(skymail_log_since "$replay_start" | grep -c 'account erasure')" \
+  log "  replay-from-backup --service skynotify --dumped-at $skynotify_t (the SkyNotify dump's instant)"
+  replay_from_backup skynotify "$skynotify_t"
+  check "replay-from-backup --service skynotify, dry run: $(replay_summary)" replay_dry_run_ok "$completed"
+  check 'the dry run sent nothing: no receipt, the same e-mail-keyed rows, no erasure in SkyNotify'"'"'s log' \
+    eq "$(pg skynotify "SELECT count(*) FROM account_erasure_receipts")|$(skynotify_erased_email_keyed)|$(rows_holding_erased skynotify)|$(skynotify_log_since "$replay_start" | grep -c 'account erasure')" \
     "0|$before_keyed|$before_rows|0"
-  replay_from_backup skymail "$skymail_t" --apply
-  check "replay-from-backup --service skymail --apply: $(replay_summary)" replay_apply_ok "$completed"
-  note "SkyMail's replay: bodies_cleared $(replay_counts_sum bodies_cleared), queue_rows_cleared $(replay_counts_sum queue_rows_cleared), queue_rows_deleted $(replay_counts_sum queue_rows_deleted), recipients_deleted $(replay_counts_sum recipients_deleted), list_memberships_deleted $(replay_counts_sum list_memberships_deleted), approval_recipients_removed $(replay_counts_sum approval_recipients_removed)"
-  check 'SkyMail wrote one receipt per request' eq "$(pg skymail "SELECT count(*) FROM account_erasure_receipts")" "$completed"
-  check 'SkyMail holds none of their recipients, list memberships, queue rows or Mail onayı recipients' \
-    eq "$(skymail_erased_email_keyed)" 0/0/0/0
-  check 'no SkyMail row holds an address of the people erased after the dump' eq "$(rows_holding_erased skymail)" 0
+  replay_from_backup skynotify "$skynotify_t" --apply
+  check "replay-from-backup --service skynotify --apply: $(replay_summary)" replay_apply_ok "$completed"
+  note "SkyNotify's replay: bodies_cleared $(replay_counts_sum bodies_cleared), queue_rows_cleared $(replay_counts_sum queue_rows_cleared), queue_rows_deleted $(replay_counts_sum queue_rows_deleted), recipients_deleted $(replay_counts_sum recipients_deleted), list_memberships_deleted $(replay_counts_sum list_memberships_deleted), approval_recipients_removed $(replay_counts_sum approval_recipients_removed)"
+  check 'SkyNotify wrote one receipt per request' eq "$(pg skynotify "SELECT count(*) FROM account_erasure_receipts")" "$completed"
+  check 'SkyNotify holds none of their recipients, list memberships, queue rows or Mail onayı recipients' \
+    eq "$(skynotify_erased_email_keyed)" 0/0/0/0
+  check 'no SkyNotify row holds an address of the people erased after the dump' eq "$(rows_holding_erased skynotify)" 0
   for p in "${!closed_row_of[@]}"; do
     # The person's restored mail, closed unsent: the row stays (the send's counts), nothing of them.
-    check "SkyMail: $p's closed row keeps nothing of $p (address, name, subject, body)" \
-      eq "$(pg skymail "SELECT status || '/' || recipient_email || '/' || recipient_full_name || '/' || subject || '/' || body || '/' || coalesce(body_html, 'NULL')
+    check "SkyNotify: $p's closed row keeps nothing of $p (address, name, subject, body)" \
+      eq "$(pg skynotify "SELECT status || '/' || recipient_email || '/' || recipient_full_name || '/' || subject || '/' || body || '/' || coalesce(body_html, 'NULL')
             FROM mail_queue WHERE id = '${closed_row_of[$p]}'")" 'failed//Silinmiş kullanıcı///NULL'
   done
   check "the bystander's recipient, list membership and Mail onayı recipient are byte-identical" \
     eq "$(bystander_rows_hash "$bystander_mail")" "$bystander_static"
   check "the bystander's mail naming no erased person is byte-identical" eq "$(queue_rows_hash "$plain_ids")" "$bystander_plain"
   check "the bystander's mail naming an erased person changed only in subject and body, now empty" \
-    eq "$(queue_rows_hash "$named_ids" subject body body_html updated_at)/$(pg skymail "SELECT count(*) FILTER (WHERE subject <> '' OR body <> '' OR body_html IS NOT NULL) FROM mail_queue WHERE id IN ($named_ids)")" \
+    eq "$(queue_rows_hash "$named_ids" subject body body_html updated_at)/$(pg skynotify "SELECT count(*) FILTER (WHERE subject <> '' OR body <> '' OR body_html IS NOT NULL) FROM mail_queue WHERE id IN ($named_ids)")" \
     "$bystander_named/0"
 
   # 5c. CMS and Forms, after their "emails": [] replay: the receipts answer, nothing changes.
@@ -590,25 +590,25 @@ scenario_11() {
   done
   check 'no CMS row holds an address of the people erased after the dump' eq "$(rows_holding_erased skylab_cms)" 0
 
-  # 5d. The "emails": [] replay reaching SkyMail after replay-from-backup is answered from its receipts.
-  local skymail_receipts again=0
-  skymail_receipts=$(receipts_hash skymail)
+  # 5d. The "emails": [] replay reaching SkyNotify after replay-from-backup is answered from its receipts.
+  local skynotify_receipts again=0
+  skynotify_receipts=$(receipts_hash skynotify)
   while IFS=$'\t' read -r request subject; do
-    replay_command skymail http://skymail:3000 "$request" "$subject"
+    replay_command skynotify http://skynotify:3000 "$request" "$subject"
     [[ $HTTP_STATUS != 200 ]] || again=$((again + 1))
   done <"$requests_file"
-  check "an emails [] replay to SkyMail afterwards answers 200 from its receipts ($again of $completed), changing nothing" \
-    eq "$again|$(receipts_hash skymail)|$(rows_holding_erased skymail)" "$completed|$skymail_receipts|0"
+  check "an emails [] replay to SkyNotify afterwards answers 200 from its receipts ($again of $completed), changing nothing" \
+    eq "$again|$(receipts_hash skynotify)|$(rows_holding_erased skynotify)" "$completed|$skynotify_receipts|0"
 
   # 5e. Nothing the replay printed or made the others log names a person or a DSN part.
   local logs output_leaks log_leaks snapshot_volumes
   logs=$EVIDENCE/s11-replay-logs.txt
   : >"$logs"
-  for service in core skymail cms forms; do docker logs --since "$replay_start" "$(dc ps -q "$service")" >>"$logs" 2>&1; done
+  for service in core skynotify cms forms; do docker logs --since "$replay_start" "$(dc ps -q "$service")" >>"$logs" 2>&1; done
   docker logs "$(snapshot_ctr)" >>"$logs" 2>&1
   output_leaks=$(leaks "$EVIDENCE/s11-replay-from-backup.txt") log_leaks=$(leaks "$logs")
   check "the replay's output carries no address, name, subject id or DSN part ($output_leaks line(s))" eq "$output_leaks" 0
-  check "the logs of core, SkyMail, CMS, Forms and snapshot-postgres since the replay carry none either ($log_leaks line(s))" eq "$log_leaks" 0
+  check "the logs of core, SkyNotify, CMS, Forms and snapshot-postgres since the replay carry none either ($log_leaks line(s))" eq "$log_leaks" 0
 
   # 5f. The snapshots are destroyed: container, volumes, network; core leaves the network first.
   snapshot_volumes=$(docker inspect --format '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' "$(snapshot_ctr)" | xargs)
@@ -618,29 +618,29 @@ scenario_11() {
   rm -f "$requests_file"
 
   for p in "${!closed_row_of[@]}"; do
-    for db in skymail skylab_cms forms_db; do
+    for db in skynotify skylab_cms forms_db; do
       check "$db: no row carries the subject of $p after the replay" eq "$(count_lines "$(subject_hits "$db" "${P_ID[$p]}")")" 0
     done
   done
   check "the bystander's closed row is byte-identical after the replay" eq "$(queue_row_hash "$bystander_row")" "$bystander_closed"
   check "the bystander's closed row still says what it said" \
-    eq "$(pg skymail "SELECT subject <> '' AND body <> '' AND error = '$RESTORE_NOT_SENT' FROM mail_queue WHERE id = '$bystander_row'")" t
+    eq "$(pg skynotify "SELECT subject <> '' AND body <> '' AND error = '$RESTORE_NOT_SENT' FROM mail_queue WHERE id = '$bystander_row'")" t
 
   # Step 6: before unpausing, the only send still going out is the one queued since the restore.
-  http GET "http://skymail:3000/v1/mail_tasks?status=sending&_start=0&_end=100" -H "Authorization: Bearer $(user_token p8 skymail)"
+  http GET "http://skynotify:3000/v1/mail_tasks?status=sending&_start=0&_end=100" -H "Authorization: Bearer $(user_token p8 skynotify)"
   check 'GET /v1/mail_tasks?status=sending lists only the send queued after the restore' \
     eq "$HTTP_STATUS $(jq -r '[.[].id] | join(",")' <<<"$HTTP_BODY" 2>/dev/null)" "200 $control_task"
-  check 'SkyMail redeployed without MAIL_SENDER' skymail_redeploy on
-  check 'the running SkyMail container has no MAIL_SENDER' eq "$(skymail_env_sender)" unset
-  check 'GET /v1/mail_tasks/summary answers sender_paused false' eq "$(skymail_sender_paused)" false
+  check 'SkyNotify redeployed without MAIL_SENDER' skynotify_redeploy on
+  check 'the running SkyNotify container has no MAIL_SENDER' eq "$(skynotify_env_sender)" unset
+  check 'GET /v1/mail_tasks/summary answers sender_paused false' eq "$(skynotify_sender_paused)" false
   check 'the control mail queued after the restore reaches mailpit once the sender is back' \
     wait_until 60 2 mailpit_has "$control_to"
-  check 'the control row is sent' eq "$(pg skymail "SELECT status FROM mail_queue WHERE id = '$control_row'")" sent
+  check 'the control row is sent' eq "$(pg skynotify "SELECT status FROM mail_queue WHERE id = '$control_row'")" sent
   log "  unpaused; waiting past two more dispatcher ticks"
   sleep 25
   # The erasure cleared the error of the erased people's closed rows with the rest of the row.
   check 'after unpausing, no restored row went out (all still failed, none sent)' \
-    eq "$(pg skymail "SELECT count(*) FROM mail_queue WHERE id IN ($restored_list) AND status = 'failed'")" "$restored_pending"
+    eq "$(pg skynotify "SELECT count(*) FROM mail_queue WHERE id IN ($restored_list) AND status = 'failed'")" "$restored_pending"
   check 'no mail of the restored queue reached mailpit at any point' eq "$(mailpit_to "$addresses")" "$baseline"
   check "the bystander's closed row is byte-identical after unpausing" eq "$(queue_row_hash "$bystander_row")" "$bystander_closed"
   rm -f "$addresses" "$control_to"
@@ -648,7 +648,7 @@ scenario_11() {
   local forms_rows
   forms_rows=$(rows_holding_erased forms_db)
   if [[ $forms_rows != 0 ]]; then
-    known_gap 18 "Forms (stub) got the emails [] replay before replay-from-backup, which then only got those receipts back: $forms_rows forms_db row(s) still hold addresses of the $completed people erased after the dump (guest responses and queued reports). A restored service must get replay-from-backup instead of the emails [] replay, as SkyMail does here."
+    known_gap 18 "Forms (stub) got the emails [] replay before replay-from-backup, which then only got those receipts back: $forms_rows forms_db row(s) still hold addresses of the $completed people erased after the dump (guest responses and queued reports). A restored service must get replay-from-backup instead of the emails [] replay, as SkyNotify does here."
   fi
   scenario_end
 }

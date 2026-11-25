@@ -27,7 +27,7 @@ func TestPostgresTicketLinks(t *testing.T) {
 	exec(`UPDATE events SET feedback_mode = 'per_session', feedback_form_url = $2 WHERE id = $1`, d.event, eventURL)
 	exec(`UPDATE sessions SET feedback_form_url = $2 WHERE id = $1`, d.session, sessionURL)
 	// mail writes a feedback mail of the Ticket carrying the targets, done,
-	// sent or not (SkyMail refused it, or it was dropped).
+	// sent or not (SkyNotify refused it, or it was dropped).
 	mail := func(ticket uuid.UUID, sent bool, sessions ...*uuid.UUID) uuid.UUID {
 		t.Helper()
 		id := uuid.New()
