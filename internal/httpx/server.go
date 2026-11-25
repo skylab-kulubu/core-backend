@@ -200,6 +200,11 @@ type Deps struct {
 	// GET /internal/v1/users/{sub}/teams; nil, that route is 503.
 	ManagedTeams *identity.TeamDelegation
 
+	// AttendanceMail answers the capabilities route's features: whether a
+	// scan queues the door's mails now (docs/attendance-mail.md). Nil
+	// answers both off.
+	AttendanceMail handlers.AttendanceMailSource
+
 	// AppAssignments mounts the app assignment routes (APP_ASSIGNMENTS=on,
 	// docs/app-assignments.md). Off they are not served: 404.
 	AppAssignments bool
@@ -615,6 +620,9 @@ func New(deps Deps) *fiber.App {
 		}
 		if deps.ManagementTerms != nil {
 			capabilities.WithExpiredMemberships(deps.ManagementTerms)
+		}
+		if deps.AttendanceMail != nil {
+			capabilities.WithAttendanceMail(deps.AttendanceMail)
 		}
 		app.Get("/v1/users/me/capabilities", capabilities.Get)
 	}

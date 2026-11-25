@@ -58,6 +58,12 @@ zero-width character (U+200B–U+200D, U+2060, U+FEFF) is
 | Event `attendanceWelcomeMail` | `true` | the organizer's switch for the welcome |
 | Event `attendanceRecordedMail` | `true` | the organizer's switch for the receipt |
 
+Whether a scan queues each mail now, with every setting above but the Event's
+switches applied, is in `GET /v1/users/me/capabilities` as
+`features.attendanceWelcomeMail` and `features.attendanceRecordedMail`
+(`ticket.PostgresStore.AttendanceMailOn`): the panel greys the Event's switches
+out while they are `false`.
+
 The Event's two switches are on the Event JSON (anyone who sees the Event sees
 them); `POST /v1/events` takes them (none is `true`), `PATCH`/`PUT
 /v1/events/{id}` turn them on or off (left out keeps them, `null` is `400`). A
