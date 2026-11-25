@@ -147,8 +147,12 @@ type Store interface {
 	// SetCoOrganizers replaces the Event's Co-organizer teams and people
 	// with w's in one transaction, under the Event's row lock, and answers
 	// the Event (docs/co-organizers.md): ErrNotFound when it is not
-	// current, ErrConflict when its Owner team is no longer w.OwnerTeam, an
-	// *InactivePersonError for a person who is no active account.
+	// current, ErrConflict when its Owner team is no longer w.OwnerTeam or
+	// (with w.Expect) its lists are no longer w.WasTeams and w.WasPeople, an
+	// *InactivePersonError for a person who is no active account. While the
+	// Co-organizer mail is on (PostgresStore.NotifyCoOrganizers) it queues
+	// the mail of each team and person added or removed in the same
+	// transaction.
 	SetCoOrganizers(ctx context.Context, w CoOrganizersWrite) (Event, error)
 	// CoOrganizerPeople reads the Event's Co-organizer people with their
 	// names and e-mails, by name.

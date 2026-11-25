@@ -276,6 +276,14 @@ func (s *service) SetOrganizers(ctx context.Context, p authz.Principal, id uuid.
 		return Organizers{}, err
 	}
 	if !s.canManageOrganizers(p, e) {
+		// Recorded (denied) with what it asked for, when that can be read.
+		var changes []organizerChange
+		if teams, err := s.coOrganizerTeams(e.OwnerTeam, in.Teams); err == nil {
+			if people, err := coOrganizerPeople(in.People); err == nil {
+				changes = organizerChanges(e, teams, people)
+			}
+		}
+		s.denyOrganizers(ctx, e, changes)
 		return Organizers{}, ErrForbidden
 	}
 	teams, err := s.coOrganizerTeams(e.OwnerTeam, in.Teams)
@@ -286,9 +294,18 @@ func (s *service) SetOrganizers(ctx context.Context, p authz.Principal, id uuid.
 	if err != nil {
 		return Organizers{}, err
 	}
+	// Each change is a row of the Team audit record, opened before the
+	// write: without its row there is no change (docs/co-organizers.md).
+	changes := organizerChanges(e, teams, people)
+	open, err := s.beginOrganizerAudit(ctx, p, e, changes)
+	if err != nil {
+		return Organizers{}, err
+	}
 	updated, err := s.store.SetCoOrganizers(ctx, CoOrganizersWrite{
 		EventID: e.ID, OwnerTeam: e.OwnerTeam, Teams: teams, People: people, By: lifecycle.ActorID(p.ID),
+		Expect: true, WasTeams: e.CoOrganizers, WasPeople: e.CoOrganizerIDs,
 	})
+	s.finishOrganizerAudit(ctx, open, err)
 	if err != nil {
 		var inactive *InactivePersonError
 		if errors.As(err, &inactive) {
@@ -403,6 +420,33 @@ type CoOrganizersWrite struct {
 	Teams     []CoOrganizerTeam
 	People    []uuid.UUID
 	By        *uuid.UUID
+	// With Expect, WasTeams and WasPeople are the lists the caller read and
+	// decided against (and recorded the difference of): ErrConflict when
+	// the Event's lists are no longer these.
+	Expect    bool
+	WasTeams  []CoOrganizerTeam
+	WasPeople []uuid.UUID
+}
+
+// sameCoOrganizers reports whether two lists are the same, in any order:
+// the teams with their choices (codes compared without case), the people.
+func sameCoOrganizers(teamsA []CoOrganizerTeam, peopleA []uuid.UUID, teamsB []CoOrganizerTeam, peopleB []uuid.UUID) bool {
+	if len(teamsA) != len(teamsB) || len(peopleA) != len(peopleB) {
+		return false
+	}
+	for _, a := range teamsA {
+		if !slices.ContainsFunc(teamsB, func(b CoOrganizerTeam) bool {
+			return strings.EqualFold(a.Code, b.Code) && a.Management == b.Management && a.Visibility == b.Visibility
+		}) {
+			return false
+		}
+	}
+	for _, a := range peopleA {
+		if !slices.Contains(peopleB, a) {
+			return false
+		}
+	}
+	return true
 }
 
 // InactivePersonError is a new Co-organizer person who is no active account

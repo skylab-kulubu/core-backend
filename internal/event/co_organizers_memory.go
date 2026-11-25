@@ -20,7 +20,7 @@ func (s *MemoryStore) SetCoOrganizers(_ context.Context, w CoOrganizersWrite) (E
 	if !ok || e.ArchivedAt != nil {
 		return Event{}, ErrNotFound
 	}
-	if e.OwnerTeam != w.OwnerTeam {
+	if e.OwnerTeam != w.OwnerTeam || w.Expect && !sameCoOrganizers(e.CoOrganizers, e.CoOrganizerIDs, w.WasTeams, w.WasPeople) {
 		return Event{}, ErrConflict
 	}
 	e.CoOrganizers, e.CoOrganizerIDs = sortedCoOrganizers(w.Teams, w.People)

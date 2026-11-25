@@ -96,6 +96,11 @@ Notification. See [event-updated-notification.md](event-updated-notification.md)
 `DOOR_STAFF_MAIL=on`: a person added to an Event's door staff is told once
 the Event is published. See [door-staff-mail.md](door-staff-mail.md).
 
+`core.event-co-organizer-added` and `core.event-co-organizer-removed` go the
+same way, off until `CO_ORGANIZER_MAIL=on`: a person, or a team's Leaders,
+added to or removed from an Event's Co-organizers. See
+[co-organizers.md](co-organizers.md#mails).
+
 `event.reminder` too, off until `EVENT_REMINDER_NOTIFICATION=on`: at 18:00
 Istanbul time the day before a published Event starts, everyone holding an
 active Ticket of it is reminded once, one mail per address, at most

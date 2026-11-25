@@ -8,6 +8,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 )
 
 // organizersBody is the body of PUT /v1/events/{id}/organizers: the whole
@@ -65,7 +66,8 @@ func (h *EventHandler) SetOrganizers(c fiber.Ctx) error {
 	for _, team := range body.Teams {
 		in.Teams = append(in.Teams, event.OrganizerTeamInput{Code: team.Code, Management: team.Management, Visibility: team.Visibility})
 	}
-	organizers, err := h.svc.SetOrganizers(c.Context(), p, id, in)
+	// Each change is a row of the Team audit record (docs/co-organizers.md).
+	organizers, err := h.svc.SetOrganizers(auditContext(c, p), p, id, in)
 	if err != nil {
 		return organizersError(c, err)
 	}
@@ -78,6 +80,10 @@ func (h *EventHandler) SetOrganizers(c fiber.Ctx) error {
 func organizersError(c fiber.Ctx, err error) error {
 	if errors.Is(err, event.ErrCoOrganizersDisabled) {
 		return problemCode(c, fiber.StatusForbidden, "Forbidden", "co_organizers_disabled")
+	}
+	if errors.Is(err, teamaudit.ErrUnavailable) {
+		// The change's row could not be opened: nothing was changed.
+		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", auditUnavailableCode)
 	}
 	var refused *event.OrganizersError
 	if !errors.As(err, &refused) {

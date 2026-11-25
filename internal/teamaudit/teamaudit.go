@@ -86,6 +86,16 @@ const (
 	// ActionTicketImportPreview is the import's preview, recorded as
 	// ActionTicketImport: what the list would do, nothing written.
 	ActionTicketImportPreview Action = "ticket.import.preview"
+	// ActionCoOrganizerAdd, ActionCoOrganizerRemove and
+	// ActionCoOrganizerChange are an Event's Co-organizer list changed
+	// (docs/co-organizers.md): a team or a person added or removed, or a
+	// team's choices changed. The target is the Event's Owner team
+	// (GroupID, GroupPath), none for an Event without one; before and after
+	// name the Event and the team (State.Code, State.Management,
+	// State.Visibility) or the person (State.PersonID), never a name.
+	ActionCoOrganizerAdd    Action = "co_organizer.add"
+	ActionCoOrganizerRemove Action = "co_organizer.remove"
+	ActionCoOrganizerChange Action = "co_organizer.change"
 	// The user.* actions are a person's account changed from the panel's
 	// person card (docs/user-accounts.md): the target is the person
 	// (TargetUserID), with no Group (GroupID and GroupPath empty). before
@@ -136,6 +146,7 @@ var Actions = []Action{
 	ActionTermExtend, ActionTermHandover, ActionTermExpired,
 	ActionTicketResend, ActionTicketLinkRenew, ActionTicketCancel, ActionTicketRestore, ActionTicketPromote,
 	ActionTicketImport, ActionTicketImportPreview,
+	ActionCoOrganizerAdd, ActionCoOrganizerRemove, ActionCoOrganizerChange,
 	ActionUserEnable, ActionUserDisable, ActionUserPasswordSet, ActionUserPasswordMail,
 	ActionUserEmailChange, ActionUserEmailVerify, ActionUserEmailMail, ActionUserEmailPrimary,
 	ActionUserRequiredActions, ActionUserCredentialRemove, ActionUserIdentityUnlink,
@@ -164,6 +175,13 @@ func (a Action) IsApp() bool {
 // target is the person alone, with no Group.
 func (a Action) IsUser() bool {
 	return slices.Contains(UserActions, a)
+}
+
+// IsCoOrganizer reports whether the action is an Event's Co-organizer
+// list's: its target is the Event's Owner team, or no Group for an Event
+// without one.
+func (a Action) IsCoOrganizer() bool {
+	return a == ActionCoOrganizerAdd || a == ActionCoOrganizerRemove || a == ActionCoOrganizerChange
 }
 
 // IsKeycloak reports whether the action is a Keycloak configuration
@@ -368,6 +386,12 @@ type State struct {
 	CredentialType  string   `json:"credentialType,omitempty"`
 	Provider        string   `json:"provider,omitempty"`
 	Fields          []string `json:"fields,omitempty"`
+	// Management, Visibility and PersonID are a co_organizer.* row's: a
+	// Co-organizer team's choices (its code is Code), or the Co-organizer
+	// person (a subject). Absent on every other row.
+	Management string `json:"management,omitempty"`
+	Visibility string `json:"visibility,omitempty"`
+	PersonID   string `json:"personId,omitempty"`
 	// Import is a ticket.import row's counts; absent on every other row.
 	Import *ImportCounts `json:"import,omitempty"`
 	// Operation and ResourceType are Keycloak's names of a console change
@@ -578,6 +602,11 @@ func (r Record) normalize() (Record, string) {
 		if r.GroupID != "" || r.GroupPath != "" {
 			return r, "invalid_path"
 		}
+	} else if r.Action.IsCoOrganizer() && r.GroupID == "" {
+		// An Event without an Owner team: no Group, no path.
+		if r.GroupPath != "" {
+			return r, "invalid_path"
+		}
 	} else if r.GroupID == "" && r.Action != ActionTeamCreate {
 		return r, "no_group"
 	}
@@ -586,7 +615,7 @@ func (r Record) normalize() (Record, string) {
 			return r, "invalid_group"
 		}
 	}
-	if r.GroupID != "" || (!r.Action.IsApp() && !r.Action.IsUser() && !r.Action.IsKeycloak()) {
+	if r.GroupID != "" || (!r.Action.IsApp() && !r.Action.IsUser() && !r.Action.IsKeycloak() && !r.Action.IsCoOrganizer()) {
 		if !strings.HasPrefix(r.GroupPath, "/") || utf8.RuneCountInString(r.GroupPath) > MaxPath || !utf8.ValidString(r.GroupPath) {
 			return r, "invalid_path"
 		}
@@ -629,6 +658,11 @@ func (s *State) normalize() *State {
 	if _, err := uuid.Parse(s.EventID); err == nil {
 		out.EventID = s.EventID
 	}
+	if _, err := uuid.Parse(s.PersonID); err == nil {
+		out.PersonID = s.PersonID
+	}
+	out.Management = cut(s.Management, MaxIdentifier)
+	out.Visibility = cut(s.Visibility, MaxIdentifier)
 	if s.Resend > 0 {
 		out.Resend = s.Resend
 	}
