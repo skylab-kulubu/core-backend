@@ -482,6 +482,7 @@ func (h *TicketHandler) UndoCheckInByID(c fiber.Ctx) error {
 
 type guestCheckInBody struct {
 	Email     string `json:"email"`
+	TicketKey string `json:"ticketKey"`
 	DoorToken string `json:"doorToken"`
 }
 
@@ -527,7 +528,12 @@ func (h *TicketHandler) CheckInGuest(c fiber.Ctx) error {
 	if err := c.Bind().Body(&body); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	ci, err := h.svc.CheckInGuest(c.Context(), sessionID, ticket.GuestCheckIn{Email: body.Email, DoorToken: body.DoorToken})
+	ci, err := h.svc.CheckInGuest(c.Context(), sessionID, ticket.GuestCheckIn{Email: body.Email, TicketKey: body.TicketKey, DoorToken: body.DoorToken})
+	var missing *ticket.GuestNotFoundError
+	if errors.As(err, &missing) && missing.RegistrationURL != "" {
+		// No Ticket: where to register, while the Event takes them.
+		return problemWithFields(c, fiber.StatusNotFound, "Not Found", "Not Found", "", fiber.Map{"registrationUrl": missing.RegistrationURL})
+	}
 	if err != nil {
 		return ticketError(c, err)
 	}
