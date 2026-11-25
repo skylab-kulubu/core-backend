@@ -6,8 +6,24 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 )
+
+// undoCertificateFonts rolls back the certificate fonts migration, whose
+// triggers use the Media attachments' function and the account guard and
+// whose role tables an older down replaces, so that an older down
+// migration can run; applying again brings it back.
+func undoCertificateFonts(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), readDown(t, certificateFontsDown)); err != nil {
+		t.Fatalf("certificate fonts down: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `DELETE FROM schema_migrations WHERE version = `+certificateFontsVersion); err != nil {
+		t.Fatal(err)
+	}
+}
 
 const (
 	certificateFontsVersion = "20261127183000"
@@ -47,9 +63,11 @@ func TestCertificateFontsMigration(t *testing.T) {
 	fits := func() (bool, bool, bool) {
 		t.Helper()
 		var layoutFont, fontRole, legacy bool
+		// The simple protocol: a cached plan would keep the immutable
+		// function's answer from before the down migration.
 		if err := pool.QueryRow(ctx, `SELECT media_purpose_fits_role('core', 'certificate_asset', 'certificate_font'),
 			media_purpose_fits_role('core', 'certificate_font', 'certificate_font'),
-			media_purpose_fits_role('core', 'certificate_font', 'legacy')`).Scan(&layoutFont, &fontRole, &legacy); err != nil {
+			media_purpose_fits_role('core', 'certificate_font', 'legacy')`, pgx.QueryExecModeSimpleProtocol).Scan(&layoutFont, &fontRole, &legacy); err != nil {
 			t.Fatal(err)
 		}
 		return layoutFont, fontRole, legacy
