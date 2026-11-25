@@ -288,7 +288,7 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 	}
 	if !in.SkipCertificateTemplate {
 		plan.EventTemplate = CopyWrite
-		plan.EventTemplateSourceLinks = s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: source.OwnerTeam}, authz.Read)
+		plan.EventTemplateSourceLinks = s.authz.Allow(p, AuthzResource(source, authz.TypeCertificateTemplate, time.Now()), authz.Read)
 		if s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: team}, authz.Assign) {
 			plan.CertificateTemplate = CopyWrite
 		}
