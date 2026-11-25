@@ -160,11 +160,12 @@ func (s *service) finishOrganizerAudit(ctx context.Context, open *organizerAudit
 }
 
 func organizerAuditCode(err error) string {
-	var inactive *OrganizersError
+	var refused *OrganizersError
+	var inactive *InactivePersonError
 	switch {
 	case errors.Is(err, teamaudit.ErrUnavailable):
 		return "audit_unavailable"
-	case errors.As(err, &inactive):
+	case errors.As(err, &refused), errors.As(err, &inactive):
 		return "event_organizers_invalid"
 	case errors.Is(err, ErrConflict):
 		return "conflict"
@@ -175,11 +176,11 @@ func organizerAuditCode(err error) string {
 	}
 }
 
-// denyOrganizers records a write of the list authorization refused: a
-// denied row for each change it asked for, or, when its lists cannot be
-// read, one co_organizer.change row naming the Event alone. A row that
-// cannot be written changes nothing: the write is refused either way.
-func (s *service) denyOrganizers(ctx context.Context, e Event, changes []organizerChange) {
+// denyOrganizers records a write of the list authorization refused: one
+// denied co_organizer.change row per request, naming the Event and how many
+// changes it asked for (0 when its lists cannot be read). A row that cannot
+// be written changes nothing: the write is refused either way.
+func (s *service) denyOrganizers(ctx context.Context, e Event, changes int) {
 	if s.audit == nil {
 		return
 	}
@@ -192,16 +193,93 @@ func (s *service) denyOrganizers(ctx context.Context, e Event, changes []organiz
 		return
 	}
 	actor.Basis, actor.ViaGroupID = teamaudit.BasisNone, ""
-	if len(changes) == 0 {
-		changes = []organizerChange{{action: teamaudit.ActionCoOrganizerChange, after: &teamaudit.State{EventID: e.ID.String()}}}
+	if err := s.audit.Deny(ctx, teamaudit.Record{
+		Actor: actor, Action: teamaudit.ActionCoOrganizerChange, GroupID: target.ID, GroupPath: target.Path,
+		After: &teamaudit.State{EventID: e.ID.String(), Changes: changes},
+	}, "forbidden"); err != nil {
+		log.Printf("events: a refused change of the Co-organizers was not recorded")
 	}
-	for _, change := range changes {
-		if err := s.audit.Deny(ctx, teamaudit.Record{
-			Actor: actor, Action: change.action, GroupID: target.ID, GroupPath: target.Path,
-			Before: change.before, After: change.after,
-		}, "forbidden"); err != nil {
-			log.Printf("events: a refused change of the Co-organizers was not recorded")
-			return
+}
+
+// copyOrganizerAudit opens a co_organizer.add row (reason copy) for each
+// team and person a copy carries (docs/co-organizers.md), against the
+// copy's Owner team: privileged, the Leader of the copy's Owner team or a
+// Team above it, else (a Co-organizer copying) an event editor through
+// that team. A row that cannot be opened stops the copy. Without an audit
+// writer, or with nothing carried, nothing is recorded.
+func (s *service) copyOrganizerAudit(ctx context.Context, p authz.Principal, copy Event, teams []CoOrganizerTeam, people []uuid.UUID) (*organizerAudit, map[uuid.UUID]uuid.UUID, error) {
+	if s.audit == nil || len(teams)+len(people) == 0 {
+		return nil, nil, nil
+	}
+	actor, ok := teamaudit.ActorFrom(ctx)
+	if !ok {
+		return nil, nil, teamaudit.ErrUnavailable
+	}
+	target, err := s.auditTarget(ctx, copy)
+	if err != nil {
+		return nil, nil, err
+	}
+	actor.Basis, actor.ViaGroupID = teamaudit.BasisPrivileged, ""
+	if !s.authz.Allow(p, resource(""), authz.ManageOrganizers) {
+		via, err := s.leaderVia(ctx, p, target)
+		switch {
+		case err == nil:
+			actor.Basis, actor.ViaGroupID = teamaudit.BasisLeader, via
+		case errors.Is(err, ErrForbidden) && target.ID != "":
+			actor.Basis, actor.ViaGroupID = teamaudit.BasisEventEditor, target.ID
+		default:
+			return nil, nil, teamaudit.ErrUnavailable
+		}
+	}
+	open := &organizerAudit{}
+	byPerson := map[uuid.UUID]uuid.UUID{}
+	begin := func(after *teamaudit.State) (uuid.UUID, error) {
+		after.Reason = "copy"
+		id, err := s.audit.Begin(ctx, teamaudit.Record{
+			Actor: actor, Action: teamaudit.ActionCoOrganizerAdd, GroupID: target.ID, GroupPath: target.Path, After: after,
+		})
+		if err != nil {
+			s.finishOrganizerAudit(ctx, open, err)
+			return uuid.Nil, err
+		}
+		open.ids = append(open.ids, id)
+		return id, nil
+	}
+	for _, team := range teams {
+		if _, err := begin(teamState(copy.ID, team)); err != nil {
+			return nil, nil, err
+		}
+	}
+	for _, person := range people {
+		id, err := begin(personState(copy.ID, person))
+		if err != nil {
+			return nil, nil, err
+		}
+		byPerson[person] = id
+	}
+	return open, byPerson, nil
+}
+
+// finishCopyAudit finishes a copy's rows: ok, but a person the copy left
+// out (an account no longer active) failed inactive_person; all failed when
+// the copy failed.
+func (s *service) finishCopyAudit(ctx context.Context, open *organizerAudit, byPerson map[uuid.UUID]uuid.UUID, created Event, err error) {
+	if open == nil {
+		return
+	}
+	if err != nil {
+		s.finishOrganizerAudit(ctx, open, err)
+		return
+	}
+	for _, id := range open.ids {
+		outcome, code := teamaudit.OutcomeOK, ""
+		for person, row := range byPerson {
+			if row == id && !slices.Contains(created.CoOrganizerIDs, person) {
+				outcome, code = teamaudit.OutcomeFailed, "inactive_person"
+			}
+		}
+		if ferr := s.audit.Finish(ctx, id, outcome, code, nil); ferr != nil {
+			log.Printf("events: audit record %s stays pending", id)
 		}
 	}
 }

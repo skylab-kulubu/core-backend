@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	coOrganizerAuditMailVersion = "20261127110000"
+	coOrganizerAuditMailVersion = "20261127115000"
 	coOrganizerAuditMailDown    = coOrganizerAuditMailVersion + "_co_organizer_audit_and_mail.down.sql"
 )
 
@@ -36,6 +36,14 @@ func TestCoOrganizerAuditMailMigration(t *testing.T) {
 		if _, err := pool.Exec(ctx, statement); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
+	}
+	copied := `INSERT INTO team_audit_records (id, occurred_at, actor_id, actor_basis, actor_via_group_id, action, group_id, group_path, outcome)
+		VALUES (gen_random_uuid(), now(), gen_random_uuid(), 'event_editor', gen_random_uuid(), 'co_organizer.add', gen_random_uuid(), '/UYELER/YK', 'ok')`
+	if _, err := pool.Exec(ctx, copied); err != nil {
+		t.Fatalf("an event editor's copy row: %v", err)
+	}
+	if _, err := pool.Exec(ctx, strings.Replace(copied, "'co_organizer.add'", "'co_organizer.remove'", 1)); err == nil {
+		t.Fatal("an event editor's co_organizer.remove was taken")
 	}
 	if _, err := pool.Exec(ctx, strings.Replace(noGroup, "'co_organizer.remove'", "'team.profile'", 1)); err == nil {
 		t.Fatal("a team.profile without a Group was taken")
@@ -80,11 +88,14 @@ func TestCoOrganizerAuditMailMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var kept, queued int
-	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM team_audit_records WHERE action LIKE 'co_organizer.%'), (SELECT count(*) FROM co_organizer_notifications)`).Scan(&kept, &queued); err != nil || kept != 3 || queued != 3 {
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM team_audit_records WHERE action LIKE 'co_organizer.%'), (SELECT count(*) FROM co_organizer_notifications)`).Scan(&kept, &queued); err != nil || kept != 4 || queued != 3 {
 		t.Fatalf("after down: %d rows, %d queued, %v", kept, queued, err)
 	}
 	if _, err := pool.Exec(ctx, noGroup); err == nil {
 		t.Fatal("after down a Group-less row was taken")
+	}
+	if _, err := pool.Exec(ctx, copied); err == nil {
+		t.Fatal("after down an event editor's copy row was taken")
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE version = `+coOrganizerAuditMailVersion); err != nil {
 		t.Fatal(err)
