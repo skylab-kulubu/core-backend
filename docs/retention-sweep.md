@@ -45,7 +45,7 @@ click list and a form's channel statistics keep looking 90 days back
 clicks turn 90 days old. Until apply it is the clicks of the last 90 days;
 from apply on it only grows, counting every click since then.
 
-## Rules (rule set v10)
+## Rules (rule set v11)
 
 "Event end" is the Event's `end_date`, else its last day's `end_date`, else
 its `start_date` (ADR-0062). For `guest_identity`, an Event with none of them
@@ -156,6 +156,12 @@ The record of the editors' answers about telling an Event's Ticket holders ([`ev
 | Rule | Selects | Period | Action |
 |---|---|---|---|
 | `event_change_notices_age` | an `event_change_notice_choices` row | `EventChangeNoticePeriod`, 3 years after `decided_at` (as the Team audit record) | row deleted |
+
+An Event's Co-organizer people ([`co-organizers.md`](co-organizers.md#data); rule set v11, Yusuf S1 2026-11-25):
+
+| Rule | Selects | Period | Action |
+|---|---|---|---|
+| `co_organizer_people` | an `event_co_organizers` person row (`user_id` set) | `CoOrganizerPeoplePeriod`, 90 days after the Event end, as `door_staff`; an Event with no date is counted as `anchorless`, never changed | row deleted (a relationship row). The person's rights end 30 days after the Event, before the row goes; a team row lives with the Event |
 
 ## Schedule, lock and periods
 

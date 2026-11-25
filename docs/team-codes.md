@@ -56,7 +56,7 @@ A move ([team-delegation.md](team-delegation.md#moving-a-team)) changes a Team's
 
 | What | On a move | On a code change |
 |---|---|---|
-| `events.owner_team`, certificates, templates, bindings | kept (they hold the code) | would break: refused while they name it (`code_in_use`) |
+| `events.owner_team`, certificates, templates, bindings, an Event's Co-organizer teams (`event_co_organizers.team_code`) | kept (they hold the code) | would break: refused while they name it (`code_in_use`) |
 | Owner team decisions (token paths) | the members count in the new ancestors, not the old, once their token is refreshed | break for the old code |
 | Delegation (who manages) | at once: the new parent's Leaders | unchanged |
 | The token's `groups` | the old path until the access token is refreshed | the same |
