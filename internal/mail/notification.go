@@ -63,6 +63,12 @@ const (
 	AttendanceRecordedType = "event.attendance-recorded"
 )
 
+// DoorStaffAddedType is the Notification type (and the e-mail template key)
+// a person added to an Event's door staff is told by
+// (docs/door-staff-mail.md). SkyMail seeds it with its template; core sends
+// it only while DOOR_STAFF_MAIL is on.
+const DoorStaffAddedType = "event.door-staff-added"
+
 const (
 	kindTicketCreated = "ticket_created"
 	kindEventUpdated  = "event_updated"
@@ -70,6 +76,7 @@ const (
 	kindTicketStatus  = "ticket_status"
 	kindEventReminder = "event_reminder"
 	kindAttendance    = "attendance_mail"
+	kindDoorStaff     = "door_staff_added"
 )
 
 // Notification is one POST /v1/notifications (SkyMail docs/notifications.md):
@@ -231,6 +238,24 @@ func (s *SkyMail) EventChanged(ctx context.Context, idempotencyKey string, holde
 // EventUpdated tells of a new time or place.
 func (s *SkyMail) EventReminder(ctx context.Context, typ, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time) error {
 	return s.tellHolder(ctx, kindEventReminder, typ, idempotencyKey, holder, vars, source, expiresAt, nil)
+}
+
+// DoorStaffAdded tells a person added to an Event's door staff, by a
+// Notification to their subject (inbox and e-mail, as SkyMail's type says),
+// idempotent under idempotencyKey. Door staff are members: there is no
+// guest form.
+func (s *SkyMail) DoorStaffAdded(ctx context.Context, idempotencyKey string, sub uuid.UUID, vars map[string]string, source NotificationSource, expiresAt *time.Time) error {
+	variables := make(map[string]any, len(vars))
+	for name, value := range vars {
+		variables[name] = value
+	}
+	return s.Notify(ctx, kindDoorStaff, idempotencyKey, Notification{
+		Type:       DoorStaffAddedType,
+		Recipients: []NotificationRecipient{{Sub: sub}},
+		Variables:  variables,
+		Source:     &source,
+		ExpiresAt:  expiresAt,
+	})
 }
 
 // tellHolder posts typ to a Ticket holder: a Notification to a registered

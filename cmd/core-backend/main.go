@@ -33,6 +33,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/consent"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
 	"github.com/skylab-kulubu/core-backend/internal/doorqr"
+	"github.com/skylab-kulubu/core-backend/internal/doorstaffmail"
 	"github.com/skylab-kulubu/core-backend/internal/editablesites"
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
@@ -997,6 +998,12 @@ func main() {
 		log.Fatal(err)
 	}
 	worker("event updated notification", startEventUpdatedNotification(workers, eventUpdatedOn, eventChangedOn, events, eventupdatenotify.NewPostgresQueue(pool), tickets, users, sky, ticketPageConfig, log.Printf))
+	// A person added to an Event's door staff (docs/door-staff-mail.md).
+	doorStaffMail, err := doorStaffMailOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	worker("door staff mail", startDoorStaffMail(workers, doorStaffMail, events, doorstaffmail.NewPostgresQueue(pool), users, sky, strings.TrimSpace(os.Getenv("PANEL_URL")), log.Printf))
 
 	var render certificate.Renderer
 	if baseURL := gotenbergURL(); baseURL != "" {

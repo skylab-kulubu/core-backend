@@ -348,3 +348,43 @@ func TestPostgresCopyIntoAnotherTeam(t *testing.T) {
 		t.Fatalf("no-team template: %v %v", got.Skipped, err)
 	}
 }
+
+// A copy with its door staff queues their door staff mail while the mail is
+// on (docs/door-staff-mail.md): they are new to the copy. Off, or without
+// the door staff, nothing is queued.
+func TestPostgresCopyQueuesTheDoorStaffMail(t *testing.T) {
+	d := newCopyDatabase(t)
+	ctx := context.Background()
+	queued := func(eventID uuid.UUID) int {
+		t.Helper()
+		return d.count(t, `SELECT count(*) FROM door_staff_notifications WHERE event_id = $1 AND user_id = $2`, eventID, d.staff)
+	}
+	copyWith := func(name, start string, staff bool) uuid.UUID {
+		t.Helper()
+		in := copyIn(name, start)
+		in.IncludeDoorStaff = staff
+		got, _, err := d.svc.Copy(ctx, d.yk, d.source.ID, in)
+		if err != nil {
+			t.Fatalf("copy %s: %v", name, err)
+		}
+		return got.Event.ID
+	}
+
+	off := copyWith("Kapalıyken", "2027-03-13T19:00:00+03:00", true)
+	if n := queued(off); n != 0 {
+		t.Fatalf("queued %d while the mail is off", n)
+	}
+
+	d.store.NotifyDoorStaff(true)
+	on := copyWith("Açıkken", "2027-04-13T19:00:00+03:00", true)
+	if n := queued(on); n != 1 {
+		t.Fatalf("queued %d, want the copied door staff", n)
+	}
+	if n := d.count(t, `SELECT count(*) FROM event_door_staff WHERE event_id = $1`, on); n != 1 {
+		t.Fatalf("door staff %d", n)
+	}
+	without := copyWith("Görevlisiz", "2027-05-13T19:00:00+03:00", false)
+	if n := queued(without); n != 0 {
+		t.Fatalf("queued %d for a copy without door staff", n)
+	}
+}
