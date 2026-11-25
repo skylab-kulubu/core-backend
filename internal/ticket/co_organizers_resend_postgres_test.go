@@ -10,6 +10,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 // A Co-organizer person's resend and link renewal are written to the
@@ -23,6 +24,9 @@ func TestCoOrganizerPersonResendIsAudited(t *testing.T) {
 	dir.PutGroup(weblab)
 	svc := ticket.NewService(e.store, e.events, authz.NewAuthorizer(authz.DefaultPolicy()), e.users, e.signer, dir, teamaudit.NewPostgres(e.pool))
 	personID := uuid.New()
+	if _, _, err := user.NewService(e.users).Ensure(ctx, personID, user.Profile{Email: "ortak@example.com", FirstName: "Ortak", LastName: "Kişi"}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := e.events.SetCoOrganizers(ctx, event.CoOrganizersWrite{EventID: e.ev.ID, OwnerTeam: "WEBLAB", People: []uuid.UUID{personID}}); err != nil {
 		t.Fatal(err)
 	}
