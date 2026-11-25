@@ -31,6 +31,9 @@ func ValidateLayout(layout Layout) error {
 	if layout.BackgroundColor != "" && !cssColorPattern.MatchString(layout.BackgroundColor) {
 		return invalid(CodeLayoutColorInvalid)
 	}
+	if p := layout.BackgroundPlacement; p != nil && (layout.BackgroundMediaID == nil || !validPlacement(*p)) {
+		return invalid(CodeLayoutPlacementInvalid)
+	}
 	if len(layout.Elements) == 0 || len(layout.Elements) > maxLayoutElements {
 		return invalid(CodeLayoutElementCount)
 	}
@@ -121,14 +124,22 @@ func LayoutHTML(ctx context.Context, layout Layout, data PreviewData, verifyURL 
 		return "", err
 	}
 	background := ""
-	if layout.BackgroundMediaID != nil {
-		uri, err := assetDataURI(ctx, assets, *layout.BackgroundMediaID)
-		if err != nil {
-			return "", err
-		}
-		background = `background-image:url("` + uri + `");background-size:cover;background-position:center;`
-	}
 	var body strings.Builder
+	if layout.BackgroundMediaID != nil {
+		if layout.BackgroundPlacement == nil {
+			uri, err := assetDataURI(ctx, assets, *layout.BackgroundMediaID)
+			if err != nil {
+				return "", err
+			}
+			background = `background-image:url("` + uri + `");background-size:cover;background-position:center;`
+		} else {
+			img, err := placedBackground(ctx, layout, assets)
+			if err != nil {
+				return "", err
+			}
+			body.WriteString(img)
+		}
+	}
 	for _, el := range layout.Elements {
 		content, image, err := elementContent(ctx, el, data, verifyURL, assets)
 		if err != nil {
@@ -217,22 +228,44 @@ func elementContent(ctx context.Context, el Element, data PreviewData, verifyURL
 }
 
 func assetDataURI(ctx context.Context, assets AssetReader, id uuid.UUID) (string, error) {
+	_, uri, err := imageAsset(ctx, assets, id)
+	return uri, err
+}
+
+// imageAsset reads an image Media and its data URI.
+func imageAsset(ctx context.Context, assets AssetReader, id uuid.UUID) (Asset, string, error) {
 	if assets == nil {
-		return "", invalid(CodeAssetStorageUnavailable)
+		return Asset{}, "", invalid(CodeAssetStorageUnavailable)
 	}
 	asset, err := assets.ReadAsset(ctx, id)
 	if err != nil {
-		return "", err
+		return Asset{}, "", err
 	}
 	switch {
 	case !strings.HasPrefix(asset.ContentType, "image/"):
-		return "", invalid(CodeAssetTypeUnsupported)
+		return Asset{}, "", invalid(CodeAssetTypeUnsupported)
 	case len(asset.Data) == 0:
-		return "", invalid(CodeAssetEmpty)
+		return Asset{}, "", invalid(CodeAssetEmpty)
 	case len(asset.Data) > 20<<20:
-		return "", invalid(CodeAssetTooLarge)
+		return Asset{}, "", invalid(CodeAssetTooLarge)
 	}
-	return "data:" + asset.ContentType + ";base64," + base64.StdEncoding.EncodeToString(asset.Data), nil
+	return asset, "data:" + asset.ContentType + ";base64," + base64.StdEncoding.EncodeToString(asset.Data), nil
+}
+
+// placedBackground is the image background of a layout with a placement:
+// an <img> in the box PlaceBackground gives, under every element. The
+// page clips what reaches past it.
+func placedBackground(ctx context.Context, layout Layout, assets AssetReader) (string, error) {
+	asset, uri, err := imageAsset(ctx, assets, *layout.BackgroundMediaID)
+	if err != nil {
+		return "", err
+	}
+	w, h, err := backgroundSize(asset.ContentType, asset.Data)
+	if err != nil {
+		return "", err
+	}
+	box := PlaceBackground(layout.Width, layout.Height, w, h, *layout.BackgroundPlacement)
+	return `<img alt="" aria-hidden="true" style="position:absolute;left:` + number(box.Left) + `px;top:` + number(box.Top) + `px;width:` + number(box.Width) + `px;height:` + number(box.Height) + `px" src="` + uri + `"/>`, nil
 }
 
 func elementStyle(el Element) string {
