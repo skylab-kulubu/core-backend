@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import socket
 import statistics
+import sys
 import threading
 import time
+import zlib
 
+import pikepdf
 import pytest
 
 import fixtures
-from pdf_tools.server import MAX_BODY_BYTES
+from pdf_tools.errors import Problem
+from pdf_tools.server import MAX_BODY_BYTES, make_server
+from pdf_tools.worker import Pool
 
 
 def problem(status, headers, body):
@@ -78,6 +84,42 @@ def test_unreadable_and_missing_file(client):
     assert st == 400 and problem(400, headers, body) == "bad_request"
 
 
+@pytest.mark.parametrize("method", ["HEAD", "PUT", "DELETE", "PATCH", "OPTIONS", "BREW"])
+def test_other_methods_are_405_problems(client, method):
+    st, headers, body = client.request(method, "/v1/inspect")
+    assert st == 405 and headers["allow"] == "GET, POST"
+    assert headers["content-type"] == "application/problem+json"
+    if method != "HEAD":
+        assert problem(405, headers, body) == "method_not_allowed"
+
+
+def test_bad_request_line_is_a_problem(client):
+    out = _raw(client.port, b"GET /a b HTTP/1.1\r\nHost: x\r\n\r\n")
+    head, _, body = out.partition(b"\r\n\r\n")
+    assert head.startswith(b"HTTP/1.1 400") and b"application/problem+json" in head
+    assert json.loads(body)["code"] == "bad_request"
+
+
+def test_unexpected_error_is_internal():
+    class Broken:
+        test_hooks = False
+
+        def run(self, *args):
+            raise RuntimeError("boom")
+
+    server = make_server("127.0.0.1", 0, Broken())  # type: ignore[arg-type]
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        from helpers import Client
+
+        st, headers, body = Client(server.server_address[1]).post("/v1/inspect", fixtures.turkish())
+        assert st == 500 and problem(500, headers, body) == "internal"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_unknown_path(client):
     st, headers, body = client.request("POST", "/v1/nope", b"x", {"Content-Type": "application/pdf"})
     assert st == 404 and problem(404, headers, body) == "not_found"
@@ -125,6 +167,89 @@ def test_timeout_kills_the_worker_and_the_next_job_runs(client):
     assert time.monotonic() - started < 10
     st, _, _ = client.post("/v1/inspect", fixtures.turkish())
     assert st == 200
+
+
+def test_worker_dying_on_a_job_is_the_pdfs_and_the_next_job_runs(client):
+    st, headers, body = client.post("/v1/_die", b"x", {})
+    assert st == 422 and problem(422, headers, body) == "pdf_unreadable"
+    for _ in range(3):
+        assert client.post("/v1/inspect", fixtures.turkish())[0] == 200
+
+
+def _bomb(size: int = 1 << 30) -> bytes:
+    """One page whose content stream is ~1 MiB deflated and `size` bytes
+    (spaces) inflated."""
+    comp = zlib.compressobj(9)
+    chunk = b" " * (1 << 20)
+    data = b"".join(comp.compress(chunk) for _ in range(size >> 20)) + comp.flush()
+    pdf = pikepdf.new()
+    contents = pdf.make_stream(b"")
+    contents.write(data, filter=pikepdf.Name.FlateDecode)
+    pdf.pages.append(
+        pikepdf.Page(
+            pikepdf.Dictionary(Type=pikepdf.Name.Page, MediaBox=pikepdf.Array([0, 0, 200, 200]), Contents=contents)
+        )
+    )
+    buf = io.BytesIO()
+    pdf.save(buf, compress_streams=False)
+    return buf.getvalue()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="RLIMIT_DATA is enforced on Linux")
+def test_inflating_pdf_hits_the_memory_cap(capped_client):
+    bomb = _bomb()
+    assert len(bomb) < 2 << 20
+    st, headers, body = capped_client.post("/v1/inspect", bomb)
+    assert st == 422 and problem(422, headers, body) == "pdf_unreadable"
+    assert capped_client.post("/v1/inspect", fixtures.turkish())[0] == 200
+
+
+def test_a_dead_pipe_is_not_the_client():
+    pool = Pool(size=1, timeout=10.0, queue_wait=5.0, memory_mib=0)
+    try:
+        w = pool._idle.get()
+
+        class DeadPipe:
+            def send(self, _):
+                raise BrokenPipeError
+
+            def close(self):
+                pass
+
+        real = w.conn
+        w.conn = DeadPipe()
+        pool._idle.put(w)
+        with pytest.raises(Problem) as e:
+            pool.run("inspect", fixtures.turkish())
+        assert e.value.code == "internal"
+        real.close()
+        assert pool._idle.qsize() == 1
+        assert pool.run("inspect", fixtures.turkish())["textCount"] == 3
+    finally:
+        pool.close()
+
+
+def test_a_worker_that_cannot_start_does_not_shrink_the_pool(monkeypatch):
+    pool = Pool(size=1, timeout=10.0, queue_wait=5.0, memory_mib=0)
+    try:
+        w = pool._idle.get()
+        pool._stop(w)
+        pool._idle.put(w)
+        start = pool._start
+
+        def fail():
+            raise OSError("no process")
+
+        monkeypatch.setattr(pool, "_start", fail)
+        with pytest.raises(Problem) as e:
+            pool.run("inspect", fixtures.turkish())
+        assert e.value.code == "internal"
+        assert pool._idle.qsize() == 1
+        monkeypatch.setattr(pool, "_start", start)
+        assert pool.run("inspect", fixtures.turkish())["textCount"] == 3
+        assert pool._idle.qsize() == 1
+    finally:
+        pool.close()
 
 
 def test_busy(small_client):

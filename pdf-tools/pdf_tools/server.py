@@ -9,6 +9,8 @@ import re
 import sys
 import threading
 import time
+import traceback
+from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
@@ -21,6 +23,13 @@ MAX_BODY_BYTES = MAX_PDF_BYTES + (1 << 20)
 # Requests being read or waiting for a worker at once; more are turned
 # away (each may hold a 20 MiB body).
 MAX_REQUESTS = 4
+
+# Only with test hooks on (the tests' pools): a job that sleeps, one whose
+# worker dies.
+_TEST_OPS = {"/v1/_sleep": "sleep", "/v1/_die": "die"}
+
+# The client went away or stalled: nothing to answer.
+_CLIENT_GONE = (BrokenPipeError, ConnectionResetError, TimeoutError)
 
 _OPS = {
     "/v1/inspect": "inspect",
@@ -136,6 +145,42 @@ class Handler(BaseHTTPRequestHandler):
         self._send(p.status, json.dumps(p.body()).encode(), "application/problem+json", extra)
         return p.status
 
+    def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
+        """The base class's errors (a bad request line, an unknown method,
+        headers too long) as problem+json too. A method other than GET and
+        POST is 405 method_not_allowed."""
+        status = int(code)
+        if status == 501:
+            status = 405
+        if status == 405:
+            pcode = "method_not_allowed"
+        elif 400 <= status < 500:
+            pcode = "bad_request"
+        else:
+            pcode = "internal"
+        body: dict[str, object] = {"type": "about:blank", "title": HTTPStatus(status).phrase, "status": status, "code": pcode}
+        if status == 405:
+            body["detail"] = "only GET and POST"
+        elif message:
+            body["detail"] = message
+        data = json.dumps(body).encode()
+        self.close_connection = True
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/problem+json")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Connection", "close")
+            if status == 405:
+                self.send_header("Allow", "GET, POST")
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(data)
+        except OSError:
+            return
+        print(f"{self.command or '-'} {status} code={pcode}", file=sys.stdout, flush=True)
+
     def do_GET(self) -> None:  # noqa: N802
         started = time.monotonic()
         if urlsplit(self.path).path == "/healthz":
@@ -149,7 +194,9 @@ class Handler(BaseHTTPRequestHandler):
         started = time.monotonic()
         url = urlsplit(self.path)
         op = _OPS.get(url.path)
-        if op is None and not (self.pool.test_hooks and url.path == "/v1/_sleep"):
+        if op is None and self.pool.test_hooks:
+            op = _TEST_OPS.get(url.path)
+        if op is None:
             self.close_connection = True
             status = self._problem(Problem("not_found", "no such path"))
             self._log(status, started, "not_found")
@@ -162,14 +209,22 @@ class Handler(BaseHTTPRequestHandler):
         size_in = 0
         try:
             try:
-                size_in, out, ctype = self._handle(op or "sleep", url.query)
+                size_in, out, ctype = self._handle(op, url.query)
             except Problem as p:
                 status = self._problem(p)
                 self._log(status, started, p.code, size_in)
                 return
+            except _CLIENT_GONE:
+                raise
+            except Exception:
+                traceback.print_exc(file=sys.stderr)
+                self.close_connection = True
+                status = self._problem(Problem("internal", "unexpected error"))
+                self._log(status, started, "internal", size_in)
+                return
             self._send(200, out, ctype)
             self._log(200, started, "", size_in, len(out))
-        except (BrokenPipeError, ConnectionResetError):
+        except _CLIENT_GONE:
             self.close_connection = True
         finally:
             self.admission.release()
@@ -217,8 +272,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise Problem("bad_request", "maxPx is not an integer") from None
         else:
             raise Problem("bad_request", "send multipart/form-data (file, params) or application/pdf")
-        if op == "sleep":
-            return len(body), self.pool.run("sleep", params.get("seconds", 1)), "text/plain"  # type: ignore[return-value]
+        if op in _TEST_OPS.values():
+            return len(body), self.pool.run(op, params.get("seconds", 1)), "text/plain"  # type: ignore[return-value]
         if not pdf:
             raise Problem("bad_request", "the file part is missing")
         if len(pdf) > MAX_PDF_BYTES:

@@ -66,6 +66,31 @@ def test_place_matrix(fit, expect):
     assert list(page.CropBox) == [0, 0, 595, 842]
 
 
+def test_core_golden_row_fit_height():
+    """core's internal/certificate/testdata/background-placement.json,
+    "fitHeight narrower x=0.5 y=0.5 scale=1": page 1123 × 794 px, source
+    1000 × 1500 px, want left 296.8333 top 0, 529.3333 × 794. In pt (× 0.75)
+    the source is a 750 × 1125 pt page."""
+    b = fixtures.Builder(750, 1125)
+    f = b.type0()
+    b.add("0 0 1 rg 0 0 750 1125 re f", "BT", f"/{f} 40 Tf 1 1 1 rg 1 0 0 1 100 560 Tm {b.hex('Dikey kaynak')} Tj", "ET")
+    data = b.build()
+    k = 0.75
+    rect = {"x": 296.8333 * k, "y": 0.0, "w": 529.3333 * k, "h": 794.0 * k}
+    out = ops.place(data, {"pageWidthPt": 1123 * k, "pageHeightPt": 794 * k, "rect": rect})
+    pdf, content = content_of(out)
+    a, b_, c, d, e, f_ = (float(v) for v in content.split()[8:14])
+    assert (b_, c) == (0.0, 0.0)
+    assert a == pytest.approx(529.3333 * k / 750, abs=1e-6) == pytest.approx(d, abs=1e-6)
+    assert e == pytest.approx(222.625, abs=1e-3) and f_ == pytest.approx(0.0, abs=1e-3)
+    assert list(pdf.pages[0].obj.MediaBox) == [0, 0, pytest.approx(842.25), pytest.approx(595.5)]
+    # Drawn: the blue source covers the box and nothing left or right of it.
+    img = render_rgb(out, 1.0)
+    assert img.getpixel((223 + 5, 300)) == (0, 0, 255)
+    assert img.getpixel((222 - 5, 300)) == (255, 255, 255)
+    assert img.getpixel((620 + 5, 300)) == (255, 255, 255)
+
+
 def test_place_matrix_numbers():
     w, h, cm = ops.place_matrix({"pageWidthPt": 600, "pageHeightPt": 400, "rect": {"x": 10, "y": 20, "w": 300, "h": 100}}, 150, 50)
     assert (w, h) == (600, 400)

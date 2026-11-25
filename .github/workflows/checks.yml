@@ -119,7 +119,7 @@ jobs:
           fi
           # Markdown and pdf-tools/ only: no Go changed, nothing to format,
           # vet or build.
-          if grep -v '\.md$' <<<"$changed" | grep -qv '^pdf-tools/'; then out lint=true; else out lint=false; fi
+          if grep -qvE '(\.md$|^pdf-tools/)' <<<"$changed"; then out lint=true; else out lint=false; fi
           if grep -qE '^(pdf-tools/|\.github/workflows/)' <<<"$changed"; then out pdf_tools=true; else out pdf_tools=false; fi
           go run ./scripts/ci/testplan affected <<<"$changed" > packages.txt
           echo "fast run: the tests of $(wc -l < packages.txt) packages"

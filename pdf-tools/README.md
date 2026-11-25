@@ -138,15 +138,16 @@ RFC 9457 `application/problem+json`, with a `code`:
 |---|---|---|
 | `bad_request` | 400 | missing file, bad params, unknown or not convertible span ids |
 | `not_found` | 404 | no such path |
+| `method_not_allowed` | 405 | a method other than GET and POST (`Allow: GET, POST`) |
 | `length_required` | 411 | no `Content-Length` |
 | `pdf_too_large` | 413 | over 20 MiB |
-| `pdf_unreadable` | 422 | not a PDF that can be read |
+| `pdf_unreadable` | 422 | not a PDF that can be read, or one that stopped its worker (over its memory cap, a crash in a library) |
 | `pdf_encrypted` | 422 | encrypted or password protected |
 | `pdf_pages` | 422 | more than one page (`pages` says how many) |
 | `pdf_timeout` | 422 | took longer than 15 s; the worker was stopped |
 | `strip_incomplete` | 422 | above |
 | `busy` | 503 | every worker busy for 10 s, or 4 requests already in; `Retry-After: 5` |
-| `internal` | 500 | a worker died |
+| `internal` | 500 | an unexpected error, or no worker could take the job |
 
 A 4xx is the input's: the same request fails again. A 5xx may pass later.
 
@@ -156,10 +157,15 @@ A 4xx is the input's: the same request fails again. A 5xx may pass later.
   is read); one page, except for `/v1/inspect`; at most 5000 spans.
 - Two worker processes do the PDF work; a job runs at most 15 s, then its
   worker is killed and replaced. A job waits at most 10 s for a worker; at
-  most 4 requests are in at once. A worker is replaced after 200 jobs.
+  most 4 requests are in at once. A worker is replaced after 200 jobs, and
+  when it dies; one that cannot be started is tried again on the next job.
+- Each worker's data (heap, private writable memory) is capped at 300 MiB
+  (`RLIMIT_DATA`): a PDF that inflates to gigabytes fails with
+  `pdf_unreadable` and the next request runs as usual.
 
 Environment: `PORT` (8080), `PDF_TOOLS_WORKERS` (2),
-`PDF_TOOLS_TIMEOUT_SECONDS` (15).
+`PDF_TOOLS_TIMEOUT_SECONDS` (15), `PDF_TOOLS_WORKER_MEMORY_MIB` (300; 0 turns
+the cap off).
 
 ## Running it
 
