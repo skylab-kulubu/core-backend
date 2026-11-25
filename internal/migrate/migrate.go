@@ -2105,13 +2105,21 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND conname IN ('event_form_mappings_names_check', 'event_form_mappings_ids_check')
 		) = 2
 		AND to_regclass('public.event_form_mappings_form_idx') IS NOT NULL`,
-	// Forms' decline of a Ticket's answer kept as a mark (K6,
-	// docs/form-response-tickets.md).
+	// Forms' decline of a Ticket's answer kept as a mark, with the
+	// answer's form and status (K6, docs/form-response-tickets.md).
 	20261127110000: `
-		SELECT 1 FROM information_schema.columns
-		WHERE table_schema = 'public' AND table_name = 'tickets' AND column_name = 'forms_rejected_at'`,
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'tickets'
+			  AND column_name IN ('forms_rejected_at', 'form_response_form_id', 'form_response_status')
+		) = 3
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.tickets') AND conname = 'tickets_form_response_status_check'
+		)`,
 	// Unticketed respondents (docs/form-respondents.md): the two tables, the
-	// two columns and form_pulls' collect kind, with no collect job parked
+	// Event's setting and form_pulls' collect kind, with no collect job parked
 	// by a rollback (the up migration runs again and puts it back).
 	20261127170000: `
 		SELECT 1
@@ -2119,9 +2127,8 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		AND to_regclass('public.respondent_ticket_jobs_open_idx') IS NOT NULL
 		AND (
 			SELECT count(*) FROM information_schema.columns
-			WHERE table_schema = 'public' AND ((table_name = 'events' AND column_name = 'form_responses_auto_ticket')
-				OR (table_name = 'tickets' AND column_name = 'forms_pending_at'))
-		) = 2
+			WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'form_responses_auto_ticket'
+		) = 1
 		AND EXISTS (
 			SELECT 1 FROM pg_constraint
 			WHERE conrelid = to_regclass('public.form_pulls') AND conname = 'form_pulls_kind_check'

@@ -17,9 +17,6 @@ SET LOCAL lock_timeout = '5s';
 --     (retention rule form_respondents).
 --   * events.form_responses_auto_ticket: "Otomatik bilet gönder", on by
 --     default as before; off, a newly accepted answer is kept as a row.
---   * tickets.forms_pending_at: the holder's answer went back to pending in
---     Forms ("Forms'ta yeniden onay bekliyor"); the Ticket stays. A later
---     acceptance or decline clears it.
 --   * form_pulls kind collect: the gathering of a form's answers when it is
 --     linked. It writes rows, never a Ticket.
 --   * respondent_ticket_jobs: an organizer's "send them all" (all: true),
@@ -56,8 +53,6 @@ CREATE INDEX IF NOT EXISTS event_form_respondents_user_idx ON event_form_respond
 CREATE INDEX IF NOT EXISTS event_form_respondents_email_idx ON event_form_respondents (email) WHERE email IS NOT NULL;
 
 ALTER TABLE events ADD COLUMN IF NOT EXISTS form_responses_auto_ticket BOOLEAN NOT NULL DEFAULT true;
-
-ALTER TABLE tickets ADD COLUMN IF NOT EXISTS forms_pending_at TIMESTAMPTZ;
 
 ALTER TABLE form_pulls DROP CONSTRAINT IF EXISTS form_pulls_kind_check;
 ALTER TABLE form_pulls ADD CONSTRAINT form_pulls_kind_check CHECK (kind IN ('backfill', 'catchup', 'collect'));

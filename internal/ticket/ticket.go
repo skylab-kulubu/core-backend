@@ -218,14 +218,11 @@ type Ticket struct {
 	// it. A later acceptance of the answer, or of the holder's next answer,
 	// clears it (docs/form-response-tickets.md).
 	FormsRejectedAt *time.Time `json:"formsRejectedAt,omitempty"`
-	// FormsPendingAt is when the answer that wrote the Ticket went back to
-	// pending in Forms (docs/form-respondents.md): the panel shows "Forms'ta
-	// yeniden onay bekliyor"; the Ticket stays. Its acceptance or decline
-	// clears it.
-	FormsPendingAt *time.Time `json:"formsPendingAt,omitempty"`
 	// FormsStatus is where the Ticket's forms answer stands in Forms, for
-	// the panel's badge: accepted, pending or declined (FormsStatusOf); left
-	// out for a Ticket no forms answer wrote (one an operator added).
+	// the panel's badge (docs/form-respondents.md): accepted, pending
+	// ("Forms'ta yeniden onay bekliyor"; the Ticket stays) or declined (K6,
+	// FormsRejectedAt); left out for a Ticket no forms answer wrote (one an
+	// operator added).
 	FormsStatus string `json:"formsStatus,omitempty"`
 	// OverCapacity is set on the answer of an operator's write that made
 	// the Ticket active past its Event's capacity (docs/event-capacity.md),

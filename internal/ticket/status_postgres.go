@@ -145,49 +145,38 @@ func (s *PostgresStore) FormResponseTickets(ctx context.Context, responseID uuid
 // Forms (FormsRejectionStore); false when it is cancelled or marked.
 func (s *PostgresStore) MarkFormsRejected(ctx context.Context, id uuid.UUID, at time.Time) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE tickets SET forms_rejected_at = $2, updated_at = now()
+		UPDATE tickets SET forms_rejected_at = $2, form_response_status = 'declined', updated_at = now()
 		WHERE id = $1 AND status <> 'cancelled' AND forms_rejected_at IS NULL`, id, at.UTC())
 	return tag.RowsAffected() > 0, err
 }
 
-// SetFormsPending marks or clears the pending mark of an answer's Tickets
-// (FormsPendingStore).
-func (s *PostgresStore) SetFormsPending(ctx context.Context, responseID uuid.UUID, at *time.Time) (int, error) {
-	if responseID == uuid.Nil {
-		return 0, nil
-	}
-	var tagRows int64
-	if at == nil {
-		tag, err := s.pool.Exec(ctx, `
-			UPDATE tickets SET forms_pending_at = NULL, updated_at = now()
-			WHERE form_response_id = $1 AND forms_pending_at IS NOT NULL`, responseID)
-		if err != nil {
-			return 0, err
-		}
-		tagRows = tag.RowsAffected()
-	} else {
-		tag, err := s.pool.Exec(ctx, `
-			UPDATE tickets SET forms_pending_at = $2, updated_at = now()
-			WHERE form_response_id = $1 AND status <> 'cancelled' AND forms_pending_at IS NULL`, responseID, at.UTC())
-		if err != nil {
-			return 0, err
-		}
-		tagRows = tag.RowsAffected()
-	}
-	return int(tagRows), nil
-}
-
-// KeepFormResponse binds a Ticket an answer wrote to the holder's newest
-// accepted answer and clears its mark (FormsRejectionStore).
-func (s *PostgresStore) KeepFormResponse(ctx context.Context, id, responseID uuid.UUID) error {
+// MarkFormResponsePending keeps that an answer waits for Forms' review
+// again (FormsRejectionStore).
+func (s *PostgresStore) MarkFormResponsePending(ctx context.Context, responseID uuid.UUID) error {
 	if responseID == uuid.Nil {
 		return nil
 	}
 	_, err := s.pool.Exec(ctx, `
-		UPDATE tickets SET form_response_id = $2, forms_rejected_at = NULL, updated_at = now()
-		WHERE id = $1 AND form_response_id IS NOT NULL AND status <> 'cancelled'
-		  AND (form_response_id <> $2 OR forms_rejected_at IS NOT NULL)`, id, responseID)
+		UPDATE tickets SET form_response_status = 'pending', forms_rejected_at = NULL, updated_at = now()
+		WHERE form_response_id = $1 AND status <> 'cancelled'
+		  AND (form_response_status IS DISTINCT FROM 'pending' OR forms_rejected_at IS NOT NULL)`, responseID)
 	return err
+}
+
+// KeepFormResponse keeps an accepted answer on a Ticket by the rule of
+// FormsRejectionStore.KeepFormResponse.
+func (s *PostgresStore) KeepFormResponse(ctx context.Context, id, formID, responseID uuid.UUID, userID *uuid.UUID) (bool, error) {
+	if responseID == uuid.Nil || formID == uuid.Nil {
+		return false, nil
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE tickets SET form_response_id = $3, form_response_form_id = $2, form_response_status = 'accepted',
+			forms_rejected_at = NULL, updated_at = now()
+		WHERE id = $1 AND status <> 'cancelled' AND form_response_id IS NOT NULL
+		  AND owner_id IS NOT DISTINCT FROM $4
+		  AND (form_response_id = $3
+		       OR (form_response_form_id = $2 AND form_response_status IN ('pending', 'declined')))`, id, formID, responseID, userID)
+	return tag.RowsAffected() > 0, err
 }
 
 // Reopen makes a cancelled Ticket active again, for an operator taking the

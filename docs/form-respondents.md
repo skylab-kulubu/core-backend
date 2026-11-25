@@ -38,8 +38,8 @@ cancelled nor ended.
 | Forms says | "Otomatik bilet gönder" on (default) | off | The person holds a Ticket |
 |---|---|---|---|
 | accepted (no review, or approved) | Ticket by the one rule | kept as an accepted row (`source` `new`) | no second Ticket; a row of theirs goes |
-| pending (or flagged) | kept as a pending row | same | the Ticket stays and is marked `formsPendingAt` ("Forms'ta yeniden onay bekliyor") |
-| pending → accepted | Ticket; the row goes | the row turns accepted | the pending mark goes |
+| pending (or flagged) | kept as a pending row | same | the Ticket stays; its `formsStatus` turns `pending` ("Forms'ta yeniden onay bekliyor"; `tickets.form_response_status`, #460) |
+| pending → accepted | Ticket; the row goes | the row turns accepted | `formsStatus` back to `accepted` |
 | declined, archived, returned | the answer's rows go | same | the Ticket is marked `formsRejectedAt`, not cancelled (K6, [form-response-tickets.md](form-response-tickets.md)) |
 
 - With the setting on, an accepted answer that still earns no Ticket (the
@@ -196,9 +196,10 @@ A copy keeps it ([event-copy.md](event-copy.md)).
 ## The Ticket's Forms status
 
 A Ticket's answer adds `formsStatus` (`accepted`, `pending`, `declined`; left
-out for a Ticket no forms answer wrote) and `formsPendingAt` beside
-`formsRejectedAt`, for the panel's two badges (Forms status and Ticket status
-are apart).
+out for a Ticket no forms answer wrote) beside `formsRejectedAt`, for the
+panel's two badges (Forms status and Ticket status are apart). It reads
+`tickets.form_response_status` (K6, #460; `declined` whenever
+`formsRejectedAt` is set, `accepted` for an answer kept before that column).
 
 ## Data
 
@@ -209,7 +210,6 @@ Migration `20261127170000`:
 | `event_form_respondents` | `event_id`, `form_id`, `form_response_id` (one row an answer on an Event), `user_id` for a signed-in person (then no name or address), else `first_name`, `last_name`, `email`; `submitted_at`, `forms_status`, `source`, `created_at` | until the person holds a Ticket, the answer is declined, the Event lets the form go (same transaction), account erasure, or two years after the Event's end (retention rule `form_respondents`) |
 | `respondent_ticket_jobs` | a send-all job: Event, form, the organizer's subject, state, counts, the last row handled | 30 days after it finished |
 | `events.form_responses_auto_ticket` | the setting | with the Event |
-| `tickets.forms_pending_at` | the pending mark | with the Ticket |
 | `form_pulls.kind = 'collect'` | the gathering | until done, at most a week |
 
 Never an answer's text, an unmapped answer or anything else of Forms.

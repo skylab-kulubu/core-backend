@@ -14,6 +14,7 @@ import (
 // (docs/form-respondents.md): the answer, and who it names, a signed-in
 // person or a guest.
 type FormRespondent struct {
+	FormID     uuid.UUID
 	ResponseID uuid.UUID
 	UserID     *uuid.UUID
 	Guest      *GuestInfo
@@ -92,7 +93,7 @@ func (s *service) AdmitFormRespondent(ctx context.Context, eventID uuid.UUID, r 
 		userID = nil
 	}
 	got, written, err := s.admitFormAnswer(ctx, eventID, userID, guest, Admission{Waitlist: true, FormResponse: r.ResponseID})
-	if err := s.keepAcceptedAnswer(ctx, got, r.ResponseID); err != nil {
+	if err := s.keepAcceptedAnswer(ctx, got, FormResponse{FormID: r.FormID, ResponseID: r.ResponseID, UserID: userID}); err != nil {
 		return "", err
 	}
 	switch {

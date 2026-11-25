@@ -130,14 +130,14 @@ func TestTheDecisionTableWithAutoTicketOn(t *testing.T) {
 	// Accepted → pending (the reviewer took it back): the Ticket stays,
 	// marked; accepted again clears the mark.
 	w.report(t, first, ticket.FormResponsePending, "ada@example.com")
-	if n := w.count(t, `SELECT count(*) FROM tickets WHERE form_response_id = $1 AND forms_pending_at IS NOT NULL AND status = 'active'`, first); n != 1 {
+	if n := w.count(t, `SELECT count(*) FROM tickets WHERE form_response_id = $1 AND form_response_status = 'pending' AND status = 'active'`, first); n != 1 {
 		t.Fatalf("pending mark %d", n)
 	}
 	if n := len(w.rows(t)); n != 0 {
 		t.Fatalf("a ticket holder was kept as a respondent (%d)", n)
 	}
 	w.report(t, first, ticket.FormResponseAccepted, "ada@example.com")
-	if n := w.count(t, `SELECT count(*) FROM tickets WHERE form_response_id = $1 AND forms_pending_at IS NOT NULL`, first); n != 0 {
+	if n := w.count(t, `SELECT count(*) FROM tickets WHERE form_response_id = $1 AND form_response_status = 'pending'`, first); n != 0 {
 		t.Fatalf("the pending mark stayed %d", n)
 	}
 	listed, err := w.svc.ListByEventStatus(context.Background(), w.editor, w.ev.ID, nil)

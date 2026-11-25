@@ -89,9 +89,10 @@ type RespondentStore interface {
 	// Ticketed reports whether the person of the row holds a Ticket on its
 	// Event (as Keep reads it).
 	Ticketed(ctx context.Context, row RespondentRow) (bool, error)
-	// ClearPending clears the pending mark of the answer's Tickets
-	// (tickets.forms_pending_at): the answer is accepted again.
-	ClearPending(ctx context.Context, responseID uuid.UUID) error
+	// AcceptAgain keeps that the answer is accepted again on its Tickets
+	// marked pending (tickets.form_response_status), when the Ticket rule
+	// did not run (every Event's "Otomatik bilet gönder" off).
+	AcceptAgain(ctx context.Context, responseID uuid.UUID) error
 	// Counts is the preview's input over the rows selected (ids, or every
 	// row of the Event, of formID when set): accepted rows whose person
 	// holds no Ticket, accepted rows whose person holds one, pending rows.
@@ -327,8 +328,8 @@ func (s *PostgresRespondents) Counts(ctx context.Context, eventID uuid.UUID, ids
 	return candidates, ticketed, pending, err
 }
 
-func (s *PostgresRespondents) ClearPending(ctx context.Context, responseID uuid.UUID) error {
-	_, err := s.pool.Exec(ctx, `UPDATE tickets SET forms_pending_at = NULL, updated_at = now()
-		WHERE form_response_id = $1 AND forms_pending_at IS NOT NULL`, responseID)
+func (s *PostgresRespondents) AcceptAgain(ctx context.Context, responseID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `UPDATE tickets SET form_response_status = 'accepted', updated_at = now()
+		WHERE form_response_id = $1 AND form_response_status = 'pending' AND status <> 'cancelled'`, responseID)
 	return err
 }

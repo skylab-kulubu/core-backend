@@ -381,16 +381,16 @@ func (h *TicketHandler) logFormResponse(c fiber.Ctx, r ticket.FormResponse, resu
 		outcome = "failed"
 	}
 	payload, marshalErr := json.Marshal(struct {
-		Event            string `json:"event"`
-		CorrelationID    string `json:"correlation_id"`
-		FormID           string `json:"form_id"`
-		ResponseID       string `json:"response_id"`
-		Status           string `json:"status"`
-		Outcome          string `json:"outcome"`
-		TicketsWritten   int    `json:"tickets_written"`
-		TicketsCancelled int    `json:"tickets_cancelled"`
-		ListingEvents    int    `json:"listing_events"`
-	}{"form_response", requestid.FromContext(c), r.FormID.String(), r.ResponseID.String(), status, outcome, result.TicketsWritten, result.TicketsCancelled, result.ListingEvents})
+		Event          string `json:"event"`
+		CorrelationID  string `json:"correlation_id"`
+		FormID         string `json:"form_id"`
+		ResponseID     string `json:"response_id"`
+		Status         string `json:"status"`
+		Outcome        string `json:"outcome"`
+		TicketsWritten int    `json:"tickets_written"`
+		TicketsMarked  int    `json:"tickets_marked"`
+		ListingEvents  int    `json:"listing_events"`
+	}{"form_response", requestid.FromContext(c), r.FormID.String(), r.ResponseID.String(), status, outcome, result.TicketsWritten, result.TicketsMarked, result.ListingEvents})
 	if marshalErr == nil {
 		h.logger.Print(string(payload))
 	}

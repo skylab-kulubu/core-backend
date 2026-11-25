@@ -28,6 +28,9 @@ type MemoryStore struct {
 	// formResponses is each Ticket's forms answer (Admission.FormResponse),
 	// as tickets.form_response_id.
 	formResponses map[uuid.UUID]uuid.UUID
+	// formAnswers is the form and Forms' status of each Ticket's forms
+	// answer, as tickets.form_response_form_id and form_response_status.
+	formAnswers map[uuid.UUID]formAnswer
 	// CancelMails counts the cancellation mails CancelTelling would queue,
 	// by Ticket (the memory store sends none).
 	CancelMails map[uuid.UUID]int
@@ -57,6 +60,7 @@ func NewMemoryStore() *MemoryStore {
 		seq:      make(map[uuid.UUID]int),
 
 		formResponses: make(map[uuid.UUID]uuid.UUID),
+		formAnswers:   make(map[uuid.UUID]formAnswer),
 		CancelMails:   make(map[uuid.UUID]int),
 	}
 }
@@ -619,6 +623,7 @@ func (s *MemoryStore) CreateAdmitted(ctx context.Context, t Ticket, a Admission)
 	}
 	if a.FormResponse != uuid.Nil {
 		s.formResponses[created.ID] = a.FormResponse
+		delete(s.formAnswers, created.ID)
 	}
 	created.OverCapacity = over
 	return created, nil
@@ -673,6 +678,7 @@ func (s *MemoryStore) ReopenAdmitted(ctx context.Context, id uuid.UUID, a Admiss
 	} else {
 		delete(s.formResponses, id)
 	}
+	delete(s.formAnswers, id)
 	got := s.withCheckInsLocked(t)
 	got.OverCapacity = over
 	return got, true, nil
@@ -761,6 +767,12 @@ func (s *MemoryStore) promoteLocked(ctx context.Context, eventID uuid.UUID) erro
 
 var _ CapacityStore = (*MemoryStore)(nil)
 
+// formAnswer is a Ticket's forms answer's form and Forms' status of it.
+type formAnswer struct {
+	form   uuid.UUID
+	status FormResponseStatus
+}
+
 // MarkFormsRejected is the database's.
 func (s *MemoryStore) MarkFormsRejected(_ context.Context, id uuid.UUID, at time.Time) (bool, error) {
 	s.mu.Lock()
@@ -775,47 +787,50 @@ func (s *MemoryStore) MarkFormsRejected(_ context.Context, id uuid.UUID, at time
 	at = at.UTC()
 	t.FormsRejectedAt = &at
 	s.byID[id] = t
+	answer := s.formAnswers[id]
+	answer.status = FormResponseDeclined
+	s.formAnswers[id] = answer
 	return true, nil
 }
 
-// SetFormsPending is the database's.
-func (s *MemoryStore) SetFormsPending(_ context.Context, responseID uuid.UUID, at *time.Time) (int, error) {
+// MarkFormResponsePending is the database's.
+func (s *MemoryStore) MarkFormResponsePending(_ context.Context, responseID uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if responseID == uuid.Nil {
-		return 0, nil
-	}
-	changed := 0
 	for id, r := range s.formResponses {
 		t, ok := s.byID[id]
-		if r != responseID || !ok {
+		if r != responseID || !ok || t.StatusOf() == StatusCancelled {
 			continue
 		}
-		switch {
-		case at == nil && t.FormsPendingAt != nil:
-			t.FormsPendingAt = nil
-		case at != nil && t.FormsPendingAt == nil && t.StatusOf() != StatusCancelled:
-			v := at.UTC()
-			t.FormsPendingAt = &v
-		default:
-			continue
-		}
+		t.FormsRejectedAt = nil
 		s.byID[id] = t
-		changed++
+		answer := s.formAnswers[id]
+		answer.status = FormResponsePending
+		s.formAnswers[id] = answer
 	}
-	return changed, nil
+	return nil
 }
 
 // KeepFormResponse is the database's.
-func (s *MemoryStore) KeepFormResponse(_ context.Context, id, responseID uuid.UUID) error {
+func (s *MemoryStore) KeepFormResponse(_ context.Context, id, formID, responseID uuid.UUID, userID *uuid.UUID) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.byID[id]
-	if _, kept := s.formResponses[id]; !ok || !kept || t.StatusOf() == StatusCancelled || responseID == uuid.Nil {
-		return nil
+	bound, kept := s.formResponses[id]
+	if !ok || !kept || t.StatusOf() == StatusCancelled || responseID == uuid.Nil || formID == uuid.Nil {
+		return false, nil
+	}
+	if (t.OwnerID == nil) != (userID == nil) || (t.OwnerID != nil && *t.OwnerID != *userID) {
+		return false, nil
+	}
+	answer := s.formAnswers[id]
+	takeOver := answer.form == formID && (answer.status == FormResponsePending || answer.status == FormResponseDeclined)
+	if bound != responseID && !takeOver {
+		return false, nil
 	}
 	s.formResponses[id] = responseID
+	s.formAnswers[id] = formAnswer{form: formID, status: FormResponseAccepted}
 	t.FormsRejectedAt = nil
 	s.byID[id] = t
-	return nil
+	return true, nil
 }

@@ -201,9 +201,10 @@ func (s *Respondents) Route(ctx context.Context, record RecordFunc, report ticke
 		if result, err = RecordRespondents(ctx, record, withOn, respondents); err != nil {
 			return result, err
 		}
-	} else if err := s.Store.ClearPending(ctx, report.ResponseID); err != nil {
+	} else if err := s.Store.AcceptAgain(ctx, report.ResponseID); err != nil {
 		// Every Event has the setting off: the rule does not run, so the
-		// pending mark an earlier report left on a Ticket goes here.
+		// pending status an earlier report left on a Ticket turns accepted
+		// here.
 		return result, err
 	}
 	if result.Outcome == ticket.FormResponsePersonUnavailable || result.Outcome == ticket.FormResponseFeedback {
@@ -458,7 +459,7 @@ func (s *Respondents) send(ctx context.Context, eventID uuid.UUID, rows []Respon
 			res.Skipped++
 			continue
 		}
-		r := ticket.FormRespondent{ResponseID: row.ResponseID, UserID: row.UserID}
+		r := ticket.FormRespondent{FormID: row.FormID, ResponseID: row.ResponseID, UserID: row.UserID}
 		if row.UserID == nil {
 			r.Guest = &ticket.GuestInfo{FirstName: row.FirstName, LastName: row.LastName, Email: row.Email}
 		}

@@ -84,34 +84,92 @@ func TestFormDeclineMarksTheAnswersTicketAndAcceptanceClearsIt(t *testing.T) {
 }
 
 // Forms asks for a correction (Returned, sent as declined) and the person
-// sends a new answer, which is accepted: the Ticket follows the new answer.
-// The old answer's decline, in either order, leaves it unmarked.
-func TestACorrectedAnswerKeepsTheTicket(t *testing.T) {
+// sends a corrected answer to the same form, which is accepted: the Ticket
+// follows the corrected answer and loses its mark; the old answer's decline
+// again reaches nothing; the corrected answer's decline marks it. Pending
+// again works as a decline does here.
+func TestACorrectedAnswerTakesTheTicketOver(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	for _, declineFirst := range []bool{true, false} {
+	for _, how := range []ticket.FormResponseStatus{ticket.FormResponseDeclined, ticket.FormResponsePending} {
 		e := newDeclineEnv(t)
 		first := acceptedGuest(e.formID, "Ada", "Lovelace", "ada@example.com")
 		second := acceptedGuest(e.formID, "Ada", "Lovelace", "ada@example.com")
 		e.report(t, first)
-		if declineFirst {
-			e.report(t, declined(first))
-			e.report(t, second)
-		} else {
-			e.report(t, second)
-			if got := e.report(t, declined(first)); got.TicketsMarked != 0 {
-				t.Fatalf("the old answer's late decline %+v", got)
-			}
+		again := first
+		again.Status = how
+		e.report(t, again)
+		if got := e.report(t, second); got.TicketsWritten != 0 {
+			t.Fatalf("%s: corrected %+v", how, got)
 		}
 		tk := storedGuest(t, e.svc, e.ev, "ada@example.com")
 		stored, _ := e.store.Get(ctx, tk.ID)
 		if stored.StatusOf() != ticket.StatusActive || stored.FormsRejectedAt != nil {
-			t.Fatalf("decline first %t: %+v", declineFirst, stored)
+			t.Fatalf("%s: %+v", how, stored)
 		}
-		// The new answer's decline reaches it.
+		if got := e.report(t, declined(first)); got.TicketsMarked != 0 {
+			t.Fatalf("%s: the old answer's decline %+v", how, got)
+		}
 		if got := e.report(t, declined(second)); got.TicketsMarked != 1 {
-			t.Fatalf("decline first %t, the new answer's decline %+v", declineFirst, got)
+			t.Fatalf("%s: the corrected answer's decline %+v", how, got)
 		}
+	}
+}
+
+// While the holder's answer stands, another accepted answer to the same
+// form with the holder's e-mail (anyone may type it into a form without
+// sign-in) takes nothing over: its decline marks nothing, the holder's
+// decline still marks the Ticket.
+func TestSomeoneElsesAnswerWithTheHoldersEmailTakesNothing(t *testing.T) {
+	t.Parallel()
+	e := newDeclineEnv(t)
+	holder := acceptedGuest(e.formID, "Ada", "Lovelace", "ada@example.com")
+	other := acceptedGuest(e.formID, "Eve", "Forged", "ada@example.com")
+	e.report(t, holder)
+	if got := e.report(t, other); got.TicketsWritten != 0 {
+		t.Fatalf("other %+v", got)
+	}
+	if got := e.report(t, declined(other)); got.TicketsMarked != 0 {
+		t.Fatalf("the other answer's decline %+v", got)
+	}
+	if got := e.report(t, declined(holder)); got.TicketsMarked != 1 {
+		t.Fatalf("the holder's decline %+v", got)
+	}
+	if tk := storedGuest(t, e.svc, e.ev, "ada@example.com"); tk.GuestFirstName != "Ada" {
+		t.Fatalf("renamed %+v", tk)
+	}
+}
+
+// An extra form's accepted answer never takes over the application's
+// Ticket: the application's decline still marks it, the extra form's does
+// not.
+func TestAnExtraFormsAnswerTakesNothingOver(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	events := event.NewMemoryStore()
+	store := ticket.NewMemoryStore()
+	svc := ticket.NewService(store, events, authz.NewAuthorizer(authz.DefaultPolicy()))
+	application, extra := uuid.New(), uuid.New()
+	ev := seedFormEvent(t, events, formAddress(application), event.EventFormLink{URL: formAddress(extra)})
+	e := declineEnv{events: events, store: store, svc: svc, ev: ev, formID: application}
+	main := acceptedGuest(application, "Ada", "Lovelace", "ada@example.com")
+	more := acceptedGuest(extra, "Ada", "Lovelace", "ada@example.com")
+	e.report(t, main)
+	if got := e.report(t, more); got.TicketsWritten != 0 {
+		t.Fatalf("extra %+v", got)
+	}
+	if got := e.report(t, declined(more)); got.TicketsMarked != 0 {
+		t.Fatalf("the extra form's decline %+v", got)
+	}
+	if got := e.report(t, declined(main)); got.TicketsMarked != 1 {
+		t.Fatalf("the application's decline %+v", got)
+	}
+	// Even with the application's answer declined, the extra form's next
+	// acceptance does not take the Ticket over.
+	e.report(t, acceptedGuest(extra, "Ada", "Lovelace", "ada@example.com"))
+	tk := storedGuest(t, svc, ev, "ada@example.com")
+	if stored, _ := store.Get(ctx, tk.ID); stored.FormsRejectedAt == nil {
+		t.Fatalf("an extra form's answer cleared the mark: %+v", stored)
 	}
 }
 
@@ -211,5 +269,27 @@ func TestFormDeclineLeavesAnOldTicket(t *testing.T) {
 	stored, _ := e.store.Get(ctx, old.ID)
 	if stored.StatusOf() != ticket.StatusActive || stored.FormsRejectedAt != nil {
 		t.Fatalf("%+v", stored)
+	}
+}
+
+// A signed-in holder's Ticket is kept only for that holder's answers: the
+// store refuses another person's, and a guest's.
+func TestKeepFormResponseNeedsTheHolder(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	e := newDeclineEnv(t)
+	owner, answer := uuid.New(), uuid.New()
+	written, err := e.store.CreateAdmitted(ctx, ticket.Ticket{EventID: e.ev.ID, TicketType: ticket.Registered, OwnerID: &owner}, ticket.Admission{FormResponse: answer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stranger := uuid.New()
+	for name, who := range map[string]*uuid.UUID{"another person": &stranger, "a guest": nil} {
+		if kept, err := e.store.KeepFormResponse(ctx, written.ID, e.formID, answer, who); err != nil || kept {
+			t.Fatalf("%s: %t %v", name, kept, err)
+		}
+	}
+	if kept, err := e.store.KeepFormResponse(ctx, written.ID, e.formID, answer, &owner); err != nil || !kept {
+		t.Fatalf("the holder: %t %v", kept, err)
 	}
 }

@@ -134,11 +134,6 @@ const (
 	// Tickets it had written (Ticket.FormsRejectedAt; K6): the panel warns
 	// and offers to cancel them. A 204 still.
 	FormResponseFormsRejected FormResponseOutcome = "forms_rejected"
-	// FormResponseFormsPending is a pending answer whose Tickets it had
-	// written are marked waiting for Forms' review again
-	// (Ticket.FormsPendingAt, docs/form-respondents.md): the Ticket stays.
-	// A 204 still.
-	FormResponseFormsPending FormResponseOutcome = "forms_pending"
 )
 
 // FormResponseResult is what recording a report did.
@@ -220,16 +215,17 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		return s.recordFeedbackAnswer(ctx, r)
 	}
 	if r.Status == FormResponseDeclined {
-		result, err := s.declineFormResponse(ctx, events, r)
-		if err == nil {
-			// Forms' decline is the answer's state now: the rejection
-			// mark, never the pending one.
-			_, err = s.setFormsPending(ctx, r.ResponseID, nil)
-		}
-		return result, err
+		return s.declineFormResponse(ctx, events, r)
 	}
 	if r.Status != FormResponseAccepted {
-		return s.pendFormResponse(ctx, r)
+		// Pending again: the answer's Tickets lose their mark and may be
+		// taken over by the holder's next accepted answer to the form.
+		if marks, ok := s.tickets.(FormsRejectionStore); ok && r.ResponseID != uuid.Nil {
+			if err := marks.MarkFormResponsePending(ctx, r.ResponseID); err != nil {
+				return FormResponseResult{}, err
+			}
+		}
+		return FormResponseResult{Outcome: FormResponseNotAccepted}, nil
 	}
 	var guest GuestInfo
 	switch {
@@ -309,7 +305,7 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		if err := settledFormResponse(err); err != nil {
 			return FormResponseResult{}, err
 		}
-		if err := s.keepAcceptedAnswer(ctx, got, r.ResponseID); err != nil {
+		if err := s.keepAcceptedAnswer(ctx, got, r); err != nil {
 			return FormResponseResult{}, err
 		}
 		if written {
@@ -322,10 +318,6 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		result.Outcome = FormResponseWaitlisted
 	case full > 0:
 		result.Outcome = FormResponseEventFull
-	}
-	// Accepted again: a pending mark the answer's Tickets carried goes.
-	if _, err := s.setFormsPending(ctx, r.ResponseID, nil); err != nil {
-		return FormResponseResult{}, err
 	}
 	return result, nil
 }
@@ -350,33 +342,6 @@ func (s *service) admitFormAnswer(ctx context.Context, eventID uuid.UUID, userID
 	}
 	applied, err := s.writeGuest(ctx, eventID, guest, false, admission)
 	return applied.Ticket, err == nil && applied.Result == GuestCreated, err
-}
-
-// pendFormResponse marks the Tickets a pending answer wrote or keeps
-// (tickets.form_response_id) as waiting for Forms' review again: an
-// accepted answer the form's team took back (docs/form-respondents.md). The
-// Ticket stays; nobody is mailed. The outcome is FormResponseFormsPending
-// when any was marked, else FormResponseNotAccepted.
-func (s *service) pendFormResponse(ctx context.Context, r FormResponse) (FormResponseResult, error) {
-	now := time.Now().UTC()
-	marked, err := s.setFormsPending(ctx, r.ResponseID, &now)
-	if err != nil {
-		return FormResponseResult{}, err
-	}
-	if marked > 0 {
-		return FormResponseResult{Outcome: FormResponseFormsPending}, nil
-	}
-	return FormResponseResult{Outcome: FormResponseNotAccepted}, nil
-}
-
-// setFormsPending marks (at set) or clears (nil) the pending mark of the
-// Tickets of the answer responseID; a store without it does nothing.
-func (s *service) setFormsPending(ctx context.Context, responseID uuid.UUID, at *time.Time) (int, error) {
-	store, ok := s.tickets.(FormsPendingStore)
-	if !ok || responseID == uuid.Nil {
-		return 0, nil
-	}
-	return store.SetFormsPending(ctx, responseID, at)
 }
 
 // declineFormResponse marks what a declined answer had earned (Yusuf, K6
@@ -428,7 +393,24 @@ func (s *service) declineFormResponse(ctx context.Context, events []event.Event,
 	return result, nil
 }
 
-// onlyEvents keeps the Events whose id is one of ids (FormResponse.GuestEvents).
+// keepAcceptedAnswer keeps an accepted answer on a Ticket it found or wrote
+// (FormsRejectionStore.KeepFormResponse): the Ticket's own answer accepted
+// again clears its mark; a newer answer of the same holder to the same form
+// takes the Ticket over only when the Ticket's answer is no longer accepted
+// (a correction asked, Forms' Returned sent as declined, or pending again).
+// An extra form's answer, or anyone typing the holder's e-mail while the
+// holder's answer stands, never takes it over.
+func (s *service) keepAcceptedAnswer(ctx context.Context, t Ticket, r FormResponse) error {
+	marks, ok := s.tickets.(FormsRejectionStore)
+	if !ok || t.ID == uuid.Nil || r.ResponseID == uuid.Nil || t.StatusOf() == StatusCancelled {
+		return nil
+	}
+	_, err := marks.KeepFormResponse(ctx, t.ID, r.FormID, r.ResponseID, r.UserID)
+	return err
+}
+
+// onlyEvents keeps the Events whose id is one of ids (FormResponse.GuestEvents,
+// OnlyEvents).
 func onlyEvents(listing []event.Event, ids []uuid.UUID) []event.Event {
 	out := listing[:0:0]
 	for _, ev := range listing {
@@ -440,19 +422,6 @@ func onlyEvents(listing []event.Event, ids []uuid.UUID) []event.Event {
 		}
 	}
 	return out
-}
-
-// keepAcceptedAnswer makes an accepted answer the one a Ticket it found or
-// wrote keeps (FormsRejectionStore.KeepFormResponse), clearing a mark an
-// earlier answer's decline left: a corrected answer approved after its
-// first one was declined (Forms' Returned) keeps the Ticket unmarked, and
-// the old answer's decline arriving late no longer reaches it.
-func (s *service) keepAcceptedAnswer(ctx context.Context, t Ticket, responseID uuid.UUID) error {
-	marks, ok := s.tickets.(FormsRejectionStore)
-	if !ok || t.ID == uuid.Nil || responseID == uuid.Nil || t.StatusOf() == StatusCancelled {
-		return nil
-	}
-	return marks.KeepFormResponse(ctx, t.ID, responseID)
 }
 
 func listsEvent(events []event.Event, id uuid.UUID) bool {

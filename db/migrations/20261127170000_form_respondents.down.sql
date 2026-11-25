@@ -1,7 +1,7 @@
 SET LOCAL lock_timeout = '5s';
 
 -- Rolling back keeps every row: event_form_respondents, respondent_ticket_jobs,
--- events.form_responses_auto_ticket and tickets.forms_pending_at stay
+-- and events.form_responses_auto_ticket stay
 -- (the release before neither reads nor writes them, and the next release
 -- reads them again: the up migration finds them, IF NOT EXISTS).
 --
@@ -12,7 +12,6 @@ SET LOCAL lock_timeout = '5s';
 -- back. To remove the new objects for good, by hand:
 --   DROP TABLE respondent_ticket_jobs; DROP TABLE event_form_respondents;
 --   ALTER TABLE events DROP COLUMN form_responses_auto_ticket;
---   ALTER TABLE tickets DROP COLUMN forms_pending_at;
 --   DELETE FROM form_pulls WHERE kind = 'collect';
 UPDATE form_pulls SET next_attempt_at = 'infinity' WHERE kind = 'collect';
 

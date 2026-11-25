@@ -46,4 +46,10 @@ func TestTicketFormsRejectedMigration(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT forms_rejected_at IS NOT NULL FROM tickets WHERE id = $1`, ticketID).Scan(&marked); err != nil || !marked {
 		t.Fatalf("after down: marked %t, %v", marked, err)
 	}
+	if _, err := pool.Exec(ctx, `UPDATE tickets SET form_response_status = 'archived' WHERE id = $1`, ticketID); err == nil {
+		t.Fatal("a status other than accepted, pending or declined was kept")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tickets SET form_response_status = 'pending', form_response_form_id = $2 WHERE id = $1`, ticketID, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
 }
