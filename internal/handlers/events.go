@@ -423,6 +423,9 @@ type copyBody struct {
 	// OwnerTeam is the copy's Owner team (ticket 16); none is the
 	// source's.
 	OwnerTeam string `json:"ownerTeam"`
+	// IncludeCertificateTemplate false leaves the certificate template
+	// out (its Event template and binding); none copies it.
+	IncludeCertificateTemplate *bool `json:"includeCertificateTemplate"`
 }
 
 // Copy copies an Event's structure into a new draft: POST
@@ -450,6 +453,7 @@ func (h *EventHandler) Copy(c fiber.Ctx) error {
 		IncludeCompetitions: body.IncludeCompetitions,
 		OwnerTeam:           body.OwnerTeam,
 
+		SkipCertificateTemplate:     body.IncludeCertificateTemplate != nil && !*body.IncludeCertificateTemplate,
 		IncludeExternalRegistration: body.IncludeExternalRegistration,
 		IncludeAttendeeNote:         body.IncludeAttendeeNote,
 	})

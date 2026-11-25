@@ -399,6 +399,12 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 	if tag.RowsAffected() == 0 {
 		return Event{}, ErrNotFound
 	}
+	// The Event's template follows its Owner team, in the same
+	// transaction (docs/certificate-event-templates.md#copy-and-team-change).
+	if _, err := tx.Exec(ctx, `UPDATE certificate_templates SET owner_team = upper(btrim($2))
+		WHERE event_id = $1 AND owner_team IS DISTINCT FROM upper(btrim($2))`, e.ID, e.OwnerTeam); err != nil {
+		return Event{}, err
+	}
 	if err := s.noticeChanges(ctx, tx, e, before); err != nil {
 		return Event{}, err
 	}
