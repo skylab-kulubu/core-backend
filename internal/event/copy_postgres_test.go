@@ -220,6 +220,65 @@ func TestPostgresCopySkips(t *testing.T) {
 	}
 }
 
+// The external registration link and the attendee note are written only
+// when asked for; an older client's copy has neither.
+func TestPostgresCopyExternalRegistrationAndAttendeeNote(t *testing.T) {
+	d := newCopyDatabase(t)
+	ctx := context.Background()
+	if _, err := d.pool.Exec(ctx, `UPDATE events SET external_registration_url = 'https://forms.office.com/r/abc', attendee_note = 'Wi-Fi: SKYLAB' WHERE id = $1`, d.source.ID); err != nil {
+		t.Fatal(err)
+	}
+	stored := func(id uuid.UUID) (link, note string) {
+		t.Helper()
+		if err := d.pool.QueryRow(ctx, `SELECT external_registration_url, attendee_note FROM events WHERE id = $1`, id).Scan(&link, &note); err != nil {
+			t.Fatal(err)
+		}
+		return link, note
+	}
+	in := copyIn("İkisi de", "2027-03-13T19:00:00+03:00")
+	in.IncludeExternalRegistration, in.IncludeAttendeeNote = true, true
+	got, _, err := d.svc.Copy(ctx, d.yk, d.source.ID, in)
+	if err != nil || len(got.Skipped) != 0 || got.Event.ExternalRegistrationURL != "https://forms.office.com/r/abc" {
+		t.Fatalf("both: %v %v %q", got.Skipped, err, got.Event.ExternalRegistrationURL)
+	}
+	if link, note := stored(got.Event.ID); link != "https://forms.office.com/r/abc" || note != "Wi-Fi: SKYLAB" {
+		t.Fatalf("both stored: %q %q", link, note)
+	}
+	got, _, err = d.svc.Copy(ctx, d.yk, d.source.ID, copyIn("Eski istemci", "2027-03-13T19:00:00+03:00"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link, note := stored(got.Event.ID); link != "" || note != "" {
+		t.Fatalf("not asked, stored: %q %q", link, note)
+	}
+	in = copyIn("Yalnız not", "2027-03-13T19:00:00+03:00")
+	in.IncludeAttendeeNote = true
+	got, _, err = d.svc.Copy(ctx, d.yk, d.source.ID, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link, note := stored(got.Event.ID); link != "" || note != "Wi-Fi: SKYLAB" {
+		t.Fatalf("note only, stored: %q %q", link, note)
+	}
+	// A refused note is named and not written.
+	policy := authz.DefaultPolicy()
+	policy.EventPermissions["WEBLAB"] = map[authz.Action][]authz.Level{
+		authz.Create: {authz.LevelLeader, authz.LevelMember},
+		authz.Update: {authz.LevelLeader},
+		authz.Delete: {authz.LevelLeader},
+	}
+	member := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	in = copyIn("Üye", "2027-03-13T19:00:00+03:00")
+	in.IncludeExternalRegistration, in.IncludeAttendeeNote = true, true
+	got, _, err = event.NewService(d.store, authz.NewAuthorizer(policy)).Copy(ctx, member, d.source.ID, in)
+	if err != nil || !slices.Contains(got.Skipped, event.SkippedAttendeeNote) {
+		t.Fatalf("member: %v %v", got.Skipped, err)
+	}
+	if link, note := stored(got.Event.ID); link != "https://forms.office.com/r/abc" || note != "" {
+		t.Fatalf("member stored: %q %q", link, note)
+	}
+}
+
 // A failure halfway leaves nothing behind: no Event, no day, no Session.
 func TestPostgresCopyIsOneTransaction(t *testing.T) {
 	d := newCopyDatabase(t)

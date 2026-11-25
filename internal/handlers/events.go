@@ -415,6 +415,11 @@ type copyBody struct {
 	StartDate           *time.Time `json:"startDate"`
 	IncludeDoorStaff    bool       `json:"includeDoorStaff"`
 	IncludeCompetitions bool       `json:"includeCompetitions"`
+	// IncludeExternalRegistration and IncludeAttendeeNote copy the
+	// source's external registration link and attendee note; none copies
+	// neither.
+	IncludeExternalRegistration bool `json:"includeExternalRegistration"`
+	IncludeAttendeeNote         bool `json:"includeAttendeeNote"`
 	// OwnerTeam is the copy's Owner team (ticket 16); none is the
 	// source's.
 	OwnerTeam string `json:"ownerTeam"`
@@ -444,6 +449,9 @@ func (h *EventHandler) Copy(c fiber.Ctx) error {
 		IncludeDoorStaff:    body.IncludeDoorStaff,
 		IncludeCompetitions: body.IncludeCompetitions,
 		OwnerTeam:           body.OwnerTeam,
+
+		IncludeExternalRegistration: body.IncludeExternalRegistration,
+		IncludeAttendeeNote:         body.IncludeAttendeeNote,
 	})
 	if err != nil {
 		return eventError(c, err)
