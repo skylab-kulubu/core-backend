@@ -2090,11 +2090,19 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM pg_constraint
 			WHERE conrelid = to_regclass('public.media_legacy_answer_moves') AND conname = 'media_legacy_answer_moves_order_check'
 		)`,
-	// Forms' decline of a Ticket's answer kept as a mark (K6,
-	// docs/form-response-tickets.md).
+	// Forms' decline of a Ticket's answer kept as a mark, with the
+	// answer's form and status (K6, docs/form-response-tickets.md).
 	20261127110000: `
-		SELECT 1 FROM information_schema.columns
-		WHERE table_schema = 'public' AND table_name = 'tickets' AND column_name = 'forms_rejected_at'`,
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'tickets'
+			  AND column_name IN ('forms_rejected_at', 'form_response_form_id', 'form_response_status')
+		) = 3
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.tickets') AND conname = 'tickets_form_response_status_check'
+		)`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

@@ -198,6 +198,13 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		return s.declineFormResponse(ctx, events, r)
 	}
 	if r.Status != FormResponseAccepted {
+		// Pending again: the answer's Tickets lose their mark and may be
+		// taken over by the holder's next accepted answer to the form.
+		if marks, ok := s.tickets.(FormsRejectionStore); ok && r.ResponseID != uuid.Nil {
+			if err := marks.MarkFormResponsePending(ctx, r.ResponseID); err != nil {
+				return FormResponseResult{}, err
+			}
+		}
 		return FormResponseResult{Outcome: FormResponseNotAccepted}, nil
 	}
 	var guest GuestInfo
@@ -287,7 +294,7 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		if err := settledFormResponse(err); err != nil {
 			return FormResponseResult{}, err
 		}
-		if err := s.keepAcceptedAnswer(ctx, got, r.ResponseID); err != nil {
+		if err := s.keepAcceptedAnswer(ctx, got, r); err != nil {
 			return FormResponseResult{}, err
 		}
 		if written {
@@ -353,17 +360,20 @@ func (s *service) declineFormResponse(ctx context.Context, events []event.Event,
 	return result, nil
 }
 
-// keepAcceptedAnswer makes an accepted answer the one a Ticket it found or
-// wrote keeps (FormsRejectionStore.KeepFormResponse), clearing a mark an
-// earlier answer's decline left: a corrected answer approved after its
-// first one was declined (Forms' Returned) keeps the Ticket unmarked, and
-// the old answer's decline arriving late no longer reaches it.
-func (s *service) keepAcceptedAnswer(ctx context.Context, t Ticket, responseID uuid.UUID) error {
+// keepAcceptedAnswer keeps an accepted answer on a Ticket it found or wrote
+// (FormsRejectionStore.KeepFormResponse): the Ticket's own answer accepted
+// again clears its mark; a newer answer of the same holder to the same form
+// takes the Ticket over only when the Ticket's answer is no longer accepted
+// (a correction asked, Forms' Returned sent as declined, or pending again).
+// An extra form's answer, or anyone typing the holder's e-mail while the
+// holder's answer stands, never takes it over.
+func (s *service) keepAcceptedAnswer(ctx context.Context, t Ticket, r FormResponse) error {
 	marks, ok := s.tickets.(FormsRejectionStore)
-	if !ok || t.ID == uuid.Nil || responseID == uuid.Nil || t.StatusOf() == StatusCancelled {
+	if !ok || t.ID == uuid.Nil || r.ResponseID == uuid.Nil || t.StatusOf() == StatusCancelled {
 		return nil
 	}
-	return marks.KeepFormResponse(ctx, t.ID, responseID)
+	_, err := marks.KeepFormResponse(ctx, t.ID, r.FormID, r.ResponseID, r.UserID)
+	return err
 }
 
 func listsEvent(events []event.Event, id uuid.UUID) bool {

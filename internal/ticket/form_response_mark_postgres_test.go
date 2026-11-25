@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
 
@@ -56,5 +57,30 @@ func TestFormDeclineMarksOnPostgres(t *testing.T) {
 	}
 	if tickets, err := e.store.FormResponseTickets(ctx, second.ResponseID); err != nil || len(tickets) != 1 {
 		t.Fatalf("the corrected answer's Tickets %+v %v", tickets, err)
+	}
+	// While the corrected answer stands, someone else's answer with the
+	// same e-mail, or an extra form's, takes nothing over.
+	other := acceptedGuest(formID, "Eve", "Forged", "ada@example.com")
+	report(other)
+	extraForm := uuid.New()
+	ev.ExtraFormURLs = []event.EventFormLink{{URL: formAddress(extraForm)}}
+	if _, err := e.events.Update(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+	extra := acceptedGuest(extraForm, "Ada", "Lovelace", "ada@example.com")
+	report(extra)
+	for _, r := range []ticket.FormResponse{other, extra} {
+		if tickets, err := e.store.FormResponseTickets(ctx, r.ResponseID); err != nil || len(tickets) != 0 {
+			t.Fatalf("taken over by %s: %+v %v", r.ResponseID, tickets, err)
+		}
+	}
+	second.Status = ticket.FormResponseDeclined
+	if got := report(second); got.TicketsMarked != 1 {
+		t.Fatalf("the corrected answer's decline %+v", got)
+	}
+	// The extra form's acceptance does not clear the application's mark.
+	report(acceptedGuest(extraForm, "Ada", "Lovelace", "ada@example.com"))
+	if got, err := e.store.Get(ctx, written.ID); err != nil || got.FormsRejectedAt == nil {
+		t.Fatalf("after the extra form %+v %v", got, err)
 	}
 }

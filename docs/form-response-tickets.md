@@ -114,11 +114,24 @@ operator's cancellation, [ticket-cancellation.md](ticket-cancellation.md)).
   does not claim it. A Ticket reopened another way (the panel's restore,
   registering again) loses it. Tickets written before the column have none
   and are never marked.
-- An accepted answer that finds the Ticket an earlier answer of the holder
-  wrote takes it over (`form_response_id` is the newest accepted answer)
-  and clears its mark. So when Forms asks for a correction (`Returned`,
-  sent as `declined` today, `CoreResponseFeed.cs`) and the corrected answer
-  is approved, the Ticket stays unmarked whichever report comes first.
+- Core keeps the form of the Ticket's answer and where Forms has it
+  (`form_response_form_id`, `form_response_status`: `accepted`, `pending`,
+  `declined`; migration `20261127110000`). An accepted answer that finds the
+  Ticket takes it over (`form_response_id` becomes the new answer, the mark
+  is cleared) only when it is of **the same form**, by **the same holder**
+  (the signed-in owner; a guest Ticket for a guest's answer), and the
+  Ticket's answer is **no longer accepted** (declined, a correction asked,
+  pending again). So when Forms asks for a correction (`Returned`, sent as
+  `declined` today, `CoreResponseFeed.cs`) and the corrected answer is
+  approved, the Ticket follows the corrected answer and loses its mark. An
+  extra form's answer never takes over the application's Ticket (the
+  application's decline still marks it, the extra form's does not), and
+  someone typing the holder's e-mail into the form while the holder's
+  answer stands gets nothing of the Ticket. The Ticket's own answer
+  accepted again clears its mark. A Ticket whose answer was kept before the
+  migration (no form) is never taken over.
+- A `pending` report of the Ticket's answer (Forms' review opened again)
+  sets it `pending` and clears the mark; nothing else changes.
 - `declined` marks, on the Events that list the form and have not ended,
   each active or waitlisted Ticket whose answer is the report's, with a
   check-in too: `formsRejectedAt` (migration `20261127110000`), in every
@@ -157,7 +170,7 @@ as a report without a respondent and writes nothing.
 Core writes one JSON line per report it reads (`"event":"form_response"`):
 `correlation_id`, `form_id`, `response_id`, `status` (`unknown` for a value
 other than the three), `outcome`, `tickets_written` (new Tickets only),
-`tickets_cancelled` (none since K6) and
+`tickets_marked` (the Tickets a declined answer marked, K6) and
 `listing_events`: how many current Events list the form, whatever their
 status (`0` when the report ended before they were read). More than one is a
 form shared before the one-place rule; such a form is left as it is and the

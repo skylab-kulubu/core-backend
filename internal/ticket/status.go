@@ -58,14 +58,24 @@ type FormResponseStore interface {
 // instead of a cancellation (Yusuf, K6 2026-11-25; PostgresStore,
 // MemoryStore).
 type FormsRejectionStore interface {
-	// MarkFormsRejected marks the Ticket declined in Forms at at; false
-	// when it is cancelled or marked already.
+	// MarkFormsRejected marks the Ticket declined in Forms at at (its
+	// answer's status declined); false when it is cancelled or marked
+	// already.
 	MarkFormsRejected(ctx context.Context, id uuid.UUID, at time.Time) (bool, error)
-	// KeepFormResponse makes responseID the forms answer of a Ticket an
-	// answer wrote or reopened (form_response_id set), not cancelled, and
-	// clears its mark: the holder's newest accepted answer is the one whose
-	// decline counts. A Ticket written another way is left.
-	KeepFormResponse(ctx context.Context, id, responseID uuid.UUID) error
+	// MarkFormResponsePending keeps that the answer responseID waits for
+	// Forms' review again: its Tickets (not cancelled) lose their mark.
+	MarkFormResponsePending(ctx context.Context, responseID uuid.UUID) error
+	// KeepFormResponse keeps the accepted answer responseID of the form
+	// formID on a Ticket it found or wrote, not cancelled, whose answer is
+	// a forms answer (form_response_id set), and whose holder is the
+	// answer's (userID the owner, or nil for a guest Ticket). True when it
+	// did: the answer is the Ticket's own (written or reopened by it, or
+	// accepted again), or the Ticket's answer is of the same form and no
+	// longer accepted (declined, a correction asked, pending again), so the
+	// newer answer takes it over. Its status is then accepted and its mark
+	// cleared. Another form's answer (an extra form), or one while the
+	// Ticket's answer stands, never takes it over.
+	KeepFormResponse(ctx context.Context, id, formID, responseID uuid.UUID, userID *uuid.UUID) (bool, error)
 }
 
 // CancelBlockStore reads which of the Tickets ids no cancellation may
