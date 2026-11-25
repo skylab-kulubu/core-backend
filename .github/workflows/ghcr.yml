@@ -1,7 +1,8 @@
 name: GHCR
 
-# Two images, the same branches and tags: core (Dockerfile) and the video
-# frame service (cmd/media-frame, Dockerfile.frame). main → :latest, :sandbox
+# Three images, the same branches and tags: core (Dockerfile), the video
+# frame service (cmd/media-frame, Dockerfile.frame) and the PDF tools
+# (pdf-tools/, its own Dockerfile and build context). main → :latest, :sandbox
 # and the commit; production → :production and the commit; v*.*.* → the
 # commit. Each main and production image is also tagged tree-<git tree>.
 #
@@ -77,12 +78,19 @@ jobs:
         include:
           - image: core-backend
             dockerfile: Dockerfile
+            context: .
           # No Dokploy hook: its Dokploy application
           # (ops/wizards/media-frame-wizard.sh in sky_lab_genel) is deployed
           # by the wizard, which redeploys it when the tag's image differs
           # from the one running.
           - image: core-backend-media-frame
             dockerfile: Dockerfile.frame
+            context: .
+          # No Dokploy hook either: its application (internal network only)
+          # is set up and deployed by its wizard in sky_lab_genel/ops/wizards.
+          - image: core-pdf-tools
+            dockerfile: pdf-tools/Dockerfile
+            context: pdf-tools
     env:
       IMAGE: ghcr.io/skylab-kulubu/${{ matrix.image }}
     steps:
@@ -136,7 +144,7 @@ jobs:
       - uses: docker/build-push-action@v7
         if: steps.promote.outputs.promoted != 'true'
         with:
-          context: .
+          context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           push: true
           platforms: linux/amd64

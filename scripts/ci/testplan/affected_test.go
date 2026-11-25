@@ -29,6 +29,8 @@ func TestAffectedFollowsTheTestBinariesImports(t *testing.T) {
 			[]string{"m/internal/api", "m/internal/api/apitest", "m/internal/docsreader"}},
 		{"documentation: only the tests that read it", []string{"docs/runbook.md", "AGENTS.md"},
 			[]string{"m/internal/docsreader"}},
+		{"pdf-tools: no Go package by itself", []string{"pdf-tools/pdf_tools/ops.py", "pdf-tools/Dockerfile"},
+			[]string{"m/internal/docsreader"}},
 		{"go.mod", []string{"go.mod"},
 			[]string{"m/internal/api", "m/internal/api/apitest", "m/internal/docsreader", "m/internal/store"}},
 		{"a file outside every package", []string{"internal/store/store.go", "Dockerfile"},

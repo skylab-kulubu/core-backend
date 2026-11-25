@@ -16,11 +16,17 @@ Two workflows: **Checks** (`.github/workflows/checks.yml`) tests, **GHCR**
   (`go run ./scripts/ci/testplan affected`): a changed file marks its
   package and the packages above it, then every package whose test binary
   imports one of them (`go list -test -deps`). `go.mod`, `go.sum` and any
-  file outside every package except Markdown (the workflows, the Dockerfiles,
-  `deploy/`) select every package. The packages whose tests read files above
+  file outside every package except Markdown and `pdf-tools/` (the workflows,
+  the Dockerfiles, `deploy/`) select every package. The packages whose tests read files above
   their directory (`internal/account` and `internal/retention` read `docs/`
   and every migration) run on any change.
 - **`lint`**: `gofmt`, `go vet`, the two binaries the Dockerfiles build.
+  Not run when only Markdown or `pdf-tools/` changed.
+- **`pdf-tools`**: the PDF service (`pdf-tools/README.md`). Builds its test
+  and service images, runs its pytest in the test image under the service's
+  limits (read-only root, 0.5 CPU, 512 MiB, no network), then starts the
+  service image the same way and asks `/healthz` and an inspect. In a full
+  run, and in a fast one when `pdf-tools/` or a workflow changed.
 - **`test (N)`**: the shards. `testplan plan` splits the packages by the
   last runs' timings (the `test-timings-*` Actions cache; without it, a
   second a test); a package longer than a shard's share is split by its
