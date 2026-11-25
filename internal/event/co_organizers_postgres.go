@@ -5,7 +5,6 @@ import (
 	"errors"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -135,45 +134,54 @@ func dropOwnerCoOrganizer(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, own
 	return err
 }
 
-// coOrganizerSeatTimeout bounds HasCoOrganizerSeat's one query.
-const coOrganizerSeatTimeout = 3 * time.Second
-
 // HasCoOrganizerSeat reports whether p holds a seat on a current Event as
-// one of its Co-organizers (authz.CoOrganizerSeats): a person row whose
-// rights have not ended (CoOrganizerPersonGrace after the Event's end, or
-// its start plus a day; none ends for an Event with no date), or a team
-// row whose code is a segment of one of p's Groups. A read that fails is
-// no seat.
-func (s *PostgresStore) HasCoOrganizerSeat(p authz.Principal) bool {
+// one of its Co-organizers (media.CoOrganizerSeats, docs/co-organizers.md):
+// a person row, or a team row of a team p leads (its leader subgroup), or
+// of a "members" team p is in; a row only while the Event's rights last
+// (CoOrganizerPersonGrace after its end, or after its start plus a day; an
+// Event with no date never ends). A read that fails is no seat.
+func (s *PostgresStore) HasCoOrganizerSeat(ctx context.Context, p authz.Principal) bool {
 	var person *uuid.UUID
 	if id, err := uuid.Parse(p.ID); err == nil {
 		person = &id
 	}
-	var teams []string
-	for _, group := range p.Groups {
-		for _, segment := range strings.Split(strings.Trim(group, "/"), "/") {
-			if segment != "" && !slices.Contains(teams, segment) {
-				teams = append(teams, segment)
-			}
-		}
-	}
-	if person == nil && len(teams) == 0 {
+	members, leads := seatTeams(p)
+	if person == nil && len(members) == 0 {
 		return false
 	}
-	if teams == nil {
-		teams = []string{}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), coOrganizerSeatTimeout)
-	defer cancel()
 	var seat bool
 	err := s.pool.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM event_co_organizers c
 			JOIN events e ON e.id = c.event_id AND e.archived_at IS NULL
-			WHERE c.team_code = ANY($2::text[])
-			   OR (c.user_id = $1 AND (
-				COALESCE(e.end_date, e.start_date + interval '1 day') IS NULL
-				OR COALESCE(e.end_date, e.start_date + interval '1 day') + make_interval(secs => $3) > now())))`,
-		person, teams, CoOrganizerPersonGrace.Seconds()).Scan(&seat)
+			WHERE (c.user_id = $1
+			    OR c.team_code = ANY($2::text[])
+			    OR (c.management = 'members' AND c.team_code = ANY($3::text[])))
+			  AND (COALESCE(e.end_date, e.start_date + interval '1 day') IS NULL
+			    OR COALESCE(e.end_date, e.start_date + interval '1 day') + make_interval(secs => $4) > now()))`,
+		person, leads, members, CoOrganizerPersonGrace.Seconds()).Scan(&seat)
 	return err == nil && seat
+}
+
+// seatTeams are the team codes p's Groups name, each segment of each path
+// (members), and those p leads: the segment right above a leader subgroup
+// (leads). Never nil.
+func seatTeams(p authz.Principal) (members, leads []string) {
+	members, leads = []string{}, []string{}
+	leaders := authz.DefaultPolicy().LeaderSubgroups
+	for _, group := range p.Groups {
+		segments := strings.Split(strings.Trim(group, "/"), "/")
+		for i, segment := range segments {
+			if segment == "" {
+				continue
+			}
+			if !slices.Contains(members, segment) {
+				members = append(members, segment)
+			}
+			if i == len(segments)-2 && slices.Contains(leaders, segments[i+1]) && !slices.Contains(leads, segment) {
+				leads = append(leads, segment)
+			}
+		}
+	}
+	return members, leads
 }

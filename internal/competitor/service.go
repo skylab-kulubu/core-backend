@@ -362,6 +362,11 @@ func (s *service) ListByOwnerTeam(ctx context.Context, p authz.Principal, ownerT
 		return nil, ErrInvalid
 	}
 	teamWide := s.authz.Allow(p, authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ownerTeam}, authz.Read)
+	// Only a person holds a Co-organizer seat: anyone else is refused as
+	// before, with nothing read.
+	if !teamWide && (p.ID == "" || p.ServiceAccount) {
+		return nil, ErrForbidden
+	}
 	comps, err := s.competitors.ListByOwnerTeam(ctx, ownerTeam)
 	if err != nil {
 		return nil, err
@@ -369,14 +374,27 @@ func (s *service) ListByOwnerTeam(ctx context.Context, p authz.Principal, ownerT
 	if teamWide {
 		return s.withEvents(ctx, p, comps), nil
 	}
+	// Decided once per Event, each Event read once: a team's Events are few
+	// against its competitors.
+	type decided struct {
+		res *event.Resource
+		ok  bool
+	}
+	seen := map[uuid.UUID]decided{}
 	out := make([]Competitor, 0)
 	for _, c := range comps {
-		ev, err := s.events.Get(ctx, c.EventID)
-		if err != nil || !event.VisibleTo(s.authz, &p, ev) || !s.authz.Allow(p, competitorResource(ev, ""), authz.Read) {
+		d, ok := seen[c.EventID]
+		if !ok {
+			if ev, err := s.events.Get(ctx, c.EventID); err == nil && event.VisibleTo(s.authz, &p, ev) && s.authz.Allow(p, competitorResource(ev, ""), authz.Read) {
+				res := ev.Resource()
+				d = decided{res: &res, ok: true}
+			}
+			seen[c.EventID] = d
+		}
+		if !d.ok {
 			continue
 		}
-		res := ev.Resource()
-		c.Event = &res
+		c.Event = d.res
 		out = append(out, c)
 	}
 	if len(out) == 0 {

@@ -299,7 +299,7 @@ func (s *service) Get(ctx context.Context, p *authz.Principal, id uuid.UUID) (Ev
 }
 
 func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (_ Event, err error) {
-	defer func() { err = s.shownTo(&p, err) }()
+	defer func() { err = s.shownTo(ctx, &p, err) }()
 	if in.Name == "" || in.Location == "" {
 		return Event{}, ErrInvalid
 	}
@@ -391,7 +391,7 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 // update writes the Event build makes of the stored one, once p may edit
 // it. syncForms re-binds the Event's form short links after the write.
 func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, build func(existing Event) (Event, error), syncForms bool) (_ Event, err error) {
-	defer func() { err = s.shownTo(&p, err) }()
+	defer func() { err = s.shownTo(ctx, &p, err) }()
 	existing, err := s.store.Get(ctx, id)
 	if err != nil {
 		return Event{}, err
@@ -508,7 +508,7 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 }
 
 func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (_ Event, err error) {
-	defer func() { err = s.shownTo(&p, err) }()
+	defer func() { err = s.shownTo(ctx, &p, err) }()
 	existing, err := s.store.GetIncludingArchived(ctx, id)
 	if err != nil {
 		return Event{}, err
@@ -805,7 +805,7 @@ func (s *service) daySessionForms(ctx context.Context, dayID uuid.UUID) ([]Sessi
 }
 
 func (s *service) RestoreDay(ctx context.Context, p authz.Principal, id uuid.UUID) (_ Day, err error) {
-	defer func() { err = s.shownTo(&p, err) }()
+	defer func() { err = s.shownTo(ctx, &p, err) }()
 	existing, err := s.store.GetDayIncludingArchived(ctx, id)
 	if err != nil {
 		return Day{}, err
@@ -897,7 +897,7 @@ func (s *service) sessionEvent(ctx context.Context, eventDayID uuid.UUID) (Event
 }
 
 func (s *service) CreateSession(ctx context.Context, p authz.Principal, sess Session) (_ Session, err error) {
-	defer func() { err = s.shownTo(&p, err) }()
+	defer func() { err = s.shownTo(ctx, &p, err) }()
 	if err := validateSession(sess); err != nil {
 		return Session{}, ErrInvalid
 	}
@@ -933,7 +933,7 @@ func (s *service) syncSessionForms(ctx context.Context, eventDayID uuid.UUID) {
 }
 
 func (s *service) UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session, cancelled *bool, feedback SessionFeedback) (_ Session, err error) {
-	defer func() { err = s.shownTo(&p, err) }()
+	defer func() { err = s.shownTo(ctx, &p, err) }()
 	existing, err := s.store.GetSession(ctx, id)
 	if err != nil {
 		return Session{}, err
@@ -1003,7 +1003,7 @@ func (s *service) DeleteSession(ctx context.Context, p authz.Principal, id uuid.
 }
 
 func (s *service) RestoreSession(ctx context.Context, p authz.Principal, id uuid.UUID) (_ Session, err error) {
-	defer func() { err = s.shownTo(&p, err) }()
+	defer func() { err = s.shownTo(ctx, &p, err) }()
 	existing, err := s.store.GetSessionIncludingArchived(ctx, id)
 	if err != nil {
 		return Session{}, err

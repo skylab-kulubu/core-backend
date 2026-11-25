@@ -186,32 +186,28 @@ func TestOrganizers_EventVia(t *testing.T) {
 	}
 }
 
-// seats answers who holds a Co-organizer seat, by id.
-type seats map[string]bool
-
-func (s seats) HasCoOrganizerSeat(p Principal) bool { return s[p.ID] }
-
 // The Media upload rules of an Event's editor name no Event: a person who
-// may create none for any team uploads while they hold a Co-organizer seat
-// (docs/co-organizers.md); which Event the Media ends up on is decided
-// when it is linked. A service account never does.
+// may create none for any team uploads while the media service says they
+// hold a Co-organizer seat (Resource.CoOrganizerSeat,
+// docs/co-organizers.md); which Event the Media ends up on is decided when
+// it is linked. A service account never does.
 func TestOrganizers_UploadWithACoOrganizerSeat(t *testing.T) {
 	t.Parallel()
-	auth := NewAuthorizer(DefaultPolicy(), WithCoOrganizerSeats(seats{"person": true, "svc": true}))
+	auth := NewAuthorizer(DefaultPolicy())
 	for _, rule := range []MediaUploader{MediaUploaderEventEditor, MediaUploaderCertificateTemplateEditor} {
-		r := Resource{Type: TypeMedia, MediaUploader: rule}
-		if !auth.Allow(Principal{ID: "person"}, r, Upload) {
+		seated := Resource{Type: TypeMedia, MediaUploader: rule, CoOrganizerSeat: true}
+		if !auth.Allow(Principal{ID: "person"}, seated, Upload) {
 			t.Errorf("%s: a seated person may not upload", rule)
 		}
-		if auth.Allow(Principal{ID: "nobody"}, r, Upload) {
+		if auth.Allow(Principal{ID: "person"}, Resource{Type: TypeMedia, MediaUploader: rule}, Upload) {
 			t.Errorf("%s: a person without a seat uploads", rule)
 		}
-		if auth.Allow(Principal{ID: "svc", ServiceAccount: true}, r, Upload) {
+		if auth.Allow(Principal{ID: "svc", ServiceAccount: true}, seated, Upload) {
 			t.Errorf("%s: a service account uploads", rule)
 		}
 	}
-	if NewAuthorizer(DefaultPolicy()).Allow(Principal{ID: "person"}, Resource{Type: TypeMedia, MediaUploader: MediaUploaderEventEditor}, Upload) {
-		t.Error("without the seats a person uploads")
+	if auth.Allow(Principal{ID: "person"}, Resource{Type: TypeMedia, MediaUploader: MediaUploaderServiceOnly, CoOrganizerSeat: true}, Upload) {
+		t.Error("a seat opened a service-only purpose")
 	}
 }
 

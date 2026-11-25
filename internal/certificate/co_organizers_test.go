@@ -3,6 +3,7 @@ package certificate_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -48,5 +49,65 @@ func TestCoOrganizersRunTheEventsCertificates(t *testing.T) {
 	}
 	if _, err := f.svc.Finalize(ctx, leader, f.ev.ID); errors.Is(err, certificate.ErrForbidden) {
 		t.Fatalf("WEBLAB's Leader finalizes: %v", err)
+	}
+}
+
+// A Co-organizer's rights are the Event's own: WEBLAB's Leader, a
+// Co-organizer of one ARTLAB Event, does nothing on another ARTLAB Event
+// (docs/co-organizers.md).
+func TestCoOrganizerRightsStayOnTheirEvent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newAttendanceFixture(t, certificate.RuleCount)
+	if _, err := f.events.SetCoOrganizers(ctx, event.CoOrganizersWrite{
+		EventID: f.ev.ID, OwnerTeam: "ARTLAB",
+		Teams: []event.CoOrganizerTeam{{Code: "WEBLAB", Management: event.ManagementLeaders, Visibility: event.VisibilityCoOrganizer}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	other, err := f.events.Create(ctx, event.Event{Name: "ARTLAB 2027", Location: "YTÜ", OwnerTeam: "ARTLAB", AttendanceRule: certificate.RuleCount})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	if _, err := f.svc.Attendance(ctx, leader, other.ID); !errors.Is(err, certificate.ErrForbidden) {
+		t.Fatalf("the attendance of an Event WEBLAB does not co-organize: %v", err)
+	}
+	if _, err := f.svc.Finalize(ctx, leader, other.ID); !errors.Is(err, certificate.ErrForbidden) {
+		t.Fatalf("finalizing an Event WEBLAB does not co-organize: %v", err)
+	}
+}
+
+// A certificate is revoked by its Event's organizers as they are now, not
+// by the Owner team it was issued under: the Event moved from ARTLAB to
+// GAMELAB, ARTLAB's Leader no longer revokes it and GAMELAB's does
+// (docs/co-organizers.md).
+func TestRevokeFollowsTheEventsOrganizers(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newAttendanceFixture(t, certificate.RuleCount)
+	issue := func() string {
+		t.Helper()
+		serial := strings.ReplaceAll(uuid.NewString(), "-", "")
+		if _, err := f.store.Create(ctx, certificate.Certificate{
+			EventID: f.ev.ID, TicketID: uuid.New(), Serial: serial, RecipientName: "Cem Demir",
+			RecipientEmail: "cem@example.com", EventName: f.ev.Name, OwnerTeam: "ARTLAB", VerifyURL: "https://skyl.app/c/" + serial,
+		}, []byte("%PDF")); err != nil {
+			t.Fatal(err)
+		}
+		return serial
+	}
+	first, second := issue(), issue()
+	moved := f.ev
+	moved.OwnerTeam = "GAMELAB"
+	if _, err := f.events.Update(ctx, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.Revoke(ctx, f.leader, first); !errors.Is(err, certificate.ErrForbidden) {
+		t.Fatalf("ARTLAB's Leader revokes after the move: %v", err)
+	}
+	gamelab := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/GAMELAB/LIDERLER"}}
+	if err := f.svc.Revoke(ctx, gamelab, second); err != nil {
+		t.Fatalf("GAMELAB's Leader revokes: %v", err)
 	}
 }

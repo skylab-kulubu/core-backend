@@ -58,25 +58,27 @@ func sortedCoOrganizers(teams []CoOrganizerTeam, people []uuid.UUID) ([]CoOrgani
 	return outTeams, outPeople
 }
 
-// HasCoOrganizerSeat is the memory store's: a current Event names p as a
-// person whose rights have not ended, or a team whose code is a segment
-// of one of p's Groups.
-func (s *MemoryStore) HasCoOrganizerSeat(p authz.Principal) bool {
+// HasCoOrganizerSeat is the memory store's, by the database's rule: a
+// person, a team p leads, or a "members" team p is in, on a current Event
+// whose rights have not ended.
+func (s *MemoryStore) HasCoOrganizerSeat(_ context.Context, p authz.Principal) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	members, leads := seatTeams(p)
 	now := time.Now()
 	for _, e := range s.byID {
 		if e.ArchivedAt != nil {
 			continue
 		}
-		if r := AuthzResource(e, authz.TypeEvent, now); slices.Contains(r.CoOrganizerIDs, p.ID) {
+		if end, ok := CoOrganizerPersonExpiry(e); ok && !now.Before(end) {
+			continue
+		}
+		if slices.ContainsFunc(e.CoOrganizerIDs, func(id uuid.UUID) bool { return id.String() == p.ID }) {
 			return true
 		}
 		for _, team := range e.CoOrganizers {
-			for _, group := range p.Groups {
-				if slices.Contains(strings.Split(strings.Trim(group, "/"), "/"), team.Code) {
-					return true
-				}
+			if slices.Contains(leads, team.Code) || (team.Management == ManagementMembers && slices.Contains(members, team.Code)) {
+				return true
 			}
 		}
 	}

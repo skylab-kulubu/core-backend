@@ -187,9 +187,10 @@ func TestCoOrganizersPostgres(t *testing.T) {
 	}
 }
 
-// HasCoOrganizerSeat: a person whose rights have not ended, and a member of
-// a Co-organizer team; not a person 30 days after the Event, nor anyone
-// else (authz.CoOrganizerSeats).
+// HasCoOrganizerSeat: a person, a Leader of a Co-organizer team, a member
+// of a "members" one, while the Event's rights last; not a plain member of
+// a "leaders" team, nor anyone 30 days after the Event, team or person, nor
+// anyone else (media.CoOrganizerSeats).
 func TestHasCoOrganizerSeatPostgres(t *testing.T) {
 	pool := testpostgres.Start(t)
 	ctx := context.Background()
@@ -210,8 +211,13 @@ func TestHasCoOrganizerSeatPostgres(t *testing.T) {
 		people []uuid.UUID
 		teams  []event.CoOrganizerTeam
 	}{
-		{soon, []uuid.UUID{current}, []event.CoOrganizerTeam{{Code: "WEBLAB", Management: event.ManagementLeaders, Visibility: event.VisibilityHelper}}},
-		{past, []uuid.UUID{ended}, nil},
+		{soon, []uuid.UUID{current}, []event.CoOrganizerTeam{
+			{Code: "WEBLAB", Management: event.ManagementLeaders, Visibility: event.VisibilityHelper},
+			{Code: "GECEKODU", Management: event.ManagementMembers, Visibility: event.VisibilityHelper},
+		}},
+		{past, []uuid.UUID{ended}, []event.CoOrganizerTeam{
+			{Code: "ARTLAB", Management: event.ManagementMembers, Visibility: event.VisibilityHelper},
+		}},
 	} {
 		e, err := store.Create(ctx, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "YK", EndDate: &c.end})
 		if err != nil {
@@ -225,14 +231,20 @@ func TestHasCoOrganizerSeatPostgres(t *testing.T) {
 		p    authz.Principal
 		want bool
 	}{
-		"the current person":       {authz.Principal{ID: current.String()}, true},
-		"a WEBLAB member":          {authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB"}}, true},
-		"the person 30 days after": {authz.Principal{ID: ended.String()}, false},
-		"another team's Leader":    {authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/SANAT/ARTLAB/LIDERLER"}}, false},
-		"no id":                    {authz.Principal{ID: "x"}, false},
+		"the current person":             {authz.Principal{ID: current.String()}, true},
+		"WEBLAB's Leader":                {authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}, true},
+		"a GECEKODU member (members)":    {authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU"}}, true},
+		"a WEBLAB member (leaders)":      {authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB"}}, false},
+		"the person 30 days after":       {authz.Principal{ID: ended.String()}, false},
+		"an ARTLAB member 30 days after": {authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/SANAT/ARTLAB"}}, false},
+		"another team's Leader":          {authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/SANAT/MUZIK/LIDERLER"}}, false},
+		"no id":                          {authz.Principal{ID: "x"}, false},
 	} {
-		if got := store.HasCoOrganizerSeat(c.p); got != c.want {
+		if got := store.HasCoOrganizerSeat(ctx, c.p); got != c.want {
 			t.Errorf("%s: %v, want %v", name, got, c.want)
+		}
+		if got := event.NewMemoryStore().HasCoOrganizerSeat(ctx, c.p); got {
+			t.Errorf("%s: an empty memory store seats them", name)
 		}
 	}
 }

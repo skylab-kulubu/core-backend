@@ -73,7 +73,7 @@ func (e *FormInUseError) Unwrap() error { return ErrFormInUse }
 
 // shownTo is err with the holder of a refused form left out when p may not
 // see it (event.VisibleTo): who may not see a draft is not told it exists.
-func (s *service) shownTo(p *authz.Principal, err error) error {
+func (s *service) shownTo(ctx context.Context, p *authz.Principal, err error) error {
 	var inUse *FormInUseError
 	if !errors.As(err, &inUse) || inUse.Holder == nil {
 		return err
@@ -81,7 +81,7 @@ func (s *service) shownTo(p *authz.Principal, err error) error {
 	// The holder as stored, its Co-organizers included; the 409's summary
 	// when it cannot be read.
 	holder := Event{Status: inUse.Holder.Status, OwnerTeam: inUse.Holder.OwnerTeam}
-	if stored, getErr := s.store.GetIncludingArchived(context.Background(), inUse.Holder.ID); getErr == nil {
+	if stored, getErr := s.store.GetIncludingArchived(ctx, inUse.Holder.ID); getErr == nil {
 		holder = stored
 	}
 	if s.VisibleTo(p, holder) {
