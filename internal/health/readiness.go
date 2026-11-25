@@ -4,7 +4,7 @@
 //
 // Readiness is the process and its own database, nothing else: a task that
 // cannot reach PostgreSQL can answer almost nothing, while Keycloak,
-// SkyMail, Gotenberg, ClamAV or R2 being down fails only the requests that
+// SkyNotify, Gotenberg, ClamAV or R2 being down fails only the requests that
 // need them, the same on every task, so taking tasks out (or letting Swarm
 // restart them) for those would turn a partial outage into a whole one.
 // Migrations are done by construction: core starts listening only after

@@ -18,9 +18,9 @@ func TestReplayOptionsRefuseWhatCannotBeReplayed(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
-	valid := []string{"--service", "skymail", "--dumped-at", "2026-09-20T03:00:00+03:00"}
+	valid := []string{"--service", "skynotify", "--dumped-at", "2026-09-20T03:00:00+03:00"}
 	options, code := parseReplayOptions(valid, &bytes.Buffer{}, now)
-	if code != 0 || options.service.Step != user.DeletionStepEraseSkyMail || options.apply || options.realm != "e-skylab" ||
+	if code != 0 || options.service.Step != user.DeletionStepEraseSkyNotify || options.apply || options.realm != "e-skylab" ||
 		!options.dumpedAt.Equal(time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("options = %+v, code %d", options, code)
 	}
@@ -58,8 +58,8 @@ func TestReplayOptionsRefuseWhatCannotBeReplayed(t *testing.T) {
 	// time, which misses the requests completed in between. It is gone, and
 	// passing it points at the new one.
 	for _, old := range [][]string{
-		{"--service", "skymail", "--restored-at", "2026-09-20T03:00:00Z"},
-		{"--service", "skymail", "-restored-at=2026-09-20T03:00:00Z"},
+		{"--service", "skynotify", "--restored-at", "2026-09-20T03:00:00Z"},
+		{"--service", "skynotify", "-restored-at=2026-09-20T03:00:00Z"},
 		append(append([]string(nil), valid...), "--restored-at", "2026-09-20T03:00:00Z"),
 	} {
 		var out bytes.Buffer
@@ -207,7 +207,7 @@ func (s stubSender) Erase(context.Context, erasure.Command) (erasure.Result, err
 func TestReplayExitsNonZeroOnAnyFailAndAsksForAnotherRunWhenUnfinished(t *testing.T) {
 	t.Parallel()
 
-	service, _ := erasure.ServiceNamed("skymail")
+	service, _ := erasure.ServiceNamed("skynotify")
 	known := erasurereplay.Request{ID: uuid.New(), SubjectID: uuid.New()}
 	missing := erasurereplay.Request{ID: uuid.New(), SubjectID: uuid.New()}
 	inProgress := &erasure.DeferredError{Step: service.Step, Reason: "in progress (202)", Status: 202}

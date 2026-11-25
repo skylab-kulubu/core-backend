@@ -30,7 +30,7 @@ func TestErasureManualStepOptions(t *testing.T) {
 		{name: "no request", args: []string{"--service", "cms", "--counts", `{}`}, code: 2, errOut: "--request"},
 		{name: "bad request", args: []string{"--request", "nope", "--service", "cms", "--counts", `{}`}, code: 2, errOut: "--request"},
 		{name: "no service", args: []string{"--request", id, "--counts", `{}`}, code: 2, errOut: "--service"},
-		{name: "unknown service", args: []string{"--request", id, "--service", "core", "--counts", `{}`}, code: 2, errOut: "skymail, cms or forms"},
+		{name: "unknown service", args: []string{"--request", id, "--service", "core", "--counts", `{}`}, code: 2, errOut: "skynotify, cms or forms"},
 		{name: "no counts", args: []string{"--request", id, "--service", "cms"}, code: 2, errOut: "--counts"},
 		{name: "counts not an object", args: []string{"--request", id, "--service", "cms", "--counts", `[1]`}, code: 2, errOut: "counts is not an object"},
 		{name: "negative count", args: []string{"--request", id, "--service", "cms", "--counts", `{"rows":-1}`}, code: 2, errOut: "non-negative"},

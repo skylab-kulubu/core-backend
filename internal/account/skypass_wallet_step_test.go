@@ -46,7 +46,7 @@ func TestErasureSagaWithdrawsTheWalletPassBeforeAnyService(t *testing.T) {
 	if wallet < 0 || consents < 0 || wallet < consents {
 		t.Fatalf("events = %v", events)
 	}
-	for _, later := range []string{"erase_skymail", "erase_cms", "erase_forms", "anonymize_core", "delete_identity"} {
+	for _, later := range []string{"erase_skynotify", "erase_cms", "erase_forms", "anonymize_core", "delete_identity"} {
 		if index := slices.Index(events, later); index >= 0 && index < wallet {
 			t.Fatalf("%s before erase_skypass_wallet: %v", later, events)
 		}
@@ -94,7 +94,7 @@ func TestErasureSagaStopsWhenTheWalletPassCannotBeWithdrawn(t *testing.T) {
 		if !worked || err == nil || !strings.Contains(err.Error(), "erase_skypass_wallet_failed") {
 			t.Fatalf("%s: worked=%v err=%v", tc.name, worked, err)
 		}
-		for _, later := range []string{"erase_skymail", "erase_cms", "erase_forms", "anonymize_core", "delete_identity"} {
+		for _, later := range []string{"erase_skynotify", "erase_cms", "erase_forms", "anonymize_core", "delete_identity"} {
 			if f.events.count(later) != 0 {
 				t.Fatalf("%s: the saga went on to %s: %v", tc.name, later, f.events.list())
 			}

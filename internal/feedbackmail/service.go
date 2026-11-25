@@ -62,7 +62,7 @@ type Queue interface {
 	RetryMail(ctx context.Context, claimed feedback.Mail, at time.Time) error
 }
 
-// Mailer posts one feedback mail (mail.SkyMail).
+// Mailer posts one feedback mail (mail.SkyNotify).
 type Mailer interface {
 	FeedbackConfigured(kind mail.FeedbackKind) bool
 	Feedback(ctx context.Context, kind mail.FeedbackKind, idempotencyKey string, to mail.FeedbackRecipient, eventID uuid.UUID, eventName string, items []mail.FeedbackItem) error
@@ -104,7 +104,7 @@ func NewService(config Config) (*Service, error) {
 
 // Report counts one pass: Planned targets and Reminders, and mails Sent
 // (Reminded of them reminders), Dropped (no target left to send), Skipped
-// (no address), Rejected by SkyMail, Expired, Off (no template key) and
+// (no address), Rejected by SkyNotify, Expired, Off (no template key) and
 // Retried later.
 type Report struct {
 	Planned, Reminders                                int
@@ -123,7 +123,7 @@ func (s *Service) Pass(ctx context.Context) (Report, error) {
 	// A kind without a template key is off: nothing of it is planned, so no
 	// target is used up and nothing piles up. Set again, the schedule takes
 	// the targets still within feedback.AutoWindow and the reminders within
-	// feedback.ReminderWindow, as after SkyMail was down. A mail queued
+	// feedback.ReminderWindow, as after SkyNotify was down. A mail queued
 	// before the key went off expires GiveUpAfter after it was queued.
 	var kinds []string
 	if s.config.Mail.FeedbackConfigured(mail.FeedbackRequest) {
@@ -184,7 +184,7 @@ func (s *Service) Pass(ctx context.Context) (Report, error) {
 
 // outcome is what became of a claimed mail: the mails sent (or dropped)
 // together with it, all finished or all retried; or a time to wait for.
-// sent is true when SkyMail took the mail.
+// sent is true when SkyNotify took the mail.
 type outcome struct {
 	group    []feedback.Mail
 	postpone *time.Time
@@ -395,8 +395,8 @@ func (s *Service) recipientOf(ctx context.Context, ticketID uuid.UUID) (recipien
 
 // idempotencyKey is the same on every try of the same mail (its mails, its
 // recipient and its links: the invite codes do not change), so a try after a
-// lost answer is SkyMail's replay, never a second Notification. A mail whose
-// links changed meanwhile (a target dropped) is another body, and SkyMail
+// lost answer is SkyNotify's replay, never a second Notification. A mail whose
+// links changed meanwhile (a target dropped) is another body, and SkyNotify
 // refuses another body under a key it has seen: it gets a key of its own.
 func idempotencyKey(kind mail.FeedbackKind, group []feedback.Mail, to mail.FeedbackRecipient, eventName string, links []mail.FeedbackItem) string {
 	ids := make([]string, 0, len(group))
@@ -484,7 +484,7 @@ func (s *Service) Run(ctx context.Context, logf func(string, ...any)) <-chan str
 			case err != nil && ctx.Err() == nil:
 				logf("feedback mail: %v", err)
 			case report.any():
-				logf("feedback mail: %d targets and %d reminders planned; %d sent (%d reminders), %d dropped, %d skipped, %d refused by SkyMail, %d expired, %d retried later",
+				logf("feedback mail: %d targets and %d reminders planned; %d sent (%d reminders), %d dropped, %d skipped, %d refused by SkyNotify, %d expired, %d retried later",
 					report.Planned, report.Reminders, report.Sent, report.Reminded, report.Dropped, report.Skipped, report.Rejected, report.Expired, report.Retried)
 			}
 			select {

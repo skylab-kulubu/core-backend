@@ -23,7 +23,7 @@ type trackingResult struct {
 	Reason  *string `json:"reason"`
 }
 
-// SkyMail's question, as its client sends it: the colon is literal, every
+// SkyNotify's question, as its client sends it: the colon is literal, every
 // sub answered once in order, and the route works without the link key.
 // Since B9 someone in no club Group is tracked too.
 func TestTrackingResolveRoute(t *testing.T) {
@@ -117,7 +117,7 @@ func TestTrackingResolveIsNotOnTheEdge(t *testing.T) {
 
 func TestTrackingResolveRefusesAMalformedQuestion(t *testing.T) {
 	env := newAudienceEnv(t, true)
-	skymail := env.service(t, commpref.TrackingResolveRole)
+	skynotify := env.service(t, commpref.TrackingResolveRole)
 	id := uuid.New().String()
 	many := make([]string, commpref.MaxTrackingSubjects+1)
 	for i := range many {
@@ -132,12 +132,12 @@ func TestTrackingResolveRefusesAMalformedQuestion(t *testing.T) {
 		`{"subs":["00000000-0000-0000-0000-000000000000"]}`,
 		`{"subs":[` + strings.Join(many, ",") + `]}`,
 	} {
-		got := audienceCall(t, env.app, skymail, fiber.MethodPost, trackingResolvePath, body)
+		got := audienceCall(t, env.app, skynotify, fiber.MethodPost, trackingResolvePath, body)
 		if got.status != fiber.StatusBadRequest || !strings.Contains(string(got.raw), "tracking_resolve_invalid") {
 			t.Fatalf("%.80s: %d %s", body, got.status, got.raw)
 		}
 	}
-	if got := audienceCall(t, env.app, skymail, fiber.MethodPost, trackingResolvePath, `{"subs":[]}`); got.status != fiber.StatusOK || !strings.Contains(string(got.raw), `"results":[]`) {
+	if got := audienceCall(t, env.app, skynotify, fiber.MethodPost, trackingResolvePath, `{"subs":[]}`); got.status != fiber.StatusOK || !strings.Contains(string(got.raw), `"results":[]`) {
 		t.Fatalf("none: %d %s", got.status, got.raw)
 	}
 }

@@ -16,28 +16,28 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
-// The team membership mail is on only with SkyMail and a template key; off,
+// The team membership mail is on only with SkyNotify and a template key; off,
 // nothing hears of membership changes and /v1/metrics says so.
 func TestStartTeamMembershipMail(t *testing.T) {
 	for _, test := range []struct {
 		name   string
-		sky    *mail.SkyMail
+		sky    *mail.SkyNotify
 		on     bool
 		logged string
 	}{
-		{name: "on", sky: &mail.SkyMail{
+		{name: "on", sky: &mail.SkyNotify{
 			BaseURL: "http://127.0.0.1:1", TeamMembershipTemplateKey: mail.DefaultTeamMembershipTemplateKey,
 			RoleMembershipTemplateKey: mail.DefaultRoleMembershipTemplateKey, GroupMembershipTemplateKey: mail.DefaultGroupMembershipTemplateKey,
 			Tokens: mail.StaticToken("t"),
 		},
 			on: true, logged: "team membership mail: on (template club.team-membership; role club.role-membership; group club.group-membership; privilege notice off)"},
-		{name: "team only", sky: &mail.SkyMail{BaseURL: "http://127.0.0.1:1", TeamMembershipTemplateKey: mail.DefaultTeamMembershipTemplateKey, Tokens: mail.StaticToken("t")},
+		{name: "team only", sky: &mail.SkyNotify{BaseURL: "http://127.0.0.1:1", TeamMembershipTemplateKey: mail.DefaultTeamMembershipTemplateKey, Tokens: mail.StaticToken("t")},
 			on: true, logged: "team membership mail: on (template club.team-membership; role off; group off; privilege notice off)"},
-		{name: "teams off", sky: &mail.SkyMail{BaseURL: "http://127.0.0.1:1", GroupMembershipTemplateKey: mail.DefaultGroupMembershipTemplateKey, Tokens: mail.StaticToken("t")},
+		{name: "teams off", sky: &mail.SkyNotify{BaseURL: "http://127.0.0.1:1", GroupMembershipTemplateKey: mail.DefaultGroupMembershipTemplateKey, Tokens: mail.StaticToken("t")},
 			on: true, logged: "team membership mail: on (template off; role off; group club.group-membership; privilege notice off)"},
-		{name: "no SkyMail", logged: "team membership mail: off (SkyMail is not configured"},
-		{name: "empty keys", sky: &mail.SkyMail{BaseURL: "http://127.0.0.1:1", Tokens: mail.StaticToken("t")},
-			logged: "team membership mail: off (SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY, SKYMAIL_ROLE_MEMBERSHIP_TEMPLATE_KEY, SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY and SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY are empty)"},
+		{name: "no SkyNotify", logged: "team membership mail: off (SkyNotify is not configured"},
+		{name: "empty keys", sky: &mail.SkyNotify{BaseURL: "http://127.0.0.1:1", Tokens: mail.StaticToken("t")},
+			logged: "team membership mail: off (SKYNOTIFY_TEAM_MEMBERSHIP_TEMPLATE_KEY, SKYNOTIFY_ROLE_MEMBERSHIP_TEMPLATE_KEY, SKYNOTIFY_GROUP_MEMBERSHIP_TEMPLATE_KEY and SKYNOTIFY_PRIVILEGE_NOTICE_TEMPLATE_KEY are empty)"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var mu sync.Mutex
@@ -78,10 +78,10 @@ func TestTeamMembershipTemplateKeyFromEnv(t *testing.T) {
 			return v, ok
 		}
 	}
-	if got := templateKey(lookup(nil), "SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY", mail.DefaultTeamMembershipTemplateKey); got != "club.team-membership" {
+	if got := templateKey(lookup(nil), "SKYNOTIFY_TEAM_MEMBERSHIP_TEMPLATE_KEY", mail.DefaultTeamMembershipTemplateKey); got != "club.team-membership" {
 		t.Fatalf("unset = %q", got)
 	}
-	if got := templateKey(lookup(map[string]string{"SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY": ""}), "SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY", mail.DefaultTeamMembershipTemplateKey); got != "" {
+	if got := templateKey(lookup(map[string]string{"SKYNOTIFY_TEAM_MEMBERSHIP_TEMPLATE_KEY": ""}), "SKYNOTIFY_TEAM_MEMBERSHIP_TEMPLATE_KEY", mail.DefaultTeamMembershipTemplateKey); got != "" {
 		t.Fatalf("empty = %q", got)
 	}
 }
@@ -95,13 +95,13 @@ func TestMembershipTemplateKeysFromEnv(t *testing.T) {
 			return v, ok
 		}
 	}
-	sky := &mail.SkyMail{}
+	sky := &mail.SkyNotify{}
 	membershipTemplateKeys(sky, env(nil))
 	if sky.TeamMembershipTemplateKey != "club.team-membership" || sky.RoleMembershipTemplateKey != "club.role-membership" || sky.GroupMembershipTemplateKey != "club.group-membership" {
 		t.Fatalf("unset = %+v", sky)
 	}
-	sky = &mail.SkyMail{}
-	membershipTemplateKeys(sky, env(map[string]string{"SKYMAIL_ROLE_MEMBERSHIP_TEMPLATE_KEY": "", "SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY": " club.custom "}))
+	sky = &mail.SkyNotify{}
+	membershipTemplateKeys(sky, env(map[string]string{"SKYNOTIFY_ROLE_MEMBERSHIP_TEMPLATE_KEY": "", "SKYNOTIFY_GROUP_MEMBERSHIP_TEMPLATE_KEY": " club.custom "}))
 	if sky.TeamMembershipTemplateKey != "club.team-membership" || sky.RoleMembershipTemplateKey != "" || sky.GroupMembershipTemplateKey != "club.custom" {
 		t.Fatalf("set = %+v", sky)
 	}
@@ -123,7 +123,7 @@ func TestMembershipMailQueuesEveryGroupThroughTheService(t *testing.T) {
 	}
 	person := uuid.New()
 	dir.PutUser(identity.Person{ID: person, Email: "ada@example.test", FirstName: "Ada", Enabled: true})
-	sky := &mail.SkyMail{BaseURL: "http://127.0.0.1:1", Tokens: mail.StaticToken("t")}
+	sky := &mail.SkyNotify{BaseURL: "http://127.0.0.1:1", Tokens: mail.StaticToken("t")}
 	membershipTemplateKeys(sky, func(string) (string, bool) { return "", false })
 	queue := teammail.NewMemoryQueue()
 	ctx, cancel := context.WithCancel(context.Background())
