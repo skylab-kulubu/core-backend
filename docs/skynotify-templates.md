@@ -1,15 +1,15 @@
-# SkyMail templates
+# SkyNotify templates
 
-Core sends two mails through SkyMail: the welcome mail a new account receives
+Core sends two mails through SkyNotify: the welcome mail a new account receives
 and the certificate mail that follows an issued certificate. Both are posted to
 `/v1/mail_tasks/single`. The certificate mail goes through core's queue,
-which reads SkyMail's answer and tries again under one Idempotency-Key
+which reads SkyNotify's answer and tries again under one Idempotency-Key
 ([certificate-mail.md](certificate-mail.md)); it never fails the issuance
 that produced it. The welcome
 mail is sent by the user sync, which reads what became of it and marks the
 person welcomed ([user-sync.md](user-sync.md)).
 
-That is also how these mails used to disappear. SkyMail refuses a send whose
+That is also how these mails used to disappear. SkyNotify refuses a send whose
 template is archived or unknown, and writes no `mail_tasks` row at all. Core
 threw the response away without reading its status, so a wrong or archived
 template left no mail, no row, no error and no log line — the send looked
@@ -19,19 +19,19 @@ identical to a delivered one from inside core.
 
 A send carries exactly one addressing:
 
-- `template_key` — a stable name SkyMail resolves at send time. `core.welcome`
+- `template_key` — a stable name SkyNotify resolves at send time. `core.welcome`
   and `core.certificate` are system templates there: they cannot be archived and
   their key cannot be renamed, so a template can be replaced underneath core
   without core being redeployed.
 - `template_id` — the template's UUID. It stops matching the moment the row is
   archived or replaced, which is the failure this page exists for.
 
-The key wins whenever it is set, and the id is then not sent at all. SkyMail
+The key wins whenever it is set, and the id is then not sent at all. SkyNotify
 stops looking at the key as soon as an id is present, so a body holding both
 would silently pin the mail to the id and hide which addressing the deployment
 believed it was using.
 
-One exception runs in the other direction. If the key is set and SkyMail answers
+One exception runs in the other direction. If the key is set and SkyNotify answers
 `404` — the key is not seeded yet — core retries that send once with the
 template id, if one is configured, and says so in the log. There is no reverse
 fallback: a refused id is never retried with a key.
@@ -46,13 +46,13 @@ change before seeding that template; older templates ignore the extra values.
 A third mail, the contact consent confirmation (double opt-in,
 [contact-consents.md](contact-consents.md)), is sent only while
 `CONTACT_CONSENT_KEY` is set. It is addressed by key alone,
-`SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY` (unset: `core.contact-consent-confirm`),
+`SKYNOTIFY_CONSENT_CONFIRM_TEMPLATE_KEY` (unset: `core.contact-consent-confirm`),
 with no id fallback, and carries `confirmUrl`, `withdrawUrl` and `purpose`
 (`event_invitations`, `promotional`; `recruitment_pool` once it is taken) and
 no recipient name: whoever typed the address may have typed any name. Seed it with
 `PUT /v1/templates/by-key/core.contact-consent-confirm` before the products
 show the consent box; a refused send writes
-`{"event":"skymail_call_failed","kind":"consent_confirmation",…}` and the
+`{"event":"skynotify_call_failed","kind":"consent_confirmation",…}` and the
 grant stays pending. The mail must carry no sponsor or other commercial
 content (ADR-0062).
 
@@ -60,28 +60,28 @@ A fourth, the membership mail, goes to a person added to a Group or removed
 from one: `club.team-membership` for a team, `club.role-membership` for a
 Privileged Group (YK, DK, ADMIN) and `club.group-membership` for any other
 Group. Unlike the others it is queued in core's database and sent by a worker
-that reads SkyMail's answer and retries, so a SkyMail outage delays it instead
+that reads SkyNotify's answer and retries, so a SkyNotify outage delays it instead
 of losing it. Each is addressed by key alone,
-`SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY`, `SKYMAIL_ROLE_MEMBERSHIP_TEMPLATE_KEY`
-and `SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY` (unset: the key above; empty: that
+`SKYNOTIFY_TEAM_MEMBERSHIP_TEMPLATE_KEY`, `SKYNOTIFY_ROLE_MEMBERSHIP_TEMPLATE_KEY`
+and `SKYNOTIFY_GROUP_MEMBERSHIP_TEMPLATE_KEY` (unset: the key above; empty: that
 kind off). See [team-membership-mail.md](team-membership-mail.md).
 
 A fifth, the privilege notice `club.privilege-change`, rides the same worker
 on a queue of its own: a Group's role mapping changed tells ADMIN, and a
 Privileged Group's membership changed tells ADMIN and that root's members.
-`SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY` addresses it the same way. See
+`SKYNOTIFY_PRIVILEGE_NOTICE_TEMPLATE_KEY` addresses it the same way. See
 [privilege-change-mail.md](privilege-change-mail.md).
 
 A sixth and a seventh, the Event status mails `core.event-cancelled` and
 `core.event-reinstated`, ride a queue of their own the same way: a cancelled
 Event's Ticket holders are told when the organizer asks, and told again when
-the cancellation is undone. `SKYMAIL_EVENT_CANCELLED_TEMPLATE_KEY` and
-`SKYMAIL_EVENT_REINSTATED_TEMPLATE_KEY` address them (unset: the key above;
+the cancellation is undone. `SKYNOTIFY_EVENT_CANCELLED_TEMPLATE_KEY` and
+`SKYNOTIFY_EVENT_REINSTATED_TEMPLATE_KEY` address them (unset: the key above;
 empty: off). See [event-cancel.md](event-cancel.md#mails).
 
 An eighth, `event.ticket-created`, is no mail of core's own but a
 Notification (ADR 0070): core posts `POST /v1/notifications` with the
-Ticket holder's subject and SkyMail picks the channels (inbox and e-mail)
+Ticket holder's subject and SkyNotify picks the channels (inbox and e-mail)
 and the text; a guest, who has no subject, gets the type's e-mail template
 by address through `/v1/mail_tasks/single`. It rides a queue of its own and is
 off until `TICKET_CREATED_NOTIFICATION=on`. See
@@ -100,22 +100,22 @@ the Event is published. See [door-staff-mail.md](door-staff-mail.md).
 Istanbul time the day before a published Event starts, everyone holding an
 active Ticket of it is reminded once, one mail per address, at most
 `EVENT_REMINDER_PER_MINUTE` (20) mails a minute.
-`SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY` addresses it (unset: the key above;
+`SKYNOTIFY_EVENT_REMINDER_TEMPLATE_KEY` addresses it (unset: the key above;
 empty: off). See [event-reminder.md](event-reminder.md).
 
 `event.attendance-welcome` and `event.attendance-recorded` too, off until
 `ATTENDANCE_MAIL=on`: the door's "hoş geldin" on a Ticket's first Venue entry
 of a day and "katılımın alındı" on each Session Check-in, two minutes after
 the scan, at most `ATTENDANCE_MAIL_PER_MINUTE` (20) mails a minute.
-`SKYMAIL_ATTENDANCE_WELCOME_TEMPLATE_KEY` and
-`SKYMAIL_ATTENDANCE_RECORDED_TEMPLATE_KEY` address them (unset: the keys
+`SKYNOTIFY_ATTENDANCE_WELCOME_TEMPLATE_KEY` and
+`SKYNOTIFY_ATTENDANCE_RECORDED_TEMPLATE_KEY` address them (unset: the keys
 above; empty: that kind off). See [attendance-mail.md](attendance-mail.md).
 
 A ninth, `club.management-term`, rides a queue of its own the same way: the
 warning 14 days and 1 day before a YK, DK or Team Leader membership's term
 ends (to the holder and those over them), the list of terms marked expired
 that day and the weekly summary (both to ADMIN). One template; its `Notice`
-variable says which. `SKYMAIL_MANAGEMENT_TERM_TEMPLATE_KEY` addresses it
+variable says which. `SKYNOTIFY_MANAGEMENT_TERM_TEMPLATE_KEY` addresses it
 (unset: the key above; empty: off). See
 [management-membership-terms.md](management-membership-terms.md#mails).
 
@@ -127,19 +127,19 @@ e-mail. See [event-feedback.md](event-feedback.md#to-the-inbox-ticket-13).
 The account deletion notices, `account.deletion-requested` and
 `account.deletion-completed`, go by key alone from the erasure worker once
 `ACCOUNT_DELETION_NOTICES=on`, with no recipient name and with
-`erase_after_send`: SkyMail neither tracks them nor keeps their row
-(`SKYMAIL_ACCOUNT_DELETION_RECEIVED_TEMPLATE_KEY`,
-`SKYMAIL_ACCOUNT_DELETION_COMPLETED_TEMPLATE_KEY`; unset: the key above;
+`erase_after_send`: SkyNotify neither tracks them nor keeps their row
+(`SKYNOTIFY_ACCOUNT_DELETION_RECEIVED_TEMPLATE_KEY`,
+`SKYNOTIFY_ACCOUNT_DELETION_COMPLETED_TEMPLATE_KEY`; unset: the key above;
 empty: off). See [account-lifecycle.md](account-lifecycle.md#deletion-notices).
 
 ## Configuration
 
 | Variable | Unset | Empty |
 | --- | --- | --- |
-| `SKYMAIL_WELCOME_TEMPLATE_KEY` | `core.welcome` | welcome mail falls back to its id |
-| `SKYMAIL_CERTIFICATE_TEMPLATE_KEY` | `core.certificate` | certificate mail falls back to its id |
-| `SKYMAIL_WELCOME_TEMPLATE_ID` | no id addressing | no id addressing |
-| `SKYMAIL_CERTIFICATE_TEMPLATE_ID` | no id addressing | no id addressing |
+| `SKYNOTIFY_WELCOME_TEMPLATE_KEY` | `core.welcome` | welcome mail falls back to its id |
+| `SKYNOTIFY_CERTIFICATE_TEMPLATE_KEY` | `core.certificate` | certificate mail falls back to its id |
+| `SKYNOTIFY_WELCOME_TEMPLATE_ID` | no id addressing | no id addressing |
+| `SKYNOTIFY_CERTIFICATE_TEMPLATE_ID` | no id addressing | no id addressing |
 
 An unset key variable takes the seeded default, because addressing by key is
 what core wants everywhere. A variable set to an empty value is the way back
@@ -151,29 +151,29 @@ difference is that startup now says so once.
 
 ## What a refused call writes
 
-Every SkyMail call — both sends, the mailing list calls and the token request —
+Every SkyNotify call — both sends, the mailing list calls and the token request —
 checks the response status. Anything outside `2xx` writes one line:
 
 ```
-{"event":"skymail_call_failed","level":"warn","kind":"welcome","status":404,"reason":"template_missing","code":"template_not_found"}
+{"event":"skynotify_call_failed","level":"warn","kind":"welcome","status":404,"reason":"template_missing","code":"template_not_found"}
 ```
 
 - `kind` — `welcome`, `certificate`, `team_membership`, `role_membership`,
   `group_membership`, `account_deletion_notice`, `token`, or the list call (`list_create`,
   `list_delete`, `list_read`, `list_recipients`, `list_recipient_add`,
   `list_recipient_remove`).
-- `status` — the raw status SkyMail answered with. Nothing is inferred from it
+- `status` — the raw status SkyNotify answered with. Nothing is inferred from it
   beyond the reason below, because an archived template has not been observed
   often enough to promise it is always a `404`.
 - `reason` — `template_missing` for a `404` to a send,
   `template_key_missing_fallback_to_id` for the line that precedes the one
-  retry, `erase_after_send_unconfirmed` for a deletion notice SkyMail took
+  retry, `erase_after_send_unconfirmed` for a deletion notice SkyNotify took
   without saying it keeps no record of it, and `upstream_error` for
   everything else. The welcome mail also
   writes a line, with no `status`, when it never got an answer:
-  `token_unavailable` (no token from Keycloak), `unreachable` (SkyMail could not
+  `token_unavailable` (no token from Keycloak), `unreachable` (SkyNotify could not
   be connected to) and `no_answer` (the request went out and nothing came back;
-  SkyMail may have taken it).
+  SkyNotify may have taken it).
 - `code` — the `error` or `message` field of a small JSON body, and only when it
   is a bare code: short, and made of letters, digits, `_`, `-` and `.`. Prose,
   mail addresses and identifiers are dropped. The line carries no recipient, no
@@ -186,7 +186,7 @@ A mailing list call that answers `404` writes nothing: callers already receive
 Startup writes one line per mail kind that cannot be addressed at all:
 
 ```
-{"event":"skymail_template_unconfigured","level":"warn","kind":"certificate","reason":"template_unconfigured"}
+{"event":"skynotify_template_unconfigured","level":"warn","kind":"certificate","reason":"template_unconfigured"}
 ```
 
 The send path stays silent for that case, so a half-configured deployment is
@@ -194,18 +194,18 @@ visible once at boot instead of once per user.
 
 ## Moving a template onto its key
 
-The keys are not in the live SkyMail database yet; what is there are the older
+The keys are not in the live SkyNotify database yet; what is there are the older
 rows addressed by UUID. The order matters, because the half-configured state in
 between is exactly what used to lose mail silently.
 
-1. Seed the template in SkyMail: `PUT /v1/templates/by-key/:key` for
+1. Seed the template in SkyNotify: `PUT /v1/templates/by-key/:key` for
    `core.welcome` and `core.certificate`.
 2. Deploy core with the key variables (or with them unset, which is the same
    thing). Until step 1 has run for a key, core logs
    `template_key_missing_fallback_to_id` and the mail still goes out through the
    template id.
-3. Archive the old UUID-addressed rows and remove `SKYMAIL_WELCOME_TEMPLATE_ID`
-   and `SKYMAIL_CERTIFICATE_TEMPLATE_ID`.
+3. Archive the old UUID-addressed rows and remove `SKYNOTIFY_WELCOME_TEMPLATE_ID`
+   and `SKYNOTIFY_CERTIFICATE_TEMPLATE_ID`.
 
 Dropping the id path from core is a separate change, made once step 3 has held
 in production, and it is worth making: a deployment that keeps both addressings

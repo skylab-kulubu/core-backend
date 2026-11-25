@@ -2047,7 +2047,7 @@ up from there. The name, uploader, upload time and size stay. Files outside
 the `answer_file` size or type rule are moved all the same (counted): the
 rule is for new uploads, and the scan below is what protects their readers.
 The hub's wizard also leaves out of the export any Media whose id or key
-appears in the CMS, SkyMail or core's own tables (other than Media's), so a
+appears in the CMS, SkyNotify or core's own tables (other than Media's), so a
 file shown by its address elsewhere is not closed.
 
 The running core's [scan worker](#the-scan-worker) scans each moved Media as

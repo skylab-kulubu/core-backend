@@ -13,7 +13,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/commpref"
 )
 
-// RecipientsResolvePath is where SkyMail asks, for the recipients a sender
+// RecipientsResolvePath is where SkyNotify asks, for the recipients a sender
 // chose, which are a person and whether the mail may go to each (ADR 0072
 // karar 3, docs/news-audience.md "Recipients"). The colon is literal; Fiber
 // reads an unescaped one as a parameter.
@@ -21,7 +21,7 @@ const RecipientsResolvePath = "/internal/v1/audiences/recipients\\:resolve"
 
 // RecipientsResolveHandler serves POST
 // /internal/v1/audiences/recipients:resolve. Only a service account holding
-// commpref.AudienceRole (SkyMail's) may call it; the route is internal
+// commpref.AudienceRole (SkyNotify's) may call it; the route is internal
 // (middlewares.InternalRouteGuard).
 type RecipientsResolveHandler struct {
 	svc *commpref.Recipients

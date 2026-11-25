@@ -12,7 +12,7 @@ render_realms() {
      | {id, username, enabled: true, emailVerified: true, firstName, lastName, email: .school,
         attributes: {schoolEmail: [.school], personalEmail: [.personal]},
         credentials: [{type: "password", value: $password, temporary: false}],
-        clientRoles: {skymail: ["skymail:access", "skymail:mails:read"], "harness-cms": ["cms:access"]},
+        clientRoles: {skynotify: ["skynotify:access", "skynotify:mails:read"], "harness-cms": ["cms:access"]},
         federatedIdentities: (if .key == "p1"
           then [{identityProvider: "OBS", userId: "0b500001-0000-4000-8000-000000000001", userName: "obs-p1"}]
           else [] end)}]' <"$HARNESS_DIR/lib/persons.tsv")
@@ -24,16 +24,16 @@ render_realms() {
         firstName: .[3], lastName: .[4], email: .[5],
         credentials: [{type: "password", value: $password, temporary: false}]}]' <"$HARNESS_DIR/lib/persons.tsv")
   mkdir -p "$STATE/realm"
-  jq --argjson users "$users" --arg core "$CORE_CLIENT_SECRET" --arg skymail "$SKYMAIL_SERVICE_CLIENT_SECRET" \
+  jq --argjson users "$users" --arg core "$CORE_CLIENT_SECRET" --arg skynotify "$SKYNOTIFY_SERVICE_CLIENT_SECRET" \
     --arg obs "$OBS_BROKER_CLIENT_SECRET" '
     .users = $users
     | .clients |= map(if .secret == "__CORE_CLIENT_SECRET__" then .secret = $core
-                      elif .secret == "__SKYMAIL_SERVICE_CLIENT_SECRET__" then .secret = $skymail else . end)
+                      elif .secret == "__SKYNOTIFY_SERVICE_CLIENT_SECRET__" then .secret = $skynotify else . end)
     | .identityProviders |= map(.config.clientSecret = $obs)
     | .users += [
         {username: "service-account-core", enabled: true, serviceAccountClientId: "core",
          clientRoles: {"realm-management": ["manage-users", "view-users", "query-users", "query-groups", "view-clients", "query-clients"]}},
-        {username: "service-account-skymail-backend", enabled: true, serviceAccountClientId: "skymail-backend",
+        {username: "service-account-skynotify-backend", enabled: true, serviceAccountClientId: "skynotify-backend",
          clientRoles: {"realm-management": ["view-users", "view-clients", "query-groups", "query-users"]}},
         {username: "harness-admin", enabled: true, emailVerified: true, firstName: "Harness", lastName: "Admin",
          email: "erasure-alarm-admin@harness.invalid", groups: ["/ADMIN"]}
@@ -116,10 +116,10 @@ service_ready() { # service_ready URL
 }
 
 provision_services() {
-  log "starting core, SkyMail, CMS, the Forms stub and the hold proxy"
-  dc up -d core skymail cms forms hold-proxy
+  log "starting core, SkyNotify, CMS, the Forms stub and the hold proxy"
+  dc up -d core skynotify cms forms hold-proxy
   wait_until 180 3 service_ready http://core:8080/v1/ready || { dc logs --tail 60 core >&2; return 1; }
-  wait_until 180 3 service_ready http://skymail:3000/ready || { dc logs --tail 60 skymail >&2; return 1; }
+  wait_until 180 3 service_ready http://skynotify:3000/ready || { dc logs --tail 60 skynotify >&2; return 1; }
   wait_until 180 3 service_ready http://cms:5000/health/ready || { dc logs --tail 60 cms >&2; return 1; }
   wait_until 60 2 service_ready http://forms:8080/api/health || { dc logs --tail 60 forms >&2; return 1; }
   log "services ready"

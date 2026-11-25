@@ -17,7 +17,7 @@ import (
 type eventReminderConfig struct {
 	// On is EVENT_REMINDER_NOTIFICATION: unset or off is off, on is on.
 	On bool
-	// Type is SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY: unset is event.reminder,
+	// Type is SKYNOTIFY_EVENT_REMINDER_TEMPLATE_KEY: unset is event.reminder,
 	// empty plans nothing.
 	Type string
 	// PerMinute is EVENT_REMINDER_PER_MINUTE: unset is
@@ -32,7 +32,7 @@ func eventReminderFromEnv(getenv func(string) string, lookup func(string) (strin
 	if err != nil {
 		return eventReminderConfig{}, err
 	}
-	cfg := eventReminderConfig{On: on, Type: templateKey(lookup, "SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY", mail.EventReminderType), PerMinute: eventreminder.DefaultPerMinute}
+	cfg := eventReminderConfig{On: on, Type: templateKey(lookup, "SKYNOTIFY_EVENT_REMINDER_TEMPLATE_KEY", mail.EventReminderType), PerMinute: eventreminder.DefaultPerMinute}
 	if raw := strings.TrimSpace(getenv("EVENT_REMINDER_PER_MINUTE")); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 0 {
@@ -45,10 +45,10 @@ func eventReminderFromEnv(getenv func(string) string, lookup func(string) (strin
 
 // startEventReminder starts the worker that plans and sends the reminder
 // the day before an Event until ctx is cancelled, and answers a channel that
-// closes once it has stopped. Off, without SkyMail, or with an empty
+// closes once it has stopped. Off, without SkyNotify, or with an empty
 // template key, nothing is planned: turned on later, it plans the Events of
 // the next day from that evening's 18:00 on.
-func startEventReminder(ctx context.Context, cfg eventReminderConfig, queue eventreminder.Queue, events *event.PostgresStore, tickets ticket.Store, users user.Store, sky *mail.SkyMail, page ticket.PageConfig, apiOrigin string, logf func(string, ...any)) <-chan struct{} {
+func startEventReminder(ctx context.Context, cfg eventReminderConfig, queue eventreminder.Queue, events *event.PostgresStore, tickets ticket.Store, users user.Store, sky *mail.SkyNotify, page ticket.PageConfig, apiOrigin string, logf func(string, ...any)) <-chan struct{} {
 	off := make(chan struct{})
 	close(off)
 	switch {
@@ -56,10 +56,10 @@ func startEventReminder(ctx context.Context, cfg eventReminderConfig, queue even
 		logf("event reminder: off (EVENT_REMINDER_NOTIFICATION is not on)")
 		return off
 	case sky == nil:
-		logf("event reminder: off (SkyMail is not configured)")
+		logf("event reminder: off (SkyNotify is not configured)")
 		return off
 	case cfg.Type == "":
-		logf("event reminder: off (SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY is empty)")
+		logf("event reminder: off (SKYNOTIFY_EVENT_REMINDER_TEMPLATE_KEY is empty)")
 		return off
 	}
 	svc, err := eventreminder.NewService(eventreminder.Config{

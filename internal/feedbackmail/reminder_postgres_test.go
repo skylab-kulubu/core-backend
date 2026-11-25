@@ -84,7 +84,7 @@ func TestReminderOnceADayWithTheSameLinks(t *testing.T) {
 	}
 }
 
-// Who answered every form gets no reminder; nor does a mail SkyMail
+// Who answered every form gets no reminder; nor does a mail SkyNotify
 // refused, nor one whose reminder is more than a week late.
 func TestReminderSkips(t *testing.T) {
 	f := newFixture(t)

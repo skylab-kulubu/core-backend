@@ -89,7 +89,7 @@ there is nothing to tell (Yusuf: the team page notice is not sent).
 `./core-backend team-page-notice`, dry or `-apply`, refuses every run with
 exit 2 ("ekip sayfaları varsayılan açık; bu bildirim artık gönderilmez")
 whatever the environment holds, and reads or writes nothing: no Keycloak,
-database or SkyMail. The ledger `team_page_notices` and its account
+database or SkyNotify. The ledger `team_page_notices` and its account
 erasure stay. What follows is how it worked.
 
 
@@ -98,7 +98,7 @@ on the first day of the transition, that the pages will show only those who
 consent (ekip-yetki-devri ticket 21). Who consented stays listed and who
 withdrew is hidden already, so neither is told. It is a transactional mail:
 it tells a person of a change in how their own data is published (KVKK
-art. 10), so it goes on SkyMail's `islem` stream, reads no preference and
+art. 10), so it goes on SkyNotify's `islem` stream, reads no preference and
 carries no unsubscribe link. Nothing promotional goes into it.
 
 Run inside the core container (working directory `/app`, the binary is
@@ -115,8 +115,8 @@ not on `PATH`), after the template is seeded and
   nobody erased or being erased) without a team page decision, written to
   at Keycloak's primary e-mail; nobody disabled or without an address. One
   mail per person, naming every roster that lists them.
-- **Template:** SkyMail `core.team-page-consent-notice` (skymail-frontend
-  `emails/core-team-page-consent-notice.tsx`; `SKYMAIL_TEAM_PAGE_NOTICE_TEMPLATE_KEY`
+- **Template:** SkyNotify `core.team-page-consent-notice` (skynotify-frontend
+  `emails/core-team-page-consent-notice.tsx`; `SKYNOTIFY_TEAM_PAGE_NOTICE_TEMPLATE_KEY`
   replaces the key). Variables: `FirstName`, `Teams` ("WEBLAB · Web
   Geliştirme, AGC"), `HideAt` (the transition's end, Europe/Istanbul,
   "11.11.2026 00:00"), `SettingsURL` (Account Center's Kulüp profili page:
@@ -125,10 +125,10 @@ not on `PATH`), after the template is seeded and
   first and last name; the mail then says so).
 - **Once:** the ledger `team_page_notices` (migration `20261030100000`: the
   person's id and when) is written before each mail. A second run mails
-  nobody it holds. A mail SkyMail refused is taken out of the ledger and
+  nobody it holds. A mail SkyNotify refused is taken out of the ledger and
   goes on the next run; one sent without an answer stays in it and is never
-  sent again (SkyMail's `/single` reads no idempotency key). A run stopped
-  (Ctrl-C, SIGTERM) before a mail reached SkyMail takes that person's row
+  sent again (SkyNotify's `/single` reads no idempotency key). A run stopped
+  (Ctrl-C, SIGTERM) before a mail reached SkyNotify takes that person's row
   out too. A Group list Keycloak read with a branch missing stops the run
   before anything is sent (exit 1, run it again).
 - **Keeping:** a row is the proof the person was told: only their id and
@@ -140,6 +140,6 @@ not on `PATH`), after the template is seeded and
   before; who decided since is left out like the first time.
 - **Refusals:** no `TEAM_PAGE_CONSENT_GRACE_UNTIL`, or one that has passed,
   exits 2; consents off (`CONTACT_CONSENT_KEY` unset: nobody could consent)
-  or a template SkyMail does not know exits 3; Keycloak (an incomplete Group
+  or a template SkyNotify does not know exits 3; Keycloak (an incomplete Group
   list too), the database or a refused mail exits 1 (run it again). The record printed is counts only,
   never a person.

@@ -29,7 +29,7 @@ func TestParseClients(t *testing.T) {
 		}
 	}
 	config := testConfig(t)
-	if !config.Enabled() || config.AppOf("skyforms-local") != "forms" || config.AppOf("frontend-main") != "" || !config.Known("panel") || config.Known("skymail") {
+	if !config.Enabled() || config.AppOf("skyforms-local") != "forms" || config.AppOf("frontend-main") != "" || !config.Known("panel") || config.Known("skynotify") {
 		t.Fatalf("config = %s", config)
 	}
 	if got := strings.Join(config.Apps(), ","); got != "account,forms,panel" {
@@ -67,7 +67,7 @@ func TestServiceAuthorizesByTheTokensClient(t *testing.T) {
 		{"forms writes panel", apppref.ErrWrongClient, func() error { _, err := svc.Put(ctx, forms, "panel", "k", value, 1, nil); return err }},
 		{"forms resets panel", apppref.ErrWrongClient, func() error { return svc.Reset(ctx, forms, "panel") }},
 		{"forms reads the summary", apppref.ErrWrongClient, func() error { _, err := svc.Summaries(ctx, forms); return err }},
-		{"unknown app", apppref.ErrUnknownApp, func() error { _, err := svc.Get(ctx, forms, "skymail"); return err }},
+		{"unknown app", apppref.ErrUnknownApp, func() error { _, err := svc.Get(ctx, forms, "skynotify"); return err }},
 		{"unmapped client", apppref.ErrWrongClient, func() error { _, err := svc.Get(ctx, person("frontend-main"), "forms"); return err }},
 		{"account center reads forms", apppref.ErrWrongClient, func() error { _, err := svc.Get(ctx, person("account-center"), "forms"); return err }},
 		{"account center writes forms", apppref.ErrWrongClient, func() error {

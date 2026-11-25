@@ -150,7 +150,7 @@ func TestAppPreferencesRefuseOtherClientsAndServiceAccounts(t *testing.T) {
 		{"forms writes panel", forms, fiber.MethodPut, appPrefRoot + "/panel/density", fiber.StatusForbidden, "app_preference_wrong_client"},
 		{"forms resets panel", forms, fiber.MethodDelete, appPrefRoot + "/panel", fiber.StatusForbidden, "app_preference_wrong_client"},
 		{"forms reads the summary", forms, fiber.MethodGet, appPrefRoot, fiber.StatusForbidden, "app_preference_wrong_client"},
-		{"unknown app", forms, fiber.MethodGet, appPrefRoot + "/skymail", fiber.StatusNotFound, "app_preference_unknown_app"},
+		{"unknown app", forms, fiber.MethodGet, appPrefRoot + "/skynotify", fiber.StatusNotFound, "app_preference_unknown_app"},
 		{"the site", e.token(t, "frontend-main"), fiber.MethodGet, appPrefRoot + "/forms", fiber.StatusForbidden, "app_preference_wrong_client"},
 		{"account center reads forms", e.token(t, "account-center"), fiber.MethodGet, appPrefRoot + "/forms", fiber.StatusForbidden, "app_preference_wrong_client"},
 		{"account center writes forms", e.token(t, "account-center"), fiber.MethodPut, appPrefRoot + "/forms/forms.list", fiber.StatusForbidden, "app_preference_wrong_client"},
