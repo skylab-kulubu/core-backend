@@ -194,7 +194,7 @@ func (s *service) Organizers(ctx context.Context, p authz.Principal, id uuid.UUI
 	if err != nil {
 		return Organizers{}, err
 	}
-	if !s.authz.Allow(p, resource(e.OwnerTeam), authz.Update) {
+	if !s.authz.Allow(p, s.eventResource(e, authz.TypeEvent), authz.Update) {
 		return Organizers{}, ErrForbidden
 	}
 	people, err := s.store.CoOrganizerPeople(ctx, e.ID)
@@ -232,12 +232,12 @@ func (s *service) organizers(p authz.Principal, e Event, people []OrganizerPerso
 	return out
 }
 
-// canManageOrganizers reports whether p may change e's Co-organizers: never
-// while the writes are off (EVENT_CO_ORGANIZERS_WRITE). Until the
-// Co-organizer decisions come (ManageOrganizers, the Owner team's Leaders),
-// only who holds event:manage (YK, ADMIN) may.
-func (s *service) canManageOrganizers(p authz.Principal, _ Event) bool {
-	return s.coOrganizersWrite && s.authz.Permitted(p, authz.RoleEventManage)
+// canManageOrganizers reports whether p may change e's Co-organizers
+// (authz.ManageOrganizers: Privileged and the Owner team's Leaders, never
+// a Co-organizer): never while the writes are off
+// (EVENT_CO_ORGANIZERS_WRITE).
+func (s *service) canManageOrganizers(p authz.Principal, e Event) bool {
+	return s.coOrganizersWrite && s.authz.Allow(p, s.eventResource(e, authz.TypeEvent), authz.ManageOrganizers)
 }
 
 // SetOrganizers replaces the Event's Co-organizer lists with in's, once

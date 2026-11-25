@@ -67,10 +67,14 @@ func TestCoOrganizersPostgres(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT added_by FROM event_co_organizers WHERE event_id = $1 AND user_id = $2`, first.ID, ada).Scan(&addedBy); err != nil || addedBy != adder {
 		t.Fatalf("added_by %v %v", addedBy, err)
 	}
-	// The Owner team's Leader edits the Event but may not change the list:
-	// the person's name, not their e-mail.
-	read, err := svc.Organizers(ctx, ownerLeader, first.ID)
+	// ARTLAB's Leader, a Co-organizer, edits the Event but may not change
+	// the list: the person's name, not their e-mail; the Owner team's
+	// Leader manages it and reads the e-mail.
+	read, err := svc.Organizers(ctx, unrelatedLead, first.ID)
 	if err != nil || read.CanManage || len(read.People) != 1 || read.People[0].Name != "Ada Lovelace" || read.People[0].Email != "" {
+		t.Fatalf("the Co-organizer's Leader reads %+v %v", read.People, err)
+	}
+	if read, err = svc.Organizers(ctx, ownerLeader, first.ID); err != nil || !read.CanManage || read.People[0].Email != "ada@example.test" {
 		t.Fatalf("the Owner team's Leader reads %+v %v", read.People, err)
 	}
 	if _, err := svc.SetOrganizers(ctx, actor, second.ID, event.OrganizersInput{Teams: []event.OrganizerTeamInput{{Code: "OYUNLAB"}}}); err != nil {

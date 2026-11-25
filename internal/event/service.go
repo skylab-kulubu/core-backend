@@ -121,6 +121,9 @@ type service struct {
 	teams authz.TeamTree
 	// coOrganizersWrite lets SetOrganizers write (EVENT_CO_ORGANIZERS_WRITE).
 	coOrganizersWrite bool
+	// now is the clock a Co-organizer person's end is read against; nil is
+	// time.Now.
+	now func() time.Time
 }
 
 func NewService(store Store, az authz.Authorizer, publicBase ...string) Service {
@@ -139,15 +142,32 @@ func (s *service) publishAll(events []Event) []Event {
 	return withPublicMediaAll(events, s.addresses)
 }
 
+// resource is an Owner team's Event decision alone, without an Event's
+// Co-organizers: creating an Event in it, moving an Event to or from it, a
+// team's own lists. A decision on an existing Event reads eventResource.
 func resource(ownerTeam string) authz.Resource {
 	return authz.Resource{Type: authz.TypeEvent, OwnerTeam: ownerTeam}
 }
 
-// readsAttendeeNote reports whether p may read the attendee note of an Event
-// of ownerTeam: who may edit it, and who reads its Tickets.
-func (s *service) readsAttendeeNote(p authz.Principal, ownerTeam string) bool {
-	return s.authz.Allow(p, resource(ownerTeam), authz.Update) ||
-		s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ownerTeam}, authz.Read)
+// eventResource is e's decision of type t, its Co-organizers included
+// (AuthzResource), at the service's now.
+func (s *service) eventResource(e Event, t authz.Type) authz.Resource {
+	return AuthzResource(e, t, s.clock())
+}
+
+// clock is the service's now: its now, or time.Now without one.
+func (s *service) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
+// readsAttendeeNote reports whether p may read e's attendee note: who may
+// edit it, and who reads its Tickets.
+func (s *service) readsAttendeeNote(p authz.Principal, e Event) bool {
+	return s.authz.Allow(p, s.eventResource(e, authz.TypeEvent), authz.Update) ||
+		s.authz.Allow(p, s.eventResource(e, authz.TypeTicket), authz.Read)
 }
 
 func (s *service) CanAssign(p authz.Principal, ownerTeam string) bool {
@@ -162,7 +182,11 @@ func (s *service) CanAssign(p authz.Principal, ownerTeam string) bool {
 // The Event's Ticket counts (ticketCount, waitlistCount) only to who may
 // edit it; anyone sees whether it is full (docs/event-capacity.md).
 func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
-	if p == nil || !s.CanAssign(*p, in.OwnerTeam) {
+	in.Viewer = nil
+	if p != nil {
+		in.Viewer = s.viewer(*p, in)
+	}
+	if p == nil || !s.authz.Allow(*p, s.eventResource(in, authz.TypeEvent), authz.Assign) {
 		in.DoorStaffIDs = nil
 	}
 	in.TicketCount, in.WaitlistCount = nil, nil
@@ -170,21 +194,21 @@ func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
 	// edit the Event; anyone sees the teams shown as Co-organizer.
 	in.CoOrganizersView, in.CoOrganizerIDsView = nil, nil
 	in.CoOrganizerTeams = PublicCoOrganizerTeams(in)
-	if p != nil && len(in.CoOrganizers)+len(in.CoOrganizerIDs) > 0 && s.authz.Allow(*p, resource(in.OwnerTeam), authz.Update) {
+	if p != nil && len(in.CoOrganizers)+len(in.CoOrganizerIDs) > 0 && s.authz.Allow(*p, s.eventResource(in, authz.TypeEvent), authz.Update) {
 		in.CoOrganizersView = slices.Clone(in.CoOrganizers)
 		in.CoOrganizerIDsView = slices.Clone(in.CoOrganizerIDs)
 	}
 	// The attendee note (the venue's Wi-Fi) only to who may edit the Event,
 	// and to who reads its Tickets (DK; Yusuf, 2026-11-25), read-only.
 	in.AttendeeNoteView = nil
-	if p != nil && s.readsAttendeeNote(*p, in.OwnerTeam) {
+	if p != nil && s.readsAttendeeNote(*p, in) {
 		note := ""
 		if in.AttendeeNote != nil {
 			note = *in.AttendeeNote
 		}
 		in.AttendeeNoteView = &note
 	}
-	if p == nil || !s.authz.Allow(*p, resource(in.OwnerTeam), authz.Update) {
+	if p == nil || !s.authz.Allow(*p, s.eventResource(in, authz.TypeEvent), authz.Update) {
 		in.Files = servableItems(in.Files)
 		in.Videos = servableItems(in.Videos)
 	} else {
@@ -244,20 +268,13 @@ func (s *service) List(ctx context.Context, p *authz.Principal, ownerTeam string
 	return s.publishAll(s.visibleOnly(p, events)), nil
 }
 
-// visibleOnly are the events p may see, decided once per Owner team.
+// visibleOnly are the events p may see, decided per Event: its
+// Co-organizers are its own (docs/co-organizers.md).
 func (s *service) visibleOnly(p *authz.Principal, events []Event) []Event {
-	drafts := make(map[string]bool)
 	out := make([]Event, 0, len(events))
 	for _, e := range events {
-		if e.Status == StatusDraft {
-			ok, seen := drafts[e.OwnerTeam]
-			if !seen {
-				ok = s.VisibleTo(p, e)
-				drafts[e.OwnerTeam] = ok
-			}
-			if !ok {
-				continue
-			}
+		if e.Status == StatusDraft && !s.VisibleTo(p, e) {
+			continue
 		}
 		out = append(out, e)
 	}
@@ -274,7 +291,7 @@ func (s *service) ListLifecycle(ctx context.Context, p authz.Principal, ownerTea
 	}
 	visible := make([]Event, 0, len(events))
 	for _, item := range events {
-		if s.authz.Allow(p, resource(item.OwnerTeam), authz.Delete) {
+		if s.authz.Allow(p, s.eventResource(item, authz.TypeEvent), authz.Delete) {
 			visible = append(visible, item)
 		}
 	}
@@ -384,14 +401,18 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 	if err != nil {
 		return Event{}, err
 	}
-	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
+	if !s.authz.Allow(p, s.eventResource(existing, authz.TypeEvent), authz.Update) {
 		return Event{}, ErrForbidden
 	}
 	in, err := build(existing)
 	if err != nil {
 		return Event{}, err
 	}
-	if in.OwnerTeam != existing.OwnerTeam && !s.authz.Allow(p, resource(in.OwnerTeam), authz.Update) {
+	// Moving the Event to another Owner team is the Owner team's: who may
+	// edit both teams' Events, a Co-organizer seat on this one aside
+	// (docs/co-organizers.md).
+	if in.OwnerTeam != existing.OwnerTeam &&
+		(!s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) || !s.authz.Allow(p, resource(in.OwnerTeam), authz.Update)) {
 		return Event{}, ErrForbidden
 	}
 	if in.Name == "" || in.Location == "" {
@@ -423,7 +444,7 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 		}
 		s.guardForms(&in, kept)
 	}
-	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Assign) {
+	if !s.authz.Allow(p, s.eventResource(existing, authz.TypeEvent), authz.Assign) {
 		in.DoorStaffIDs = existing.DoorStaffIDs
 	}
 	newCover := in.CoverImageID != nil && (existing.CoverImageID == nil || *existing.CoverImageID != *in.CoverImageID)
@@ -470,7 +491,7 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 	if err != nil {
 		return err
 	}
-	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Delete) {
+	if !s.authz.Allow(p, s.eventResource(existing, authz.TypeEvent), authz.Delete) {
 		return ErrForbidden
 	}
 	// Only a draft is deleted (ADR 0066, decision 3); a published or
@@ -494,7 +515,7 @@ func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	if err != nil {
 		return Event{}, err
 	}
-	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Delete) {
+	if !s.authz.Allow(p, s.eventResource(existing, authz.TypeEvent), authz.Delete) {
 		return Event{}, ErrForbidden
 	}
 	// Its forms were released when it was archived: one taken since by
@@ -521,7 +542,7 @@ func (s *service) AddImages(ctx context.Context, p authz.Principal, id uuid.UUID
 	if err != nil {
 		return Event{}, err
 	}
-	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
+	if !s.authz.Allow(p, s.eventResource(existing, authz.TypeEvent), authz.Update) {
 		return Event{}, ErrForbidden
 	}
 	inGallery := make(map[uuid.UUID]bool, len(existing.Images))
@@ -634,7 +655,7 @@ func (s *service) editableForFiles(ctx context.Context, p authz.Principal, id uu
 	if err != nil {
 		return Event{}, err
 	}
-	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
+	if !s.authz.Allow(p, s.eventResource(existing, authz.TypeEvent), authz.Update) {
 		return Event{}, ErrForbidden
 	}
 	return existing, nil
@@ -671,23 +692,16 @@ func (s *service) RemoveImages(ctx context.Context, p authz.Principal, id uuid.U
 	if err != nil {
 		return Event{}, err
 	}
-	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
+	if !s.authz.Allow(p, s.eventResource(existing, authz.TypeEvent), authz.Update) {
 		return Event{}, ErrForbidden
 	}
 	updated, err := s.store.RemoveImages(ctx, id, ids)
 	return s.detail(ctx, updated, err)
 }
 
-func (s *service) ownerResource(owner string, t authz.Type) authz.Resource {
-	return authz.Resource{Type: t, OwnerTeam: owner}
-}
-
-func (s *service) eventOwner(ctx context.Context, eventID uuid.UUID) (string, error) {
-	ev, err := s.store.Get(ctx, eventID)
-	if err != nil {
-		return "", err
-	}
-	return ev.OwnerTeam, nil
+// eventOf is the current Event a day or Session's decision is made on.
+func (s *service) eventOf(ctx context.Context, eventID uuid.UUID) (Event, error) {
+	return s.store.Get(ctx, eventID)
 }
 
 func (s *service) ListDays(ctx context.Context, p *authz.Principal, eventID uuid.UUID) ([]Day, error) {
@@ -702,7 +716,7 @@ func (s *service) ListDaysLifecycle(ctx context.Context, p authz.Principal, even
 	if err != nil {
 		return nil, err
 	}
-	if !s.authz.Allow(p, s.ownerResource(ev.OwnerTeam, authz.TypeEventDay), authz.Delete) {
+	if !s.authz.Allow(p, s.eventResource(ev, authz.TypeEventDay), authz.Delete) {
 		return nil, ErrForbidden
 	}
 	return s.store.ListDaysLifecycle(ctx, eventID, visibility)
@@ -723,11 +737,11 @@ func (s *service) CreateDay(ctx context.Context, p authz.Principal, d Day) (Day,
 	if d.EventID == uuid.Nil {
 		return Day{}, ErrInvalid
 	}
-	owner, err := s.eventOwner(ctx, d.EventID)
+	ev, err := s.eventOf(ctx, d.EventID)
 	if err != nil {
 		return Day{}, err
 	}
-	if !s.authz.Allow(p, s.ownerResource(owner, authz.TypeEventDay), authz.Create) {
+	if !s.authz.Allow(p, s.eventResource(ev, authz.TypeEventDay), authz.Create) {
 		return Day{}, ErrForbidden
 	}
 	return s.store.CreateDay(ctx, d)
@@ -738,11 +752,11 @@ func (s *service) UpdateDay(ctx context.Context, p authz.Principal, id uuid.UUID
 	if err != nil {
 		return Day{}, err
 	}
-	owner, err := s.eventOwner(ctx, existing.EventID)
+	ev, err := s.eventOf(ctx, existing.EventID)
 	if err != nil {
 		return Day{}, err
 	}
-	if !s.authz.Allow(p, s.ownerResource(owner, authz.TypeEventDay), authz.Update) {
+	if !s.authz.Allow(p, s.eventResource(ev, authz.TypeEventDay), authz.Update) {
 		return Day{}, ErrForbidden
 	}
 	d.ID = existing.ID
@@ -759,7 +773,7 @@ func (s *service) DeleteDay(ctx context.Context, p authz.Principal, id uuid.UUID
 	if err != nil {
 		return err
 	}
-	if !s.authz.Allow(p, s.ownerResource(ev.OwnerTeam, authz.TypeEventDay), authz.Delete) {
+	if !s.authz.Allow(p, s.eventResource(ev, authz.TypeEventDay), authz.Delete) {
 		return ErrForbidden
 	}
 	withForms, err := s.daySessionForms(ctx, id)
@@ -802,7 +816,7 @@ func (s *service) RestoreDay(ctx context.Context, p authz.Principal, id uuid.UUI
 	if err != nil {
 		return Day{}, err
 	}
-	if !s.authz.Allow(p, s.ownerResource(ev.OwnerTeam, authz.TypeEventDay), authz.Delete) {
+	if !s.authz.Allow(p, s.eventResource(ev, authz.TypeEventDay), authz.Delete) {
 		return Day{}, ErrForbidden
 	}
 	if ev.ArchivedAt != nil {
@@ -844,7 +858,7 @@ func (s *service) ListSessionsLifecycle(ctx context.Context, p authz.Principal, 
 	if err != nil {
 		return nil, err
 	}
-	if !s.authz.Allow(p, s.ownerResource(ev.OwnerTeam, authz.TypeSession), authz.Delete) {
+	if !s.authz.Allow(p, s.eventResource(ev, authz.TypeSession), authz.Delete) {
 		return nil, ErrForbidden
 	}
 	return s.store.ListSessionsLifecycle(ctx, eventDayID, visibility)
@@ -876,12 +890,12 @@ func (s *service) CurrentSession(ctx context.Context, p *authz.Principal, eventD
 	return ResolveCurrent(sessions, at), nil
 }
 
-func (s *service) sessionOwner(ctx context.Context, eventDayID uuid.UUID) (string, error) {
+func (s *service) sessionEvent(ctx context.Context, eventDayID uuid.UUID) (Event, error) {
 	day, err := s.store.GetDay(ctx, eventDayID)
 	if err != nil {
-		return "", err
+		return Event{}, err
 	}
-	return s.eventOwner(ctx, day.EventID)
+	return s.eventOf(ctx, day.EventID)
 }
 
 func (s *service) CreateSession(ctx context.Context, p authz.Principal, sess Session) (_ Session, err error) {
@@ -889,11 +903,11 @@ func (s *service) CreateSession(ctx context.Context, p authz.Principal, sess Ses
 	if err := validateSession(sess); err != nil {
 		return Session{}, ErrInvalid
 	}
-	owner, err := s.sessionOwner(ctx, sess.EventDayID)
+	ev, err := s.sessionEvent(ctx, sess.EventDayID)
 	if err != nil {
 		return Session{}, err
 	}
-	if !s.authz.Allow(p, s.ownerResource(owner, authz.TypeSession), authz.Create) {
+	if !s.authz.Allow(p, s.eventResource(ev, authz.TypeSession), authz.Create) {
 		return Session{}, ErrForbidden
 	}
 	if sess, err = sess.certificateMarks(CountedByDefault(sess.SessionType), false); err != nil {
@@ -926,11 +940,11 @@ func (s *service) UpdateSession(ctx context.Context, p authz.Principal, id uuid.
 	if err != nil {
 		return Session{}, err
 	}
-	owner, err := s.sessionOwner(ctx, existing.EventDayID)
+	ev, err := s.sessionEvent(ctx, existing.EventDayID)
 	if err != nil {
 		return Session{}, err
 	}
-	if !s.authz.Allow(p, s.ownerResource(owner, authz.TypeSession), authz.Update) {
+	if !s.authz.Allow(p, s.eventResource(ev, authz.TypeSession), authz.Update) {
 		return Session{}, ErrForbidden
 	}
 	sess.ID = existing.ID
@@ -977,7 +991,7 @@ func (s *service) DeleteSession(ctx context.Context, p authz.Principal, id uuid.
 	if err != nil {
 		return err
 	}
-	if !s.authz.Allow(p, s.ownerResource(ev.OwnerTeam, authz.TypeSession), authz.Delete) {
+	if !s.authz.Allow(p, s.eventResource(ev, authz.TypeSession), authz.Delete) {
 		return ErrForbidden
 	}
 	if err := s.store.ArchiveSession(ctx, id, lifecycle.ActorID(p.ID)); err != nil {
@@ -1004,7 +1018,7 @@ func (s *service) RestoreSession(ctx context.Context, p authz.Principal, id uuid
 	if err != nil {
 		return Session{}, err
 	}
-	if !s.authz.Allow(p, s.ownerResource(ev.OwnerTeam, authz.TypeSession), authz.Delete) {
+	if !s.authz.Allow(p, s.eventResource(ev, authz.TypeSession), authz.Delete) {
 		return Session{}, ErrForbidden
 	}
 	if ev.ArchivedAt != nil || day.ArchivedAt != nil {
@@ -1055,7 +1069,7 @@ func (s *service) AssignSeason(ctx context.Context, p authz.Principal, eventID u
 	if err != nil {
 		return Event{}, err
 	}
-	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
+	if !s.authz.Allow(p, s.eventResource(existing, authz.TypeEvent), authz.Update) {
 		return Event{}, ErrForbidden
 	}
 	updated, err := s.store.SetSeason(ctx, eventID, seasonID)

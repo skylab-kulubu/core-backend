@@ -340,8 +340,22 @@ func TestCopySkipsWhatItMayNotWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(got.Skipped, []string{event.SkippedDoorStaff, event.SkippedCover}) || got.Event.CoverImageID != nil || len(got.Event.DoorStaffIDs) != 0 {
+	// The Owner team's Leader assigns door staff (Yusuf S3, 2026-11-25):
+	// they come along; the cover does not.
+	if !slices.Equal(got.Skipped, []string{event.SkippedCover}) || got.Event.CoverImageID != nil || !slices.Equal(got.Event.DoorStaffIDs, source.DoorStaffIDs) {
 		t.Fatalf("skipped %v cover %v staff %v", got.Skipped, got.Event.CoverImageID, got.Event.DoorStaffIDs)
+	}
+	// A member who may copy (GECEKODU's) but assigns none: door staff are
+	// left out and named.
+	gecekodu, err := store.Create(ctx, event.Event{Name: "Gece", Location: "YTÜ", OwnerTeam: "GECEKODU", DoorStaffIDs: source.DoorStaffIDs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU"}}
+	memberIn := copyIn("Gece kopya", "2027-01-01T10:00:00+03:00")
+	memberIn.IncludeDoorStaff = true
+	if got, _, err = svc.Copy(ctx, member, gecekodu.ID, memberIn); err != nil || !slices.Equal(got.Skipped, []string{event.SkippedDoorStaff}) || len(got.Event.DoorStaffIDs) != 0 {
+		t.Fatalf("a member's copy: %v %v %v", got.Skipped, got.Event.DoorStaffIDs, err)
 	}
 	// Not asked for, door staff are not named.
 	got, _, err = svc.Copy(ctx, copyLeader, source.ID, copyIn("Kopya 2", "2027-01-01T10:00:00+03:00"))
@@ -390,9 +404,9 @@ func TestCopyIntoAnotherTeam(t *testing.T) {
 		t.Fatalf("both: %v %v", fresh, err)
 	}
 	// The cover is WEBLAB's Event's: the Team media library keeps it out of
-	// ARTLAB; door staff need event:manage in ARTLAB.
+	// ARTLAB; door staff come along, assigned by ARTLAB's Leader.
 	if got.Event.OwnerTeam != "ARTLAB" || got.Event.Status != event.StatusDraft || got.Event.CoverImageID != nil ||
-		!slices.Equal(got.Skipped, []string{event.SkippedDoorStaff, event.SkippedCover}) {
+		!slices.Equal(got.Skipped, []string{event.SkippedCover}) {
 		t.Fatalf("into ARTLAB: %s %v %v", got.Event.OwnerTeam, got.Event.CoverImageID, got.Skipped)
 	}
 	// Retried into the same team: the same copy; into another: a conflict.

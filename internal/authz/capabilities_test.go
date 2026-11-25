@@ -123,7 +123,7 @@ func TestCapabilities_Leader(t *testing.T) {
 		"certificate.issue", "certificate.read", "certificate.revoke",
 		"certificateTemplate.assign", "certificateTemplate.create", "certificateTemplate.read", "certificateTemplate.update",
 		"competition.archive", "competition.manage", "competitor.create", "competitor.delete", "competitor.read", "competitor.update",
-		"door.checkIn", "event.create", "event.delete", "event.update", "ticket.assign", "ticket.read",
+		"door.checkIn", "event.assignDoorStaff", "event.create", "event.delete", "event.update", "ticket.assign", "ticket.read",
 	}
 	if got := trueKeys(weblab.Can); !slices.Equal(got, want) {
 		t.Errorf("WEBLAB = %v\nwant %v", got, want)

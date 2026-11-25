@@ -197,10 +197,10 @@ func TestPostgresCopySkips(t *testing.T) {
 	leader := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
 	in := copyIn("Kopya", "2027-03-13T19:00:00+03:00")
 	in.IncludeDoorStaff, in.IncludeCompetitions = true, true
-	// A WEBLAB Leader binds templates and manages Competitions, but does
-	// not assign door staff (event:manage).
+	// A WEBLAB Leader binds templates, manages Competitions and assigns
+	// door staff (Yusuf S3, 2026-11-25; docs/co-organizers.md).
 	got, _, err := d.svc.Copy(ctx, leader, d.source.ID, in)
-	if err != nil || !slices.Equal(got.Skipped, []string{event.SkippedDoorStaff}) {
+	if err != nil || len(got.Skipped) != 0 {
 		t.Fatalf("leader: %v %v", got.Skipped, err)
 	}
 	// Another team's template does not serve WEBLAB.
