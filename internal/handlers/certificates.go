@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"log"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -41,6 +42,7 @@ func certError(c fiber.Ctx, err error) error {
 	case errors.Is(err, certificate.ErrJustificationTooLong):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "justification_too_long")
 	case errors.As(err, &unavailable):
+		log.Printf("certificate renderer unavailable: %s %s: %v", c.Method(), loggedPath(c.Path()), err)
 		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", unavailable.Code)
 	case errors.As(err, &refused):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", refused.Code)

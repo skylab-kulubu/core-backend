@@ -475,7 +475,10 @@ func eventDates(ev event.Event) string {
 }
 
 func safeErrorCode(err error) string {
+	var unavailable *UnavailableError
 	switch {
+	case errors.As(err, &unavailable):
+		return unavailable.Code
 	case errors.Is(err, ErrInvalid):
 		return "invalid_input"
 	case errors.Is(err, ErrNotFound):
