@@ -279,6 +279,41 @@ func TestTheSummarySaysWhatChanged(t *testing.T) {
 	}
 }
 
+// Only the fields the editor said to tell are announced: a place changed by
+// a save that said no is not in the summary (the mail still shows the
+// Event's venue as it is), and a row whose told fields did not change is
+// dropped. A row of an older release (no told fields) announces all.
+func TestOnlyTheToldFieldsAreAnnounced(t *testing.T) {
+	for name, tc := range map[string]struct {
+		told    []string
+		summary string
+	}{
+		"time told, place saved without telling": {[]string{event.FieldStart}, "Etkinliğin saati değişti."},
+		"place told":                             {[]string{event.FieldLocation}, "Etkinliğin yeri değişti."},
+		"an older release's row":                 {nil, "Etkinliğin saati ve yeri değişti."},
+		"nothing told changed":                   {[]string{}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := setup(t)
+			f.queue1(func(r *eventupdatenotify.Queued) { r.ToldFields = tc.told })
+			report, err := f.svc.Pass(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.summary == "" {
+				if report.Dropped != 1 || len(f.mail.calls) != 0 {
+					t.Fatalf("report %+v, calls %d", report, len(f.mail.calls))
+				}
+				return
+			}
+			vars := f.mail.calls[0].vars
+			if vars["ChangeSummary"] != tc.summary || vars["NewVenue"] != "Kongre Merkezi" || vars["NewStartsAt"] != "20.11.2026 18:30" {
+				t.Fatalf("vars %v, want summary %q with the Event as it is", vars, tc.summary)
+			}
+		})
+	}
+}
+
 func TestNothingIsToldOfAnEventNoLongerNewsOrBackAsItWas(t *testing.T) {
 	for name, mutate := range map[string]func(*event.Event, *eventupdatenotify.Queued){
 		"undone within the window": func(ev *event.Event, r *eventupdatenotify.Queued) {
