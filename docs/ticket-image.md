@@ -72,7 +72,7 @@ not saved yet) is `ticket_image_invalid`. The answer:
 | 400 | `ticket_image_invalid` | unknown source, region out of the image, `cover` without a cover or with another cover than the Event's, `upload` without an image |
 | 403 | | not an editor of the Event |
 | 403 | `media_team_mismatch` | the image is used on an Event of another Owner team |
-| 404 | | no such Event |
+| 404 | `event_not_found` | no such Event (a core without this route answers 404 without a code) |
 | 422 | `media_purpose_mismatch`, `media_not_linkable` | the image's purpose does not fit, or it cannot be linked |
 
 ## Media

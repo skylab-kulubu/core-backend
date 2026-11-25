@@ -5,6 +5,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/ticketimage"
 )
 
@@ -18,9 +19,15 @@ func NewTicketImageHandler(svc *ticketimage.Service) *TicketImageHandler {
 	return &TicketImageHandler{svc: svc}
 }
 
+// ticketImageError answers a refusal. A missing Event says event_not_found,
+// so the panel tells it (a new Event not saved yet) from an older core
+// without the route (a 404 without a code).
 func ticketImageError(c fiber.Ctx, err error) error {
-	if errors.Is(err, ticketimage.ErrInvalid) {
+	switch {
+	case errors.Is(err, ticketimage.ErrInvalid):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "ticket_image_invalid")
+	case errors.Is(err, event.ErrNotFound):
+		return problemCode(c, fiber.StatusNotFound, "Not Found", "event_not_found")
 	}
 	return eventError(c, err)
 }
