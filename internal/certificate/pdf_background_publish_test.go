@@ -27,10 +27,12 @@ import (
 // (pdfengines.formDataPdfStampsOrWatermarks), so a number in it is a 400,
 // and a pdf watermark needs a file under the field "watermark".
 type gotenbergContract struct {
-	pages     int
-	status    int // of the convert route, when not 0
-	converted atomic.Int32
-	options   atomic.Value
+	pages          int
+	status         int  // of the convert route, when not 0
+	metadataStatus int  // of the metadata route, when not 0
+	unreachable    bool // the server is closed before core calls it
+	converted      atomic.Int32
+	options        atomic.Value
 }
 
 func (g *gotenbergContract) server(t *testing.T) *httptest.Server {
@@ -42,6 +44,10 @@ func (g *gotenbergContract) server(t *testing.T) *httptest.Server {
 		}
 		switch r.URL.Path {
 		case "/forms/pdfengines/metadata/read":
+			if g.metadataStatus != 0 {
+				http.Error(w, "Bad Gateway", g.metadataStatus)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]map[string]any{
 				"background.pdf": {"PageCount": g.pages, "MIMEType": "application/pdf"},
@@ -95,6 +101,9 @@ type pdfBackgroundCertificates struct {
 func newPDFBackgroundCertificates(t *testing.T, gotenberg *gotenbergContract) pdfBackgroundCertificates {
 	t.Helper()
 	srv := gotenberg.server(t)
+	if gotenberg.unreachable {
+		srv.Close()
+	}
 	az := authz.NewAuthorizer(authz.DefaultPolicy())
 	mediaStore := media.NewMemoryStore()
 	public, private := media.NewMemoryBlob(), media.NewMemoryBlob()
@@ -220,7 +229,7 @@ func TestPublishTemplateWithPDFBackgroundSaysWhy(t *testing.T) {
 	}{
 		{"two pages", &gotenbergContract{pages: 2}, onePagePDF(), certificate.CodeBackgroundPDFPages},
 		{"not a PDF", &gotenbergContract{pages: 1}, []byte("GIF89a not a pdf"), certificate.CodeBackgroundPDFUnreadable},
-		{"renderer down", &gotenbergContract{pages: 1, status: http.StatusServiceUnavailable}, onePagePDF(), certificate.CodeRenderFailed},
+		{"renderer refuses the page", &gotenbergContract{pages: 1, status: http.StatusBadRequest}, onePagePDF(), certificate.CodeRenderFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -233,6 +242,35 @@ func TestPublishTemplateWithPDFBackgroundSaysWhy(t *testing.T) {
 			}
 			if tc.gotenberg.converted.Load() != 0 {
 				t.Fatal("a refused background was rendered")
+			}
+		})
+	}
+}
+
+// A renderer that is down, unreachable or failing on its side (5xx) is
+// unavailable, not an invalid template: 503 with renderer_unavailable, and
+// an issuance job tries it again (it is not ErrInvalid).
+func TestPublishTemplateWhileTheRendererIsDown(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		gotenberg *gotenbergContract
+	}{
+		{"metadata answers 502", &gotenbergContract{pages: 1, metadataStatus: http.StatusBadGateway}},
+		{"convert answers 503", &gotenbergContract{pages: 1, status: http.StatusServiceUnavailable}},
+		{"unreachable", &gotenbergContract{pages: 1, unreachable: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := newPDFBackgroundCertificates(t, tc.gotenberg)
+			template := c.template(t, c.publicPDF(t, onePagePDF()))
+			_, err := c.service.PublishTemplate(context.Background(), c.admin, template.ID)
+			var unavailable *certificate.UnavailableError
+			if !errors.As(err, &unavailable) || unavailable.Code != certificate.CodeRendererUnavailable {
+				t.Fatalf("err = %v, want %s", err, certificate.CodeRendererUnavailable)
+			}
+			if errors.Is(err, certificate.ErrInvalid) {
+				t.Fatal("an unavailable renderer must not read as an invalid template: issuance would stop retrying")
 			}
 		})
 	}

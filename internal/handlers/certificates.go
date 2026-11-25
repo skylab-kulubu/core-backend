@@ -24,6 +24,7 @@ func certError(c fiber.Ctx, err error) error {
 	// A template's layout, asset or rendering refused, with what to change
 	// (docs/certificate-template-errors.md).
 	var refused *certificate.InvalidError
+	var unavailable *certificate.UnavailableError
 	switch {
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
@@ -39,6 +40,8 @@ func certError(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "justification_required")
 	case errors.Is(err, certificate.ErrJustificationTooLong):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "justification_too_long")
+	case errors.As(err, &unavailable):
+		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", unavailable.Code)
 	case errors.As(err, &refused):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", refused.Code)
 	case errors.Is(err, certificate.ErrInvalid):

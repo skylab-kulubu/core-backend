@@ -8,7 +8,7 @@ import (
 
 func (s *service) renderLayoutPDF(ctx context.Context, layout Layout, data PreviewData, verifyURL string, assets AssetReader) ([]byte, error) {
 	if s.render == nil {
-		return nil, invalid(CodeRendererUnavailable)
+		return nil, rendererUnavailable(nil)
 	}
 	prepared := layout
 	var backgroundPDF []byte
@@ -41,7 +41,7 @@ func (s *service) renderLayoutPDF(ctx context.Context, layout Layout, data Previ
 	}
 	renderer, ok := s.render.(PDFBackgroundRenderer)
 	if !ok {
-		return nil, invalid(CodeRendererUnavailable)
+		return nil, rendererUnavailable(nil)
 	}
 	return renderer.PDFWithBackground(ctx, html, backgroundPDF)
 }

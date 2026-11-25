@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"testing"
@@ -35,6 +36,9 @@ func TestEventStatusRefusalsCarryTheirProblemCode(t *testing.T) {
 		{"template refused with a reason", func(c fiber.Ctx) error {
 			return certError(c, fmt.Errorf("publish: %w", &certificate.InvalidError{Code: certificate.CodeBackgroundPDFPages}))
 		}, fiber.StatusBadRequest, "background_pdf_pages"},
+		{"renderer down", func(c fiber.Ctx) error {
+			return certError(c, fmt.Errorf("publish: %w", &certificate.UnavailableError{Code: certificate.CodeRendererUnavailable, Err: errors.New("dial tcp: connection refused")}))
+		}, fiber.StatusServiceUnavailable, "renderer_unavailable"},
 		{"template refused without one", func(c fiber.Ctx) error {
 			return certError(c, certificate.ErrInvalid)
 		}, fiber.StatusBadRequest, ""},

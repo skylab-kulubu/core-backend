@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -94,7 +95,7 @@ func (g *Gotenberg) Screenshot(ctx context.Context, html string, width, height, 
 func (g *Gotenberg) PDFWithBackground(ctx context.Context, html string, background []byte) ([]byte, error) {
 	switch {
 	case g == nil || strings.TrimSpace(g.BaseURL) == "":
-		return nil, invalid(CodeRendererUnavailable)
+		return nil, rendererUnavailable(nil)
 	case len(background) > maxRenderedPDFBytes:
 		return nil, invalid(CodeBackgroundPDFTooLarge)
 	case !bytes.Contains(background[:min(len(background), 1024)], []byte("%PDF-")):
@@ -112,7 +113,7 @@ func (g *Gotenberg) PDFWithBackground(ctx context.Context, html string, backgrou
 
 func (g *Gotenberg) convertHTML(ctx context.Context, html string, background []byte, header string, flags ...string) ([]byte, error) {
 	if g == nil || strings.TrimSpace(g.BaseURL) == "" {
-		return nil, invalid(CodeRendererUnavailable)
+		return nil, rendererUnavailable(nil)
 	}
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
@@ -178,13 +179,17 @@ func (g *Gotenberg) convertHTML(ctx context.Context, html string, background []b
 	client := g.client()
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, rendererUnavailable(err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRenderedPDFBytes+1))
 	if err != nil {
-		return nil, err
+		return nil, rendererUnavailable(err)
 	}
+	if resp.StatusCode >= 500 {
+		return nil, rendererUnavailable(fmt.Errorf("gotenberg: HTTP %d", resp.StatusCode))
+	}
+	// A 4xx: Gotenberg refused what core sent, which a retry does not change.
 	if resp.StatusCode >= 300 || len(body) == 0 || len(body) > maxRenderedPDFBytes || !bytes.HasPrefix(body, []byte("%PDF-")) {
 		return nil, invalid(CodeRenderFailed)
 	}
@@ -193,7 +198,7 @@ func (g *Gotenberg) convertHTML(ctx context.Context, html string, background []b
 
 func (g *Gotenberg) validateSinglePagePDF(ctx context.Context, background []byte) error {
 	if g == nil || strings.TrimSpace(g.BaseURL) == "" {
-		return invalid(CodeRendererUnavailable)
+		return rendererUnavailable(nil)
 	}
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
@@ -214,11 +219,17 @@ func (g *Gotenberg) validateSinglePagePDF(ctx context.Context, background []byte
 	req.Header.Set("Content-Type", w.FormDataContentType())
 	resp, err := g.client().Do(req)
 	if err != nil {
-		return err
+		return rendererUnavailable(err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil || resp.StatusCode >= 300 {
+	if err != nil {
+		return rendererUnavailable(err)
+	}
+	if resp.StatusCode >= 500 {
+		return rendererUnavailable(fmt.Errorf("gotenberg: HTTP %d", resp.StatusCode))
+	}
+	if resp.StatusCode >= 300 {
 		// Gotenberg answers 400 for a file it cannot read.
 		return invalid(CodeBackgroundPDFUnreadable)
 	}

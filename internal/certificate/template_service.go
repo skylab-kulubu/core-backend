@@ -126,7 +126,7 @@ func (s *service) PublishTemplate(ctx context.Context, p authz.Principal, id uui
 		return TemplateVersion{}, err
 	}
 	if s.render == nil {
-		return TemplateVersion{}, invalid(CodeRendererUnavailable)
+		return TemplateVersion{}, rendererUnavailable(nil)
 	}
 	sample := PreviewData{
 		RecipientName: "Örnek Katılımcı",
@@ -181,7 +181,7 @@ func (s *service) PreviewTemplate(ctx context.Context, p authz.Principal, id uui
 		return nil, err
 	}
 	if s.render == nil {
-		return nil, invalid(CodeRendererUnavailable)
+		return nil, rendererUnavailable(nil)
 	}
 	if sample.RecipientName == "" {
 		sample.RecipientName = "Ada Lovelace"
@@ -210,7 +210,7 @@ func (s *service) PreviewEvent(ctx context.Context, p authz.Principal, eventID u
 		return nil, ErrForbidden
 	}
 	if s.render == nil {
-		return nil, invalid(CodeRendererUnavailable)
+		return nil, rendererUnavailable(nil)
 	}
 	resolved, err := s.resolveForEvent(ctx, ev)
 	if err != nil {

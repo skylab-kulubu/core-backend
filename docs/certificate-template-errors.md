@@ -1,6 +1,6 @@
 # Certificate template errors
 
-Saving, previewing or publishing a certificate template (`POST /v1/certificate-templates`, `PUT /v1/certificate-templates/{id}`, `POST /v1/certificate-templates/{id}/preview`, `POST /v1/certificate-templates/{id}/publish`) and the Event preview (`POST /v1/events/{eventId}/certificates/preview`) answer a refused layout, asset or rendering with `400` and a `code` (RFC 9457 extension member), so the panel can say what to change. A `400` without a `code` is still a malformed request (an unreadable body or id).
+Saving, previewing or publishing a certificate template (`POST /v1/certificate-templates`, `PUT /v1/certificate-templates/{id}`, `POST /v1/certificate-templates/{id}/preview`, `POST /v1/certificate-templates/{id}/publish`) and the Event preview (`POST /v1/events/{eventId}/certificates/preview`) answer a refused layout, asset or rendering with `400` and a `code` (RFC 9457 extension member), so the panel can say what to change, and a renderer that is down with `503` and `renderer_unavailable`. A `400` without a `code` is still a malformed request (an unreadable body or id).
 
 ## Required layers
 
@@ -31,8 +31,8 @@ A layout needs the recipient's name (`recipientName`) and at least one of the ve
 | `background_pdf_unreadable` | A PDF background that is not a PDF the renderer can read. |
 | `background_pdf_too_large` | A PDF background over 20 MB. |
 | `background_pdf_pages` | A PDF background that is not exactly one page. |
-| `renderer_unavailable` | Core runs without its PDF renderer (Gotenberg). |
-| `render_failed` | The renderer refused or failed the page. |
+| `renderer_unavailable` | `503`: core runs without its PDF renderer (Gotenberg), cannot reach it, or it failed on its side (5xx). A later try may pass; an issuance job tries again. |
+| `render_failed` | The renderer refused the page (4xx) or answered no PDF. |
 
 ## PDF backgrounds
 

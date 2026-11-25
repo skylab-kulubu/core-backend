@@ -11,6 +11,29 @@ func (e *InvalidError) Is(target error) bool { return target == ErrInvalid }
 
 func invalid(code string) error { return &InvalidError{Code: code} }
 
+// UnavailableError is a renderer that could not be reached, is not set up
+// or failed on its side (a 5xx): a later try may pass. It is not
+// ErrInvalid, so an issuance job tries it again; the API answers 503 with
+// its code. Err is the cause, for the log.
+type UnavailableError struct {
+	Code string
+	Err  error
+}
+
+func (e *UnavailableError) Error() string {
+	if e.Err == nil {
+		return "certificate: unavailable: " + e.Code
+	}
+	return "certificate: unavailable: " + e.Code + ": " + e.Err.Error()
+}
+
+func (e *UnavailableError) Unwrap() error { return e.Err }
+
+// rendererUnavailable is the renderer down or missing, with its cause.
+func rendererUnavailable(cause error) error {
+	return &UnavailableError{Code: CodeRendererUnavailable, Err: cause}
+}
+
 // The codes of a template's layout, its assets and its rendering.
 const (
 	CodeTemplateNameInvalid     = "template_name_invalid"
