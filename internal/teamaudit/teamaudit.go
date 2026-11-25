@@ -206,10 +206,12 @@ const (
 	// nil subject, and Actor.Client names the job.
 	BasisSystem Basis = "system"
 	// BasisEventEditor: the actor may edit the Event by the Event policy
-	// (a member of a team whose members edit its Events, GECEKODU) without
-	// being Privileged or a Leader. Only a Ticket's cancellation and its
-	// taking back (docs/ticket-cancellation.md) carry it; Actor.ViaGroupID
-	// names the Event's team.
+	// (a member of a team whose members edit its Events, GECEKODU; one of
+	// its Co-organizers, docs/co-organizers.md) without being Privileged or
+	// a Leader of the Event's team or a Team above it. A Ticket's
+	// cancellation and its taking back (docs/ticket-cancellation.md), its
+	// promotion and import, and its resend and link renewal by a
+	// Co-organizer carry it; Actor.ViaGroupID names the Event's team.
 	BasisEventEditor Basis = "event_editor"
 	// BasisConsole is a change made in Keycloak's own console (or its Admin
 	// REST API by anyone but core), read back from Keycloak's admin events
@@ -529,7 +531,8 @@ func (r Record) normalize() (Record, string) {
 	case BasisEventEditor:
 		if _, err := uuid.Parse(r.Actor.ViaGroupID); err != nil ||
 			(r.Action != ActionTicketCancel && r.Action != ActionTicketRestore && r.Action != ActionTicketPromote &&
-				r.Action != ActionTicketImport && r.Action != ActionTicketImportPreview) {
+				r.Action != ActionTicketImport && r.Action != ActionTicketImportPreview &&
+				r.Action != ActionTicketResend && r.Action != ActionTicketLinkRenew) {
 			return r, "invalid_basis"
 		}
 	case BasisConsole:

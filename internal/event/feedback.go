@@ -78,7 +78,13 @@ func (s *service) shownTo(p *authz.Principal, err error) error {
 	if !errors.As(err, &inUse) || inUse.Holder == nil {
 		return err
 	}
-	if VisibleTo(s.authz, p, Event{Status: inUse.Holder.Status, OwnerTeam: inUse.Holder.OwnerTeam}) {
+	// The holder as stored, its Co-organizers included; the 409's summary
+	// when it cannot be read.
+	holder := Event{Status: inUse.Holder.Status, OwnerTeam: inUse.Holder.OwnerTeam}
+	if stored, getErr := s.store.GetIncludingArchived(context.Background(), inUse.Holder.ID); getErr == nil {
+		holder = stored
+	}
+	if s.VisibleTo(p, holder) {
 		return err
 	}
 	return &FormInUseError{FormID: inUse.FormID}

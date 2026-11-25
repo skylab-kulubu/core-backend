@@ -236,7 +236,7 @@ func (s *service) Rescan(ctx context.Context, p authz.Principal, eventID uuid.UU
 	if err != nil {
 		return RescanResult{}, err
 	}
-	if !s.canIssue(p, ev.OwnerTeam) {
+	if !s.canIssue(p, ev) {
 		return RescanResult{}, ErrForbidden
 	}
 	if err := issuable(ev); err != nil {

@@ -248,7 +248,7 @@ func (s *service) ListAssignableUsers(ctx context.Context, p authz.Principal, ev
 	if err := s.seen(&p, ev); err != nil {
 		return nil, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign) {
+	if !s.authz.Allow(p, eventResource(ev, authz.TypeTicket), authz.Assign) {
 		return nil, ErrForbidden
 	}
 	query = strings.TrimSpace(query)
@@ -586,7 +586,7 @@ func (s *service) readable(ctx context.Context, p authz.Principal, t Ticket) err
 	if err := s.seen(&p, ev); err != nil {
 		return err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Read) {
+	if !s.authz.Allow(p, eventResource(ev, authz.TypeTicket), authz.Read) {
 		return ErrForbidden
 	}
 	return nil
@@ -630,7 +630,7 @@ func (s *service) ApplyForOther(ctx context.Context, p authz.Principal, eventID,
 	if err := s.seen(&p, ev); err != nil {
 		return Ticket{}, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign) {
+	if !s.authz.Allow(p, eventResource(ev, authz.TypeTicket), authz.Assign) {
 		return Ticket{}, ErrForbidden
 	}
 	if ev.Status == event.StatusCancelled {
@@ -853,8 +853,8 @@ func (s *service) untrustedWaitlisted(ctx context.Context, eventID uuid.UUID, a 
 // is offered to. A product's service identity is not one.
 func (s *service) operatorOf(p authz.Principal, ev event.Event) bool {
 	return p.Product == "" && p.ID != "" &&
-		(s.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: ev.OwnerTeam}, authz.Update) ||
-			s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign))
+		(s.authz.Allow(p, eventResource(ev, authz.TypeEvent), authz.Update) ||
+			s.authz.Allow(p, eventResource(ev, authz.TypeTicket), authz.Assign))
 }
 
 // guestApplyTrusted reports whether p may write a guest with a token, see the
@@ -1082,7 +1082,7 @@ func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uu
 	if err := s.seen(&p, ev); err != nil {
 		return nil, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Read) {
+	if !s.authz.Allow(p, eventResource(ev, authz.TypeTicket), authz.Read) {
 		return nil, ErrForbidden
 	}
 	tickets, err := s.tickets.ListByEvent(ctx, eventID)
@@ -1110,7 +1110,7 @@ func (s *service) ListByEventStatus(ctx context.Context, p authz.Principal, even
 	if err := s.seen(&p, ev); err != nil {
 		return nil, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Read) {
+	if !s.authz.Allow(p, eventResource(ev, authz.TypeTicket), authz.Read) {
 		return nil, ErrForbidden
 	}
 	tickets, err := store.ListByEventStatus(ctx, eventID, statuses)
@@ -2083,20 +2083,32 @@ func (s *service) sessionActivity(ctx context.Context, ev event.Event, sessionID
 }
 
 func doorResource(ev event.Event) authz.Resource {
-	ids := make([]string, 0, len(ev.DoorStaffIDs))
-	for _, id := range ev.DoorStaffIDs {
-		ids = append(ids, id.String())
-	}
-	return authz.Resource{
-		Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam, DoorStaffIDs: ids,
-	}
+	return eventResource(ev, authz.TypeTicket)
 }
 
-func principalInOwnerTeam(p authz.Principal, ownerTeam string) bool {
-	if ownerTeam == "" {
+// doorScanTeams are the Event's organizer teams whose membership counts at
+// the door: its Owner team and its "members" Co-organizer teams
+// (docs/co-organizers.md), those p is in alone (memberOfTeam).
+func doorScanTeams(p authz.Principal, ev event.Event) []string {
+	var out []string
+	if memberOfTeam(p, ev.OwnerTeam) {
+		out = append(out, ev.OwnerTeam)
+	}
+	for _, team := range ev.CoOrganizers {
+		if team.Management == event.ManagementMembers && memberOfTeam(p, team.Code) {
+			out = append(out, team.Code)
+		}
+	}
+	return out
+}
+
+// memberOfTeam reports whether one of p's Groups is the team's or below it,
+// by its code as a whole path segment.
+func memberOfTeam(p authz.Principal, team string) bool {
+	if team == "" {
 		return false
 	}
-	marker := "/" + ownerTeam
+	marker := "/" + team
 	for _, group := range p.Groups {
 		if strings.HasSuffix(group, marker) || strings.Contains(group, marker+"/") {
 			return true
@@ -2105,15 +2117,27 @@ func principalInOwnerTeam(p authz.Principal, ownerTeam string) bool {
 	return false
 }
 
+// canUseDoor reports whether p may work ev's door: door staff, an
+// organizer team's Leader or a Co-organizer person, Privileged; or a member
+// of an organizer team whose membership counts while that team's Team door
+// scan is on, which is read only for the teams p is in.
 func (s *service) canUseDoor(ctx context.Context, p authz.Principal, ev event.Event) bool {
 	resource := doorResource(ev)
 	if s.authz.Allow(p, resource, authz.Validate) {
 		return true
 	}
-	if !principalInOwnerTeam(p, ev.OwnerTeam) {
+	teams := doorScanTeams(p, ev)
+	if len(teams) == 0 {
 		return false
 	}
-	resource.TeamDoorScan = s.teamDoorScan(ctx, ev.OwnerTeam)
+	for _, team := range teams {
+		if s.teamDoorScan(ctx, team) {
+			resource.TeamDoorScanTeams = append(resource.TeamDoorScanTeams, team)
+		}
+	}
+	if len(resource.TeamDoorScanTeams) == 0 {
+		return false
+	}
 	return s.authz.Allow(p, resource, authz.Validate)
 }
 

@@ -70,10 +70,10 @@ func (s *service) Sync(ctx context.Context, p authz.Principal, eventID uuid.UUID
 	// enough (a Privileged reader such as DK reads them, grup-yonetimi
 	// GY1); the caller must also operate the Event: update it or assign its
 	// Tickets, as for a guest application (review of #244, A1).
-	owner := ev.OwnerTeam
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: owner}, authz.Read) ||
-		!(s.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: owner}, authz.Update) ||
-			s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: owner}, authz.Assign)) {
+	now := time.Now()
+	if !s.authz.Allow(p, event.AuthzResource(ev, authz.TypeTicket, now), authz.Read) ||
+		!(s.authz.Allow(p, event.AuthzResource(ev, authz.TypeEvent, now), authz.Update) ||
+			s.authz.Allow(p, event.AuthzResource(ev, authz.TypeTicket, now), authz.Assign)) {
 		return Result{}, ErrForbidden
 	}
 	rows, err := s.tickets.ListByEvent(ctx, eventID)

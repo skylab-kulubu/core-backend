@@ -185,3 +185,32 @@ func TestOrganizers_EventVia(t *testing.T) {
 		}
 	}
 }
+
+// seats answers who holds a Co-organizer seat, by id.
+type seats map[string]bool
+
+func (s seats) HasCoOrganizerSeat(p Principal) bool { return s[p.ID] }
+
+// The Media upload rules of an Event's editor name no Event: a person who
+// may create none for any team uploads while they hold a Co-organizer seat
+// (docs/co-organizers.md); which Event the Media ends up on is decided
+// when it is linked. A service account never does.
+func TestOrganizers_UploadWithACoOrganizerSeat(t *testing.T) {
+	t.Parallel()
+	auth := NewAuthorizer(DefaultPolicy(), WithCoOrganizerSeats(seats{"person": true, "svc": true}))
+	for _, rule := range []MediaUploader{MediaUploaderEventEditor, MediaUploaderCertificateTemplateEditor} {
+		r := Resource{Type: TypeMedia, MediaUploader: rule}
+		if !auth.Allow(Principal{ID: "person"}, r, Upload) {
+			t.Errorf("%s: a seated person may not upload", rule)
+		}
+		if auth.Allow(Principal{ID: "nobody"}, r, Upload) {
+			t.Errorf("%s: a person without a seat uploads", rule)
+		}
+		if auth.Allow(Principal{ID: "svc", ServiceAccount: true}, r, Upload) {
+			t.Errorf("%s: a service account uploads", rule)
+		}
+	}
+	if NewAuthorizer(DefaultPolicy()).Allow(Principal{ID: "person"}, Resource{Type: TypeMedia, MediaUploader: MediaUploaderEventEditor}, Upload) {
+		t.Error("without the seats a person uploads")
+	}
+}

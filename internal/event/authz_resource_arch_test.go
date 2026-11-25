@@ -15,30 +15,21 @@ import (
 // resourcesFromAnEvent are the places, by file, that still build an
 // authz.Resource out of an Event's Owner team instead of reading
 // event.AuthzResource (docs/co-organizers.md). Such a decision does not see
-// the Event's Co-organizers. The list only shrinks: co-organizer ticket 03
-// moves each of them to the helper and empties it.
-var resourcesFromAnEvent = map[string]int{
-	"internal/certificate/event_template.go":   4,
-	"internal/certificate/queue_service.go":    3,
-	"internal/certificate/service.go":          2,
-	"internal/certificate/template_service.go": 4,
-	"internal/competition/service.go":          2,
-	"internal/competitor/service.go":           8,
-	"internal/dashboard/home_charts.go":        1,
-	"internal/dashboard/summary.go":            1,
-	"internal/formsfeed/backfill.go":           1,
-	"internal/handlers/feedback.go":            3,
-	"internal/ticket/cancel.go":                1,
-	"internal/ticket/event_door.go":            1,
-	"internal/ticket/resend.go":                1,
-	"internal/ticket/service.go":               8,
-}
+// the Event's Co-organizers. Co-organizer ticket 03 emptied it: it stays
+// empty.
+var resourcesFromAnEvent = map[string]int{}
 
 // ownerTeamOnPurpose are the decisions that read an Owner team alone on
 // purpose and stay: creating an Event in a team and moving an Event
-// between Owner teams (the Owner team's, never a Co-organizer's).
+// between Owner teams (the Owner team's, never a Co-organizer's); a
+// certificate template's own team (a team template is its team's to read
+// and write, whichever Events use it); and a certificate whose Event can
+// no longer be read, decided by the Owner team it was issued under.
 var ownerTeamOnPurpose = map[string]int{
-	"internal/event/service.go": 4,
+	"internal/event/service.go":                4,
+	"internal/certificate/event_template.go":   2,
+	"internal/certificate/template_service.go": 4,
+	"internal/certificate/service.go":          1,
 }
 
 // Every authz.Resource{..., OwnerTeam: x.OwnerTeam, ...}, and every call of

@@ -4,8 +4,10 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 )
 
 // SetCoOrganizers replaces the Event's Co-organizers as the database does,
@@ -54,4 +56,29 @@ func sortedCoOrganizers(teams []CoOrganizerTeam, people []uuid.UUID) ([]CoOrgani
 		slices.SortFunc(outPeople, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
 	}
 	return outTeams, outPeople
+}
+
+// HasCoOrganizerSeat is the memory store's: a current Event names p as a
+// person whose rights have not ended, or a team whose code is a segment
+// of one of p's Groups.
+func (s *MemoryStore) HasCoOrganizerSeat(p authz.Principal) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for _, e := range s.byID {
+		if e.ArchivedAt != nil {
+			continue
+		}
+		if r := AuthzResource(e, authz.TypeEvent, now); slices.Contains(r.CoOrganizerIDs, p.ID) {
+			return true
+		}
+		for _, team := range e.CoOrganizers {
+			for _, group := range p.Groups {
+				if slices.Contains(strings.Split(strings.Trim(group, "/"), "/"), team.Code) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

@@ -152,3 +152,23 @@ func (a *authorizer) EventVia(p Principal, r Resource) Via {
 	}
 	return via
 }
+
+// CoOrganizerSeats tells whether p holds a seat on some current Event as one
+// of its Co-organizers: a person whose rights have not ended, or a member
+// of a Co-organizer team. The Media upload rules of an Event's editor
+// (MediaUploaderEventEditor, MediaUploaderCertificateTemplateEditor) read
+// it, as they name no Event; which Event the Media ends up on is decided
+// when it is linked, so the answer may be wide (a "leaders" team's member).
+type CoOrganizerSeats interface {
+	HasCoOrganizerSeat(p Principal) bool
+}
+
+// WithCoOrganizerSeats lets the Media upload rules of an Event's editor
+// count Co-organizers. Without it only the Owner teams' editors upload.
+func WithCoOrganizerSeats(s CoOrganizerSeats) Option {
+	return func(a *authorizer) { a.coSeats = s }
+}
+
+func (a *authorizer) hasCoOrganizerSeat(p Principal) bool {
+	return a.coSeats != nil && p.ID != "" && !p.ServiceAccount && a.coSeats.HasCoOrganizerSeat(p)
+}

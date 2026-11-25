@@ -305,14 +305,14 @@ func (s *service) ListBindings(ctx context.Context, p authz.Principal) ([]Bindin
 	}
 	out := make([]Binding, 0, len(bindings))
 	for _, binding := range bindings {
-		owner, _, _, err := s.bindingScope(ctx, p, binding.Scope, binding.ScopeKey)
+		owner, _, ev, err := s.bindingScope(ctx, p, binding.Scope, binding.ScopeKey)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		if s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: owner}, authz.Assign) {
+		if s.canAssign(p, owner, ev) {
 			out = append(out, binding)
 		}
 	}
@@ -403,8 +403,8 @@ func (s *service) ClearBinding(ctx context.Context, p authz.Principal, scope, sc
 // template rule's Assign, and for an Event's binding (ev) who may edit the
 // Event too.
 func (s *service) canAssign(p authz.Principal, owner string, ev *event.Event) bool {
-	if ev != nil && s.canEditEvent(p, *ev) {
-		return true
+	if ev != nil {
+		return s.canEditEvent(p, *ev) || s.authz.Allow(p, eventResource(*ev, authz.TypeCertificateTemplate), authz.Assign)
 	}
 	return s.authz.Allow(p, templateResource(owner), authz.Assign)
 }

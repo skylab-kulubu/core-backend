@@ -582,7 +582,7 @@ func main() {
 	teamTree := identity.NewTeamTree(dir, identity.TeamTreeOptions{Logf: log.Printf})
 	// The same Groups carry the Teams' own settings (team_competition_manage).
 	az := authz.NewAuthorizer(authzPolicy, authz.WithRoleMetrics(authzRoleMetrics), authz.WithTeamTree(teamTree),
-		authz.WithTeamSettings(teamTree))
+		authz.WithTeamSettings(teamTree), authz.WithCoOrganizerSeats(events))
 	// The capabilities route's editableSites: the configured Site clients
 	// a person holds cms:access on, read with core's own service account.
 	// A hint for the admin panel, never an authorization.

@@ -50,6 +50,9 @@ type authorizer struct {
 	teams TeamTree
 	// settings are the Teams' own settings (WithTeamSettings), nil without.
 	settings TeamSettings
+	// coSeats tells who holds a Co-organizer seat on some Event
+	// (WithCoOrganizerSeats), nil without.
+	coSeats CoOrganizerSeats
 }
 
 // Option configures an Authorizer.
@@ -355,10 +358,13 @@ func (a *authorizer) allowMedia(p Principal, r Resource, action Action) bool {
 // is the list of rules the Media purpose catalogue may name (Known).
 var mediaUploaders = map[MediaUploader]func(a *authorizer, p Principal, r Resource) bool{
 	MediaUploaderAuthenticated: func(*authorizer, Principal, Resource) bool { return true },
+	// Who may create an Event for some Owner team, or holds a Co-organizer
+	// seat on a current Event (docs/co-organizers.md). Which Event the
+	// Media ends up on is checked when it is linked.
 	MediaUploaderEventEditor: func(a *authorizer, p Principal, _ Resource) bool {
 		return a.forSomeOwnerTeam(p, func(team string) bool {
 			return a.allowEvent(p, Resource{Type: TypeEvent, OwnerTeam: team}, Create)
-		})
+		}) || a.hasCoOrganizerSeat(p)
 	},
 	// Who may create a certificate template, or edit an Event: an Event's
 	// editor makes its Event template (docs/certificate-event-templates.md).
@@ -367,7 +373,7 @@ var mediaUploaders = map[MediaUploader]func(a *authorizer, p Principal, r Resour
 		return a.forSomeOwnerTeam(p, func(team string) bool {
 			return a.allowCertificateTemplate(p, Resource{Type: TypeCertificateTemplate, OwnerTeam: team}, Create) ||
 				a.allowEvent(p, Resource{Type: TypeEvent, OwnerTeam: team}, Update)
-		})
+		}) || a.hasCoOrganizerSeat(p)
 	},
 	// No person, whatever roles they hold: the service account of the
 	// product that owns the purpose, with the role that manages its Media

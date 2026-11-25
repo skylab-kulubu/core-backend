@@ -186,3 +186,53 @@ func TestCoOrganizersPostgres(t *testing.T) {
 		t.Fatalf("no Event: %v", err)
 	}
 }
+
+// HasCoOrganizerSeat: a person whose rights have not ended, and a member of
+// a Co-organizer team; not a person 30 days after the Event, nor anyone
+// else (authz.CoOrganizerSeats).
+func TestHasCoOrganizerSeatPostgres(t *testing.T) {
+	pool := testpostgres.Start(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	users := user.NewService(user.NewPostgresStore(pool))
+	current, ended := uuid.New(), uuid.New()
+	for _, id := range []uuid.UUID{current, ended} {
+		if _, _, err := users.Ensure(ctx, id, user.Profile{Email: id.String() + "@example.test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := event.NewPostgresStore(pool)
+	soon, past := time.Now().Add(24*time.Hour), time.Now().Add(-40*24*time.Hour)
+	for _, c := range []struct {
+		end    time.Time
+		people []uuid.UUID
+		teams  []event.CoOrganizerTeam
+	}{
+		{soon, []uuid.UUID{current}, []event.CoOrganizerTeam{{Code: "WEBLAB", Management: event.ManagementLeaders, Visibility: event.VisibilityHelper}}},
+		{past, []uuid.UUID{ended}, nil},
+	} {
+		e, err := store.Create(ctx, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "YK", EndDate: &c.end})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.SetCoOrganizers(ctx, event.CoOrganizersWrite{EventID: e.ID, OwnerTeam: "YK", Teams: c.teams, People: c.people}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, c := range map[string]struct {
+		p    authz.Principal
+		want bool
+	}{
+		"the current person":       {authz.Principal{ID: current.String()}, true},
+		"a WEBLAB member":          {authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB"}}, true},
+		"the person 30 days after": {authz.Principal{ID: ended.String()}, false},
+		"another team's Leader":    {authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/SANAT/ARTLAB/LIDERLER"}}, false},
+		"no id":                    {authz.Principal{ID: "x"}, false},
+	} {
+		if got := store.HasCoOrganizerSeat(c.p); got != c.want {
+			t.Errorf("%s: %v, want %v", name, got, c.want)
+		}
+	}
+}

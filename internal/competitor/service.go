@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -121,7 +122,7 @@ func (s *service) Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Com
 	if err != nil {
 		return Competitor{}, err
 	}
-	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: got.UserID.String()}
+	res := competitorResource(ev, got.UserID.String())
 	if !s.authz.Allow(p, res, authz.Read) {
 		return Competitor{}, ErrForbidden
 	}
@@ -140,7 +141,7 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in CreateInput)
 	if err := ev.StatusError(); err != nil {
 		return Competitor{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: in.UserID.String()}
+	res := competitorResource(ev, in.UserID.String())
 	if !s.authz.Allow(p, res, authz.Create) {
 		return Competitor{}, ErrForbidden
 	}
@@ -193,7 +194,7 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 		if !event.VisibleTo(s.authz, &p, from) {
 			return Competitor{}, ErrNotFound
 		}
-		res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: from.OwnerTeam, OwnerID: existing.UserID.String()}
+		res := competitorResource(from, existing.UserID.String())
 		if !s.authz.Allow(p, res, authz.Update) {
 			return Competitor{}, ErrForbidden
 		}
@@ -202,7 +203,7 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 	if err != nil {
 		return Competitor{}, err
 	}
-	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: existing.UserID.String()}
+	res := competitorResource(ev, existing.UserID.String())
 	if !s.authz.Allow(p, res, authz.Update) {
 		return Competitor{}, ErrForbidden
 	}
@@ -260,7 +261,7 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 	if !event.VisibleTo(s.authz, &p, ev) {
 		return ErrNotFound
 	}
-	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: existing.UserID.String()}
+	res := competitorResource(ev, existing.UserID.String())
 	if !s.authz.Allow(p, res, authz.Delete) {
 		return ErrForbidden
 	}
@@ -325,7 +326,7 @@ func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uu
 	if err != nil {
 		return nil, err
 	}
-	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam}
+	res := competitorResource(ev, "")
 	if s.authz.Allow(p, res, authz.Read) {
 		return s.withEvents(ctx, p, comps), nil
 	}
@@ -352,18 +353,36 @@ func (s *service) ListByUser(ctx context.Context, p authz.Principal, userID uuid
 	return s.withEvents(ctx, p, comps), nil
 }
 
+// ListByOwnerTeam lists the competitors of ownerTeam's Events: all of them
+// to who reads the team's (its members, Privileged); to anyone else only
+// those of the team's Events p reads as one of their Co-organizers, decided
+// per Event (docs/co-organizers.md), and ErrForbidden when there is none.
 func (s *service) ListByOwnerTeam(ctx context.Context, p authz.Principal, ownerTeam string) ([]Competitor, error) {
 	if ownerTeam == "" {
 		return nil, ErrInvalid
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ownerTeam}, authz.Read) {
-		return nil, ErrForbidden
-	}
+	teamWide := s.authz.Allow(p, authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ownerTeam}, authz.Read)
 	comps, err := s.competitors.ListByOwnerTeam(ctx, ownerTeam)
 	if err != nil {
 		return nil, err
 	}
-	return s.withEvents(ctx, p, comps), nil
+	if teamWide {
+		return s.withEvents(ctx, p, comps), nil
+	}
+	out := make([]Competitor, 0)
+	for _, c := range comps {
+		ev, err := s.events.Get(ctx, c.EventID)
+		if err != nil || !event.VisibleTo(s.authz, &p, ev) || !s.authz.Allow(p, competitorResource(ev, ""), authz.Read) {
+			continue
+		}
+		res := ev.Resource()
+		c.Event = &res
+		out = append(out, c)
+	}
+	if len(out) == 0 {
+		return nil, ErrForbidden
+	}
+	return out, nil
 }
 
 func (s *service) Winner(ctx context.Context, p authz.Principal, eventID uuid.UUID) (Competitor, error) {
@@ -371,7 +390,7 @@ func (s *service) Winner(ctx context.Context, p authz.Principal, eventID uuid.UU
 	if err != nil {
 		return Competitor{}, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam}, authz.Read) {
+	if !s.authz.Allow(p, competitorResource(ev, ""), authz.Read) {
 		return Competitor{}, ErrForbidden
 	}
 	got, err := s.competitors.Winner(ctx, eventID)
@@ -381,6 +400,9 @@ func (s *service) Winner(ctx context.Context, p authz.Principal, eventID uuid.UU
 	return s.withEvent(ctx, got), nil
 }
 
+// Leaderboard is ownerTeam's standings over all its Events: the team's own
+// (its members, Privileged). A Co-organizer of one of its Events reads that
+// Event's competitors, not the team's standings (docs/co-organizers.md).
 func (s *service) Leaderboard(ctx context.Context, p authz.Principal, ownerTeam string, seasonID *uuid.UUID) ([]LeaderboardEntry, error) {
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ownerTeam}, authz.Read) {
 		return nil, ErrForbidden
@@ -448,7 +470,7 @@ func assignRanks(entries []LeaderboardEntry) {
 // organizer (no owner on the resource), so a person removed by the Event's
 // managers does not put themselves, and the result they were given, back.
 func lifecycleResource(p authz.Principal, ev event.Event, c Competitor) authz.Resource {
-	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: c.UserID.String()}
+	res := competitorResource(ev, c.UserID.String())
 	if c.WithdrawnAt != nil && (c.WithdrawnBy == nil || c.WithdrawnBy.String() != p.ID) {
 		res.OwnerID = ""
 	}
@@ -477,4 +499,13 @@ func sameScore(a, b *float64) bool {
 		return a == b
 	}
 	return *a == *b
+}
+
+// competitorResource is the decision on a competitor of ev (ownerID its
+// person, "" for none): ev's, its Co-organizers included
+// (event.AuthzResource, docs/co-organizers.md).
+func competitorResource(ev event.Event, ownerID string) authz.Resource {
+	r := event.AuthzResource(ev, authz.TypeCompetitor, time.Now())
+	r.OwnerID = ownerID
+	return r
 }

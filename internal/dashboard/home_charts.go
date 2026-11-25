@@ -218,14 +218,9 @@ func (s *service) activity(ctx context.Context, p authz.Principal, now, today ti
 	}
 
 	readable := make([]uuid.UUID, 0, len(covered))
-	allowed := map[string]bool{}
 	for _, e := range covered {
-		v, seen := allowed[e.OwnerTeam]
-		if !seen {
-			v = s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificate, OwnerTeam: e.OwnerTeam}, authz.Read)
-			allowed[e.OwnerTeam] = v
-		}
-		if v {
+		// Per Event: its Co-organizers are its own (docs/co-organizers.md).
+		if s.authz.Allow(p, event.AuthzResource(e, authz.TypeCertificate, time.Now()), authz.Read) {
 			readable = append(readable, e.ID)
 		}
 	}

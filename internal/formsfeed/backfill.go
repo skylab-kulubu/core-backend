@@ -58,7 +58,7 @@ func (b *Backfills) Request(ctx context.Context, p authz.Principal, eventID, for
 	if err != nil {
 		return false, err
 	}
-	if p.ServiceAccount || !b.Authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: ev.OwnerTeam}, authz.Update) {
+	if p.ServiceAccount || !b.Authz.Allow(p, event.AuthzResource(ev, authz.TypeEvent, time.Now()), authz.Update) {
 		if ev.Status == event.StatusDraft {
 			// A draft is shown to its editors only (ADR 0066).
 			return false, ErrBackfillEventNotFound

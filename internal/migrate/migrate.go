@@ -2070,6 +2070,13 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND indexname = 'certificate_templates_one_per_event'
 			  AND indexdef LIKE 'CREATE UNIQUE INDEX%(event_id)%archived_at IS NULL%'
 		)`,
+	// A Ticket's resend and link renewal by an event editor (a
+	// Co-organizer's, docs/co-organizers.md): the basis check names them.
+	20261126190000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
+		  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.link.renew%'
+		  AND pg_get_constraintdef(oid) LIKE '%console%'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
