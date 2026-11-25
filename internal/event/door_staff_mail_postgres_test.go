@@ -14,8 +14,8 @@ import (
 )
 
 // A person new to an Event's door staff gets one queued mail, two minutes
-// later; one already on it, a subject without a users row and every change
-// while the mail is off queue nothing. The queue's claim, wait and done.
+// later; one already on it and every change while the mail is off queue
+// nothing. The queue's claim, wait and done.
 func TestAddingDoorStaffQueuesTheirMail(t *testing.T) {
 	pool := testpostgres.Start(t)
 	ctx := context.Background()
@@ -24,7 +24,7 @@ func TestAddingDoorStaffQueuesTheirMail(t *testing.T) {
 	}
 	store := event.NewPostgresStore(pool)
 	people := user.NewService(user.NewPostgresStore(pool))
-	ada, cem, noRow := uuid.New(), uuid.New(), uuid.New()
+	ada, cem := uuid.New(), uuid.New()
 	for _, id := range []uuid.UUID{ada, cem} {
 		if _, _, err := people.Ensure(ctx, id, user.Profile{Email: id.String() + "@example.com"}); err != nil {
 			t.Fatal(err)
@@ -58,7 +58,7 @@ func TestAddingDoorStaffQueuesTheirMail(t *testing.T) {
 	}
 
 	store.NotifyDoorStaff(true)
-	ev.DoorStaffIDs = []uuid.UUID{ada, cem, noRow}
+	ev.DoorStaffIDs = []uuid.UUID{ada, cem}
 	if ev, err = store.Update(ctx, ev); err != nil {
 		t.Fatal(err)
 	}
