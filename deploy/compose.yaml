@@ -115,6 +115,8 @@ services:
       GOTENBERG_URL: ${GOTENBERG_URL:-http://gotenberg:3000}
       PUBLIC_API_ORIGIN: ${PUBLIC_API_ORIGIN:-}
       PUBLIC_VERIFY_ORIGIN: ${PUBLIC_VERIFY_ORIGIN:-https://skyl.app/c}
+      # The certificate page's address: pdfUrl opens the PDF there (docs/certificate-pdf-address.md).
+      CERTIFICATE_PUBLIC_PAGE_ORIGIN: ${CERTIFICATE_PUBLIC_PAGE_ORIGIN:-}
       # Contact consents (docs/contact-consents.md): off while the key is unset.
       CONTACT_CONSENT_KEY: ${CONTACT_CONSENT_KEY:-}
       CONTACT_CONSENT_SERVICE_CLIENTS: ${CONTACT_CONSENT_SERVICE_CLIENTS:-}

@@ -27,7 +27,7 @@ Example valid item:
   },
   "status": "valid",
   "issuedAt": "2026-09-19T15:30:00Z",
-  "pdfUrl": "https://api.yildizskylab.com/v1/certificates/verify/75E614C7A33C08CB5C04804D6C24F9E7/pdf",
+  "pdfUrl": "https://yildizskylab.com/sertifika/75E614C7A33C08CB5C04804D6C24F9E7.pdf",
   "verifyUrl": "https://skyl.app/c/75E614C7A33C08CB5C04804D6C24F9E7",
   "share": {
     "title": "AGC 2026 sertifikası",
@@ -37,7 +37,7 @@ Example valid item:
 }
 ```
 
-A revoked item has `status: "revoked"` and `revokedAt`. Its `pdfUrl` is omitted; `verifyUrl` and `share` remain available. Unknown future statuses must render as neutral/unavailable, never as valid.
+`pdfUrl` is on the club's site when core has `CERTIFICATE_PUBLIC_PAGE_ORIGIN`, else on core's API host ([certificate-pdf-address.md](certificate-pdf-address.md)); open whichever address core gives. A revoked item has `status: "revoked"` and `revokedAt`. Its `pdfUrl` is omitted; `verifyUrl` and `share` remain available. Unknown future statuses must render as neutral/unavailable, never as valid.
 
 ## Screen behavior
 
