@@ -314,17 +314,19 @@ func TestService_PrivilegedAssignsDoorStaff(t *testing.T) {
 	}
 }
 
-func TestService_LeaderCannotAssignDoorStaff(t *testing.T) {
+// Door staff are assigned by Privileged and the Owner team's Leaders (Yusuf
+// S3, 2026-11-25): a member who edits the Event (GECEKODU) does not.
+func TestService_MemberCannotAssignDoorStaff(t *testing.T) {
 	t.Parallel()
 	_, svc := setup(t)
 	ctx := context.Background()
 	yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
-	leader := authz.Principal{ID: "l", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	leader := authz.Principal{ID: "m", Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU"}}
 	staff := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	created, err := svc.Create(ctx, yk, event.Event{
 		Name:         "Hack",
 		Location:     "YTÜ",
-		OwnerTeam:    "WEBLAB",
+		OwnerTeam:    "GECEKODU",
 		DoorStaffIDs: []uuid.UUID{staff},
 	})
 	if err != nil {
@@ -334,7 +336,7 @@ func TestService_LeaderCannotAssignDoorStaff(t *testing.T) {
 	updated, err := svc.Update(ctx, leader, created.ID, event.Event{
 		Name:         "Hack 2",
 		Location:     "Davutpaşa",
-		OwnerTeam:    "WEBLAB",
+		OwnerTeam:    "GECEKODU",
 		DoorStaffIDs: []uuid.UUID{uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")},
 	})
 	if err != nil {
@@ -350,7 +352,7 @@ func TestService_LeaderCannotAssignDoorStaff(t *testing.T) {
 	fromLeader, err := svc.Create(ctx, leader, event.Event{
 		Name:         "Mini",
 		Location:     "YTÜ",
-		OwnerTeam:    "WEBLAB",
+		OwnerTeam:    "GECEKODU",
 		DoorStaffIDs: []uuid.UUID{staff},
 	})
 	if err != nil {
@@ -423,5 +425,23 @@ func TestService_PublicMediaURLsDoNotRewriteStore(t *testing.T) {
 	}
 	if len(res.CoverColors) != 2 || res.CoverColors[0] != "#3c82be" {
 		t.Fatalf("resource colors %#v", res.CoverColors)
+	}
+}
+
+// The Owner team's Leader assigns door staff on its Event (Yusuf S3,
+// 2026-11-25).
+func TestService_OwnerLeaderAssignsDoorStaff(t *testing.T) {
+	t.Parallel()
+	_, svc := setup(t)
+	ctx := context.Background()
+	leader := authz.Principal{ID: "l", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	staff := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
+	created, err := svc.Create(ctx, leader, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", DoorStaffIDs: []uuid.UUID{staff}})
+	if err != nil || len(created.DoorStaffIDs) != 1 {
+		t.Fatalf("create %+v %v", created.DoorStaffIDs, err)
+	}
+	updated, err := svc.Update(ctx, leader, created.ID, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", DoorStaffIDs: []uuid.UUID{}})
+	if err != nil || len(updated.DoorStaffIDs) != 0 {
+		t.Fatalf("cleared %+v %v", updated.DoorStaffIDs, err)
 	}
 }

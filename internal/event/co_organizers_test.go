@@ -181,28 +181,36 @@ func TestOrganizersRefusals(t *testing.T) {
 	}
 }
 
-// Who: the list is changed by event:manage alone for now (the Owner team's
-// Leader, DK and anyone else are 403); it is read by who may edit the
-// Event; a draft others may not see is 404.
+// Who: the list is changed by Privileged and the Owner team's Leaders
+// (ManageOrganizers); a Co-organizer reads it (they edit the Event) but
+// does not change it; DK and anyone else are 403; a draft others may not
+// see is 404.
 func TestOrganizersWho(t *testing.T) {
 	t.Parallel()
 	_, svc := organizerSetup(t)
 	ctx := context.Background()
 	e := createEvent(t, svc, "WEBLAB", event.StatusPublished)
 	list := event.OrganizersInput{Teams: []event.OrganizerTeamInput{{Code: "ARTLAB"}}}
-	for name, p := range map[string]authz.Principal{"the Owner team's Leader": ownerLeader, "DK": dkMember, "another team's Leader": unrelatedLead} {
+	for name, p := range map[string]authz.Principal{"DK": dkMember, "another team's Leader": unrelatedLead} {
 		if _, err := svc.SetOrganizers(ctx, p, e.ID, list); !errors.Is(err, event.ErrForbidden) {
 			t.Errorf("PUT by %s: %v", name, err)
 		}
 	}
-	if _, err := svc.SetOrganizers(ctx, ykMember, e.ID, list); err != nil {
-		t.Fatal(err)
+	if _, err := svc.SetOrganizers(ctx, ownerLeader, e.ID, list); err != nil {
+		t.Fatalf("PUT by the Owner team's Leader: %v", err)
 	}
 	got, err := svc.Organizers(ctx, ownerLeader, e.ID)
-	if err != nil || got.CanManage || len(got.Teams) != 1 {
+	if err != nil || !got.CanManage || len(got.Teams) != 1 {
 		t.Fatalf("GET by the Owner team's Leader: %+v %v", got, err)
 	}
-	for name, p := range map[string]authz.Principal{"DK": dkMember, "another team's Leader": unrelatedLead} {
+	// ARTLAB's Leader is a Co-organizer now: reads, does not change.
+	if got, err := svc.Organizers(ctx, unrelatedLead, e.ID); err != nil || got.CanManage {
+		t.Fatalf("GET by the Co-organizer's Leader: %+v %v", got, err)
+	}
+	if _, err := svc.SetOrganizers(ctx, unrelatedLead, e.ID, event.OrganizersInput{}); !errors.Is(err, event.ErrForbidden) {
+		t.Fatalf("PUT by the Co-organizer's Leader: %v", err)
+	}
+	for name, p := range map[string]authz.Principal{"DK": dkMember, "a member": {ID: "m", Groups: []string{"/UYELER/ARGE/WEBLAB"}}} {
 		if _, err := svc.Organizers(ctx, p, e.ID); !errors.Is(err, event.ErrForbidden) {
 			t.Errorf("GET by %s: %v", name, err)
 		}

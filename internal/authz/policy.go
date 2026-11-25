@@ -94,7 +94,16 @@ type Resource struct {
 	OwnerTeam    string
 	OwnerID      string
 	DoorStaffIDs []string
+	// TeamDoorScan is the Owner team's Team door scan.
 	TeamDoorScan bool
+	// CoOwnerTeams and CoOrganizerIDs are the Event's Co-organizer teams
+	// and the Co-organizer people whose rights have not ended
+	// (docs/co-organizers.md; event.AuthzResource fills them, leaving out
+	// the ended). TeamDoorScanTeams are the organizer teams whose Team
+	// door scan is on, the Owner team's read with TeamDoorScan too.
+	CoOwnerTeams      []CoTeam
+	CoOrganizerIDs    []string
+	TeamDoorScanTeams []string
 	// MediaUploader is the upload rule of a Media purpose, for Upload on
 	// TypeMedia. Empty is MediaUploaderAuthenticated.
 	MediaUploader MediaUploader

@@ -137,15 +137,21 @@ func TestEventOrganizersRoutes(t *testing.T) {
 		t.Fatalf("a refused PUT changed the list: %s", got.raw)
 	}
 
+	// The Owner team's Leader manages the list (ManageOrganizers); ARTLAB's
+	// Leader, a Co-organizer, reads it and may not change it; another
+	// team's Leader neither.
 	leaderApp := organizersApp(t, weblabLeader(), svc)
-	if got := organizersCall(t, leaderApp, fiber.MethodPut, path, `{"teams":[]}`); got.status != fiber.StatusForbidden {
-		t.Errorf("the Owner team's Leader PUT: %d %s", got.status, got.raw)
-	}
-	if got := organizersCall(t, leaderApp, fiber.MethodGet, path, ""); got.status != fiber.StatusOK || !strings.Contains(got.raw, `"canManage":false`) {
+	if got := organizersCall(t, leaderApp, fiber.MethodGet, path, ""); got.status != fiber.StatusOK || !strings.Contains(got.raw, `"canManage":true`) {
 		t.Errorf("the Owner team's Leader GET: %d %s", got.status, got.raw)
 	}
-	other := authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/SANAT/ARTLAB/LIDERLER"}}
-	otherApp := organizersApp(t, other, svc)
+	coApp := organizersApp(t, authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/SANAT/ARTLAB/LIDERLER"}}, svc)
+	if got := organizersCall(t, coApp, fiber.MethodPut, path, `{"teams":[]}`); got.status != fiber.StatusForbidden {
+		t.Errorf("the Co-organizer's Leader PUT: %d %s", got.status, got.raw)
+	}
+	if got := organizersCall(t, coApp, fiber.MethodGet, path, ""); got.status != fiber.StatusOK || !strings.Contains(got.raw, `"canManage":false`) {
+		t.Errorf("the Co-organizer's Leader GET: %d %s", got.status, got.raw)
+	}
+	otherApp := organizersApp(t, authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/ARGE/GAMELAB/LIDERLER"}}, svc)
 	for _, method := range []string{fiber.MethodGet, fiber.MethodPut} {
 		if got := organizersCall(t, otherApp, method, path, `{"teams":[]}`); got.status != fiber.StatusForbidden {
 			t.Errorf("another team's Leader %s: %d %s", method, got.status, got.raw)
