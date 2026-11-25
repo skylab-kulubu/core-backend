@@ -76,6 +76,9 @@ func (h *EventHandler) SetOrganizers(c fiber.Ctx) error {
 // item's index (none for the list itself) and why
 // (event_organizers_invalid).
 func organizersError(c fiber.Ctx, err error) error {
+	if errors.Is(err, event.ErrCoOrganizersDisabled) {
+		return problemCode(c, fiber.StatusForbidden, "Forbidden", "co_organizers_disabled")
+	}
 	var refused *event.OrganizersError
 	if !errors.As(err, &refused) {
 		return eventError(c, err)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -15,11 +16,14 @@ import (
 )
 
 // The database's Co-organizers: the service writes and reads them back with
-// the people's names and e-mails; a list and a read of several Events carry
-// each Event's own; a person who is no account is refused, naming them, and
-// nothing is written; an Event update keeps the list but drops the team
-// that becomes the Owner team; a write whose Owner team moved meanwhile is
-// a conflict.
+// the people's names, and their e-mails to who may change the list alone; a
+// list and a read of several Events carry each Event's own; a new person who
+// is no account is refused, naming them, and nothing is written; a write is
+// the difference (a row that stays keeps who added it and when, a team's
+// choices are updated in place, a person who stays is kept though their
+// account is no longer active); an Event update keeps the list but drops
+// the team that becomes the Owner team; a write whose Owner team moved
+// meanwhile is a conflict.
 func TestCoOrganizersPostgres(t *testing.T) {
 	pool := testpostgres.Start(t)
 	ctx := context.Background()
@@ -37,7 +41,7 @@ func TestCoOrganizersPostgres(t *testing.T) {
 		}
 	}
 	store := event.NewPostgresStore(pool)
-	svc := event.NewServiceWithOptions(store, authz.NewAuthorizer(authz.DefaultPolicy()), event.ServiceOptions{Teams: organizerTeams})
+	svc := event.NewServiceWithOptions(store, authz.NewAuthorizer(authz.DefaultPolicy()), event.ServiceOptions{Teams: organizerTeams, CoOrganizersWrite: true})
 	actor := authz.Principal{ID: adder.String(), Groups: []string{"/UYELER/YK"}}
 	first := createEvent(t, svc, "WEBLAB", event.StatusPublished)
 	second := createEvent(t, svc, "WEBLAB", event.StatusPublished)
@@ -62,6 +66,12 @@ func TestCoOrganizersPostgres(t *testing.T) {
 	var addedBy uuid.UUID
 	if err := pool.QueryRow(ctx, `SELECT added_by FROM event_co_organizers WHERE event_id = $1 AND user_id = $2`, first.ID, ada).Scan(&addedBy); err != nil || addedBy != adder {
 		t.Fatalf("added_by %v %v", addedBy, err)
+	}
+	// The Owner team's Leader edits the Event but may not change the list:
+	// the person's name, not their e-mail.
+	read, err := svc.Organizers(ctx, ownerLeader, first.ID)
+	if err != nil || read.CanManage || len(read.People) != 1 || read.People[0].Name != "Ada Lovelace" || read.People[0].Email != "" {
+		t.Fatalf("the Owner team's Leader reads %+v %v", read.People, err)
 	}
 	if _, err := svc.SetOrganizers(ctx, actor, second.ID, event.OrganizersInput{Teams: []event.OrganizerTeamInput{{Code: "OYUNLAB"}}}); err != nil {
 		t.Fatal(err)
@@ -92,6 +102,66 @@ func TestCoOrganizersPostgres(t *testing.T) {
 	}
 	if read, err := store.Get(ctx, first.ID); err != nil || !slices.Equal(read.CoOrganizers, wantTeams) {
 		t.Fatalf("after the refusal %+v %v", read.CoOrganizers, err)
+	}
+
+	// The difference: ARTLAB and Ada stay as added (by, at), GECEKODU's
+	// choices change in place, OYUNLAB comes in by another adder. Ada's
+	// account is being erased meanwhile: she stays, being no new row.
+	other := uuid.New()
+	if _, _, err := users.Ensure(ctx, other, user.Profile{Email: "admin@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	type row struct {
+		by uuid.UUID
+		at time.Time
+	}
+	rows := func() map[string]row {
+		t.Helper()
+		got, err := pool.Query(ctx, `SELECT COALESCE(team_code, user_id::text), added_by, added_at FROM event_co_organizers WHERE event_id = $1`, first.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer got.Close()
+		out := map[string]row{}
+		for got.Next() {
+			var key string
+			var r row
+			if err := got.Scan(&key, &r.by, &r.at); err != nil {
+				t.Fatal(err)
+			}
+			out[key] = r
+		}
+		return out
+	}
+	before := rows()
+	if _, err := pool.Exec(ctx, `UPDATE users SET account_state = 'deletion_pending' WHERE id = $1`, ada); err != nil {
+		t.Fatal(err)
+	}
+	admin := authz.Principal{ID: other.String(), Groups: []string{"/UYELER/YK"}}
+	got, err = svc.SetOrganizers(ctx, admin, first.ID, event.OrganizersInput{
+		Teams:  []event.OrganizerTeamInput{{Code: "ARTLAB"}, {Code: "GECEKODU", Management: ptr(event.ManagementMembers), Visibility: ptr(event.VisibilityCoOrganizer)}, {Code: "OYUNLAB"}},
+		People: []uuid.UUID{ada},
+	})
+	if err != nil {
+		t.Fatalf("a write that keeps a person no longer active: %v", err)
+	}
+	after := rows()
+	for _, kept := range []string{"ARTLAB", "GECEKODU", ada.String()} {
+		if after[kept] != before[kept] {
+			t.Errorf("%s: %+v, was %+v", kept, after[kept], before[kept])
+		}
+	}
+	if after["OYUNLAB"].by != other || len(after) != 4 {
+		t.Errorf("after %+v", after)
+	}
+	if len(got.Teams) != 3 || got.Teams[1].Code != "GECEKODU" || got.Teams[1].Management != event.ManagementMembers || got.Teams[1].Visibility != event.VisibilityCoOrganizer {
+		t.Errorf("teams %+v", got.Teams)
+	}
+	if _, err := svc.SetOrganizers(ctx, actor, first.ID, event.OrganizersInput{Teams: []event.OrganizerTeamInput{{Code: "GECEKODU", Visibility: ptr(event.VisibilityHelper)}, {Code: "ARTLAB"}}, People: []uuid.UUID{ada}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows()) != 3 {
+		t.Fatalf("OYUNLAB stayed: %+v", rows())
 	}
 
 	// An update keeps the list; making ARTLAB the Owner team drops it.

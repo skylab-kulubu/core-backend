@@ -54,7 +54,7 @@ var (
 func organizerSetup(t *testing.T) (*event.MemoryStore, event.Service) {
 	t.Helper()
 	store := event.NewMemoryStore()
-	return store, event.NewServiceWithOptions(store, authz.NewAuthorizer(authz.DefaultPolicy()), event.ServiceOptions{Teams: organizerTeams})
+	return store, event.NewServiceWithOptions(store, authz.NewAuthorizer(authz.DefaultPolicy()), event.ServiceOptions{Teams: organizerTeams, CoOrganizersWrite: true})
 }
 
 func createEvent(t *testing.T, svc event.Service, owner string, status event.Status) event.Event {
@@ -172,7 +172,7 @@ func TestOrganizersRefusals(t *testing.T) {
 	}
 
 	// Without the Group tree no team is known.
-	plain := event.NewService(event.NewMemoryStore(), authz.NewAuthorizer(authz.DefaultPolicy()))
+	plain := event.NewServiceWithOptions(event.NewMemoryStore(), authz.NewAuthorizer(authz.DefaultPolicy()), event.ServiceOptions{CoOrganizersWrite: true})
 	other := createEvent(t, plain, "WEBLAB", event.StatusPublished)
 	_, err := plain.SetOrganizers(ctx, ykMember, other.ID, event.OrganizersInput{Teams: []event.OrganizerTeamInput{{Code: "ARTLAB"}}})
 	var refused *event.OrganizersError
@@ -323,5 +323,25 @@ func TestCoOrganizerPersonExpiry(t *testing.T) {
 	}
 	if _, ok := event.CoOrganizerPersonExpiry(event.Event{}); ok {
 		t.Error("with no date")
+	}
+}
+
+// Off (EVENT_CO_ORGANIZERS_WRITE unset), no write passes, not even
+// event:manage's, and nobody may manage the list; reading it still works.
+func TestOrganizersWritesOff(t *testing.T) {
+	t.Parallel()
+	svc := event.NewServiceWithOptions(event.NewMemoryStore(), authz.NewAuthorizer(authz.DefaultPolicy()), event.ServiceOptions{Teams: organizerTeams})
+	ctx := context.Background()
+	e := createEvent(t, svc, "WEBLAB", event.StatusPublished)
+	_, err := svc.SetOrganizers(ctx, ykMember, e.ID, event.OrganizersInput{Teams: []event.OrganizerTeamInput{{Code: "ARTLAB"}}})
+	if !errors.Is(err, event.ErrCoOrganizersDisabled) || !errors.Is(err, event.ErrForbidden) {
+		t.Fatalf("PUT while off: %v", err)
+	}
+	got, err := svc.Organizers(ctx, ykMember, e.ID)
+	if err != nil || got.CanManage || len(got.Teams) != 0 {
+		t.Fatalf("GET while off: %+v %v", got, err)
+	}
+	if _, err := event.NewService(event.NewMemoryStore(), authz.NewAuthorizer(authz.DefaultPolicy())).SetOrganizers(ctx, ykMember, e.ID, event.OrganizersInput{}); !errors.Is(err, event.ErrCoOrganizersDisabled) {
+		t.Fatalf("NewService's default: %v", err)
 	}
 }

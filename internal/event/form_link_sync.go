@@ -44,6 +44,10 @@ type ServiceOptions struct {
 	// Teams finds a Co-organizer team's Group (docs/co-organizers.md); nil
 	// finds none, so no team can be added.
 	Teams authz.TeamTree
+	// CoOrganizersWrite lets PUT /v1/events/{id}/organizers write
+	// (EVENT_CO_ORGANIZERS_WRITE); off, it is refused
+	// (ErrCoOrganizersDisabled) and GET still answers.
+	CoOrganizersWrite bool
 }
 
 func NewServiceWithOptions(store Store, az authz.Authorizer, options ServiceOptions) Service {
@@ -54,7 +58,7 @@ func NewServiceWithOptions(store Store, az authz.Authorizer, options ServiceOpti
 	return &service{
 		store: store, authz: az, formLinks: options.FormLinks, media: options.Media,
 		addresses: media.Addresses{Base: options.PublicBase, Mode: options.ImageAddressMode},
-		policy:    policy, teams: options.Teams,
+		policy:    policy, teams: options.Teams, coOrganizersWrite: options.CoOrganizersWrite,
 	}
 }
 

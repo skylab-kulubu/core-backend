@@ -102,9 +102,11 @@ type OrganizerTeam struct {
 // when the person's rights end (CoOrganizerPersonExpiry), left out for an
 // Event with no date.
 type OrganizerPerson struct {
-	ID        uuid.UUID  `json:"id"`
-	Name      string     `json:"name"`
-	Email     string     `json:"email"`
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+	// Email only to who may change the list (canManage); the Event's other
+	// editors see the name alone.
+	Email     string     `json:"email,omitempty"`
 	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 }
 
@@ -133,6 +135,12 @@ func PublicCoOrganizerTeams(e Event) []string {
 	}
 	return out
 }
+
+// ErrCoOrganizersDisabled refuses a write of the Co-organizers while
+// EVENT_CO_ORGANIZERS_WRITE is off (docs/co-organizers.md): until the
+// decisions, the audit record and the mails ship with them, nobody changes
+// the list. Reading it still works.
+var ErrCoOrganizersDisabled = fmt.Errorf("event: co-organizer writes are off: %w", ErrForbidden)
 
 // OrganizersError refuses a list of Co-organizers: the field (teams or
 // people), the item's index (-1 for the list itself) and why. It is an
@@ -216,21 +224,28 @@ func (s *service) organizers(p authz.Principal, e Event, people []OrganizerPerso
 	}
 	for _, person := range people {
 		person.ExpiresAt = expiry
+		if !out.CanManage {
+			person.Email = ""
+		}
 		out.People = append(out.People, person)
 	}
 	return out
 }
 
-// canManageOrganizers reports whether p may change e's Co-organizers. Until
-// the Co-organizer decisions come (ManageOrganizers, the Owner team's
-// Leaders), only who holds event:manage (YK, ADMIN) may.
+// canManageOrganizers reports whether p may change e's Co-organizers: never
+// while the writes are off (EVENT_CO_ORGANIZERS_WRITE). Until the
+// Co-organizer decisions come (ManageOrganizers, the Owner team's Leaders),
+// only who holds event:manage (YK, ADMIN) may.
 func (s *service) canManageOrganizers(p authz.Principal, _ Event) bool {
-	return s.authz.Permitted(p, authz.RoleEventManage)
+	return s.coOrganizersWrite && s.authz.Permitted(p, authz.RoleEventManage)
 }
 
 // SetOrganizers replaces the Event's Co-organizer lists with in's, once
 // checked (OrganizersError), and answers them as Organizers does.
 func (s *service) SetOrganizers(ctx context.Context, p authz.Principal, id uuid.UUID, in OrganizersInput) (Organizers, error) {
+	if !s.coOrganizersWrite {
+		return Organizers{}, ErrCoOrganizersDisabled
+	}
 	e, err := s.visible(ctx, &p, id)
 	if err != nil {
 		return Organizers{}, err
@@ -353,7 +368,10 @@ func coOrganizerPeople(in []uuid.UUID) ([]uuid.UUID, error) {
 }
 
 // CoOrganizersWrite is what the store's SetCoOrganizers writes: the whole
-// lists of the Event, while its Owner team is still OwnerTeam.
+// lists of the Event, while its Owner team is still OwnerTeam. The store
+// writes the difference: a row that stays keeps who added it and when, a
+// team that stays has its choices updated, and By is the adder of the new
+// rows alone.
 type CoOrganizersWrite struct {
 	EventID   uuid.UUID
 	OwnerTeam string
@@ -362,8 +380,9 @@ type CoOrganizersWrite struct {
 	By        *uuid.UUID
 }
 
-// InactivePersonError is a Co-organizer person who is no active account
-// (none, being erased, or erased): the store refuses the write.
+// InactivePersonError is a new Co-organizer person who is no active account
+// (none, being erased, or erased): the store refuses the write. A person
+// already on the list stays whatever their account became.
 type InactivePersonError struct {
 	ID uuid.UUID
 }

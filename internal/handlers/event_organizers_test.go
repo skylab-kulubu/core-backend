@@ -68,7 +68,7 @@ func TestEventOrganizersRoutes(t *testing.T) {
 	store := event.NewMemoryStore()
 	svc := event.NewServiceWithOptions(store, authz.NewAuthorizer(authz.DefaultPolicy()), event.ServiceOptions{Teams: organizerTree{
 		"WEBLAB": "/UYELER/ARGE/WEBLAB", "ARTLAB": "/UYELER/SANAT/ARTLAB", "GECEKODU": "/UYELER/ORGANIZASYON/GECEKODU",
-	}})
+	}, CoOrganizersWrite: true})
 	ykApp := organizersApp(t, yk(), svc)
 	created := organizersCall(t, ykApp, fiber.MethodPost, "/v1/events", `{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB","endDate":"2026-12-12T18:00:00Z"}`)
 	if created.status != fiber.StatusCreated {
@@ -180,5 +180,22 @@ func TestEventOrganizersRoutes(t *testing.T) {
 	}
 	if got := organizersCall(t, ykApp, fiber.MethodGet, path, ""); got.raw != put.raw {
 		t.Fatalf("an Event PATCH changed the list: %s", got.raw)
+	}
+}
+
+// Off (EVENT_CO_ORGANIZERS_WRITE unset): PUT is 403 co_organizers_disabled,
+// even to event:manage; GET answers, with canManage false.
+func TestEventOrganizersWritesOff(t *testing.T) {
+	t.Parallel()
+	svc := event.NewService(event.NewMemoryStore(), authz.NewAuthorizer(authz.DefaultPolicy()))
+	ykApp := organizersApp(t, yk(), svc)
+	created := organizersCall(t, ykApp, fiber.MethodPost, "/v1/events", `{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB"}`)
+	id, _ := created.body["id"].(string)
+	path := "/v1/events/" + id + "/organizers"
+	if got := organizersCall(t, ykApp, fiber.MethodPut, path, `{"teams":[]}`); got.status != fiber.StatusForbidden || got.body["code"] != "co_organizers_disabled" {
+		t.Fatalf("PUT while off: %d %s", got.status, got.raw)
+	}
+	if got := organizersCall(t, ykApp, fiber.MethodGet, path, ""); got.status != fiber.StatusOK || !strings.Contains(got.raw, `"canManage":false`) {
+		t.Fatalf("GET while off: %d %s", got.status, got.raw)
 	}
 }

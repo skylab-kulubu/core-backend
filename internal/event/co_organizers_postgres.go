@@ -10,8 +10,12 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
-// SetCoOrganizers replaces the Event's Co-organizer rows in one
-// transaction, under the Event's row lock (docs/co-organizers.md).
+// SetCoOrganizers writes the difference between the Event's Co-organizer
+// rows and w's lists in one transaction, under the Event's row lock
+// (docs/co-organizers.md): the rows that go are deleted, the new ones
+// inserted, a team that stays has its choices updated; a row that stays
+// keeps its added_by and added_at, and only a new person must be an active
+// account.
 func (s *PostgresStore) SetCoOrganizers(ctx context.Context, w CoOrganizersWrite) (Event, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -29,19 +33,39 @@ func (s *PostgresStore) SetCoOrganizers(ctx context.Context, w CoOrganizersWrite
 	if owner != w.OwnerTeam {
 		return Event{}, ErrConflict
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM event_co_organizers WHERE event_id = $1`, w.EventID); err != nil {
+	codes := make([]string, len(w.Teams))
+	for i, team := range w.Teams {
+		codes[i] = team.Code
+	}
+	people := w.People
+	if people == nil {
+		people = []uuid.UUID{}
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM event_co_organizers
+		WHERE event_id = $1
+		  AND (team_code IS NOT NULL AND NOT team_code = ANY($2::text[])
+		    OR user_id IS NOT NULL AND NOT user_id = ANY($3::uuid[]))`, w.EventID, codes, people); err != nil {
 		return Event{}, err
 	}
 	for _, team := range w.Teams {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO event_co_organizers (event_id, team_code, management, visibility, added_by)
-			VALUES ($1, $2, $3, $4, $5)`, w.EventID, team.Code, string(team.Management), string(team.Visibility), w.By); err != nil {
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (event_id, team_code) DO UPDATE SET management = EXCLUDED.management, visibility = EXCLUDED.visibility
+			WHERE (event_co_organizers.management, event_co_organizers.visibility) IS DISTINCT FROM (EXCLUDED.management, EXCLUDED.visibility)`,
+			w.EventID, team.Code, string(team.Management), string(team.Visibility), w.By); err != nil {
 			return Event{}, err
 		}
 	}
 	for _, person := range w.People {
+		// A person already on the list is no insert at all: the account
+		// guard (a BEFORE INSERT trigger, which runs before any ON
+		// CONFLICT) looks at the new ones alone.
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO event_co_organizers (event_id, user_id, added_by) VALUES ($1, $2, $3)`, w.EventID, person, w.By); err != nil {
+			INSERT INTO event_co_organizers (event_id, user_id, added_by)
+			SELECT $1::uuid, $2::uuid, $3::uuid
+			WHERE NOT EXISTS (SELECT 1 FROM event_co_organizers WHERE event_id = $1 AND user_id = $2)`, w.EventID, person, w.By); err != nil {
 			if subjectlock.IsInactiveAccountReference(err) {
 				return Event{}, &InactivePersonError{ID: person}
 			}

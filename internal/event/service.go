@@ -119,6 +119,8 @@ type service struct {
 	policy authz.Policy
 	// teams finds a Co-organizer team's Group; nil finds none.
 	teams authz.TeamTree
+	// coOrganizersWrite lets SetOrganizers write (EVENT_CO_ORGANIZERS_WRITE).
+	coOrganizersWrite bool
 }
 
 func NewService(store Store, az authz.Authorizer, publicBase ...string) Service {

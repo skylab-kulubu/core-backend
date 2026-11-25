@@ -4,6 +4,8 @@ An Event keeps **one** Owner team (for example YK). Beside it, a list of **Co-or
 
 This page is the data and the routes (ticket 01). Until the decisions come (ticket 02), a Co-organizer gains **no** right yet: every decision still reads the Owner team alone, and only `event:manage` (YK, ADMIN) changes the list.
 
+**`EVENT_CO_ORGANIZERS_WRITE`** (`on`/`off`, unset is `off`; any other value stops core at start): off, `PUT /v1/events/{id}/organizers` is `403 co_organizers_disabled` for everyone and `canManage` is `false`; `GET` still answers. It stays off until the decisions, the Team audit record and the mails (tickets 02–05) ship with it, so no list changes without its record.
+
 ## The rule
 
 - A **Co-organizer team** is a Team code, as the Owner team is. Each team row carries two choices, both always stored:
@@ -43,7 +45,7 @@ For who may edit the Event (`authz.Update` on its Owner team); `403` to anyone e
 }
 ```
 
-Teams by code, people by name. `name` is the team as shown outside the panel (`organizer.Name`). `expiresAt` is left out for an Event with no date. `canManage` is whether the caller may change the list.
+Teams by code, people by name. `name` is the team as shown outside the panel (`organizer.Name`). A person's `email` only to who may change the list (`canManage`); the Event's other editors see the name alone. `expiresAt` is left out for an Event with no date. `canManage` is whether the caller may change the list.
 
 ## `PUT /v1/events/{id}/organizers`
 
@@ -53,7 +55,7 @@ The whole lists; the answer is the GET's.
 {"teams": [{"code": "WEBLAB"}, {"code": "GECEKODU", "management": "members", "visibility": "helper"}], "people": ["<user id>"]}
 ```
 
-Who: `event:manage` (YK, ADMIN) for now; ticket 02 makes it the Owner team's Leaders (`ManageOrganizers`). The write replaces both lists in one transaction under the Event's row lock; `409` when the Owner team changed since the request read it.
+Who: `event:manage` (YK, ADMIN) for now, while `EVENT_CO_ORGANIZERS_WRITE` is on; ticket 02 makes it the Owner team's Leaders (`ManageOrganizers`). The write is the difference, in one transaction under the Event's row lock: the rows that go are deleted, the new ones inserted, a team that stays has its choices updated in place. A row that stays keeps its `added_by` and `added_at`, and a person who stays is kept though their account is no longer active: `inactive_person` is about a new person alone. `409` when the Owner team changed since the request read it.
 
 `PUT`/`PATCH /v1/events/{id}`, the Event's create and its copy never write the list (a field of it in their body is ignored; what a copy carries is ticket 04).
 
