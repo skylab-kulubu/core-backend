@@ -74,6 +74,41 @@ SELECT decided_at, decided_by, fields, notify, queued
 FROM event_change_notice_choices WHERE event_id = '…' ORDER BY decided_at;
 ```
 
+## Other details
+
+While `EVENT_CHANGED_NOTIFICATION=on`, the same question covers a published
+Event's other details (etkinlik-bildirim-secenekleri b): its name
+(`name`), description (`description`), attendee note (`attendeeNote`),
+capacity (`capacity`) and links (`links`: the external registration link,
+LinkedIn, the application form and the extra forms, by label and address).
+The panel's box is then unticked by default.
+
+| The save | Its details |
+|---|---|
+| `"notifyTicketHolders": true` | told |
+| `false`, or the field left out (an older client) | not told |
+
+They join the same waiting row and window. The row keeps, for each detail
+field first told, the SHA-256 of its value before that change
+(`before_details`; never the text), and the worker leaves out a field whose
+value is back to it. The row then sends one Notification:
+
+- a told start, end or location changed: `event.updated`, as above (the
+  details are not named; the Ticket page shows the Event as it is);
+- only told details changed: `event.changed` (Idempotency-Key
+  `core:event.changed:<rowId>:<sub>:v1`), the same way to members and guests,
+  with `EventId`, `EventName` (the name now), `ChangedFields` ("adı,
+  açıklaması ve kontenjanı"), `ChangeSummary` ("Etkinliğin adı, açıklaması
+  ve kontenjanı değişti."), `StartsAt`, `Venue`, and `TicketUrl` and
+  `TicketCode` while `TICKET_PAGE_URL` is set. The new text is not in the
+  mail.
+
+Off, a change of details queues nothing and is not recorded; a waiting row
+that told details alone tells nobody. The type needs SkyMail's template
+`event.changed` and its inbox text before it is turned on. The worker runs
+while either switch is on; the startup line reads
+`event updated notification: time and place on, other details off (event.updated, event.changed; changes gathered for 15m0s)`.
+
 This is a transactional mail about the holder's own Ticket, not an
 announcement: the type is required (no preferences, no consent, no unsubscribe
 link) and rides SkyMail's `system` lane, so it leaves from the transactional
@@ -182,7 +217,7 @@ Ticket deleted takes its record of sends with it; an Event deleted, its rows.
    (skymail-frontend Template seed: the template `event.updated` and
    `PUT /v1/notification_types/event.updated`).
 3. `EVENT_UPDATED_NOTIFICATION=on`; the startup line reads
-   `event updated notification: on (event.updated, changes gathered for 15m0s)`.
+   `event updated notification: time and place on, other details off (event.updated, event.changed; changes gathered for 15m0s)`.
 
 Rollback: `EVENT_UPDATED_NOTIFICATION=off` (or unset); the panel's question
 then decides nothing (nothing is queued either way). The rows already

@@ -2025,6 +2025,11 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		AND to_regclass('public.event_change_notice_choices') IS NOT NULL
 		AND to_regclass('public.event_change_notice_choices_event_idx') IS NOT NULL
 		AND to_regclass('public.event_change_notice_choices_decided_by_idx') IS NOT NULL`,
+	// The digests of the details a waiting notice tells
+	// (docs/event-updated-notification.md#other-details).
+	20261126160000: `
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'event_update_notifications' AND column_name = 'before_details'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

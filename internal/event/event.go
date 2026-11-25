@@ -177,6 +177,9 @@ type Event struct {
 	notifyHolders *bool
 	// changedBy is who saves the update, for the record of that answer.
 	changedBy *uuid.UUID
+	// detailsBefore are the stored Event's DetailDigests, set by the
+	// service's update: what a change of its details is told against.
+	detailsBefore map[string]string
 }
 
 type GalleryImage struct {

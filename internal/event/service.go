@@ -393,6 +393,7 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 	in.ID = existing.ID
 	in.formGuard = nil
 	in.changedBy = lifecycle.ActorID(p.ID)
+	in.detailsBefore = DetailDigests(existing)
 	if syncForms {
 		kept := listedForms(existing)
 		if err := s.checkFormPlaces(ctx, in, false, kept); err != nil {
