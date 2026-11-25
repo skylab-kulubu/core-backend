@@ -447,7 +447,7 @@ func (s *PostgresStore) RenewMail(ctx context.Context, claimed Mail, until time.
 	return err
 }
 
-// FinishMail marks the claimed mail done: sent (SkyMail took it; a request
+// FinishMail marks the claimed mail done: sent (SkyNotify took it; a request
 // sent gets its reminder), or no longer to be sent.
 func (s *PostgresStore) FinishMail(ctx context.Context, claimed Mail, at time.Time, sent bool) error {
 	_, err := s.pool.Exec(ctx, `UPDATE feedback_mails SET done_at = $3, sent = $4, claimed_at = NULL WHERE id = $1 AND claimed_at = $2`,

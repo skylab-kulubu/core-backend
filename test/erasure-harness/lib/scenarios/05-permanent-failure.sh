@@ -23,7 +23,7 @@ restart_core() {
 # erasure_alarm: the alarm's path in the harness. Like skylab-erasure-alarm it reads the four
 # gauges from inside core's container over loopback (never through the edge) and, when
 # overdue or manual intervention is above zero, mails the verified members of /ADMIN directly
-# over SMTP, not through SkyMail. The real script needs the OpenBao rotator and is rehearsed by
+# over SMTP, not through SkyNotify. The real script needs the OpenBao rotator and is rehearsed by
 # ops/wizards/erasure/erasure-alarm-rehearsal.sh; this stand-in proves gauge -> mail here.
 erasure_alarm() {
   local metrics manual overdue open recipients members subject body
@@ -99,8 +99,8 @@ retry_until_completed() {
   check "Account Center's status page shows the completed request ($(jq -r '.status + " updatedAt=" + .updatedAt' <<<"$HTTP_BODY" 2>/dev/null))" \
     eq "$HTTP_STATUS/$(jq -r .status <<<"$HTTP_BODY" 2>/dev/null)" 200/completed
   check 'all nine steps are checkpointed' eq "$(pg super_skylab "SELECT count(*) FROM account_deletion_steps WHERE request_id = '$1'")" 9
-  check 'the retry did not call SkyMail or Forms again (one receipt, one Forms PUT)' \
-    eq "$(pg skymail "SELECT count(*) FROM account_erasure_receipts WHERE request_id = '$1'")/$(curl -s "http://forms:9090/harness/stats/$1" | jq -r .puts)" 1/1
+  check 'the retry did not call SkyNotify or Forms again (one receipt, one Forms PUT)' \
+    eq "$(pg skynotify "SELECT count(*) FROM account_erasure_receipts WHERE request_id = '$1'")/$(curl -s "http://forms:9090/harness/stats/$1" | jq -r .puts)" 1/1
 }
 
 scenario_5() {
@@ -116,7 +116,7 @@ scenario_5() {
   check 'p9: request goes to manual_intervention at once' wait_until 60 2 request_is "$DEL_REQUEST" manual_intervention
   check 'p9: the stable code is erase_cms_rejected_403' eq "$(request_field "$DEL_REQUEST" last_error_code)" erase_cms_rejected_403
   check 'p9: one attempt spent' eq "$(request_field "$DEL_REQUEST" attempt_count)" 1
-  check 'p9: SkyMail and Forms were checkpointed in the same pass' steps_done "$DEL_REQUEST" erase_skymail erase_forms
+  check 'p9: SkyNotify and Forms were checkpointed in the same pass' steps_done "$DEL_REQUEST" erase_skynotify erase_forms
   check 'p9: nothing after the service steps ran' \
     eq "$(pg super_skylab "SELECT count(*) FROM account_deletion_steps WHERE request_id = '$DEL_REQUEST' AND step IN ('erase_cms','anonymize_core','delete_identity')")" 0
   ac_bff_status

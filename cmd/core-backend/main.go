@@ -733,7 +733,7 @@ func main() {
 	// Open and click tracking (docs/communication-preferences.md,
 	// "Tracking"): the operator's mode. It needs no
 	// COMMUNICATION_PREFERENCE_KEY. Since B9 nobody withdraws: the worker
-	// that told SkyMail of withdrawals is not started, and
+	// that told SkyNotify of withdrawals is not started, and
 	// COMMUNICATION_TRACKING_WITHDRAWAL_URL is not read.
 	trackingMode, err := commpref.TrackingModeFromEnv(os.Getenv)
 	if err != nil {
@@ -758,7 +758,7 @@ func main() {
 	} else {
 		log.Printf("communication preferences: off (neither %s nor %s<n> is set)", commpref.KeyEnv, commpref.KeyVersionEnvPrefix)
 	}
-	// The News audience (docs/news-audience.md): SkyMail's service account
+	// The News audience (docs/news-audience.md): SkyNotify's service account
 	// asks who a send goes to. Off with the preferences (every recipient
 	// gets a signed link); private visibilities only with
 	// NEWS_AUDIENCE_PRIVATE_VISIBILITY=on (ADR 0067 karar 3, second step).
@@ -774,7 +774,7 @@ func main() {
 		log.Print(line)
 	}
 	// The recipient question (ADR 0072 karar 3, docs/news-audience.md
-	// "Recipients"): SkyMail asks, for the recipients a sender chose, which
+	// "Recipients"): SkyNotify asks, for the recipients a sender chose, which
 	// are a person and whether the mail may go to each. The verified
 	// addresses are read from Keycloak in bulk on demand, never per address.
 	ytuIdentityProvider, err := commpref.YTUIdentityProviderFromEnv(os.Getenv)
@@ -848,7 +848,7 @@ func main() {
 		log.Printf("account erasure watchdog: alert after %s; periodic destruction interval %s",
 			erasureConfig.AlertAfter, erasureConfig.PeriodicDestructionInterval)
 		accountIdentity := identity.NewAccountIdentity(dir)
-		// SkyMail, CMS and Forms each get the Erasure command after logout and
+		// SkyNotify, CMS and Forms each get the Erasure command after logout and
 		// before core is anonymized (ADR-0051): one client per registry entry,
 		// each with its own core-erasure token for its own erase scope. The
 		// secret source is handed on as it is and read for every token
@@ -858,11 +858,11 @@ func main() {
 			base+"/realms/"+realm+"/protocol/openid-connect/token",
 			account.NewErasureAddresses(accountIdentity, users))
 		// The person is told their request was received and that it
-		// completed, through SkyMail with no record kept of it
+		// completed, through SkyNotify with no record kept of it
 		// (ACCOUNT_DELETION_NOTICES, off unless on). Core's own client:
 		// the worker requires its credentials.
 		deletionNotices, err := accountDeletionNotices(os.LookupEnv, users,
-			newSkyMail(base, realm, os.Getenv("KEYCLOAK_CLIENT_ID"), os.Getenv("KEYCLOAK_CLIENT_SECRET"), os.Getenv("SKYMAIL_URL"), skyMailTimeout))
+			newSkyNotify(base, realm, os.Getenv("KEYCLOAK_CLIENT_ID"), os.Getenv("KEYCLOAK_CLIENT_SECRET"), os.Getenv("SKYNOTIFY_URL"), skyNotifyTimeout))
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -891,26 +891,26 @@ func main() {
 	}
 
 	var welcomeMailer usersync.Mailer
-	var sky *mail.SkyMail
+	var sky *mail.SkyNotify
 	if base != "" && realm != "" && os.Getenv("KEYCLOAK_CLIENT_ID") != "" && os.Getenv("KEYCLOAK_CLIENT_SECRET") != "" {
-		sky = newSkyMail(base, realm, os.Getenv("KEYCLOAK_CLIENT_ID"), os.Getenv("KEYCLOAK_CLIENT_SECRET"), os.Getenv("SKYMAIL_URL"), skyMailTimeout)
-		sky.TemplateKey = templateKey(os.LookupEnv, "SKYMAIL_WELCOME_TEMPLATE_KEY", mail.DefaultWelcomeTemplateKey)
-		sky.CertificateTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_CERTIFICATE_TEMPLATE_KEY", mail.DefaultCertificateTemplateKey)
+		sky = newSkyNotify(base, realm, os.Getenv("KEYCLOAK_CLIENT_ID"), os.Getenv("KEYCLOAK_CLIENT_SECRET"), os.Getenv("SKYNOTIFY_URL"), skyNotifyTimeout)
+		sky.TemplateKey = templateKey(os.LookupEnv, "SKYNOTIFY_WELCOME_TEMPLATE_KEY", mail.DefaultWelcomeTemplateKey)
+		sky.CertificateTemplateKey = templateKey(os.LookupEnv, "SKYNOTIFY_CERTIFICATE_TEMPLATE_KEY", mail.DefaultCertificateTemplateKey)
 		// The publisher's mail when an Event's attendance closes by itself
 		// (docs/certificate-rule.md); an empty key turns it off.
-		sky.CertificateAutoFinalizedTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_CERTIFICATE_AUTO_FINALIZED_TEMPLATE_KEY", mail.DefaultCertificateAutoFinalizedTemplateKey)
+		sky.CertificateAutoFinalizedTemplateKey = templateKey(os.LookupEnv, "SKYNOTIFY_CERTIFICATE_AUTO_FINALIZED_TEMPLATE_KEY", mail.DefaultCertificateAutoFinalizedTemplateKey)
 		membershipTemplateKeys(sky, os.LookupEnv)
-		if raw := os.Getenv("SKYMAIL_WELCOME_TEMPLATE_ID"); raw != "" {
+		if raw := os.Getenv("SKYNOTIFY_WELCOME_TEMPLATE_ID"); raw != "" {
 			tid, err := uuid.Parse(raw)
 			if err != nil {
-				log.Fatal("SKYMAIL_WELCOME_TEMPLATE_ID must be a UUID")
+				log.Fatal("SKYNOTIFY_WELCOME_TEMPLATE_ID must be a UUID")
 			}
 			sky.TemplateID = tid
 		}
-		if raw := os.Getenv("SKYMAIL_CERTIFICATE_TEMPLATE_ID"); raw != "" {
+		if raw := os.Getenv("SKYNOTIFY_CERTIFICATE_TEMPLATE_ID"); raw != "" {
 			tid, err := uuid.Parse(raw)
 			if err != nil {
-				log.Fatal("SKYMAIL_CERTIFICATE_TEMPLATE_ID must be a UUID")
+				log.Fatal("SKYNOTIFY_CERTIFICATE_TEMPLATE_ID must be a UUID")
 			}
 			sky.CertificateTemplateID = tid
 		}
@@ -945,7 +945,7 @@ func main() {
 		worker("user sync", syncWorker.Run(workers))
 		userSync = syncWorker
 		if welcomeMailer == nil {
-			log.Printf("user sync: %s; Welcome mail off (no SkyMail welcome template)", userSyncConfig)
+			log.Printf("user sync: %s; Welcome mail off (no SkyNotify welcome template)", userSyncConfig)
 		} else {
 			log.Printf("user sync: %s", userSyncConfig)
 		}
@@ -954,7 +954,7 @@ func main() {
 	// Membership mail (docs/team-membership-mail.md): a person added to a
 	// Group or removed from one through the membership routes is told by
 	// mail, worded by the Group's kind (team, Privileged, other). The change
-	// is queued in the database and sent by a worker, so SkyMail being down
+	// is queued in the database and sent by a worker, so SkyNotify being down
 	// delays the mail, never the change.
 	// The privilege notice (docs/privilege-change-mail.md) rides the same
 	// worker: a role mapping changed tells ADMIN, a Privileged Group's
@@ -970,7 +970,7 @@ func main() {
 	}
 	worker("feedback mail", startFeedbackMail(workers, feedbackNotification, feedbackInvites, tickets, users, sky, log.Printf))
 	// The new Ticket's Notification (docs/ticket-created-notification.md):
-	// SkyMail tells the holder by inbox and e-mail.
+	// SkyNotify tells the holder by inbox and e-mail.
 	ticketNotificationOn, err := ticketCreatedNotificationOn(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
@@ -987,7 +987,7 @@ func main() {
 		log.Printf("ticket page: on, closes %s after the Event", ticketPageConfig.Grace)
 	}
 	// A published Event's new time or place (docs/event-updated-notification.md):
-	// SkyMail tells its Ticket holders by inbox and e-mail.
+	// SkyNotify tells its Ticket holders by inbox and e-mail.
 	eventUpdatedOn, err := eventUpdatedNotificationOn(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
@@ -1057,7 +1057,7 @@ func main() {
 	worker("ticket notification", startTicketCreatedNotification(workers, ticketNotificationOn, ticketStatusMail, tickets, ticketnotify.NewPostgresQueue(pool), events, users, sky,
 		ticketPageConfig, os.Getenv("PUBLIC_API_ORIGIN"), ticketMailPDF, log.Printf))
 	// The reminder the day before an Event (docs/event-reminder.md):
-	// SkyMail tells its Ticket holders by inbox and e-mail.
+	// SkyNotify tells its Ticket holders by inbox and e-mail.
 	eventReminder, err := eventReminderFromEnv(os.Getenv, os.LookupEnv)
 	if err != nil {
 		log.Fatal(err)
@@ -1102,7 +1102,7 @@ func main() {
 	worker("certificate issuance worker", certificate.MaintainIssuance(workers, certSvc, 2*time.Second, 10, func(err error) {
 		log.Printf("certificate issuance worker: %v", err)
 	}))
-	// The certificate mail queue (docs/certificate-mail.md): SkyMail gets
+	// The certificate mail queue (docs/certificate-mail.md): SkyNotify gets
 	// each issued certificate's mail under an Idempotency-Key, again with
 	// backoff while it is unreachable.
 	worker("certificate mail", certificate.MaintainMails(workers, certSvc, 5*time.Second, certificate.MailBatch, func(err error) {
@@ -1567,29 +1567,29 @@ func accountErasureWorkerEnabled(getenv func(string) string) (bool, error) {
 	}
 }
 
-// skyMailTimeout bounds each request core makes for a mail: the token request
-// to Keycloak and the post to SkyMail.
-const skyMailTimeout = 15 * time.Second
+// skyNotifyTimeout bounds each request core makes for a mail: the token request
+// to Keycloak and the post to SkyNotify.
+const skyNotifyTimeout = 15 * time.Second
 
 // The certificate mail queue sizes its leases by it.
-var _ = [1]struct{}{}[skyMailTimeout-certificate.MailSendTimeout]
+var _ = [1]struct{}{}[skyNotifyTimeout-certificate.MailSendTimeout]
 
-// newSkyMail is core's SkyMail client, which asks the realm at base for its
+// newSkyNotify is core's SkyNotify client, which asks the realm at base for its
 // token with core's own service account. The token request uses the same
 // client as the post: without one, mail.ClientCredentials falls back to
 // http.DefaultClient, which never gives up, and a hung mail would hold the
-// user sync's pass (and so its lock) or the request that sent it. SKYMAIL_URL
+// user sync's pass (and so its lock) or the request that sent it. SKYNOTIFY_URL
 // has no default: unset, mail is off, startup and every attempt log
-// mail.URLMissingLine and skylab_skymail_url_missing reads 1. Core keeps
+// mail.URLMissingLine and skylab_skynotify_url_missing reads 1. Core keeps
 // running.
-func newSkyMail(base, realm, clientID, clientSecret, skyMailURL string, timeout time.Duration) *mail.SkyMail {
-	origin, err := mail.APIOrigin(skyMailURL)
+func newSkyNotify(base, realm, clientID, clientSecret, skyNotifyURL string, timeout time.Duration) *mail.SkyNotify {
+	origin, err := mail.APIOrigin(skyNotifyURL)
 	missing := err != nil
 	if missing && mail.MarkURLMissing() {
 		log.Print(mail.URLMissingLine)
 	}
 	client := &http.Client{Timeout: timeout}
-	return &mail.SkyMail{
+	return &mail.SkyNotify{
 		BaseURL:    origin,
 		URLMissing: missing,
 		HTTP:       client,
@@ -1602,7 +1602,7 @@ func newSkyMail(base, realm, clientID, clientSecret, skyMailURL string, timeout 
 	}
 }
 
-// templateKey reads a SkyMail template key. An unset variable takes the seeded
+// templateKey reads a SkyNotify template key. An unset variable takes the seeded
 // default, because addressing by key is what core wants everywhere. A variable
 // set to an empty value opts that kind back onto its template id, which is how
 // the key rollout is held back or rolled back without a code change.

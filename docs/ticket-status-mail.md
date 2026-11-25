@@ -1,8 +1,8 @@
 # "Biletin iptal edildi": the cancellation mail
 
 kontenjan-iptal-hatirlatma ticket 04 (SPEC §3.6). When a Ticket is
-cancelled, its holder is told by `event.ticket-cancelled` (SkyMail
-template, skymail-frontend #179) while `TICKET_STATUS_MAIL` is on, the
+cancelled, its holder is told by `event.ticket-cancelled` (SkyNotify
+template, skynotify-frontend #179) while `TICKET_STATUS_MAIL` is on, the
 switch that also turns on the waiting list's mails
 ([event-capacity.md](event-capacity.md)). Default `off`; the start line says
 `ticket status mail: on (event.waitlist-joined, event.waitlist-promoted,
@@ -48,7 +48,7 @@ doubling to 30 min, a day): see ticket-created-notification.md.
   `POST /v1/mail_tasks/single`. Key
   `core:event.ticket-cancelled:<ticketId>:q<qrVersion>`: a Ticket restored
   and cancelled again (a new QR version) is told again.
-- Variables, every one always (SkyMail renders with `missingkey=error`):
+- Variables, every one always (SkyNotify renders with `missingkey=error`):
   `EventId`, `EventName`, `EventDate`, `OwnerTeam`, `CancelledBy`
   (`holder` or `operator`), `Reason`. No link, QR, code or PDF: a
   cancelled Ticket opens nothing.
@@ -59,8 +59,8 @@ doubling to 30 min, a day): see ticket-created-notification.md.
 
 ## Turning it on
 
-Only once SkyMail has seeded `event.waitlist-joined`,
-`event.waitlist-promoted` and `event.ticket-cancelled`: before that SkyMail
+Only once SkyNotify has seeded `event.waitlist-joined`,
+`event.waitlist-promoted` and `event.ticket-cancelled`: before that SkyNotify
 answers `422 notification.type_unknown` and the rows are dropped as
 refused.
 

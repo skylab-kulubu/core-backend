@@ -103,7 +103,7 @@ func TestPostgresServiceErasureKeepsProofAndHonoursTheFence(t *testing.T) {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}
 	proof := stepCounts(f.request.ID)
-	if len(proof) != 2 || proof["erase_skymail"] != `{"skymail_rows_erased": 1}` || proof["erase_forms"] != `{"forms_rows_erased": 1}` {
+	if len(proof) != 2 || proof["erase_skynotify"] != `{"skynotify_rows_erased": 1}` || proof["erase_forms"] != `{"forms_rows_erased": 1}` {
 		t.Fatalf("proof after first pass = %v", proof)
 	}
 	state := f.state()
@@ -122,7 +122,7 @@ func TestPostgresServiceErasureKeepsProofAndHonoursTheFence(t *testing.T) {
 	if proof := stepCounts(f.request.ID); len(proof) != 3 || proof["erase_cms"] != `{"collection_items_updated": 2}` {
 		t.Fatalf("proof = %v", proof)
 	}
-	if f.services[user.DeletionStepEraseSkyMail].callCount() != 1 || f.services[user.DeletionStepEraseForms].callCount() != 1 {
+	if f.services[user.DeletionStepEraseSkyNotify].callCount() != 1 || f.services[user.DeletionStepEraseForms].callCount() != 1 {
 		t.Fatal("a checkpointed service was called again")
 	}
 
@@ -167,7 +167,7 @@ func TestPostgresServiceErasureKeepsProofAndHonoursTheFence(t *testing.T) {
 	// A worker that lost its lease writes no proof and calls nothing more.
 	h := newErasureFixtureWith(t, store)
 	thieves := make(chan user.DeletionRequest, 1)
-	h.services[user.DeletionStepEraseSkyMail].set(func(w http.ResponseWriter, r *http.Request) {
+	h.services[user.DeletionStepEraseSkyNotify].set(func(w http.ResponseWriter, r *http.Request) {
 		claimed, ok, err := store.ClaimDeletionRequest(context.Background(), h.now.Add(10*time.Minute), time.Minute)
 		if err != nil || !ok || claimed.ID != h.request.ID {
 			t.Errorf("thief claim=%+v ok=%v err=%v", claimed, ok, err)

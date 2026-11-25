@@ -77,7 +77,7 @@ scenario_8() {
   check "the old account's records stay detached (owner NULL)" \
     eq "$(pg super_skylab "SELECT count(*) FROM tickets WHERE id = '$(uuid_of "$person-ticket-owned")' AND owner_id IS NULL")" 1
   local db
-  for db in skymail skylab_cms forms_db; do
+  for db in skynotify skylab_cms forms_db; do
     check "$db holds nothing for the new sub" eq "$(count_lines "$(subject_hits "$db" "$new_sub")")" 0
   done
   printf '%s\n' "$new_sub" >"$STATE/s8.new-sub"

@@ -68,7 +68,7 @@ func newFormsClient(getenv func(string) string, base, realm string) (*formsfeed.
 	if base == "" || realm == "" || clientID == "" || strings.TrimSpace(getenv("KEYCLOAK_CLIENT_SECRET")) == "" {
 		return nil, from, nil
 	}
-	httpClient := &http.Client{Timeout: skyMailTimeout}
+	httpClient := &http.Client{Timeout: skyNotifyTimeout}
 	return &formsfeed.Client{
 		BaseURL: address,
 		HTTP:    httpClient,

@@ -95,7 +95,7 @@ func serialsOf(f mailFixture) map[string]bool {
 }
 
 // With CERTIFICATE_PDF_ATTACHMENT on, each queued mail carries its
-// certificate's PDF; a try SkyMail did not answer is tried again with the
+// certificate's PDF; a try SkyNotify did not answer is tried again with the
 // same file under the same key; "yeniden gönder" carries it too.
 func TestCertificateMailCarriesThePDF(t *testing.T) {
 	t.Parallel()
@@ -165,7 +165,7 @@ func TestCertificateMailWithoutThePDFWhenOff(t *testing.T) {
 	}
 }
 
-// A PDF over SkyMail's 512 KB, one storage cannot read, or a mail SkyMail
+// A PDF over SkyNotify's 512 KB, one storage cannot read, or a mail SkyNotify
 // refuses with the file: the mail still goes, without it (its verify link
 // is in it), under its own key, and the metric says why.
 func TestCertificateMailGoesWithoutThePDFItCannotCarry(t *testing.T) {
@@ -237,7 +237,7 @@ func TestCertificateMailRefusedForItsBodyIsNotResentWithoutThePDF(t *testing.T) 
 		t.Fatalf("sends %d", len(files))
 	}
 	for serial, state := range f.states(t) {
-		if state.Status != certificate.MailFailed || state.ErrorCode != "skymail_400" {
+		if state.Status != certificate.MailFailed || state.ErrorCode != "skynotify_400" {
 			t.Fatalf("%s: %+v", serial, state)
 		}
 	}

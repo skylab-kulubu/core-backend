@@ -7,7 +7,7 @@ and counts the rows core's hourly cleanups should already have removed. Every
 run writes a record without personal data that is kept at least three years.
 Code: `internal/retention`; command: `core-backend retention-sweep`.
 
-Other services (SkyMail, Forms, Place, Guessr) destroy their own data with
+Other services (SkyNotify, Forms, Place, Guessr) destroy their own data with
 their own runs (ADR-0062: each service its own data); core never writes
 another service's database.
 

@@ -3,7 +3,7 @@
 A communication preference is a person's choice of which News (duyuru,
 haber) reaches them on which **channel**: the Duyuru tercihi of ADR 0067
 (`skylab-kulubu/e-skylab`), kept per channel so the one communication
-service (SkyMail growing into e-mail, in-app inbox, push and SMS; the
+service (SkyNotify growing into e-mail, in-app inbox, push and SMS; the
 iletişim servisi decision, option B) reads one record. Today e-mail is the
 only channel.
 
@@ -16,7 +16,7 @@ carries a one-click link that turns its own categories off.
 tickets, certificates, team membership, Mail onayı and contact consent
 confirmations go whatever the preferences say. Only News sends (bilet 03's
 audience, [`news-audience.md`](news-audience.md)) and, since ADR 0072, every
-duyuru-stream mail SkyMail sends to recipients a sender chose (the recipient
+duyuru-stream mail SkyNotify sends to recipients a sender chose (the recipient
 question, [`news-audience.md`](news-audience.md#recipients)) are filtered by
 it. The recipient question counts every default as on: only the person's
 own "off" holds such a mail back.
@@ -236,7 +236,7 @@ the categories a mail was sent on, and every POST writes on that channel
 only; the audience route (bilet 03) gives every recipient their own, and
 the recipient question (`POST /internal/v1/audiences/recipients:resolve`,
 ADR 0072, [news-audience.md](news-audience.md#recipients)) every allowed
-person theirs for the one category asked, so SkyMail never holds the key.
+person theirs for the one category asked, so SkyNotify never holds the key.
 
 - `GET` shows a page naming the categories ("AIRLAB · Duyurular") and
   changes nothing, so a mail scanner that opens the link turns nothing off.
@@ -284,7 +284,7 @@ routes answer pages, not problem documents (which echo the query). The
 edge proxy's access log must not keep query strings of this path either.
 
 **The key ring** (ADR 0072 Consequences; hub ticket abonelik-cikisi 13, the
-same rules as SkyMail's unsubscribe key ring). A link names the key version
+same rules as SkyNotify's unsubscribe key ring). A link names the key version
 that signed it, so a new key does not break the links already mailed:
 
 | Format | Starts with | Signed by |
@@ -314,11 +314,11 @@ that signed it, so a new key does not break the links already mailed:
 
 ## Tracking
 
-SkyMail can record whether a person opened a mail and which link they
-clicked (open and click tracking, ADR-0074; skymail-backend README "Açılma
-ve tıklama takibi"; hub tickets iletisim-servisi 14 and 16). SkyMail's
-flags decide which mail is tracked (`SKYMAIL_TRACKING`,
-`SKYMAIL_TRACKING_OPERATOR`, `SKYMAIL_TRACKING_SYSTEM`).
+SkyNotify can record whether a person opened a mail and which link they
+clicked (open and click tracking, ADR-0074; skynotify-backend README "Açılma
+ve tıklama takibi"; hub tickets iletisim-servisi 14 and 16). SkyNotify's
+flags decide which mail is tracked (`SKYNOTIFY_TRACKING`,
+`SKYNOTIFY_TRACKING_OPERATOR`, `SKYNOTIFY_TRACKING_SYSTEM`).
 
 **Every mail is tracked (B9, ADR-0074 addendum of 2026-11-24).** A person's
 objection, not being a Member and having no account no longer stop
@@ -329,7 +329,7 @@ more.
 **The mode.** `COMMUNICATION_TRACKING_MODE` is the operator's switch, not a
 personal preference:
 
-| Mode | Core lets SkyMail track |
+| Mode | Core lets SkyNotify track |
 |---|---|
 | `opt_out` (default, unset) | every active account |
 | `opt_in` | no one (the brake; reason `tracking_off`) |
@@ -351,11 +351,11 @@ not answer it is `200` with `"partial": true` and no team or News switch. A
 `PUT` with `items` writes them as before. The field and the `PUT` key go in
 a later release.
 
-**Whom SkyMail may track.** SkyMail asks before it queues a tracked send:
+**Whom SkyNotify may track.** SkyNotify asks before it queues a tracked send:
 
 ```
 POST /internal/v1/communication-preferences/tracking:resolve
-Authorization: Bearer <SkyMail's service account token>
+Authorization: Bearer <SkyNotify's service account token>
 
 {"subs": ["7d3c1f6e-0b9a-4c55-9a51-3f4d2b8e6a10", …]}
 ```
@@ -375,8 +375,8 @@ no-store`). At most 1000 subs, each a lower-case hyphenated UUID, once;
 Before B9 core also said `preference_off` and `not_member`; it no longer
 does. It reads the News audience's snapshot of the `/UYELER` tree (30 s)
 and needs no `COMMUNICATION_PREFERENCE_KEY`. Only a service account with
-core's client role `communication-preferences:read` (SkyMail's,
-`skymail-backend`) may call it: a person's token is `403
+core's client role `communication-preferences:read` (SkyNotify's,
+`skynotify-backend`) may call it: a person's token is `403
 tracking_resolve_service_only` whatever it carries, a service account
 without the role `403 tracking_resolve_role_missing`. A body core cannot
 read is `400 tracking_resolve_invalid`; Keycloak not answering the tree is
@@ -386,7 +386,7 @@ sub.
 
 **Internal routes.** Every route under `/internal` answers a request that
 came through the public edge (one carrying `X-Forwarded-*`, `Forwarded` or
-`X-Real-Ip`) a bare `404` before its token is read, as SkyMail's do. It is
+`X-Real-Ip`) a bare `404` before its token is read, as SkyNotify's do. It is
 a second layer only: any container on the network reaches core without
 Traefik, so the token checks stay the boundary.
 
@@ -399,15 +399,15 @@ Traefik, so the token checks stay the boundary.
   deleted 3 years after their change by the retention sweep's
   `tracking_changes_age` ([retention-sweep.md](retention-sweep.md));
 - the outbox `communication_tracking_withdrawals` gets no new row, and the
-  worker that sent its rows to SkyMail (`PUT
+  worker that sent its rows to SkyNotify (`PUT
   /internal/v1/tracking-withdrawals/{sub}`) is no longer started:
   `COMMUNICATION_TRACKING_WITHDRAWAL_URL` is not read and the
   `skylab_tracking_withdrawal_*` metrics are gone. A row still waiting
-  there stays. SkyMail's route answers success for one release and deletes
+  there stays. SkyNotify's route answers success for one release and deletes
   nothing.
 
 **Erasure.** The step `erase_communication_preferences` still deletes the
-person's old row, their waiting withdrawal and their audit trail; SkyMail
+person's old row, their waiting withdrawal and their audit trail; SkyNotify
 deletes its tracking data in its own erasure step
 ([account-erasure-command.md](account-erasure-command.md)).
 

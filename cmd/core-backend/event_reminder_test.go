@@ -19,8 +19,8 @@ func TestEventReminderFromEnv(t *testing.T) {
 	}{
 		"unset":       {map[string]string{}, eventReminderConfig{Type: "event.reminder", PerMinute: eventreminder.DefaultPerMinute}},
 		"on":          {map[string]string{"EVENT_REMINDER_NOTIFICATION": " on "}, eventReminderConfig{On: true, Type: "event.reminder", PerMinute: 20}},
-		"own key":     {map[string]string{"EVENT_REMINDER_NOTIFICATION": "on", "SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY": " club.reminder "}, eventReminderConfig{On: true, Type: "club.reminder", PerMinute: 20}},
-		"empty key":   {map[string]string{"EVENT_REMINDER_NOTIFICATION": "on", "SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY": ""}, eventReminderConfig{On: true, PerMinute: 20}},
+		"own key":     {map[string]string{"EVENT_REMINDER_NOTIFICATION": "on", "SKYNOTIFY_EVENT_REMINDER_TEMPLATE_KEY": " club.reminder "}, eventReminderConfig{On: true, Type: "club.reminder", PerMinute: 20}},
+		"empty key":   {map[string]string{"EVENT_REMINDER_NOTIFICATION": "on", "SKYNOTIFY_EVENT_REMINDER_TEMPLATE_KEY": ""}, eventReminderConfig{On: true, PerMinute: 20}},
 		"own pace":    {map[string]string{"EVENT_REMINDER_PER_MINUTE": "10"}, eventReminderConfig{Type: "event.reminder", PerMinute: 10}},
 		"no bound":    {map[string]string{"EVENT_REMINDER_PER_MINUTE": "0"}, eventReminderConfig{Type: "event.reminder"}},
 		"off spelled": {map[string]string{"EVENT_REMINDER_NOTIFICATION": "off"}, eventReminderConfig{Type: "event.reminder", PerMinute: 20}},

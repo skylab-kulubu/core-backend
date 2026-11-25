@@ -1077,7 +1077,7 @@ func TestAccountErasureServiceStepsAreForwardOnlyOnceProofExists(t *testing.T) {
 	`).Scan(&definition); err != nil {
 		t.Fatal(err)
 	}
-	for _, step := range []string{"erase_skymail", "erase_cms", "erase_forms", "anonymize_core", "delete_identity"} {
+	for _, step := range []string{"erase_skynotify", "erase_cms", "erase_forms", "anonymize_core", "delete_identity"} {
 		if !strings.Contains(definition, "'"+step+"'") {
 			t.Fatalf("step check lacks %s: %s", step, definition)
 		}
