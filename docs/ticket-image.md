@@ -29,8 +29,11 @@ the band is the cover's first colour, else the theme's.
 ## Drawing
 
 - The band is cut from the image's **original** (JPEG, PNG, WebP or GIF's
-  first frame, at most 10 MiB; an Event image is at most 2560 px), else
-  from its `page` size.
+  first frame, at most 10 MiB) when it is the image core recorded: its
+  decoded size is the Media's width and height, at most 2560 px a side. An
+  older original (stored before re-encoding: EXIF orientation not applied,
+  larger, or of no recorded size) and one the band cannot be cut from give
+  the `page` size instead, which core made upright.
 - It is **2150 px wide (300 dpi at 182 mm)**, or the region's own width
   when that is less (never enlarged), as a JPEG of at most **64 KB**: quality
   80, 70, 60, 50, then narrower, down to 600 px. The PDF stays under the
@@ -49,7 +52,8 @@ PUT {"source": "cover", "coverMediaId": "…", "crop": {"x": 0.1, "y": 0.2, "w":
 PUT {"source": "auto"}
 ```
 
-`coverMediaId` left out takes the Event's cover. The answer:
+`coverMediaId` left out takes the Event's saved cover; another one (a cover
+not saved yet) is `ticket_image_invalid`. The answer:
 
 ```json
 {
@@ -65,7 +69,7 @@ PUT {"source": "auto"}
 
 | Status | `code` | When |
 |---|---|---|
-| 400 | `ticket_image_invalid` | unknown source, region out of the image, `cover` without a cover, `upload` without an image |
+| 400 | `ticket_image_invalid` | unknown source, region out of the image, `cover` without a cover or with another cover than the Event's, `upload` without an image |
 | 403 | | not an editor of the Event |
 | 403 | `media_team_mismatch` | the image is used on an Event of another Owner team |
 | 404 | | no such Event |

@@ -92,8 +92,8 @@ func TestOnlyEditorsChoose(t *testing.T) {
 	}
 }
 
-// A cover region is drawn on the Event's cover (or the one named); a new
-// cover makes it no longer apply. Auto forgets the choice.
+// A cover region is drawn on the Event's saved cover (another one named is
+// refused); a new cover makes it no longer apply. Auto forgets the choice.
 func TestCoverRegion(t *testing.T) {
 	t.Parallel()
 	svc, events, linker, cover, _ := setup()
@@ -105,6 +105,13 @@ func TestCoverRegion(t *testing.T) {
 	}
 	if len(linker.checked) != 0 {
 		t.Errorf("a cover region checked a link: %v", linker.checked)
+	}
+	other := uuid.New()
+	if _, err := svc.Set(ctx, leader, events.ev.ID, ticketimage.Input{Source: ticketimage.SourceCover, CoverMediaID: &other, Crop: crop}); !errors.Is(err, ticketimage.ErrInvalid) {
+		t.Fatalf("a region of a cover the Event does not have: %v", err)
+	}
+	if _, err := svc.Set(ctx, leader, events.ev.ID, ticketimage.Input{Source: ticketimage.SourceCover, CoverMediaID: &cover, Crop: crop}); err != nil {
+		t.Fatalf("the Event's own cover named: %v", err)
 	}
 	newCover := uuid.New()
 	events.ev.CoverImageID = &newCover

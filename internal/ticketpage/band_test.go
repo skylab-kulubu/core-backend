@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/ticketimage"
 	"github.com/skylab-kulubu/core-backend/internal/ticketpage"
@@ -185,5 +186,98 @@ func TestPDFBandFollowsTheTicketImage(t *testing.T) {
 		if mostlyBlue(t, band) != tc.blue {
 			t.Errorf("%s: band blue = %v", tc.name, !tc.blue)
 		}
+	}
+}
+
+// The original is cut only when it is the image core recorded (its decoded
+// size is the Media's, at most 2560 pixels a side); an older one (stored
+// sideways before re-encoding, or larger) gives the page size.
+func TestBandSourceReadsOnlyARecordedOriginal(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	store, blobs := media.NewMemoryStore(), media.NewMemoryBlob()
+	add := func(w, h, recW, recH int) uuid.UUID {
+		t.Helper()
+		key := "images/" + uuid.NewString() + ".png"
+		original := halves(t, w, h)
+		page := halves(t, 60, 30)
+		if err := blobs.Put(ctx, key, original, media.BlobMetadata{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := blobs.Put(ctx, key+"/page.png", page, media.BlobMetadata{}); err != nil {
+			t.Fatal(err)
+		}
+		m, err := store.Create(ctx, media.Media{
+			ID: uuid.New(), Type: "image/png", Key: key, Size: int64(len(original)), Width: recW, Height: recH,
+			Purpose: "event_cover", Status: media.StatusAttached, Visibility: media.VisibilityPublic,
+			SizeObjects: map[string]media.SizeObject{media.SizePage: {ImageSize: media.ImageSize{Width: 60, Height: 30}, Type: "image/png"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m.ID
+	}
+	images := &ticketpage.MediaImages{Media: store, Blobs: blobs}
+	width := func(id uuid.UUID) int {
+		t.Helper()
+		data, ok := images.BandSource(ctx, id)
+		if !ok {
+			t.Fatal("no source")
+		}
+		cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg.Width
+	}
+	if got := width(add(1200, 600, 1200, 600)); got != 1200 {
+		t.Errorf("a recorded original: %d px", got)
+	}
+	if got := width(add(600, 1200, 1200, 600)); got != 60 {
+		t.Errorf("a sideways original: %d px, want the page size", got)
+	}
+	if got := width(add(1200, 600, 0, 0)); got != 60 {
+		t.Errorf("an original of no recorded size: %d px, want the page size", got)
+	}
+}
+
+// pageOnly answers an original Band cannot decode and a page size it can.
+type pageOnly struct {
+	page  []byte
+	pages int
+}
+
+func (p *pageOnly) Image(context.Context, uuid.UUID, string) ([]byte, string, bool) {
+	p.pages++
+	return p.page, "image/png", true
+}
+
+func (p *pageOnly) BandSource(context.Context, uuid.UUID) ([]byte, bool) {
+	return []byte("bir resim değil"), true
+}
+
+// An original Band cannot cut (too large to decode) gives the page size's
+// band, asked once.
+func TestPDFBandFallsBackToThePageSize(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	ctx := t.Context()
+	cover := uuid.New()
+	ev := f.ev
+	ev.CoverImageID = &cover
+	if _, err := f.events.Update(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+	images := &pageOnly{page: halves(t, 1200, 600)}
+	svc := ticketpage.New(f.store, f.events, f.users, f.signer, f.render, images, ticketpage.Config{
+		Page: ticket.PageConfig{Grace: ticket.DefaultPageGrace, URL: "https://yildizskylab.com/bilet/{key}"},
+	})
+	svc.Now = func() time.Time { return f.now }
+	g := f.guest("elif@example.com")
+	if _, _, err := svc.PDF(ctx, g.AccessKey); err != nil {
+		t.Fatal(err)
+	}
+	if images.pages != 1 || !mostlyBlue(t, bandOf(t, f.render.html)) {
+		t.Fatalf("page size asked %d times", images.pages)
 	}
 }

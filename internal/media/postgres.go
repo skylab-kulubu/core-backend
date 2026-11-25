@@ -448,7 +448,7 @@ type postgresMediaTx interface {
 }
 
 func lockMediaReferenceWriters(ctx context.Context, tx postgresMediaTx) error {
-	_, err := tx.Exec(ctx, `LOCK TABLE events, event_images, event_files, event_videos, users, certificate_templates, certificate_template_versions, media_attachments IN SHARE MODE`)
+	_, err := tx.Exec(ctx, `LOCK TABLE events, event_images, event_files, event_videos, event_ticket_images, users, certificate_templates, certificate_template_versions, media_attachments IN SHARE MODE`)
 	return err
 }
 

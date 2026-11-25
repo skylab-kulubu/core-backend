@@ -553,19 +553,23 @@ func (s *Service) band(ctx context.Context, id uuid.UUID, crop *ticketimage.Crop
 	if data, ok := s.bands.get(key, now); ok {
 		return data
 	}
-	var data []byte
+	var cut []byte
 	var ok bool
 	if src, has := s.images.(BandSources); has {
-		data, ok = src.BandSource(ctx, id)
-	} else {
-		data, _, ok = s.images.Image(ctx, id, media.SizePage)
+		if data, read := src.BandSource(ctx, id); read {
+			cut, ok = Band(data, crop)
+		}
 	}
 	if !ok {
-		return nil
-	}
-	cut, ok := Band(data, crop)
-	if !ok {
-		return nil
+		// No original to cut, or one Band could not (too large to decode):
+		// the page size, once.
+		data, _, read := s.images.Image(ctx, id, media.SizePage)
+		if !read {
+			return nil
+		}
+		if cut, ok = Band(data, crop); !ok {
+			return nil
+		}
 	}
 	s.bands.put(key, cut, now)
 	return cut

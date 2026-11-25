@@ -79,9 +79,16 @@ const maxBandSourceBytes = 10 << 20
 // gives its page size, if it has one.
 var bandSourceTypes = []string{"image/jpeg", "image/png", "image/webp", "image/gif"}
 
-// BandSource is the image's original when core can decode it, else its
-// page size: a region of a poster needs the original's pixels to stay
-// sharp at print size.
+// maxBandSourceSide bounds an original's side: an Event image is stored at
+// most 2560 pixels (config/media-purposes.json, image.max_dimension).
+const maxBandSourceSide = 2560
+
+// BandSource is the image's original when it is the image core recorded
+// (its decoded size is the Media's width and height, at most 2560 pixels a
+// side), else its page size: a region of a poster needs the original's
+// pixels to stay sharp at print size. An older original stored before
+// re-encoding (EXIF orientation not applied, larger than core now keeps)
+// gives its page size, which core made upright.
 func (m *MediaImages) BandSource(ctx context.Context, id uuid.UUID) ([]byte, bool) {
 	if m == nil || m.Media == nil || m.Blobs == nil {
 		return nil, false
@@ -90,9 +97,12 @@ func (m *MediaImages) BandSource(ctx context.Context, id uuid.UUID) ([]byte, boo
 	if err != nil || item.DeletedAt != nil || !item.Servable() {
 		return nil, false
 	}
-	if slices.Contains(bandSourceTypes, item.Type) && item.Size > 0 && item.Size <= maxBandSourceBytes {
+	if slices.Contains(bandSourceTypes, item.Type) && item.Size > 0 && item.Size <= maxBandSourceBytes &&
+		item.Width > 0 && item.Height > 0 && max(item.Width, item.Height) <= maxBandSourceSide {
 		if data, err := m.Blobs.Read(ctx, item.Key); err == nil && len(data) > 0 && len(data) <= maxBandSourceBytes {
-			return data, true
+			if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil && cfg.Width == item.Width && cfg.Height == item.Height {
+				return data, true
+			}
 		}
 	}
 	data, _, ok := m.Image(ctx, id, media.SizePage)
@@ -202,7 +212,9 @@ func Band(data []byte, crop *ticketimage.Crop) ([]byte, bool) {
 	// The JPEG shrinks in quality first, then in width, until it fits
 	// bandMaxBytes (a photo fits at the first try; noise needs the rest).
 	var out []byte
-	for outW := min(bandWidth, region.Dx()); ; outW = outW * 3 / 4 {
+	// A region narrower than bandMinWidth is cut at its own width and only
+	// loses quality; a wider one never goes below bandMinWidth.
+	for outW := min(bandWidth, region.Dx()); ; outW = max(bandMinWidth, outW*3/4) {
 		outH := max(1, int(math.Round(float64(outW)/ticketimage.BandAspect)))
 		dst := image.NewRGBA(image.Rect(0, 0, outW, outH))
 		xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, region, xdraw.Src, nil)

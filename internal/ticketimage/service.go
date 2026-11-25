@@ -60,7 +60,8 @@ type View struct {
 	Band         Band       `json:"band"`
 }
 
-// Input is a new choice. CoverMediaID left out takes the Event's cover.
+// Input is a new choice. CoverMediaID, when sent, must be the Event's
+// cover; left out, it is.
 type Input struct {
 	Source       Source     `json:"source"`
 	MediaID      *uuid.UUID `json:"mediaId"`
@@ -112,11 +113,11 @@ func (s *Service) Set(ctx context.Context, p authz.Principal, id uuid.UUID, in I
 	switch in.Source {
 	case SourceAuto:
 	case SourceCover:
-		cover := in.CoverMediaID
-		if cover == nil {
-			cover = ev.CoverImageID
-		}
-		if cover == nil || *cover == uuid.Nil || in.Crop == nil || !in.Crop.Valid() {
+		// The region is drawn on the Event's saved cover: another one (a
+		// cover not saved yet) is refused.
+		cover := ev.CoverImageID
+		if cover == nil || in.Crop == nil || !in.Crop.Valid() ||
+			(in.CoverMediaID != nil && *in.CoverMediaID != *cover) {
 			return View{}, ErrInvalid
 		}
 		next.CoverMediaID, next.Crop = cover, in.Crop
