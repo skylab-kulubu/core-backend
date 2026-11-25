@@ -76,7 +76,9 @@ drops its row when it comes due.
    (already, for `event.ticket-created`).
 2. SkyMail: the type `event.door-staff-added` is seeded with its template
    and inbox text (skymail-frontend; waits for the SkyNotify move).
-3. `PANEL_URL` (the panel's origin, e.g. `https://admin.example`), optional.
+3. `PANEL_URL`, the panel's origin: `https://admin.yildizskylab.com` in
+   production (sandbox: the sandbox panel's origin). Optional: unset, the
+   mail has no door link.
 4. `DOOR_STAFF_MAIL=on`; the startup line reads
    `door staff mail: on (event.door-staff-added, after 2m0s; door link on the panel)`.
 
