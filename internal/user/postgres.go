@@ -365,6 +365,35 @@ func (s *PostgresStore) FindByEmail(ctx context.Context, email string) ([]User, 
 	return out, rows.Err()
 }
 
+// FindBySchoolEmail is the active accounts whose school e-mail is email
+// (the attendance QR's page finds a member's Ticket by it,
+// docs/guest-self-check-in.md).
+func (s *PostgresStore) FindBySchoolEmail(ctx context.Context, email string) ([]User, error) {
+	want := strings.TrimSpace(email)
+	out := make([]User, 0)
+	if want == "" {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+userCols+`
+		FROM users
+		WHERE account_state = 'active' AND school_email <> '' AND lower(school_email) = lower($1)
+		ORDER BY created_at
+	`, want)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresStore) FindByStudentCardUID(ctx context.Context, uid string) (User, error) {
 	if uid == "" {
 		return User{}, ErrNotFound

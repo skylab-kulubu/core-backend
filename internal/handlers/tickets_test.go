@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/doorqr"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
@@ -1247,5 +1248,69 @@ func TestListTicketsQuerySelfUserAndVictimEmailIsIntersection(t *testing.T) {
 	}
 	if len(listed) != 1 || listed[0].ID != ownTk.ID {
 		t.Fatalf("own intersection %+v", listed)
+	}
+}
+
+// The attendance QR's page (docs/guest-self-check-in.md): the Ticket's
+// access key needs the QR's token, and nobody's Ticket answers 404 with
+// where to register while the Event takes registrations.
+func TestCheckInGuestHTTPTicketKeyAndRegistrationURL(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", FormURL: "https://forms.yildizskylab.com/f/hack"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := events.CreateDay(t.Context(), event.Day{EventID: ev.ID, Name: "Day 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := events.CreateSession(t.Context(), event.Session{EventDayID: day.ID, Title: "Opening", SpeakerName: "Ada", SessionType: "PRESENTATION"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := uuid.New()
+	held, err := tickets.Create(t.Context(), ticket.Ticket{EventID: ev.ID, TicketType: ticket.Registered, OwnerID: &owner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := doorqr.NewGate([]byte("handler door qr key, handler doo"), doorqr.Config{})
+	app := ticketApp(t, authn.Identity{}, events, tickets, gate)
+	pass, err := gate.MintFor(doorqr.ClassDisplay, sess.ID, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(body string) (int, map[string]any) {
+		req := httptest.NewRequest(fiber.MethodPost, "/v1/sessions/"+sess.ID.String()+"/check-in/guest", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+	if held.AccessKey == "" {
+		t.Fatal("no access key")
+	}
+	// A key needs the QR's token in every mode.
+	if status, body := post(`{"ticketKey":"` + held.AccessKey + `"}`); status != fiber.StatusForbidden || body["code"] != "door_qr_required" {
+		t.Fatalf("key without a token: %d %v", status, body)
+	}
+	if status, body := post(`{"ticketKey":"` + held.AccessKey + `","doorToken":"` + pass.Token + `"}`); status != fiber.StatusCreated {
+		t.Fatalf("key with a token: %d %v", status, body)
+	}
+	status, body := post(`{"email":"nobody@example.com","doorToken":"` + pass.Token + `"}`)
+	if status != fiber.StatusNotFound || body["registrationUrl"] != "https://forms.yildizskylab.com/f/hack" {
+		t.Fatalf("nobody: %d %v", status, body)
+	}
+	// Without a token a member was not looked for: no link.
+	if status, body := post(`{"email":"nobody@example.com"}`); status != fiber.StatusNotFound || body["registrationUrl"] != nil {
+		t.Fatalf("nobody without a token: %d %v", status, body)
+	}
+	if status, body := post(`{}`); status != fiber.StatusBadRequest {
+		t.Fatalf("empty: %d %v", status, body)
 	}
 }

@@ -60,6 +60,8 @@ services:
       SKYMAIL_CERTIFICATE_TEMPLATE_KEY: ${SKYMAIL_CERTIFICATE_TEMPLATE_KEY-core.certificate}
       SKYMAIL_WELCOME_TEMPLATE_ID: ${SKYMAIL_WELCOME_TEMPLATE_ID:-}
       SKYMAIL_CERTIFICATE_TEMPLATE_ID: ${SKYMAIL_CERTIFICATE_TEMPLATE_ID:-}
+      # The certificate's PDF with its mail (docs/certificate-mail.md).
+      CERTIFICATE_PDF_ATTACHMENT: ${CERTIFICATE_PDF_ATTACHMENT:-off}
       # The user sync (docs/user-sync.md); unset takes the defaults.
       USER_SYNC_ENABLED: ${USER_SYNC_ENABLED:-}
       USER_SYNC_INTERVAL: ${USER_SYNC_INTERVAL:-}
@@ -88,6 +90,7 @@ services:
       SKYMAIL_FEEDBACK_REMINDER_TEMPLATE_KEY: ${SKYMAIL_FEEDBACK_REMINDER_TEMPLATE_KEY-core.feedback-reminder}
       # Management membership terms (docs/management-membership-terms.md).
       MANAGEMENT_TERMS_MODE: ${MANAGEMENT_TERMS_MODE:-off}
+      MANAGEMENT_TERMS_AUTO_REMOVE: ${MANAGEMENT_TERMS_AUTO_REMOVE:-off}
       MANAGEMENT_TERMS_WEEKLY_SUMMARY: ${MANAGEMENT_TERMS_WEEKLY_SUMMARY:-on}
       SKYMAIL_MANAGEMENT_TERM_TEMPLATE_KEY: ${SKYMAIL_MANAGEMENT_TERM_TEMPLATE_KEY-club.management-term}
       # A member's feedback mail as a Notification (docs/event-feedback.md).

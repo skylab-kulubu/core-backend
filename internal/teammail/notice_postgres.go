@@ -24,13 +24,25 @@ func orEmpty(names []string) []string {
 	return names
 }
 
+// viaConsole is privilege_notice_mails.via of a console change.
+const viaConsole = "console"
+
+// noticeVia is n's via column: console, or NULL.
+func noticeVia(n Notice) any {
+	if n.Console {
+		return viaConsole
+	}
+	return nil
+}
+
 func (q *PostgresNoticeQueue) Enqueue(ctx context.Context, n Notice) error {
 	_, err := q.pool.Exec(ctx, `
 		INSERT INTO privilege_notice_mails
-			(id, change_id, event, group_path, subject_id, actor_id, roles_added, roles_removed, occurred_at, next_attempt_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+			(id, change_id, event, group_path, subject_id, actor_id, roles_added, roles_removed, occurred_at, next_attempt_at, via)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10)
 		ON CONFLICT DO NOTHING`,
-		n.ID, n.ChangeID, string(n.Event), n.GroupPath, n.SubjectID, n.ActorID, orEmpty(n.RolesAdded), orEmpty(n.RolesRemoved), n.OccurredAt)
+		n.ID, n.ChangeID, string(n.Event), n.GroupPath, n.SubjectID, n.ActorID, orEmpty(n.RolesAdded), orEmpty(n.RolesRemoved),
+		n.OccurredAt, noticeVia(n))
 	return err
 }
 
@@ -44,7 +56,7 @@ func (q *PostgresNoticeQueue) Claim(ctx context.Context, now time.Time, lease ti
 			LIMIT $3
 			FOR UPDATE SKIP LOCKED)
 		RETURNING id, change_id, recipient_id, event, group_path, subject_id, actor_id, roles_added, roles_removed,
-			member_count, occurred_at, next_attempt_at, attempts, claimed_at`,
+			member_count, occurred_at, next_attempt_at, attempts, claimed_at, via`,
 		now, now.Add(lease), limit)
 	if err != nil {
 		return nil, err
@@ -55,10 +67,12 @@ func (q *PostgresNoticeQueue) Claim(ctx context.Context, now time.Time, lease ti
 		var n Notice
 		var event string
 		var count *int32
+		var via *string
 		if err := rows.Scan(&n.ID, &n.ChangeID, &n.RecipientID, &event, &n.GroupPath, &n.SubjectID, &n.ActorID,
-			&n.RolesAdded, &n.RolesRemoved, &count, &n.OccurredAt, &n.NextAttemptAt, &n.Attempts, &n.ClaimedAt); err != nil {
+			&n.RolesAdded, &n.RolesRemoved, &count, &n.OccurredAt, &n.NextAttemptAt, &n.Attempts, &n.ClaimedAt, &via); err != nil {
 			return nil, err
 		}
+		n.Console = via != nil && *via == viaConsole
 		n.Event = NoticeEvent(event)
 		if count != nil {
 			c := int(*count)
@@ -81,9 +95,9 @@ func (q *PostgresNoticeQueue) Expand(ctx context.Context, claimed Notice, recipi
 		)
 		INSERT INTO privilege_notice_mails
 			(id, change_id, recipient_id, event, group_path, subject_id, actor_id, roles_added, roles_removed,
-			 member_count, occurred_at, next_attempt_at)
+			 member_count, occurred_at, next_attempt_at, via)
 		SELECT gen_random_uuid(), c.change_id, r.recipient, c.event, c.group_path, c.subject_id, c.actor_id,
-			c.roles_added, c.roles_removed, $4, c.occurred_at, $5
+			c.roles_added, c.roles_removed, $4, c.occurred_at, $5, c.via
 		FROM change c CROSS JOIN unnest($3::uuid[]) AS r(recipient)
 		ON CONFLICT DO NOTHING`,
 		claimed.ID, claimed.ClaimedAt, recipients, memberCount, at)

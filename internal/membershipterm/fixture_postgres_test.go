@@ -161,6 +161,22 @@ func (f *fixture) serviceReading(t *testing.T, dir membershipterm.Directory) *me
 	return svc
 }
 
+// serviceRemoving is a second service on the same store whose removal
+// runs in mode, reading the Groups from dir and writing through the
+// fixture's identity service.
+func (f *fixture) serviceRemoving(t *testing.T, mode membershipterm.Mode, dir membershipterm.Directory) *membershipterm.Service {
+	t.Helper()
+	config := f.config
+	config.AutoRemove = mode
+	config.Directory = dir
+	svc, err := membershipterm.NewService(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.UseMemberships(f.identity)
+	return svc
+}
+
 func (f *fixture) open(t *testing.T) []membershipterm.Term {
 	t.Helper()
 	terms, err := f.store.Open(context.Background())

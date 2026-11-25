@@ -53,6 +53,11 @@ type CheckIn struct {
 	SessionID  uuid.UUID `json:"sessionId"`
 	EventDayID uuid.UUID `json:"eventDayId"`
 	CreatedAt  time.Time `json:"createdAt"`
+	// ScannedAt is when the door took the scan, when it sent it later
+	// (docs/offline-door.md); nil for a scan core took as it came.
+	ScannedAt *time.Time `json:"scannedAt,omitempty"`
+	// NoMail queues no door mail with it: a scan sent too late for one.
+	NoMail bool `json:"-"`
 	// Kind is what a door write answers: check_in, or entry when a scan in
 	// the venue mode wrote the day's Venue entry alone (ID is then the
 	// entry's; docs/venue-entry.md). A stored check-in leaves it out.
@@ -81,13 +86,26 @@ type DoorCheckIn struct {
 	Kind string `json:"kind"`
 }
 
-// GuestCheckIn is a guest checking themselves in to a Session: the e-mail
-// their guest Ticket was written for, and the door QR token they scanned
-// (docs/guest-self-check-in.md).
+// GuestCheckIn is someone checking themselves in to a Session on the page
+// the door or attendance QR opens (docs/guest-self-check-in.md): by the
+// e-mail their Ticket was written for (a guest's, or a member's account
+// e-mail: primary or school), or by their Ticket's access key (any Ticket),
+// with the token of the QR they scanned.
 type GuestCheckIn struct {
 	Email     string
+	TicketKey string
 	DoorToken string
 }
+
+// GuestNotFoundError is a self check-in that found no Ticket: ErrNotFound,
+// with where to register while the Event takes registrations (its form,
+// or its external registration link). The page shows the link.
+type GuestNotFoundError struct {
+	RegistrationURL string
+}
+
+func (e *GuestNotFoundError) Error() string { return ErrNotFound.Error() }
+func (e *GuestNotFoundError) Unwrap() error { return ErrNotFound }
 
 // DoorQR is a minted door QR for the screen at a Session's door. URL is what
 // the QR encodes; the screen asks for a new one after RefreshAfterSeconds.

@@ -1061,6 +1061,17 @@ func main() {
 	if mapWorker := startEventMaps(workers, worker, render, publicBlobs, mediaStore, mediaPurposes, decodeBudget, mapRegions); mapWorker != nil {
 		eventMapMetrics = mapWorker
 	}
+	// The certificate's PDF with its queued mail (CERTIFICATE_PDF_ATTACHMENT):
+	// read from storage just before each send.
+	certificatePDFAttachment, err := certificatePDFAttachmentOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if certificatePDFAttachment {
+		log.Printf("certificate mail: PDF attachment on")
+	} else {
+		log.Printf("certificate mail: PDF attachment off (CERTIFICATE_PDF_ATTACHMENT is not on)")
+	}
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
@@ -1070,6 +1081,7 @@ func main() {
 		Assets:           certificate.MediaAssets{Media: mediaStore, Blobs: blobs},
 		PrivateArtifacts: privateArtifacts,
 		Media:            media.NewLinker(mediaStore),
+		MailPDF:          certificatePDFAttachment,
 	})
 	worker("certificate issuance worker", certificate.MaintainIssuance(workers, certSvc, 2*time.Second, 10, func(err error) {
 		log.Printf("certificate issuance worker: %v", err)
@@ -1191,7 +1203,8 @@ func main() {
 
 	// Management membership terms (docs/management-membership-terms.md,
 	// grup-yonetimi 11): YK, DK and Team Leader memberships end with the
-	// season; core warns, marks and lists, and never takes anyone out.
+	// season; core warns, marks and lists, and 30 days after the end takes
+	// the holder out (MANAGEMENT_TERMS_AUTO_REMOVE, off by default).
 	terms, err := startManagementTerms(workers, os.Getenv, managementTermsDeps{
 		pool: pool, dir: dir, seasons: seasons, users: users, sky: sky, audit: teamAudit, az: az,
 		rules: membershipterm.Rules{PrivilegedRoots: privilegedRoots, LeaderSubgroups: authzPolicy.LeaderSubgroups},
@@ -1222,6 +1235,16 @@ func main() {
 		TeamPage:              &identity.TeamPageVisibility{Consents: consents},
 	})
 	terms.UseMemberships(identityService)
+	// Keycloak's console changes in the same record (docs/console-audit.md,
+	// KEYCLOAK_CONSOLE_AUDIT): read back from Keycloak's admin events and
+	// told as the panel's are, the management terms included.
+	consoleAudit, err := consoleAuditFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	consoleAuditMetrics, consoleAuditStopped := startConsoleAudit(workers, consoleAudit, dir, pool, teamAudit,
+		teamMembership, managementTermsNotifier(terms), groupRolesNotice, log.Printf)
+	worker("keycloak console audit", consoleAuditStopped)
 	userAccounts := identity.NewUserAccounts(identity.UserAccountOptions{
 		Accounts: accountDir, People: dir, Users: users, Authz: az,
 		PrivilegedRoots: privilegedRoots, Audit: teamAudit, YTUProvider: ytuIdentityProvider,
@@ -1268,7 +1291,7 @@ func main() {
 		AccountAccessMetrics:   accessMetrics,
 		AccountErasureMetrics:  optionalErasureMetrics(erasureGauges),
 		MediaCDNPurgeMetrics:   cdnPurgeMetrics,
-		TeamMailMetrics:        teamMembershipMetrics,
+		TeamMailMetrics:        joinedMetrics{teamMembershipMetrics, consoleAuditMetrics},
 		ManagementTerms:        terms,
 		TeamDelegationMetrics:  delegationMetrics,
 		RetentionMetrics:       retentionMetrics,

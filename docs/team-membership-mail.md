@@ -25,7 +25,9 @@ The routes:
   parent roster this removes the subgroup they sit in, see CONTEXT.md
   "Source group")
 
-A change made in Keycloak's own console sends nothing: core does not see it.
+A change made in Keycloak's own console sends the same mail once
+`KEYCLOAK_CONSOLE_AUDIT` is on ([console-audit.md](console-audit.md)); off, it
+sends nothing: core does not see it.
 
 A Privileged Group's membership change also tells ADMIN and that root's
 other members, by the privilege notice (`club.privilege-change`,
