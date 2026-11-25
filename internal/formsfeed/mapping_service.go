@@ -51,8 +51,12 @@ type Mappings struct {
 	Forms FormReader
 	// On is EVENTS_FORMS_ENABLED: off, the questions are ErrFormsPullOff. A
 	// mapping is still saved, read and deleted (ready when it opens).
-	On  bool
-	Now func() time.Time
+	On bool
+	// Collects queues the form's gathering when its mapping is first
+	// saved, so the answers that named nobody before are kept with the
+	// guests it builds (docs/form-respondents.md); nil queues none.
+	Collects *Collects
+	Now      func() time.Time
 }
 
 func (m *Mappings) now() time.Time {
@@ -140,9 +144,15 @@ func (m *Mappings) Get(ctx context.Context, p authz.Principal, eventID, formID u
 // (read from Forms now). created is true when there was none (the first
 // save, which bilet 04 may hang the backfill on).
 func (m *Mappings) Put(ctx context.Context, p authz.Principal, in Mapping) (saved Mapping, created bool, err error) {
-	if _, err := m.editable(ctx, p, in.EventID, in.FormID); err != nil {
+	ev, err := m.editable(ctx, p, in.EventID, in.FormID)
+	if err != nil {
 		return Mapping{}, false, err
 	}
+	defer func() {
+		if err == nil && created {
+			m.Collects.FormsLinked(ctx, ev, []uuid.UUID{in.FormID})
+		}
+	}()
 	in = in.Normalized()
 	if err := in.Validate(); err != nil {
 		return Mapping{}, false, err

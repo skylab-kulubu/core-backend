@@ -150,6 +150,33 @@ func (s *PostgresStore) MarkFormsRejected(ctx context.Context, id uuid.UUID, at 
 	return tag.RowsAffected() > 0, err
 }
 
+// SetFormsPending marks or clears the pending mark of an answer's Tickets
+// (FormsPendingStore).
+func (s *PostgresStore) SetFormsPending(ctx context.Context, responseID uuid.UUID, at *time.Time) (int, error) {
+	if responseID == uuid.Nil {
+		return 0, nil
+	}
+	var tagRows int64
+	if at == nil {
+		tag, err := s.pool.Exec(ctx, `
+			UPDATE tickets SET forms_pending_at = NULL, updated_at = now()
+			WHERE form_response_id = $1 AND forms_pending_at IS NOT NULL`, responseID)
+		if err != nil {
+			return 0, err
+		}
+		tagRows = tag.RowsAffected()
+	} else {
+		tag, err := s.pool.Exec(ctx, `
+			UPDATE tickets SET forms_pending_at = $2, updated_at = now()
+			WHERE form_response_id = $1 AND status <> 'cancelled' AND forms_pending_at IS NULL`, responseID, at.UTC())
+		if err != nil {
+			return 0, err
+		}
+		tagRows = tag.RowsAffected()
+	}
+	return int(tagRows), nil
+}
+
 // KeepFormResponse binds a Ticket an answer wrote to the holder's newest
 // accepted answer and clears its mark (FormsRejectionStore).
 func (s *PostgresStore) KeepFormResponse(ctx context.Context, id, responseID uuid.UUID) error {

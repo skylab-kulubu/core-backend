@@ -47,6 +47,9 @@ type eventBody struct {
 	// on (docs/attendance-mail.md).
 	AttendanceWelcomeMail  *bool `json:"attendanceWelcomeMail"`
 	AttendanceRecordedMail *bool `json:"attendanceRecordedMail"`
+	// FormResponsesAutoTicket on create; none is on
+	// (docs/form-respondents.md).
+	FormResponsesAutoTicket *bool `json:"formResponsesAutoTicket"`
 	// AttendeeNote: the organizer's note for whoever enters; none keeps it
 	// (docs/attendance-mail.md).
 	AttendeeNote *string `json:"attendeeNote"`
@@ -150,18 +153,19 @@ func (b eventBody) asEvent() event.Event {
 		WaitlistEnabled: b.WaitlistEnabled,
 		EntryMode:       b.EntryMode,
 
-		AttendanceWelcomeMail:  b.AttendanceWelcomeMail,
-		AttendanceRecordedMail: b.AttendanceRecordedMail,
-		AttendeeNote:           b.AttendeeNote,
-		StartDate:              b.StartDate,
-		EndDate:                b.EndDate,
-		Linkedin:               b.Linkedin,
-		Status:                 event.Status(b.Status),
-		Ranked:                 b.Ranked,
-		PrizeInfo:              b.PrizeInfo,
-		CoverImageID:           b.CoverImageID,
-		AttendanceRule:         b.AttendanceRule,
-		AttendanceRatio:        b.AttendanceRatio,
+		AttendanceWelcomeMail:   b.AttendanceWelcomeMail,
+		AttendanceRecordedMail:  b.AttendanceRecordedMail,
+		FormResponsesAutoTicket: b.FormResponsesAutoTicket,
+		AttendeeNote:            b.AttendeeNote,
+		StartDate:               b.StartDate,
+		EndDate:                 b.EndDate,
+		Linkedin:                b.Linkedin,
+		Status:                  event.Status(b.Status),
+		Ranked:                  b.Ranked,
+		PrizeInfo:               b.PrizeInfo,
+		CoverImageID:            b.CoverImageID,
+		AttendanceRule:          b.AttendanceRule,
+		AttendanceRatio:         b.AttendanceRatio,
 
 		AttendanceMinCount:     b.AttendanceMinCount,
 		AttendanceAutoFinalize: b.AttendanceAutoFinalize == nil || *b.AttendanceAutoFinalize,

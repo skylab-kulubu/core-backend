@@ -68,6 +68,30 @@ type FormsRejectionStore interface {
 	KeepFormResponse(ctx context.Context, id, responseID uuid.UUID) error
 }
 
+// FormsPendingStore keeps a pending answer's Tickets marked (Ticket.FormsPendingAt;
+// PostgresStore, MemoryStore).
+type FormsPendingStore interface {
+	// SetFormsPending marks the Tickets of the answer responseID that are
+	// not cancelled pending in Forms at at, or clears the mark when at is
+	// nil; it answers how many changed.
+	SetFormsPending(ctx context.Context, responseID uuid.UUID, at *time.Time) (int, error)
+}
+
+// FormsStatusOf is a Ticket's Ticket.FormsStatus: "" for a Ticket no forms
+// answer wrote, declined when Forms declined it (K6), pending when it went
+// back to pending, else accepted.
+func FormsStatusOf(fromForm bool, rejectedAt, pendingAt *time.Time) string {
+	switch {
+	case !fromForm:
+		return ""
+	case rejectedAt != nil:
+		return string(FormResponseDeclined)
+	case pendingAt != nil:
+		return string(FormResponsePending)
+	}
+	return string(FormResponseAccepted)
+}
+
 // CancelBlockStore reads which of the Tickets ids no cancellation may
 // touch (PostgresStore, MemoryStore): one with a check-in, or of a
 // Competition's current Entrant, as Cancel refuses them

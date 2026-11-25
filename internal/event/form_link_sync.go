@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -52,6 +53,16 @@ type ServiceOptions struct {
 	// Now is the clock a Co-organizer person's end is read against; nil is
 	// time.Now.
 	Now func() time.Time
+	// FormsLinked hears of the application and extra forms a create or an
+	// update newly linked (formsfeed: the Unticketed respondents'
+	// gathering, docs/form-respondents.md); nil hears nothing.
+	FormsLinked FormsLinkedHook
+}
+
+// FormsLinkedHook is told, after the write committed, which forms an Event
+// newly lists as its application or extra forms. It never fails the write.
+type FormsLinkedHook interface {
+	FormsLinked(ctx context.Context, e Event, formIDs []uuid.UUID)
 }
 
 func NewServiceWithOptions(store Store, az authz.Authorizer, options ServiceOptions) Service {
@@ -63,6 +74,7 @@ func NewServiceWithOptions(store Store, az authz.Authorizer, options ServiceOpti
 		store: store, authz: az, formLinks: options.FormLinks, media: options.Media,
 		addresses: media.Addresses{Base: options.PublicBase, Mode: options.ImageAddressMode},
 		policy:    policy, teams: options.Teams, coOrganizersWrite: options.CoOrganizersWrite, now: options.Now,
+		formsLinked: options.FormsLinked,
 	}
 }
 
@@ -107,6 +119,35 @@ func (e Event) ListsForm(formID uuid.UUID) bool {
 		}
 	}
 	return false
+}
+
+// ApplicationFormIDs are the forms the Event lists (ListsForm), each once;
+// never nil.
+func ApplicationFormIDs(e Event) []uuid.UUID {
+	out := []uuid.UUID{}
+	for _, link := range applicationLinksOf(e) {
+		if !slices.Contains(out, link.FormID) {
+			out = append(out, link.FormID)
+		}
+	}
+	return out
+}
+
+// linkedForms tells formsLinked which of e's forms were not in before (nil:
+// every one, a new Event).
+func (s *service) linkedForms(ctx context.Context, e Event, before map[uuid.UUID]bool) {
+	if s.formsLinked == nil {
+		return
+	}
+	var added []uuid.UUID
+	for _, id := range ApplicationFormIDs(e) {
+		if !before[id] {
+			added = append(added, id)
+		}
+	}
+	if len(added) > 0 {
+		s.formsLinked.FormsLinked(ctx, e, added)
+	}
 }
 
 // FormIDFromURL finds the form in a forms address: the first path segment

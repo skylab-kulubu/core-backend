@@ -208,7 +208,7 @@ func TestAPullAsksForTheMappedQuestions(t *testing.T) {
 	h, reader, mapped := mappedHarness(nil)
 	anon := Response{FormID: applicationForm, ResponseID: uuid.New(), Status: StatusAccepted, Version: 1, Answers: map[string]string{"n": "Ada Lovelace", "e": "ada@example.com"}}
 	l := &pageLister{pages: map[string]Page{"": {Items: []Response{anon}}}}
-	q := &memQueue{jobs: []PullJob{{ID: uuid.New(), FormID: applicationForm, Kind: PullBackfill, RequestedAt: pullNow}}}
+	q := &memQueue{jobs: []PullJob{{ID: uuid.New(), FormID: applicationForm, Kind: PullCatchup, RequestedAt: pullNow}}}
 	if _, err := newPuller(h, q, l).RunOne(context.Background()); err != nil {
 		t.Fatal(err)
 	}

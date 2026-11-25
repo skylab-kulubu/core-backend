@@ -778,6 +778,34 @@ func (s *MemoryStore) MarkFormsRejected(_ context.Context, id uuid.UUID, at time
 	return true, nil
 }
 
+// SetFormsPending is the database's.
+func (s *MemoryStore) SetFormsPending(_ context.Context, responseID uuid.UUID, at *time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if responseID == uuid.Nil {
+		return 0, nil
+	}
+	changed := 0
+	for id, r := range s.formResponses {
+		t, ok := s.byID[id]
+		if r != responseID || !ok {
+			continue
+		}
+		switch {
+		case at == nil && t.FormsPendingAt != nil:
+			t.FormsPendingAt = nil
+		case at != nil && t.FormsPendingAt == nil && t.StatusOf() != StatusCancelled:
+			v := at.UTC()
+			t.FormsPendingAt = &v
+		default:
+			continue
+		}
+		s.byID[id] = t
+		changed++
+	}
+	return changed, nil
+}
+
 // KeepFormResponse is the database's.
 func (s *MemoryStore) KeepFormResponse(_ context.Context, id, responseID uuid.UUID) error {
 	s.mu.Lock()

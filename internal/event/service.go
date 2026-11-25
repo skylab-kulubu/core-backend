@@ -123,6 +123,8 @@ type service struct {
 	// now is the clock a Co-organizer person's end is read against; nil is
 	// time.Now.
 	now func() time.Time
+	// formsLinked hears of the forms a write linked (ServiceOptions.FormsLinked).
+	formsLinked FormsLinkedHook
 }
 
 func NewService(store Store, az authz.Authorizer, publicBase ...string) Service {
@@ -216,6 +218,7 @@ func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
 	}
 	in.AttendanceWelcomeMail = onUnlessOff(in.AttendanceWelcomeMail)
 	in.AttendanceRecordedMail = onUnlessOff(in.AttendanceRecordedMail)
+	in.FormResponsesAutoTicket = onUnlessOff(in.FormResponsesAutoTicket)
 	return in
 }
 
@@ -354,6 +357,7 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (_ Ev
 	created, err := s.store.Create(ctx, in)
 	if err == nil {
 		s.syncEventForms(ctx, created)
+		s.linkedForms(ctx, created, nil)
 	}
 	return s.detail(ctx, created, err)
 }
@@ -480,6 +484,7 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 	updated, err := s.store.Update(ctx, in)
 	if err == nil && syncForms {
 		s.syncEventForms(ctx, updated)
+		s.linkedForms(ctx, updated, listedForms(existing))
 	}
 	return s.detail(ctx, updated, err)
 }

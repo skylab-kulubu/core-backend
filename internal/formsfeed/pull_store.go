@@ -12,9 +12,15 @@ import (
 
 // Kinds of pull (form_pulls.kind).
 const (
-	// PullBackfill is an organizer's "Bu kişilere de bilet yaz": every
-	// accepted answer of the form.
+	// PullBackfill was an organizer's "Bu kişilere de bilet yaz", which
+	// wrote Tickets. A job of it left from the release before runs as a
+	// gathering (PullCollect) and writes none (docs/form-respondents.md).
 	PullBackfill = "backfill"
+	// PullCollect is the gathering of a form's answers into Unticketed
+	// respondents: queued when an Event links the form (or first saves its
+	// mapping), and by the organizer's button. Every answer that is not
+	// archived; no Ticket.
+	PullCollect = "collect"
 	// PullCatchup is the daily pass: the answers changed since the form's
 	// watermark − WatermarkMargin.
 	PullCatchup = "catchup"
@@ -66,10 +72,14 @@ type PullJob struct {
 
 // PullQueue is the jobs and the watermarks (PostgresPulls).
 type PullQueue interface {
-	// Backfill queues an organizer's pull of the form; false when one is
-	// waiting already. Asked again within BackfillCooldown it is a
-	// *BackfillCooldownError, and nothing changes.
+	// Backfill queues an organizer's gathering of the form (PullCollect);
+	// false when one is waiting already. Asked again within
+	// BackfillCooldown it is a *BackfillCooldownError, and nothing changes.
 	Backfill(ctx context.Context, formID, eventID, requestedBy uuid.UUID, now time.Time) (bool, error)
+	// Collect queues the gathering of a form an Event just linked, with
+	// no cooldown; false when one is waiting already. A form the daily
+	// pass has not seen gets its watermark now.
+	Collect(ctx context.Context, formID, eventID uuid.UUID, now time.Time) (bool, error)
 	// Claim takes the next due job and keeps it from others for pullLease.
 	Claim(ctx context.Context, now time.Time) (PullJob, bool, error)
 	// SaveCursor keeps the next page's cursor of a running job and renews
@@ -124,7 +134,7 @@ func (s *PostgresPulls) Backfill(ctx context.Context, formID, eventID, requested
 	var id uuid.UUID
 	err = tx.QueryRow(ctx, `
 		INSERT INTO form_pulls (id, form_id, kind, event_id, requested_by, requested_at, next_attempt_at)
-		VALUES ($1, $2, 'backfill', $3, $4, $5, $5)
+		VALUES ($1, $2, 'collect', $3, $4, $5, $5)
 		ON CONFLICT (form_id, kind) DO NOTHING
 		RETURNING id`, uuid.New(), formID, eventID, requestedBy, now).Scan(&id)
 	queued := err == nil
@@ -132,6 +142,39 @@ func (s *PostgresPulls) Backfill(ctx context.Context, formID, eventID, requested
 		return false, err
 	}
 	return queued, tx.Commit(ctx)
+}
+
+func (s *PostgresPulls) Collect(ctx context.Context, formID, eventID uuid.UUID, now time.Time) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO form_pull_watermarks (form_id, watermark, next_catchup_at, updated_at)
+		VALUES ($1, $2, $3, $2)
+		ON CONFLICT (form_id) DO NOTHING`, formID, now, now.Add(CatchupEvery)); err != nil {
+		return false, err
+	}
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO form_pulls (id, form_id, kind, event_id, requested_at, next_attempt_at)
+		VALUES ($1, $2, 'collect', $3, $4, $4)
+		ON CONFLICT (form_id, kind) DO NOTHING`, uuid.New(), formID, eventID, now)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, tx.Commit(ctx)
+}
+
+// Collecting reports whether a gathering of the Event's form (any of its
+// forms for nil) waits or runs (CollectingReader).
+func (s *PostgresPulls) Collecting(ctx context.Context, eventID uuid.UUID, formID *uuid.UUID) (bool, error) {
+	var collecting bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM form_pulls
+			WHERE kind IN ('collect', 'backfill') AND event_id = $1 AND ($2::uuid IS NULL OR form_id = $2)
+			  AND next_attempt_at <> 'infinity')`, eventID, formID).Scan(&collecting)
+	return collecting, err
 }
 
 func (s *PostgresPulls) Claim(ctx context.Context, now time.Time) (PullJob, bool, error) {

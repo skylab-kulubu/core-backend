@@ -42,6 +42,9 @@ type Patch struct {
 	// mails on or off (null is ErrInvalid; docs/attendance-mail.md).
 	AttendanceWelcomeMail  optional.Field[bool] `json:"attendanceWelcomeMail"`
 	AttendanceRecordedMail optional.Field[bool] `json:"attendanceRecordedMail"`
+	// FormResponsesAutoTicket turns "Otomatik bilet gönder" on or off (null
+	// is ErrInvalid; docs/form-respondents.md).
+	FormResponsesAutoTicket optional.Field[bool] `json:"formResponsesAutoTicket"`
 	// AttendeeNote writes the organizer's note; null or "" clears it.
 	AttendeeNote optional.Field[string] `json:"attendeeNote"`
 	// EntryMode sets the door's mode: per_session or venue, null for
@@ -116,7 +119,7 @@ func (p Patch) apply(existing Event) (Event, error) {
 	e.LocationLng = p.LocationLng.Or(existing.LocationLng)
 	e.LocationAddress = p.LocationAddress.Or(existing.LocationAddress)
 	if p.Ranked.Null || p.RegistrationClosed.Null || p.FeedbackMode.Null || p.FeedbackAutoSend.Null || p.AttendanceAutoFinalize.Null || p.WaitlistEnabled.Null ||
-		p.AttendanceWelcomeMail.Null || p.AttendanceRecordedMail.Null || p.NotifyTicketHolders.Null {
+		p.AttendanceWelcomeMail.Null || p.AttendanceRecordedMail.Null || p.NotifyTicketHolders.Null || p.FormResponsesAutoTicket.Null {
 		return Event{}, ErrInvalid
 	}
 	if e.FeedbackMode = p.FeedbackMode.Or(existing.FeedbackMode); !e.FeedbackMode.Valid() {
@@ -147,6 +150,10 @@ func (p Patch) apply(existing Event) (Event, error) {
 	if p.AttendanceRecordedMail.Set {
 		on := p.AttendanceRecordedMail.Value
 		e.AttendanceRecordedMail = &on
+	}
+	if p.FormResponsesAutoTicket.Set {
+		on := p.FormResponsesAutoTicket.Value
+		e.FormResponsesAutoTicket = &on
 	}
 	if p.AttendeeNote.Set || p.AttendeeNote.Null {
 		note := p.AttendeeNote.Value

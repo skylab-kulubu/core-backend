@@ -31,7 +31,7 @@ func TestPostgresPullsQueueAndPlan(t *testing.T) {
 		t.Fatalf("third backfill: %t %v", ok, err)
 	}
 	job, ok, err := q.Claim(ctx, now)
-	if err != nil || !ok || job.FormID != form || job.Kind != formsfeed.PullBackfill || job.EventID == nil || *job.EventID != eventID {
+	if err != nil || !ok || job.FormID != form || job.Kind != formsfeed.PullCollect || job.EventID == nil || *job.EventID != eventID {
 		t.Fatalf("claim: %+v %t %v", job, ok, err)
 	}
 	// Leased: not due again until the lease ends.

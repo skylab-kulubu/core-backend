@@ -50,6 +50,12 @@ type FormResponse struct {
 	// Event listing the form without a mapping gets no guest from another
 	// Event's mapping. Nil is every Event that lists the form, as before.
 	GuestEvents []uuid.UUID
+	// OnlyEvents, when set, are the only Events the answer may write on,
+	// whoever answered: those whose "Otomatik bilet gönder" is on
+	// (docs/form-respondents.md); an Event with it off keeps the answer as
+	// an Unticketed respondent instead. Nil is every Event that lists the
+	// form, as before.
+	OnlyEvents []uuid.UUID
 }
 
 // FeedbackAnswers marks who answered a feedback form: the invite the code
@@ -128,6 +134,11 @@ const (
 	// Tickets it had written (Ticket.FormsRejectedAt; K6): the panel warns
 	// and offers to cancel them. A 204 still.
 	FormResponseFormsRejected FormResponseOutcome = "forms_rejected"
+	// FormResponseFormsPending is a pending answer whose Tickets it had
+	// written are marked waiting for Forms' review again
+	// (Ticket.FormsPendingAt, docs/form-respondents.md): the Ticket stays.
+	// A 204 still.
+	FormResponseFormsPending FormResponseOutcome = "forms_pending"
 )
 
 // FormResponseResult is what recording a report did.
@@ -209,10 +220,16 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		return s.recordFeedbackAnswer(ctx, r)
 	}
 	if r.Status == FormResponseDeclined {
-		return s.declineFormResponse(ctx, events, r)
+		result, err := s.declineFormResponse(ctx, events, r)
+		if err == nil {
+			// Forms' decline is the answer's state now: the rejection
+			// mark, never the pending one.
+			_, err = s.setFormsPending(ctx, r.ResponseID, nil)
+		}
+		return result, err
 	}
 	if r.Status != FormResponseAccepted {
-		return FormResponseResult{Outcome: FormResponseNotAccepted}, nil
+		return s.pendFormResponse(ctx, r)
 	}
 	var guest GuestInfo
 	switch {
@@ -237,6 +254,9 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 	listed := len(listing)
 	if r.GuestEvents != nil && r.UserID == nil {
 		listing = onlyEvents(listing, r.GuestEvents)
+	}
+	if r.OnlyEvents != nil {
+		listing = onlyEvents(listing, r.OnlyEvents)
 	}
 	if len(listing) == 0 {
 		return FormResponseResult{Outcome: FormResponseNotListed, ListingEvents: listed}, nil
@@ -270,24 +290,9 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 	admission := Admission{Waitlist: true, FormResponse: r.ResponseID}
 	var active, waitlisted, full int
 	for _, ev := range listing {
-		eventID := ev.ID
-		written := false
 		var got Ticket
-		if r.UserID != nil {
-			got, err = s.applyRegistered(ctx, eventID, *r.UserID, admission)
-			written = err == nil
-			if errors.Is(err, ErrConflict) || errors.Is(err, ErrTicketWaitlisted) {
-				// The Ticket already there: its status tells the outcome.
-				if existing, getErr := s.tickets.GetByOwnerEvent(ctx, *r.UserID, eventID); getErr == nil {
-					got = existing
-				}
-			}
-		} else {
-			var applied GuestApplication
-			applied, err = s.writeGuest(ctx, eventID, guest, false, admission)
-			written = err == nil && applied.Result == GuestCreated
-			got = applied.Ticket
-		}
+		var written bool
+		got, written, err = s.admitFormAnswer(ctx, ev.ID, r.UserID, guest, admission)
 		switch {
 		case errors.Is(err, ErrEventFull):
 			full++
@@ -318,7 +323,60 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 	case full > 0:
 		result.Outcome = FormResponseEventFull
 	}
+	// Accepted again: a pending mark the answer's Tickets carried goes.
+	if _, err := s.setFormsPending(ctx, r.ResponseID, nil); err != nil {
+		return FormResponseResult{}, err
+	}
 	return result, nil
+}
+
+// admitFormAnswer writes, or finds, the Ticket an accepted answer earns on
+// one Event (RecordFormResponse's step for each Event, and an organizer's
+// sending of an Unticketed respondent's Ticket): a REGISTERED one for
+// userID, else a guest one for guest, as untrusted (no rename). written is
+// a new or reopened Ticket; got is the Ticket the person holds there, when
+// known.
+func (s *service) admitFormAnswer(ctx context.Context, eventID uuid.UUID, userID *uuid.UUID, guest GuestInfo, admission Admission) (got Ticket, written bool, err error) {
+	if userID != nil {
+		got, err = s.applyRegistered(ctx, eventID, *userID, admission)
+		written = err == nil
+		if errors.Is(err, ErrConflict) || errors.Is(err, ErrTicketWaitlisted) {
+			// The Ticket already there: its status tells the outcome.
+			if existing, getErr := s.tickets.GetByOwnerEvent(ctx, *userID, eventID); getErr == nil {
+				got = existing
+			}
+		}
+		return got, written, err
+	}
+	applied, err := s.writeGuest(ctx, eventID, guest, false, admission)
+	return applied.Ticket, err == nil && applied.Result == GuestCreated, err
+}
+
+// pendFormResponse marks the Tickets a pending answer wrote or keeps
+// (tickets.form_response_id) as waiting for Forms' review again: an
+// accepted answer the form's team took back (docs/form-respondents.md). The
+// Ticket stays; nobody is mailed. The outcome is FormResponseFormsPending
+// when any was marked, else FormResponseNotAccepted.
+func (s *service) pendFormResponse(ctx context.Context, r FormResponse) (FormResponseResult, error) {
+	now := time.Now().UTC()
+	marked, err := s.setFormsPending(ctx, r.ResponseID, &now)
+	if err != nil {
+		return FormResponseResult{}, err
+	}
+	if marked > 0 {
+		return FormResponseResult{Outcome: FormResponseFormsPending}, nil
+	}
+	return FormResponseResult{Outcome: FormResponseNotAccepted}, nil
+}
+
+// setFormsPending marks (at set) or clears (nil) the pending mark of the
+// Tickets of the answer responseID; a store without it does nothing.
+func (s *service) setFormsPending(ctx context.Context, responseID uuid.UUID, at *time.Time) (int, error) {
+	store, ok := s.tickets.(FormsPendingStore)
+	if !ok || responseID == uuid.Nil {
+		return 0, nil
+	}
+	return store.SetFormsPending(ctx, responseID, at)
 }
 
 // declineFormResponse marks what a declined answer had earned (Yusuf, K6

@@ -38,6 +38,9 @@ type Service interface {
 	PromoteTicket(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error)
 	RecordFormResponse(ctx context.Context, p authz.Principal, r FormResponse) (FormResponseResult, error)
 	CanRecordFormResponse(p authz.Principal) bool
+	// AdmitFormRespondent writes an Unticketed respondent's Ticket on the
+	// Event (docs/form-respondents.md); the caller checked who may.
+	AdmitFormRespondent(ctx context.Context, eventID uuid.UUID, r FormRespondent) (FormRespondentOutcome, error)
 	Mine(ctx context.Context, p authz.Principal) ([]Ticket, error)
 	// MineIncluding is the holder's active Tickets and those of the other
 	// statuses include names (GET /v1/tickets/me?include=…).

@@ -224,6 +224,7 @@ func (s *MemoryStore) Create(ctx context.Context, e Event) (Event, error) {
 	}
 	e.AttendanceWelcomeMail = onUnlessOff(e.AttendanceWelcomeMail)
 	e.AttendanceRecordedMail = onUnlessOff(e.AttendanceRecordedMail)
+	e.FormResponsesAutoTicket = onUnlessOff(e.FormResponsesAutoTicket)
 	if e.AttendeeNote == nil {
 		e.AttendeeNote = new(string)
 	}
@@ -268,6 +269,9 @@ func (s *MemoryStore) Update(ctx context.Context, e Event) (Event, error) {
 	}
 	if e.AttendanceRecordedMail == nil {
 		e.AttendanceRecordedMail = existing.AttendanceRecordedMail
+	}
+	if e.FormResponsesAutoTicket == nil {
+		e.FormResponsesAutoTicket = existing.FormResponsesAutoTicket
 	}
 	if e.AttendeeNote == nil {
 		e.AttendeeNote = existing.AttendeeNote

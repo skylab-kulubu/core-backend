@@ -76,6 +76,10 @@ type Deps struct {
 	// /v1/events/{id}/forms/{formId} (docs/form-mappings.md); nil leaves
 	// them out.
 	FormMappings handlers.FormMappings
+	// FormRespondents serves the Unticketed respondent routes under
+	// /v1/events/{id}/respondents (docs/form-respondents.md); nil leaves
+	// them out.
+	FormRespondents handlers.FormRespondents
 	// FormResponseMapper runs the forms report through the form mappings
 	// (docs/form-mappings.md); nil takes it as before.
 	FormResponseMapper     handlers.FormResponseMapper
@@ -769,6 +773,13 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/events/:id/forms/:formId/mapping", formMappings.Get)
 		app.Put("/v1/events/:id/forms/:formId/mapping", formMappings.Put)
 		app.Delete("/v1/events/:id/forms/:formId/mapping", formMappings.Delete)
+	}
+	if deps.FormRespondents != nil {
+		respondents := handlers.NewFormRespondentHandler(deps.FormRespondents)
+		app.Get("/v1/events/:id/respondents", respondents.List)
+		app.Post("/v1/events/:id/respondents/tickets/preview", respondents.Preview)
+		app.Post("/v1/events/:id/respondents/tickets", respondents.Send)
+		app.Get("/v1/events/:id/respondents/ticket-jobs/:jobId", respondents.Job)
 	}
 	app.Post("/v1/events/:id/images", events.AddImages)
 	app.Delete("/v1/events/:id/images", events.RemoveImages)

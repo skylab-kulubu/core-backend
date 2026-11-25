@@ -73,6 +73,10 @@ func (a *afterCheckIn) CanRecordFormResponse(p authz.Principal) bool {
 	return a.inner.CanRecordFormResponse(p)
 }
 
+func (a *afterCheckIn) AdmitFormRespondent(ctx context.Context, eventID uuid.UUID, r FormRespondent) (FormRespondentOutcome, error) {
+	return a.inner.AdmitFormRespondent(ctx, eventID, r)
+}
+
 func (a *afterCheckIn) Mine(ctx context.Context, p authz.Principal) ([]Ticket, error) {
 	return a.inner.Mine(ctx, p)
 }

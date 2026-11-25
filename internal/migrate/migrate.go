@@ -2110,6 +2110,23 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 	20261127110000: `
 		SELECT 1 FROM information_schema.columns
 		WHERE table_schema = 'public' AND table_name = 'tickets' AND column_name = 'forms_rejected_at'`,
+	// Unticketed respondents (docs/form-respondents.md): the two tables, the
+	// two columns and form_pulls' collect kind, with no collect job parked
+	// by a rollback (the up migration runs again and puts it back).
+	20261127170000: `
+		SELECT 1
+		WHERE to_regclass('public.event_form_respondents_response_idx') IS NOT NULL
+		AND to_regclass('public.respondent_ticket_jobs_open_idx') IS NOT NULL
+		AND (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND ((table_name = 'events' AND column_name = 'form_responses_auto_ticket')
+				OR (table_name = 'tickets' AND column_name = 'forms_pending_at'))
+		) = 2
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.form_pulls') AND conname = 'form_pulls_kind_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%collect%')
+		AND NOT EXISTS (SELECT 1 FROM form_pulls WHERE kind = 'collect' AND next_attempt_at = 'infinity')`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

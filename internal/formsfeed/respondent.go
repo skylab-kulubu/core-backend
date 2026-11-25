@@ -230,6 +230,10 @@ type MappedGuests struct {
 	// Forms reads an answer's mapped answers for the HTTP report; nil
 	// leaves such a report as before (no_respondent).
 	Forms Reader
+	// Respondents nil writes Tickets by the rule alone, as before; set,
+	// the report goes between the rule and the Unticketed respondents
+	// (Respondents.Route), as an event's or a pull's does.
+	Respondents *Respondents
 }
 
 // Mappings are the mappings of the form whose Event lists it now (not
@@ -284,6 +288,9 @@ func MappedFields(mappings []Mapping) []string {
 // nothing (404) is OutcomeGone, a 2xx; another failed read is an error
 // (the report answers 5xx, Forms sends it again).
 func (m *MappedGuests) RecordReport(ctx context.Context, record RecordFunc, r ticket.FormResponse) (ticket.FormResponseResult, error) {
+	if m != nil && m.Respondents != nil {
+		return m.routeReport(ctx, record, r)
+	}
 	if m == nil || m.Forms == nil || r.Status != ticket.FormResponseAccepted || r.UserID != nil || r.Guest != nil || r.ResponseID == uuid.Nil {
 		return record(ctx, r)
 	}
@@ -310,4 +317,51 @@ func (m *MappedGuests) RecordReport(ctx context.Context, record RecordFunc, r ti
 		return ticket.FormResponseResult{Outcome: outcome}, nil
 	}
 	return RecordRespondents(ctx, record, r, respondents)
+}
+
+// routeReport is RecordReport with the Unticketed respondents on: who the
+// report names (a person, Forms' named guest, or for an accepted or pending
+// answer that names nobody the guest the mappings build from Forms' single
+// read), then Respondents.Route. A report the rule refuses or that has no
+// answer id goes to the rule as it came.
+func (m *MappedGuests) routeReport(ctx context.Context, record RecordFunc, r ticket.FormResponse) (ticket.FormResponseResult, error) {
+	if r.ResponseID == uuid.Nil {
+		return record(ctx, r)
+	}
+	var guest *Guest
+	if r.Guest != nil {
+		guest = &Guest{FirstName: r.Guest.FirstName, LastName: r.Guest.LastName, Email: r.Guest.Email}
+	}
+	var answers map[string]string
+	var mappings []Mapping
+	if r.UserID == nil && r.Guest == nil && m.Forms != nil &&
+		(r.Status == ticket.FormResponseAccepted || r.Status == ticket.FormResponsePending) {
+		var err error
+		if mappings, err = m.Mappings(ctx, r.FormID); err != nil {
+			return ticket.FormResponseResult{}, err
+		}
+		if len(mappings) > 0 {
+			got, err := m.Forms.Response(ctx, r.FormID, r.ResponseID, MappedFields(mappings)...)
+			switch {
+			case errors.Is(err, ErrNotFound):
+				return ticket.FormResponseResult{Outcome: ticket.FormResponseOutcome(OutcomeGone)}, nil
+			case err != nil:
+				return ticket.FormResponseResult{}, err
+			}
+			if string(r.Status) != got.Status {
+				// Forms' answer moved on since the report; its own report
+				// follows.
+				return record(ctx, r)
+			}
+			answers = got.Answers
+		}
+	}
+	respondents, outcome := ResolveRespondents(r.UserID, guest, answers, mappings)
+	if outcome != "" {
+		if r.Status != ticket.FormResponsePending {
+			return ticket.FormResponseResult{Outcome: outcome}, nil
+		}
+		respondents = []Respondent{{Source: RespondentNobody}}
+	}
+	return m.Respondents.Route(ctx, record, r, respondents)
 }

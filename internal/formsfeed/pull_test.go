@@ -23,6 +23,7 @@ type memQueue struct {
 	planned    [][]uuid.UUID
 	backfilled map[uuid.UUID]bool
 	asked      map[uuid.UUID]time.Time
+	collected  [][2]uuid.UUID
 }
 
 func (q *memQueue) Backfill(_ context.Context, formID, eventID, _ uuid.UUID, now time.Time) (bool, error) {
@@ -34,6 +35,19 @@ func (q *memQueue) Backfill(_ context.Context, formID, eventID, _ uuid.UUID, now
 		return false, &BackfillCooldownError{RetryAfter: last.Add(BackfillCooldown).Sub(now)}
 	}
 	q.asked[formID] = now
+	if q.backfilled[formID] {
+		return false, nil
+	}
+	q.backfilled[formID] = true
+	return true, nil
+}
+
+func (q *memQueue) Collect(_ context.Context, formID, eventID uuid.UUID, _ time.Time) (bool, error) {
+	if q.backfilled == nil {
+		q.backfilled = map[uuid.UUID]bool{}
+		q.asked = map[uuid.UUID]time.Time{}
+	}
+	q.collected = append(q.collected, [2]uuid.UUID{formID, eventID})
 	if q.backfilled[formID] {
 		return false, nil
 	}
@@ -98,7 +112,7 @@ func item(userID uuid.UUID, version int64) Response {
 	return Response{FormID: applicationForm, ResponseID: uuid.New(), Status: StatusAccepted, UserID: &id, Version: version}
 }
 
-func TestBackfillPullsEveryPageThroughTheTicketRule(t *testing.T) {
+func TestAPullReadsEveryPageThroughTheTicketRule(t *testing.T) {
 	h := newHarness()
 	h.reader.got = Response{Status: StatusAccepted, Version: 1, Guest: &Guest{FirstName: "A", LastName: "B", Email: "g@example.com"}}
 	watermark := pullNow.Add(-time.Minute)
@@ -108,7 +122,7 @@ func TestBackfillPullsEveryPageThroughTheTicketRule(t *testing.T) {
 		"p2": {Items: []Response{item(uuid.New(), 2)}, Skipped: 1, Watermark: &watermark},
 	}}
 	event := uuid.New()
-	q := &memQueue{jobs: []PullJob{{ID: uuid.New(), FormID: applicationForm, Kind: PullBackfill, EventID: &event, RequestedAt: pullNow}}}
+	q := &memQueue{jobs: []PullJob{{ID: uuid.New(), FormID: applicationForm, Kind: PullCatchup, EventID: &event, RequestedAt: pullNow}}}
 	ran, err := newPuller(h, q, l).RunOne(context.Background())
 	if err != nil || !ran {
 		t.Fatalf("%t %v", ran, err)
@@ -154,7 +168,7 @@ func TestAMissingListRouteWaitsLongerEachTimeAndGivesUpAfterAWeek(t *testing.T) 
 			t.Fatalf("attempts %d: retries %v (%v)", attempts, q.retries, q.attempts)
 		}
 	}
-	q := &memQueue{jobs: []PullJob{{ID: uuid.New(), FormID: applicationForm, Kind: PullBackfill, RequestedAt: pullNow.Add(-pullGiveUp), Attempts: 12}}}
+	q := &memQueue{jobs: []PullJob{{ID: uuid.New(), FormID: applicationForm, Kind: PullCatchup, RequestedAt: pullNow.Add(-pullGiveUp), Attempts: 12}}}
 	if _, err := newPuller(h, q, l).RunOne(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +184,7 @@ func TestATransientAnswerStopsTheJobAPermanentOneIsPassed(t *testing.T) {
 	h := newHarness()
 	h.err = ticket.ErrInvalid
 	l := &pageLister{pages: map[string]Page{"": {Items: []Response{item(uuid.New(), 1), item(uuid.New(), 1)}}}}
-	q := &memQueue{jobs: []PullJob{{ID: uuid.New(), FormID: applicationForm, Kind: PullBackfill, RequestedAt: pullNow}}}
+	q := &memQueue{jobs: []PullJob{{ID: uuid.New(), FormID: applicationForm, Kind: PullCatchup, RequestedAt: pullNow}}}
 	newPuller(h, q, l).RunOne(context.Background())
 	if len(h.reports) != 2 || len(q.finished) != 1 {
 		t.Fatalf("permanent: reports %d finished %d", len(h.reports), len(q.finished))
@@ -178,7 +192,7 @@ func TestATransientAnswerStopsTheJobAPermanentOneIsPassed(t *testing.T) {
 
 	h = newHarness()
 	h.err = errors.New("connection reset")
-	q = &memQueue{jobs: []PullJob{{ID: uuid.New(), FormID: applicationForm, Kind: PullBackfill, RequestedAt: pullNow}}}
+	q = &memQueue{jobs: []PullJob{{ID: uuid.New(), FormID: applicationForm, Kind: PullCatchup, RequestedAt: pullNow}}}
 	newPuller(h, q, l).RunOne(context.Background())
 	if len(h.reports) != 1 || len(q.finished) != 0 || len(q.retries) != 1 {
 		t.Fatalf("transient: reports %d finished %d retries %d", len(h.reports), len(q.finished), len(q.retries))
@@ -216,14 +230,14 @@ func TestPlanCoversTheOpenEventsApplicationForms(t *testing.T) {
 func TestACursorThatDoesNotMoveOrAnEndlessListStopsTheJob(t *testing.T) {
 	h := newHarness()
 	l := &pageLister{pages: map[string]Page{"": {NextCursor: "a"}, "a": {NextCursor: "a"}}}
-	q := &memQueue{jobs: []PullJob{{ID: uuid.New(), FormID: applicationForm, Kind: PullBackfill, RequestedAt: pullNow}}}
+	q := &memQueue{jobs: []PullJob{{ID: uuid.New(), FormID: applicationForm, Kind: PullCatchup, RequestedAt: pullNow}}}
 	newPuller(h, q, l).RunOne(context.Background())
 	if len(q.retries) != 1 || len(q.finished) != 0 || len(l.queries) != 2 {
 		t.Fatalf("stuck cursor: retries %d finished %d queries %d", len(q.retries), len(q.finished), len(l.queries))
 	}
 
 	endless := &endlessLister{}
-	q = &memQueue{jobs: []PullJob{{ID: uuid.New(), FormID: applicationForm, Kind: PullBackfill, RequestedAt: pullNow}}}
+	q = &memQueue{jobs: []PullJob{{ID: uuid.New(), FormID: applicationForm, Kind: PullCatchup, RequestedAt: pullNow}}}
 	newPuller(h, q, endless).RunOne(context.Background())
 	if len(q.retries) != 1 || endless.calls != maxPagesPerRun {
 		t.Fatalf("endless list: retries %d calls %d", len(q.retries), endless.calls)
