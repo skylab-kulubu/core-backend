@@ -612,7 +612,7 @@ func (s *service) ApplyJoining(ctx context.Context, p authz.Principal, eventID u
 	}
 	ownerID, err := uuid.Parse(p.ID)
 	if err != nil {
-		return Ticket{}, ErrInvalid
+		return Ticket{}, invalid(CodeTokenSubjectInvalid)
 	}
 	return s.applyRegistered(ctx, eventID, ownerID, Admission{Waitlist: joinWaitlist})
 }
@@ -637,7 +637,7 @@ func (s *service) ApplyForOther(ctx context.Context, p authz.Principal, eventID,
 		return Ticket{}, ErrEventCancelled
 	}
 	if userID == uuid.Nil {
-		return Ticket{}, ErrInvalid
+		return Ticket{}, invalid(CodeUserIDInvalid)
 	}
 	if err := s.resolveApplyTarget(ctx, userID); err != nil {
 		return Ticket{}, err
@@ -749,6 +749,22 @@ func (s *service) create(ctx context.Context, t Ticket, a Admission) (Ticket, er
 	return s.tickets.Create(ctx, t)
 }
 
+// missingGuestFields names the fields of a normalized g a guest
+// application needs and lacks, in the body's order.
+func missingGuestFields(g GuestInfo) []string {
+	missing := []string{}
+	if g.FirstName == "" {
+		missing = append(missing, "firstName")
+	}
+	if g.LastName == "" {
+		missing = append(missing, "lastName")
+	}
+	if g.Email == "" {
+		missing = append(missing, "email")
+	}
+	return missing
+}
+
 func normalizeGuest(g GuestInfo) GuestInfo {
 	g.FirstName = strings.TrimSpace(g.FirstName)
 	g.LastName = strings.TrimSpace(g.LastName)
@@ -779,8 +795,8 @@ func (s *service) ApplyGuest(ctx context.Context, p authz.Principal, eventID uui
 // it says no more than before about whether the e-mail had applied.
 func (s *service) ApplyGuestJoining(ctx context.Context, p authz.Principal, eventID uuid.UUID, g GuestInfo, joinWaitlist bool) (GuestApplication, error) {
 	g = normalizeGuest(g)
-	if g.FirstName == "" || g.LastName == "" || g.Email == "" {
-		return GuestApplication{}, ErrInvalid
+	if missing := missingGuestFields(g); len(missing) > 0 {
+		return GuestApplication{}, invalidWith(CodeGuestFieldsRequired, map[string]any{"fields": missing})
 	}
 	ev, err := s.events.Get(ctx, eventID)
 	if err != nil {
@@ -964,7 +980,7 @@ func (s *service) MineIncluding(ctx context.Context, p authz.Principal, include 
 	}
 	ownerID, err := uuid.Parse(p.ID)
 	if err != nil {
-		return nil, ErrInvalid
+		return nil, invalid(CodeTokenSubjectInvalid)
 	}
 	tickets, err := s.tickets.ListByOwner(ctx, ownerID)
 	if err != nil {
@@ -1152,7 +1168,7 @@ func (s *service) GetByUserEvent(ctx context.Context, p authz.Principal, userID,
 func (s *service) ListQuery(ctx context.Context, p authz.Principal, email string, userID *uuid.UUID) ([]Ticket, error) {
 	email = strings.TrimSpace(email)
 	if email == "" && userID == nil {
-		return nil, ErrInvalid
+		return nil, invalid(CodeTicketQueryRequired)
 	}
 
 	var byUser []Ticket
@@ -1328,7 +1344,7 @@ func (s *service) ticketSessionDay(ctx context.Context, t Ticket, sessionID uuid
 		return event.Session{}, event.Day{}, err
 	}
 	if day.EventID != t.EventID {
-		return event.Session{}, event.Day{}, ErrInvalid
+		return event.Session{}, event.Day{}, invalid(CodeSessionNotInEvent)
 	}
 	return sess, day, nil
 }
@@ -1414,7 +1430,7 @@ func (s *service) CheckInMe(ctx context.Context, p authz.Principal, sessionID uu
 func (s *service) checkInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID, doorToken string) (CheckIn, error) {
 	ownerID, err := uuid.Parse(p.ID)
 	if err != nil {
-		return CheckIn{}, ErrInvalid
+		return CheckIn{}, invalid(CodeTokenSubjectInvalid)
 	}
 	sess, eventID, err := s.sessionAndEvent(ctx, sessionID)
 	if err != nil {
@@ -1462,7 +1478,7 @@ func (s *service) CheckInGuest(ctx context.Context, sessionID uuid.UUID, g Guest
 func (s *service) checkInGuest(ctx context.Context, sessionID uuid.UUID, g GuestCheckIn) (CheckIn, error) {
 	email, key := strings.TrimSpace(g.Email), strings.TrimSpace(g.TicketKey)
 	if email == "" && key == "" {
-		return CheckIn{}, ErrInvalid
+		return CheckIn{}, invalid(CodeEmailOrTicketKeyRequired)
 	}
 	sess, eventID, err := s.sessionAndEvent(ctx, sessionID)
 	if err != nil {
@@ -1821,7 +1837,7 @@ func (s *service) ResolveAndCheckIn(
 func (s *service) findDoorTicket(ctx context.Context, ev event.Event, target DoorCheckInTarget) (Ticket, string, error) {
 	query := normalizedDoorValue(target.Query)
 	if target.PersonID == nil && query == "" {
-		return Ticket{}, "", ErrInvalid
+		return Ticket{}, "", invalid(CodeDoorQueryRequired)
 	}
 	if target.PersonID == nil {
 		row, found, err := s.doorTicketByCode(ctx, ev.ID, target.Query)

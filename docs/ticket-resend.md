@@ -27,7 +27,8 @@ with the variables of the moment (its page, QR and code), and while
   instead of answering the first mail's replay (the first mail's key stays
   `…:v1`). A row still waiting (the first mail, an earlier resend) is taken
   over and sends this one.
-- **`Idempotency-Key`** (optional, at most 128 characters): the same key
+- **`Idempotency-Key`** (optional, at most 128 characters; longer is `400
+  request_key_too_long`): the same key
   for the same Ticket answers as the first time (`"replayed": true`) and
   writes nothing again; a double click sends one mail. Only its SHA-256 is
   kept.
@@ -51,7 +52,8 @@ stays.
 - The mail with the new link is queued in the same transaction, as above
   (its own `…:r<n>`, the same limit, the same `409`s, in which case nothing
   is renewed: a new link nobody is told of would lock the holder out).
-- `?notify=false`: the link alone, on any Event, with the Notifications
+- `?notify=false` (`true`, `1`, `false`, `0` or none; anything else is `400
+  invalid_query` with `param: "notify"`): the link alone, on any Event, with the Notifications
   off too: an operator ending a leaked link at once. No mail, no
   `Idempotency-Key`.
 - **`200`**: the Ticket as the panel reads it (its `code`, never its key)

@@ -34,6 +34,10 @@ type importBody struct {
 // importError answers a refused preview or import.
 func importError(c fiber.Ctx, err error) error {
 	switch {
+	case errors.Is(err, errImportBadID):
+		return badID(c, "eventId")
+	case errors.Is(err, errImportBadBody):
+		return badBody(c)
 	case errors.Is(err, ticket.ErrImportTooLarge):
 		return problemWithFields(c, fiber.StatusRequestEntityTooLarge, "Payload Too Large",
 			"Liste 2 MB'tan büyük.", "import_too_large", fiber.Map{"maxBytes": ticket.MaxImportBytes})
@@ -51,13 +55,20 @@ func importError(c fiber.Ctx, err error) error {
 	}
 }
 
-// readImport reads the request: the Event and the body. A bad id or body is
-// ticket.ErrInvalid, a body past the limit ticket.ErrImportTooLarge
-// (importError answers them).
+// errImportBadID and errImportBadBody are a request readImport could not
+// read: importError answers them 400 invalid_id and invalid_body.
+var (
+	errImportBadID   = errors.New("import: event id is not an id")
+	errImportBadBody = errors.New("import: body is not JSON")
+)
+
+// readImport reads the request: the Event and the body. A bad id is
+// errImportBadID, a bad body errImportBadBody, a body past the limit
+// ticket.ErrImportTooLarge (importError answers them).
 func readImport(c fiber.Ctx) (uuid.UUID, ticket.ImportInput, error) {
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {
-		return uuid.Nil, ticket.ImportInput{}, ticket.ErrInvalid
+		return uuid.Nil, ticket.ImportInput{}, errImportBadID
 	}
 	raw := c.Body()
 	if len(raw) > maxImportBody {
@@ -65,7 +76,7 @@ func readImport(c fiber.Ctx) (uuid.UUID, ticket.ImportInput, error) {
 	}
 	var body importBody
 	if err := json.Unmarshal(raw, &body); err != nil {
-		return uuid.Nil, ticket.ImportInput{}, ticket.ErrInvalid
+		return uuid.Nil, ticket.ImportInput{}, errImportBadBody
 	}
 	in := ticket.ImportInput{Text: body.Text, SendMail: body.SendMail == nil || *body.SendMail, PastCapacity: body.PastCapacity}
 	return eventID, in, nil

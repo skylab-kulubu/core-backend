@@ -79,7 +79,7 @@ check-in cannot be cancelled.
 ## `POST /v1/tickets/{id}/cancel`
 
 Body (optional): `{"reason": "…", "notify": true}`; `reason` at most 500
-characters (`400` over), `notify` whether the holder is told (default
+characters (`400 cancel_reason_too_long` with `max` over), `notify` whether the holder is told (default
 `false`).
 
 - **Who:** the Ticket's holder (below), or exactly who may edit the Event

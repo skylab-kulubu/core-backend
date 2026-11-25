@@ -82,7 +82,7 @@ func RequestHash(key string) (string, error) {
 		return "", nil
 	}
 	if len(key) > maxRequestKey {
-		return "", ErrInvalid
+		return "", invalid(CodeRequestKeyTooLong)
 	}
 	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:]), nil

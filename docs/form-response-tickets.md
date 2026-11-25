@@ -56,7 +56,7 @@ that no Event lists: it writes nothing for it, and the report's log line
 | `200` `{"outcome": "waitlisted"}` | done: every Event of the form that took the answer is full, and the answer is on the waiting list of at least one ([event-capacity.md](event-capacity.md)); core tells the person (while `TICKET_STATUS_MAIL` is on); stop sending the report |
 | `200` `{"outcome": "event_full"}` | done, and no Ticket was written: every Event of the form is full with its waiting list off; stop sending the report |
 | `200` `{"outcome": "registration_closed"}` | done, and no Ticket was written: the report said when the answer was sent (`submittedAt`), and by then every Event of the form not cancelled had closed applying ([event-registration-closure.md](event-registration-closure.md)); stop sending the report |
-| `400` | a malformed report: a form id or body core cannot read, an unknown `status`, a zero `userId`, or a `guest` with an e-mail but without a first name or last name; sending it again will not help |
+| `400` | a malformed report, with its `code` ([problem-codes.md](problem-codes.md)): a form id or body core cannot read (`invalid_id`, `invalid_body`), the zero form id (`form_id_required`), an unknown `status` (`form_status_invalid`), a zero `userId` (`user_id_invalid`), or a `guest` with an e-mail but without a first name or last name (`guest_name_required`); sending it again will not help |
 | `401` | no valid token |
 | `403` | the token is not the forms service account's with `ticket:forms`; core refuses it before reading the request, so a malformed report from such a caller is `403` too |
 | `5xx` | core could not finish; send the report again |
