@@ -191,8 +191,8 @@ const (
 	// included. Which Event the Media ends up on is checked when it is linked.
 	MediaUploaderEventEditor MediaUploader = "event_editor"
 	// MediaUploaderCertificateTemplateEditor is a person who may create a
-	// certificate template for at least one Owner team: the certificate
-	// template create decision.
+	// certificate template, or edit an Event (its Event template), for at
+	// least one Owner team.
 	MediaUploaderCertificateTemplateEditor MediaUploader = "certificate_template_editor"
 	// MediaUploaderServiceOnly is no person: only the owning product's service
 	// account, with the media:attach role, may start such an upload (Skyforms

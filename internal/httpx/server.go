@@ -781,6 +781,8 @@ func New(deps Deps) *fiber.App {
 		app.Post("/v1/events/:eventId/certificates/rescan", certs.Rescan)
 		app.Post("/v1/events/:eventId/certificates/mail/resend", certs.ResendEventMails)
 		app.Get("/v1/events/:eventId/certificates/template", certs.Resolve)
+		app.Get("/v1/events/:eventId/certificate-template", certs.EventTemplate)
+		app.Post("/v1/events/:eventId/certificate-template", certs.CreateEventTemplate)
 		app.Post("/v1/events/:eventId/certificates/preview", certs.PreviewEvent)
 		app.Get("/v1/events/:eventId/certificate-batches", certs.ListBatches)
 		app.Post("/v1/events/:eventId/certificates/issue", certs.Issue)
