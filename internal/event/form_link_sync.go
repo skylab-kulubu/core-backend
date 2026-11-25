@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -48,6 +49,9 @@ type ServiceOptions struct {
 	// (EVENT_CO_ORGANIZERS_WRITE); off, it is refused
 	// (ErrCoOrganizersDisabled) and GET still answers.
 	CoOrganizersWrite bool
+	// Now is the clock a Co-organizer person's end is read against; nil is
+	// time.Now.
+	Now func() time.Time
 }
 
 func NewServiceWithOptions(store Store, az authz.Authorizer, options ServiceOptions) Service {
@@ -58,7 +62,7 @@ func NewServiceWithOptions(store Store, az authz.Authorizer, options ServiceOpti
 	return &service{
 		store: store, authz: az, formLinks: options.FormLinks, media: options.Media,
 		addresses: media.Addresses{Base: options.PublicBase, Mode: options.ImageAddressMode},
-		policy:    policy, teams: options.Teams, coOrganizersWrite: options.CoOrganizersWrite,
+		policy:    policy, teams: options.Teams, coOrganizersWrite: options.CoOrganizersWrite, now: options.Now,
 	}
 }
 

@@ -156,11 +156,14 @@ type Event struct {
 	CoOrganizersView   []CoOrganizerTeam `json:"coOrganizers,omitempty"`
 	CoOrganizerIDsView []uuid.UUID       `json:"coOrganizerIds,omitempty"`
 	CoOrganizerTeams   []string          `json:"coOrganizerTeams,omitempty"`
-	MailListID         *uuid.UUID        `json:"mailListId,omitempty"`
-	ArchivedAt         *time.Time        `json:"archivedAt,omitempty"`
-	ArchivedBy         *uuid.UUID        `json:"archivedBy,omitempty"`
-	CreatedAt          time.Time         `json:"createdAt"`
-	UpdatedAt          time.Time         `json:"updatedAt"`
+	// Viewer is what the signed-in caller may do on the Event (ProjectFor
+	// answers it); left out for who is signed out.
+	Viewer     *Viewer    `json:"viewer,omitempty"`
+	MailListID *uuid.UUID `json:"mailListId,omitempty"`
+	ArchivedAt *time.Time `json:"archivedAt,omitempty"`
+	ArchivedBy *uuid.UUID `json:"archivedBy,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	UpdatedAt  time.Time  `json:"updatedAt"`
 
 	// Files and Videos are the Event's files and videos, in their
 	// organizers' order (media redesign ticket 22). Only an Event's detail

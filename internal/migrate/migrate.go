@@ -2052,6 +2052,11 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND tgfoid = to_regprocedure('public.require_active_account_reference()')
 			  AND NOT tgisinternal
 		  ) = 2`,
+	// The digests of the details a waiting notice tells
+	// (docs/event-updated-notification.md#other-details).
+	20261126160000: `
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'event_update_notifications' AND column_name = 'before_details'`,
 	// Event templates (docs/certificate-event-templates.md): the column
 	// with its key to events, and the partial unique index of one current
 	// Event template per Event.

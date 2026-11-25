@@ -296,7 +296,7 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 		// The note (the venue's Wi-Fi) comes along only for who may read
 		// it on the source.
 		plan.AttendeeNote = CopyRefused
-		if s.readsAttendeeNote(p, source.OwnerTeam) {
+		if s.readsAttendeeNote(p, source) {
 			plan.AttendeeNote = CopyWrite
 			plan.Event.AttendeeNote = source.AttendeeNote
 		}

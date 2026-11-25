@@ -7,6 +7,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -28,15 +29,38 @@ func backgroundSize(contentType string, data []byte) (float64, float64, error) {
 			w, h = h, w
 		}
 	}
-	if !(w > 0 && h > 0) || !finite(w, h) {
+	// A size under minBackgroundSide (an SVG of width="0.0000001") would
+	// scale the background past any page; one over maxBackgroundSide would
+	// print a box no page holds.
+	if !finite(w, h) || w < minBackgroundSide || h < minBackgroundSide || w > maxBackgroundSide || h > maxBackgroundSide {
 		return 0, 0, invalid(CodeBackgroundSizeUnknown)
 	}
 	return w, h, nil
 }
 
-// svgSize reads the root svg element's width and height in px (or
-// unitless); when one is missing or in another unit the viewBox gives it,
-// keeping the viewBox's ratio.
+// The smallest and largest natural side, in px, a placed background may
+// have.
+const (
+	minBackgroundSide = 1e-3
+	maxBackgroundSide = 1e6
+)
+
+// cssNumber is a CSS <number>: digits with an optional fraction and
+// exponent. strconv.ParseFloat also takes "0x1p4", "5." and "Inf", which
+// a browser does not.
+var cssNumber = regexp.MustCompile(`^[+-]?([0-9]+(\.[0-9]+)?|\.[0-9]+)([eE][+-]?[0-9]+)?$`)
+
+func parseCSSNumber(s string) (float64, bool) {
+	if !cssNumber.MatchString(s) {
+		return 0, false
+	}
+	n, err := strconv.ParseFloat(s, 64)
+	return n, err == nil && finite(n)
+}
+
+// svgSize reads the root svg element's width and height in an absolute
+// unit (px or unitless, pt, pc, mm, cm, in); when one is missing or in a
+// relative unit (%, em) the viewBox gives it, keeping the viewBox's ratio.
 func svgSize(data []byte) (float64, float64) {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	for {
@@ -61,8 +85,8 @@ func svgSize(data []byte) (float64, float64) {
 			case "viewBox":
 				fields := strings.FieldsFunc(attr.Value, func(r rune) bool { return r == ' ' || r == ',' || r == '\t' || r == '\n' || r == '\r' })
 				if len(fields) == 4 {
-					vw, _ = strconv.ParseFloat(fields[2], 64)
-					vh, _ = strconv.ParseFloat(fields[3], 64)
+					vw, _ = parseCSSNumber(fields[2])
+					vh, _ = parseCSSNumber(fields[3])
 				}
 			}
 		}
@@ -81,11 +105,23 @@ func svgSize(data []byte) (float64, float64) {
 	}
 }
 
+// svgUnits are the absolute CSS units in px (96 per inch).
+var svgUnits = map[string]float64{"px": 1, "pt": 96.0 / 72, "pc": 16, "mm": 96 / 25.4, "cm": 96 / 2.54, "in": 96}
+
+// svgLength is an SVG width or height in px; 0 when it is missing, not a
+// number or in a relative unit. The unit follows the number with no space
+// between ("10 cm" is no length to a browser, so it is none here either).
 func svgLength(value string) float64 {
-	value = strings.TrimSuffix(strings.TrimSpace(value), "px")
-	n, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
-	if err != nil || !finite(n) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	factor := 1.0
+	if len(value) > 2 {
+		if f, ok := svgUnits[value[len(value)-2:]]; ok {
+			factor, value = f, value[:len(value)-2]
+		}
+	}
+	n, ok := parseCSSNumber(value)
+	if !ok {
 		return 0
 	}
-	return n
+	return n * factor
 }

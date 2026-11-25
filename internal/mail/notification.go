@@ -40,6 +40,13 @@ const TicketCancelledType = "event.ticket-cancelled"
 // docs/event-updated-notification.md).
 const EventUpdatedType = "event.updated"
 
+// EventChangedType is the Notification type (and the e-mail template key) a
+// published Event's other details (name, description, attendee note,
+// capacity, links) are told by when its editor says so
+// (docs/event-updated-notification.md#other-details). SkyMail seeds it;
+// core sends it only while EVENT_CHANGED_NOTIFICATION is on.
+const EventChangedType = "event.changed"
+
 // EventReminderType is the Notification type (and the e-mail template key)
 // of the reminder the day before an Event (docs/event-reminder.md): the
 // default of SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY, and the type the
@@ -65,6 +72,7 @@ const DoorStaffAddedType = "event.door-staff-added"
 const (
 	kindTicketCreated = "ticket_created"
 	kindEventUpdated  = "event_updated"
+	kindEventChanged  = "event_changed"
 	kindTicketStatus  = "ticket_status"
 	kindEventReminder = "event_reminder"
 	kindAttendance    = "attendance_mail"
@@ -217,6 +225,12 @@ func (s *SkyMail) TicketStatus(ctx context.Context, typ, idempotencyKey string, 
 // Notification to their subject, a guest by the type's e-mail template.
 func (s *SkyMail) EventUpdated(ctx context.Context, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time) error {
 	return s.tellHolder(ctx, kindEventUpdated, EventUpdatedType, idempotencyKey, holder, vars, source, expiresAt, nil)
+}
+
+// EventChanged tells a Ticket holder that the Event's other details
+// changed, the way EventUpdated tells of a new time or place.
+func (s *SkyMail) EventChanged(ctx context.Context, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time) error {
+	return s.tellHolder(ctx, kindEventChanged, EventChangedType, idempotencyKey, holder, vars, source, expiresAt, nil)
 }
 
 // EventReminder tells a Ticket holder that the Event is tomorrow, under the

@@ -2,7 +2,7 @@
 
 An Event keeps **one** Owner team (for example YK). Beside it, a list of **Co-organizers** (Ortak düzenleyen) manages the Event: other teams and, where a team does not fit, single people. Keycloak is not touched: the list is core's data and core decides with it. Spec: `.scratch/etkinlik-ortak-yonetim/SPEC.md` (decisions of 2026-11-25); ADR 0092 in e-skylab.
 
-This page is the data and the routes (ticket 01). Until the decisions come (ticket 02), a Co-organizer gains **no** right yet: every decision still reads the Owner team alone, and only `event:manage` (YK, ADMIN) changes the list.
+This page is the data, the routes (ticket 01) and the decisions (ticket 02). The decisions of `internal/event` read the Co-organizers; the other packages' (Tickets, certificates, Competitions, the door, the dashboard) move to them in ticket 03 (see "Decisions" below).
 
 **`EVENT_CO_ORGANIZERS_WRITE`** (`on`/`off`, unset is `off`; any other value stops core at start): off, `PUT /v1/events/{id}/organizers` is `403 co_organizers_disabled` for everyone and `canManage` is `false`; `GET` still answers. It stays off until the decisions, the Team audit record and the mails (tickets 02–05) ship with it, so no list changes without its record.
 
@@ -13,7 +13,33 @@ This page is the data and the routes (ticket 01). Until the decisions come (tick
   - `visibility`: `co_organizer` (named outside the panel: the site, the Ticket page, the certificate check) or `helper` (Yardımcı ekip: seen in the panel alone). Left out, it is `co_organizer`.
 - A **Co-organizer person** is an e-skylab account (user id). A person has no choices, is never shown outside the panel, and their rights end **30 days after the Event** (its end; its start plus a day when it has no end): `expiresAt`, derived, never stored.
 - The Owner team is not a Co-organizer: an Event whose Owner team becomes one of its Co-organizer teams (an update of `ownerTeam`) drops that row in the same write.
-- The decisions (ticket 02, ADR 0092) will read the list so: a person may do a job when, in **any** of the organizer teams (the Owner team and the Co-organizer teams), they meet the level that team asks for it. A Co-organizer person counts as a Leader. In a `leaders` team, being a member gives nothing (not the certificate roles, not Team door scan, not `team_competition_manage`); in a `members` team, a member who is no Leader does not scan at the door (the door stays a Leader's, door staff's, or Team door scan's). Deleting, archiving, changing the Owner team, the list itself and assigning door staff stay the Owner team's.
+- The decisions read the list so (ADR 0092): a person may do a job when, in **any** of the organizer teams (the Owner team and the Co-organizer teams), they meet the level that team asks for it. A Co-organizer person counts as a Leader. In a `leaders` team, being a member gives nothing (not the certificate roles, not Team door scan, not `team_competition_manage`); in a `members` team, a member who is no Leader does not scan at the door by membership (the door stays a Leader's, door staff's, or Team door scan's). Deleting, archiving, changing the Owner team, the list itself and assigning door staff stay the Owner team's.
+
+## Decisions
+
+`authz.Resource` carries `CoOwnerTeams` (`{Code, MembersManage}`), `CoOrganizerIDs` (the people whose rights have not ended) and `TeamDoorScanTeams` (the organizer teams whose Team door scan is on). `event.AuthzResource(ev, type, now)` is the one place they are filled from an Event; an architecture test (`internal/event/authz_resource_arch_test.go`) lists the places that still build a decision out of an Event's Owner team alone, and only lets the list shrink.
+
+For each organizer team the authorizer reads the person's levels in it (`ownerLevels`, a Leader of a Team above included), its **seat**: the Owner team's as before; a `members` Co-organizer team's Leader and member; a `leaders` Co-organizer team's Leader alone. A Co-organizer person has a Leader's seat.
+
+| Decision | Who |
+|---|---|
+| Event `Update`, `ReadFull` (a draft), publish, unpublish, cancel, uncancel; days and Sessions (`Create`, `Update`, `Delete`) | a seat that holds the level its team asks: the Owner team's row of the Event permission table; a `members` team: Leader or member (`Delete` of a day or Session: Leader); a `leaders` team and a person: Leader |
+| Event `Create`, `Delete` (delete, archive) | the Owner team's seat alone, as before |
+| Changing the Owner team | `Update` in both teams through the Owner team's seat alone (a Co-organizer seat does not count) |
+| `ManageOrganizers` (the list), `Assign` (door staff) | Privileged (`event:manage`) and the Owner team's Leaders (a Leader of a Team above included); on an Event without an Owner team, Privileged alone (Yusuf S3) |
+| Ticket `Read` | a Leader's seat; a member's seat with `certificate:issue`; a seat that may edit the Event |
+| Ticket `Assign`, certificate `Issue`/`Revoke` without a role, template binding (`CertificateTemplate.Assign`) | a Leader's seat |
+| Certificate manager | a member's seat (Owner team, `members` team) with `certificate:issue` / `certificate:revoke` (`certificate:binding:manage` for a binding) |
+| Door (`Validate`) | door staff; a Leader's seat; a member's seat while that team's Team door scan is on |
+| Competitions | a Leader's seat (`leader` basis); a member's seat while that team's `team_competition_manage` is on (`member_setting`) |
+
+**Event-by-Event answers.** The Event's detail and list answer `viewer` to a signed-in caller:
+
+```json
+"viewer": {"via": "coTeam", "can": {"event.update": true, "event.delete": false, "event.publish": true, "event.manageOrganizers": false, "event.assignDoorStaff": false, "ticket.read": true, "ticket.assign": true, "certificate.issue": true, "certificate.revoke": true, "certificate.template.assign": true, "competition.manage": true}}
+```
+
+`via` is what the right to edit rests on, the strongest: `privileged`, `owner`, `coTeam`, `coPerson`, or `none`. Each `can` is the decision it names on the Event (`event.manageOrganizers` also reads `EVENT_CO_ORGANIZERS_WRITE`). The panel reads it instead of `teamCan(ownerTeam, …)`; `GET /v1/users/me/capabilities` keeps the decisions that name no Event ("for which team may I create one").
 
 ## Limits
 
@@ -33,7 +59,7 @@ The problem names what to fix: `{"code": "event_organizers_invalid", "field": "t
 
 ## `GET /v1/events/{id}/organizers`
 
-For who may edit the Event (`authz.Update` on its Owner team); `403` to anyone else, `404` for a draft the caller may not see.
+For who may edit the Event (`authz.Update`, its Co-organizers included); `403` to anyone else, `404` for a draft the caller may not see.
 
 ```json
 {
@@ -55,7 +81,7 @@ The whole lists; the answer is the GET's.
 {"teams": [{"code": "WEBLAB"}, {"code": "GECEKODU", "management": "members", "visibility": "helper"}], "people": ["<user id>"]}
 ```
 
-Who: `event:manage` (YK, ADMIN) for now, while `EVENT_CO_ORGANIZERS_WRITE` is on; ticket 02 makes it the Owner team's Leaders (`ManageOrganizers`). The write is the difference, in one transaction under the Event's row lock: the rows that go are deleted, the new ones inserted, a team that stays has its choices updated in place. A row that stays keeps its `added_by` and `added_at`, and a person who stays is kept though their account is no longer active: `inactive_person` is about a new person alone. `409` when the Owner team changed since the request read it.
+Who: `ManageOrganizers` (Privileged and the Owner team's Leaders; never a Co-organizer), while `EVENT_CO_ORGANIZERS_WRITE` is on. The write is the difference, in one transaction under the Event's row lock: the rows that go are deleted, the new ones inserted, a team that stays has its choices updated in place. A row that stays keeps its `added_by` and `added_at`, and a person who stays is kept though their account is no longer active: `inactive_person` is about a new person alone. `409` when the Owner team changed since the request read it.
 
 `PUT`/`PATCH /v1/events/{id}`, the Event's create and its copy never write the list (a field of it in their body is ignored; what a copy carries is ticket 04).
 

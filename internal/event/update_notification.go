@@ -31,22 +31,36 @@ type updateBefore struct {
 	// news to its Ticket holders. A draft's, a cancelled and an ended
 	// Event's changes tell nobody.
 	told bool
+	// details are the row's DetailDigests, read under the same lock: what
+	// a change of its other details is told against.
+	details map[string]string
 }
 
 // readUpdateBefore locks the Event's row and reads it; nil when there is no
 // such current Event (the Update then finds none either).
 func readUpdateBefore(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*updateBefore, error) {
 	var b updateBefore
+	var d Event
+	var note string
+	var extraRaw []byte
 	err := tx.QueryRow(ctx, `
 		SELECT e.start_date, e.end_date, e.location,
-			e.status = 'published' AND (`+endsAtSQL+` IS NULL OR `+endsAtSQL+` > now())
-		FROM events e WHERE e.id = $1 AND e.archived_at IS NULL FOR UPDATE`, id).Scan(&b.start, &b.end, &b.location, &b.told)
+			e.status = 'published' AND (`+endsAtSQL+` IS NULL OR `+endsAtSQL+` > now()),
+			COALESCE(e.name, ''), COALESCE(e.description, ''), COALESCE(e.attendee_note, ''), COALESCE(e.capacity, 0),
+			COALESCE(e.external_registration_url, ''), COALESCE(e.linkedin, ''), COALESCE(e.form_url, ''), e.extra_form_urls
+		FROM events e WHERE e.id = $1 AND e.archived_at IS NULL FOR UPDATE`, id).Scan(&b.start, &b.end, &b.location, &b.told,
+		&d.Name, &d.Description, &note, &d.Capacity, &d.ExternalRegistrationURL, &d.Linkedin, &d.FormURL, &extraRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	d.AttendeeNote = &note
+	if _, d.ExtraFormURLs, err = DecodeExtraForm(extraRaw); err != nil {
+		return nil, err
+	}
+	b.details = DetailDigests(d)
 	return &b, nil
 }
 
@@ -85,21 +99,53 @@ func changedTimeOrPlace(ctx context.Context, tx pgx.Tx, id uuid.UUID, before *up
 	return fields, nil
 }
 
-// noticeChanges queues the update's change of time or place for the
-// Event's Ticket holders when the editor did not say no and the
-// Notification is on, and records the editor's answer
-// (event_change_notice_choices): who saved which change, what they said,
-// whether a notice was queued. A change that is no news (a draft's, an
-// ended Event's, or one that left time and place as they were) records
-// nothing.
+// NotifyChanged turns the telling of an Event's other details on or off
+// (EVENT_CHANGED_NOTIFICATION, docs/event-updated-notification.md#other-details):
+// while on, a change of a published Event's name, description, attendee
+// note, capacity or links joins the waiting notice when the editor says to
+// tell; a body that does not say tells nothing of them.
+func (s *PostgresStore) NotifyChanged(on bool) { s.notifyChanged.Store(on) }
+
+// noticeChanges queues the update's change for the Event's Ticket holders
+// and records the editor's answer (event_change_notice_choices): who saved
+// which change, what they said, whether a notice was queued. Its time or
+// place is told unless the editor said no, while the Notification is on;
+// its other details only when the editor said yes, while their telling is
+// on (NotifyChanged). A change that is no news (a draft's, an ended
+// Event's, or one that left all as it was) records nothing; the other
+// details are recorded only while their telling is on.
 func (s *PostgresStore) noticeChanges(ctx context.Context, tx pgx.Tx, e Event, before *updateBefore) error {
-	fields, err := changedTimeOrPlace(ctx, tx, e.ID, before)
-	if err != nil || len(fields) == 0 {
+	timeFields, err := changedTimeOrPlace(ctx, tx, e.ID, before)
+	if err != nil {
 		return err
 	}
-	queued := s.notifyUpdated.Load() && (e.notifyHolders == nil || *e.notifyHolders)
+	var detailFields []string
+	if s.notifyChanged.Load() && before != nil && before.told {
+		after := DetailDigests(e)
+		if e.AttendeeNote == nil {
+			// Not sent: the write keeps the stored note.
+			after[FieldAttendeeNote] = before.details[FieldAttendeeNote]
+		}
+		detailFields = changedDetails(before.details, after)
+	}
+	fields := append(append([]string{}, timeFields...), detailFields...)
+	if len(fields) == 0 {
+		return nil
+	}
+	var told []string
+	if len(timeFields) > 0 && s.notifyUpdated.Load() && (e.notifyHolders == nil || *e.notifyHolders) {
+		told = append(told, timeFields...)
+	}
+	beforeDetails := map[string]string{}
+	if len(detailFields) > 0 && e.notifyHolders != nil && *e.notifyHolders {
+		told = append(told, detailFields...)
+		for _, field := range detailFields {
+			beforeDetails[field] = before.details[field]
+		}
+	}
+	queued := len(told) > 0
 	if queued {
-		if err := queueUpdateNotification(ctx, tx, e.ID, before, fields); err != nil {
+		if err := queueUpdateNotification(ctx, tx, e.ID, before, told, beforeDetails); err != nil {
 			return err
 		}
 	}
@@ -114,21 +160,25 @@ func (s *PostgresStore) noticeChanges(ctx context.Context, tx pgx.Tx, e Event, b
 
 // queueUpdateNotification queues the Event's change for its Ticket holders.
 // The row gathers the changes until the worker first takes it: while one
-// waits, a later change adds no row (it keeps the first change's before)
-// and adds the fields it changed to the row's told_fields, and the worker
-// reads the Event as it is when it sends. The later change's write of the
-// waiting row also keeps it locked until the change commits: a worker
-// claiming it in between (FOR UPDATE SKIP LOCKED) skips it instead of
-// reading the Event before the change and losing it.
-func queueUpdateNotification(ctx context.Context, tx pgx.Tx, id uuid.UUID, before *updateBefore, fields []string) error {
+// waits, a later change adds no row (it keeps the first change's before),
+// adds the fields it changed to the row's told_fields and the digests of
+// details it is the first to tell, and the worker reads the Event as it is
+// when it sends. The later change's write of the waiting row also keeps it
+// locked until the change commits: a worker claiming it in between (FOR
+// UPDATE SKIP LOCKED) skips it instead of reading the Event before the
+// change and losing it.
+func queueUpdateNotification(ctx context.Context, tx pgx.Tx, id uuid.UUID, before *updateBefore, fields []string, beforeDetails map[string]string) error {
 	_, err := tx.Exec(ctx, `
-		INSERT INTO event_update_notifications (id, event_id, before_start_date, before_end_date, before_location, told_fields, next_attempt_at)
-		SELECT $1, e.id, $3::timestamptz, $4::timestamptz, $5::text, $6::text[], now() + make_interval(secs => $7)
+		INSERT INTO event_update_notifications (id, event_id, before_start_date, before_end_date, before_location, told_fields, before_details, next_attempt_at)
+		SELECT $1, e.id, $3::timestamptz, $4::timestamptz, $5::text, $6::text[], $9::jsonb, now() + make_interval(secs => $7)
 		FROM events e
 		WHERE e.id = $2 AND e.status = 'published'
-		ON CONFLICT (event_id) WHERE started_at IS NULL DO UPDATE SET told_fields = ARRAY(
-			SELECT DISTINCT f FROM unnest(COALESCE(event_update_notifications.told_fields, $8::text[]) || EXCLUDED.told_fields) f ORDER BY f)`,
+		ON CONFLICT (event_id) WHERE started_at IS NULL DO UPDATE SET
+			told_fields = ARRAY(
+				SELECT DISTINCT f FROM unnest(COALESCE(event_update_notifications.told_fields, $8::text[]) || EXCLUDED.told_fields) f ORDER BY f),
+			-- The first change's digests win: the right-hand side of || wins.
+			before_details = EXCLUDED.before_details || event_update_notifications.before_details`,
 		uuid.New(), id, before.start, before.end, before.location, fields, UpdateNotificationWindow.Seconds(),
-		[]string{FieldStart, FieldEnd, FieldLocation})
+		[]string{FieldStart, FieldEnd, FieldLocation}, beforeDetails)
 	return err
 }

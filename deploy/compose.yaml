@@ -105,6 +105,8 @@ services:
       TICKET_STATUS_MAIL: ${TICKET_STATUS_MAIL:-off}
       # A published Event's new time or place (docs/event-updated-notification.md).
       EVENT_UPDATED_NOTIFICATION: ${EVENT_UPDATED_NOTIFICATION:-off}
+      # Its other details, when the editor says to tell (event.changed).
+      EVENT_CHANGED_NOTIFICATION: ${EVENT_CHANGED_NOTIFICATION:-off}
       # The mail a person added to an Event's door staff gets (docs/door-staff-mail.md).
       DOOR_STAFF_MAIL: ${DOOR_STAFF_MAIL:-off}
       PANEL_URL: ${PANEL_URL:-}
