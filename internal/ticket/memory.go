@@ -534,6 +534,30 @@ func (s *MemoryStore) VenueEntryDays(_ context.Context, eventID uuid.UUID) ([]En
 	return out, nil
 }
 
+// CheckInOf is the Ticket's Check-in at the Session (ScanRecords).
+func (s *MemoryStore) CheckInOf(_ context.Context, ticketID, sessionID uuid.UUID) (CheckIn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.checkIns {
+		if c.TicketID == ticketID && c.SessionID == sessionID {
+			return c, nil
+		}
+	}
+	return CheckIn{}, ErrNotFound
+}
+
+// VenueEntryOn is the Ticket's Venue entry of the venue day (ScanRecords).
+func (s *MemoryStore) VenueEntryOn(_ context.Context, ticketID uuid.UUID, date string) (VenueEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.entries {
+		if e.TicketID == ticketID && e.EntryDate == date {
+			return e, nil
+		}
+	}
+	return VenueEntry{}, ErrNotFound
+}
+
 func (s *MemoryStore) HasCheckIn(_ context.Context, ticketID, sessionID uuid.UUID) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

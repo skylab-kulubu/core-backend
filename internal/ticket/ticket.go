@@ -53,6 +53,11 @@ type CheckIn struct {
 	SessionID  uuid.UUID `json:"sessionId"`
 	EventDayID uuid.UUID `json:"eventDayId"`
 	CreatedAt  time.Time `json:"createdAt"`
+	// ScannedAt is when the door took the scan, when it sent it later
+	// (docs/offline-door.md); nil for a scan core took as it came.
+	ScannedAt *time.Time `json:"scannedAt,omitempty"`
+	// NoMail queues no door mail with it: a scan sent too late for one.
+	NoMail bool `json:"-"`
 	// Kind is what a door write answers: check_in, or entry when a scan in
 	// the venue mode wrote the day's Venue entry alone (ID is then the
 	// entry's; docs/venue-entry.md). A stored check-in leaves it out.

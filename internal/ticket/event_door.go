@@ -45,7 +45,9 @@ func (s *service) eventDoor(ctx context.Context, p authz.Principal, eventID uuid
 		}
 		return event.Event{}, ErrForbidden
 	}
-	if reason := closedReason(ev, s.now()); reason != "" {
+	// A scan sent later is judged at the moment it was taken
+	// (docs/offline-door.md).
+	if reason := closedReason(ev, s.scanTime(ctx)); reason != "" {
 		return event.Event{}, &EventClosedError{Reason: reason}
 	}
 	if !s.canUseDoor(ctx, p, ev) {
@@ -135,19 +137,24 @@ func (s *service) enterEvent(ctx context.Context, ev event.Event, t Ticket, how 
 	if refused := inactiveErr(t); refused != nil {
 		return DoorEntry{}, refused
 	}
-	date, dayID, err := s.eventDay(ctx, ev, s.now())
+	date, dayID, err := s.eventDay(ctx, ev, s.scanTime(ctx))
 	if err != nil {
 		return DoorEntry{}, err
 	}
-	e := VenueEntry{TicketID: t.ID, EventID: ev.ID, EntryDate: date, EventDayID: dayID, Source: how.source, ByUserID: how.by}
+	scannedAt, late := s.scanned(ctx)
+	e := VenueEntry{TicketID: t.ID, EventID: ev.ID, EntryDate: date, EventDayID: dayID, Source: how.source, ByUserID: how.by,
+		ScannedAt: scannedAt, NoMail: late}
 	name, _ := s.doorTicketIdentity(ctx, t)
 	written, err := s.tickets.AddVenueEntry(ctx, e)
 	var conflict *EntryConflictError
 	if errors.As(err, &conflict) {
-		return DoorEntry{}, &EntryConflictError{Name: name}
+		return DoorEntry{}, s.duplicate(ctx, &EntryConflictError{Name: name}, t.ID, date, uuid.Nil)
 	}
 	if err != nil {
 		return DoorEntry{}, err
+	}
+	if scannedAt != nil {
+		s.scans.recordOffline(nil)
 	}
 	s.scans.recordEntry(written.Source)
 	s.logger.Printf(`{"event":"venue_entry","actorId":%q,"eventId":%q,"source":%q}`,
@@ -155,6 +162,7 @@ func (s *service) enterEvent(ctx context.Context, ev event.Event, t Ticket, how 
 	return DoorEntry{
 		ID: written.ID, Kind: KindEntry, TicketID: t.ID, EntryDate: written.EntryDate,
 		EventDayID: written.EventDayID, Source: written.Source, Name: name, CreatedAt: written.CreatedAt,
+		ScannedAt: written.ScannedAt,
 	}, nil
 }
 

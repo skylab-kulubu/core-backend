@@ -1352,17 +1352,22 @@ func (s *service) addSessionCheckIn(ctx context.Context, t Ticket, sessionID uui
 		return CheckIn{}, err
 	}
 	if dup {
-		return CheckIn{}, ErrConflict
+		return CheckIn{}, s.duplicate(ctx, ErrAlreadyCheckedIn, t.ID, "", sessionID)
 	}
 	entry, err := s.venueEntryFor(ctx, t, day, sess, how)
 	if err != nil {
 		return CheckIn{}, err
 	}
+	scannedAt, late := s.scanned(ctx)
 	ci, err := s.tickets.AddCheckIn(ctx, CheckIn{
 		TicketID: t.ID, SessionID: sessionID, EventDayID: sess.EventDayID, Entry: entry,
+		ScannedAt: scannedAt, NoMail: late,
 	})
 	if err != nil {
-		return CheckIn{}, err
+		return CheckIn{}, s.duplicate(ctx, err, t.ID, "", sessionID)
+	}
+	if scannedAt != nil {
+		s.scans.recordOffline(nil)
 	}
 	if ci.EntryWritten {
 		s.scans.recordEntry(how.source)

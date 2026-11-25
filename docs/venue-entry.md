@@ -131,6 +131,11 @@ Each entry and undo at the Event's door logs one line:
 `{"event":"venue_entry_undo","actorId":…,"eventId":…,"entryId":…}`; no
 names.
 
+A scan sent later by an offline door carries `scannedAt`: the venue day,
+the Event's door window and the Ticket QR's expiry are read at it, and a
+Ticket already in answers `200 {"duplicate": true, …}` instead of `409`
+([offline-door.md](offline-door.md)).
+
 ## The Session's door activity
 
 `GET /v1/sessions/{id}/check-ins` lists the Session's Check-ins

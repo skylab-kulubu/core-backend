@@ -548,13 +548,13 @@ func (s *PostgresStore) AddCheckIn(ctx context.Context, c CheckIn) (CheckIn, err
 	// Check-in (undoing the Check-in keeps it), the others' name it.
 	err := s.pool.QueryRow(ctx, `
 		WITH ci AS (
-			INSERT INTO ticket_checkins (id, ticket_id, event_day_id, session_id)
-			SELECT $1, t.id, $3, $4 FROM tickets t WHERE t.id = $2 AND t.status = 'active'
-			RETURNING id, ticket_id, event_day_id, session_id, created_at
+			INSERT INTO ticket_checkins (id, ticket_id, event_day_id, session_id, scanned_at)
+			SELECT $1, t.id, $3, $4, $10 FROM tickets t WHERE t.id = $2 AND t.status = 'active'
+			RETURNING id, ticket_id, event_day_id, session_id, created_at, scanned_at
 		), entry AS (
-			INSERT INTO venue_entries (id, ticket_id, event_id, entry_date, event_day_id, source, check_in_id, by_user_id)
+			INSERT INTO venue_entries (id, ticket_id, event_id, entry_date, event_day_id, source, check_in_id, by_user_id, scanned_at)
 			SELECT gen_random_uuid(), ci.ticket_id, t.event_id, $5::date, ci.event_day_id, $6,
-				CASE WHEN $6 <> 'scan' THEN ci.id END, `+activeActorSQL("$7")+`
+				CASE WHEN $6 <> 'scan' THEN ci.id END, `+activeActorSQL("$7")+`, ci.scanned_at
 			FROM ci JOIN tickets t ON t.id = ci.ticket_id
 			WHERE $5::date IS NOT NULL
 			ON CONFLICT (ticket_id, entry_date) DO NOTHING
@@ -571,12 +571,14 @@ func (s *PostgresStore) AddCheckIn(ctx context.Context, c CheckIn) (CheckIn, err
 			WHERE $9::boolean AND e.attendance_recorded_mail
 			ON CONFLICT (ticket_id, session_id) WHERE kind = 'recorded' DO UPDATE SET `+requeueSQL+`
 		)
-		SELECT ci.id, ci.ticket_id, ci.event_day_id, ci.session_id, ci.created_at, EXISTS (SELECT 1 FROM entry)
+		SELECT ci.id, ci.ticket_id, ci.event_day_id, ci.session_id, ci.created_at, ci.scanned_at, EXISTS (SELECT 1 FROM entry)
 		FROM ci
-	`, c.ID, c.TicketID, c.EventDayID, c.SessionID, date, source, by, s.mailWelcome.Load(), s.mailRecorded.Load()).Scan(
-		&c.ID, &c.TicketID, &c.EventDayID, &c.SessionID, &c.CreatedAt, &c.EntryWritten)
+	`, c.ID, c.TicketID, c.EventDayID, c.SessionID, date, source, by, s.mailWelcome.Load() && !c.NoMail,
+		s.mailRecorded.Load() && !c.NoMail, c.ScannedAt).Scan(
+		&c.ID, &c.TicketID, &c.EventDayID, &c.SessionID, &c.CreatedAt, &c.ScannedAt, &c.EntryWritten)
+	c.NoMail = false
 	if isUnique(err) {
-		return CheckIn{}, ErrConflict
+		return CheckIn{}, ErrAlreadyCheckedIn
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		status, serr := s.statusOf(ctx, c.TicketID)
@@ -659,6 +661,19 @@ func (s *PostgresStore) CheckInByID(ctx context.Context, id uuid.UUID) (CheckIn,
 
 func (s *PostgresStore) RemoveCheckInByID(ctx context.Context, id uuid.UUID) (bool, error) {
 	return s.removeCheckIn(ctx, `id = $1`, id)
+}
+
+// CheckInOf is the Ticket's Check-in at the Session (ScanRecords).
+func (s *PostgresStore) CheckInOf(ctx context.Context, ticketID, sessionID uuid.UUID) (CheckIn, error) {
+	c := CheckIn{}
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, ticket_id, event_day_id, session_id, created_at, scanned_at
+		FROM ticket_checkins WHERE ticket_id = $1 AND session_id = $2`, ticketID, sessionID).
+		Scan(&c.ID, &c.TicketID, &c.EventDayID, &c.SessionID, &c.CreatedAt, &c.ScannedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CheckIn{}, ErrNotFound
+	}
+	return c, err
 }
 
 func (s *PostgresStore) HasCheckIn(ctx context.Context, ticketID, sessionID uuid.UUID) (bool, error) {
