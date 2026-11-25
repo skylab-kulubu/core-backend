@@ -83,50 +83,49 @@ AS $$
     WHERE candidate ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 $$;
 
--- 20261122160000's copy of rolePurposes (internal/media/attachment.go),
--- with a font: a layout links its fonts as certificate assets, and a font
--- row links its file as certificate_font. A test keeps it equal to
--- rolePurposes, both ways.
-CREATE OR REPLACE FUNCTION media_role_purposes()
+-- The role tables (media_role_purposes, media_roles_without_legacy; copies
+-- of rolePurposes and rolesWithoutLegacy in internal/media/attachment.go,
+-- which a test keeps equal): a font row links its file as certificate_font,
+-- a layout links its fonts as certificate assets, and certificate_font takes
+-- no legacy Media. Each function is written again from its current rows with
+-- these added, never from a list of its own: migrations may be applied out
+-- of order, and another one's role must not be lost.
+DO $roles$
+DECLARE
+    pairs TEXT;
+    strict_roles TEXT;
+BEGIN
+    SELECT string_agg(format('(%L, %L, %L)', t.owner_service, t.role, t.purpose), E',\n        '
+               ORDER BY t.owner_service, t.role, t.purpose)
+    INTO pairs
+    FROM (
+        SELECT f.owner_service, f.role, f.purpose FROM media_role_purposes() f
+        UNION
+        VALUES ('core', 'certificate_asset', 'certificate_font'), ('core', 'certificate_font', 'certificate_font')
+    ) t (owner_service, role, purpose);
+    EXECUTE format($f$CREATE OR REPLACE FUNCTION media_role_purposes()
 RETURNS TABLE (owner_service TEXT, role TEXT, purpose TEXT)
 LANGUAGE sql
 IMMUTABLE
-AS $$
+AS $body$
     VALUES
-        ('core', 'event_cover', 'event_cover'),
-        ('core', 'event_cover', 'event_gallery'),
-        ('core', 'event_gallery', 'event_gallery'),
-        ('core', 'event_gallery', 'event_cover'),
-        ('core', 'profile_picture', 'profile_picture'),
-        ('core', 'certificate_asset', 'certificate_asset'),
-        ('core', 'certificate_asset', 'certificate_font'),
-        ('core', 'certificate_font', 'certificate_font'),
-        ('core', 'event_file', 'club_file'),
-        ('core', 'event_video', 'video'),
-        ('core', 'event_video_poster', 'event_cover'),
-        ('core', 'event_video_poster', 'event_gallery'),
-        ('core', 'event_video_frame', 'video_frame'),
-        ('core', 'event_map', 'event_map'),
-        ('forms', 'answer', 'answer_file'),
-        ('forms', 'answer', 'answer_file_large'),
-        ('forms', 'answer', 'answer_file_guest'),
-        ('cms', 'image', 'cms_image'),
-        ('cms', 'file', 'cms_file')
-$$;
+        %s
+$body$$f$, pairs);
 
--- The roles a legacy Media does not fit (rolesWithoutLegacy): a font is
--- checked by pdf-tools before core keeps it, which no legacy Media was. A
--- test keeps the two equal.
-CREATE OR REPLACE FUNCTION media_roles_without_legacy()
+    SELECT string_agg(format('(%L, %L)', t.owner_service, t.role), E',\n        ' ORDER BY t.owner_service, t.role)
+    INTO strict_roles
+    FROM (
+        SELECT f.owner_service, f.role FROM media_roles_without_legacy() f
+        UNION
+        VALUES ('core', 'certificate_font')
+    ) t (owner_service, role);
+    EXECUTE format($f$CREATE OR REPLACE FUNCTION media_roles_without_legacy()
 RETURNS TABLE (owner_service TEXT, role TEXT)
 LANGUAGE sql
 IMMUTABLE
-AS $$
+AS $body$
     VALUES
-        ('core', 'event_file'),
-        ('core', 'event_video'),
-        ('core', 'event_video_poster'),
-        ('core', 'event_video_frame'),
-        ('core', 'event_map'),
-        ('core', 'certificate_font')
-$$;
+        %s
+$body$$f$, strict_roles);
+END
+$roles$;
