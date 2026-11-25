@@ -2,11 +2,14 @@
 
 Core's internal PDF service (certificate editor v2): it reads the text of a
 background PDF, removes chosen text from it, places its page into a box on a
-new page, and renders it to PNG. Core finds it at `PDF_TOOLS_URL`; with that
+new page, and renders it to PNG; and it checks the fonts teams upload and
+writes them back as WOFF2. Core finds it at `PDF_TOOLS_URL`; with that
 unset, the features that need it stay off. Like Gotenberg it is on the
 internal network only, with no route from outside.
 
-Python 3.12; PDFium (pypdfium2) reads and renders, pikepdf (qpdf) edits.
+Python 3.12; PDFium (pypdfium2) reads and renders, pikepdf (qpdf) edits;
+OTS (opentype-sanitizer, the checker browsers run on web fonts) and fontTools
+check and convert fonts.
 The image is `ghcr.io/skylab-kulubu/core-pdf-tools`, built by core-backend's
 GHCR workflow with the same tags as core's image (`docs/ci.md`).
 
@@ -24,6 +27,7 @@ application/pdf`; `/v1/render?maxPx=`). A body needs a `Content-Length`
 | `POST /v1/strip-text` | `{"spanIds": ["3", "7.1"]}` | `application/pdf`: the PDF without those texts |
 | `POST /v1/place` | `{"pageWidthPt", "pageHeightPt", "rect": {"x", "y", "w", "h"}}` | `application/pdf`: one page of that size, the source page drawn into `rect` |
 | `POST /v1/render` | `{"maxPx": 2000}` (16–4000) | `image/png` of the visible page, its long side `maxPx` |
+| `POST /v1/font/sanitize` | – | JSON: the font's facts and the checked font as WOFF2, below |
 | `GET /healthz` | – | `200 {"status":"ok"}` |
 
 Coordinates are in pt on the **visible page** (the CropBox inside the
@@ -130,6 +134,52 @@ the caller's (core's `PlaceBackground`, SPEC §4.2).
 The visible page at `maxPx` on its long side, white background, without
 annotations or form fields.
 
+### `/v1/font/sanitize`
+
+The font is the `file` part, or the whole body (`Content-Type: font/ttf`,
+`font/otf`, `font/woff2`, `font/sfnt` or `application/octet-stream`). Steps,
+in order; the first that fails answers:
+
+1. At most 10 MiB (`font_too_large`; a body over 11 MiB is refused before it
+   is read). The first bytes: `00 01 00 00` or `true` (TrueType), `OTTO`
+   (OpenType/CFF), `wOF2` (WOFF2). `ttcf`, or a WOFF2 of flavor `ttcf`, is
+   `font_collection`; anything else (WOFF 1 too) `font_unreadable`.
+2. OTS (`ots-sanitize`, in a process of its own) reads it, a WOFF2 unpacked,
+   and writes the sanitized sfnt: tables it does not know are dropped, a
+   table it cannot read refuses the font (`font_unreadable`, its first error
+   in `reason`).
+3. fontTools reads the sanitized font: an `fvar` table is `font_variable`;
+   OS/2 `fsType` bit 1 (Restricted License embedding) is
+   `font_embedding_restricted` (with `fsType`).
+4. The facts, below.
+5. The sanitized font is written as WOFF2 (brotli; the glyf transform and
+   quality 11 for small fonts, lighter settings for large ones so that a job
+   keeps to its time and memory).
+
+```json
+{
+  "family": "Deneme Sans",
+  "subfamily": "Bold",
+  "weight": 700,
+  "italic": false,
+  "glyphCount": 412,
+  "missingTurkish": "ğı",
+  "fsType": 0,
+  "woff2": "d09GMgABAAAAA…"
+}
+```
+
+- `family`: name ID 16 (typographic family), else 1; `subfamily`: 17, else
+  2. Control characters and runs of spaces become one space.
+- `weight`: OS/2 `usWeightClass` (1–9 read as 100–900; none, or out of
+  1–1000: 400). `italic`: OS/2 `fsSelection` bit 0 or `head.macStyle`
+  bit 1.
+- `missingTurkish`: the characters of `ğĞıİşŞçÇöÖüÜ`, `A–Z`, `a–z` and
+  `0–9` the font's cmap does not map, in that order (`""`: all there). A
+  font missing some is not refused.
+- `woff2`: the checked font, base64. This is the only form of the font core
+  stores or serves; the upload itself is not used again.
+
 ### Errors
 
 RFC 9457 `application/problem+json`, with a `code`:
@@ -146,6 +196,12 @@ RFC 9457 `application/problem+json`, with a `code`:
 | `pdf_pages` | 422 | more than one page (`pages` says how many) |
 | `pdf_timeout` | 422 | took longer than 15 s; the worker was stopped |
 | `strip_incomplete` | 422 | above |
+| `font_too_large` | 413 | a font over 10 MiB |
+| `font_unreadable` | 422 | not a TrueType, OpenType or WOFF2 font, refused by OTS, or one that stopped its worker |
+| `font_collection` | 422 | a font collection (TTC) |
+| `font_variable` | 422 | a variable font (`fvar`) |
+| `font_embedding_restricted` | 422 | `fsType` says Restricted License embedding (`fsType` in the answer) |
+| `font_timeout` | 422 | took longer than 10 s; the worker was stopped |
 | `busy` | 503 | every worker busy for 10 s, or 4 requests already in; `Retry-After: 5` |
 | `internal` | 500 | an unexpected error, or no worker could take the job |
 
@@ -155,13 +211,18 @@ A 4xx is the input's: the same request fails again. A 5xx may pass later.
 
 - A PDF of at most 20 MiB (the body's `Content-Length` is checked before it
   is read); one page, except for `/v1/inspect`; at most 5000 spans.
-- Two worker processes do the PDF work; a job runs at most 15 s, then its
-  worker is killed and replaced. A job waits at most 10 s for a worker; at
+- Two worker processes do the PDF and font work; a job runs at most 15 s (a
+  font job 10 s, of which OTS has 7), then its worker is killed and
+  replaced. A job waits at most 10 s for a worker; at
   most 4 requests are in at once. A worker is replaced after 200 jobs, and
   when it dies; one that cannot be started is tried again on the next job.
 - Each worker's data (heap, private writable memory) is capped at 300 MiB
   (`RLIMIT_DATA`): a PDF that inflates to gigabytes fails with
-  `pdf_unreadable` and the next request runs as usual.
+  `pdf_unreadable` (`font_unreadable`) and the next request runs as usual.
+  A font of almost 10 MiB is checked within 200 MiB and 10 s on half a CPU
+  (the tests measure one).
+- A font of at most 10 MiB; OTS's output at most 48 MiB, written to `/tmp`
+  (OTS seeks in it) and removed after the job.
 
 Environment: `PORT` (8080), `PDF_TOOLS_WORKERS` (2),
 `PDF_TOOLS_TIMEOUT_SECONDS` (15), `PDF_TOOLS_WORKER_MEMORY_MIB` (300; 0 turns
@@ -199,7 +260,8 @@ python3.12 -m venv .venv
 (`requirements*.txt` pin Linux wheels; on macOS install the versions in
 `requirements*.in` instead.) The test PDFs are written by the tests
 (`tests/fixtures.py`: hand-written content streams and a TrueType font built
-with fontTools); the repository holds no PDF or font files. CI runs the
+with fontTools; `tests/font_fixtures.py`: the fonts); the repository holds no
+PDF or font files. CI runs the
 tests in the image's `test` stage with the settings above (`docs/ci.md`).
 
 To change a dependency, edit `requirements*.in` and run the `uv pip

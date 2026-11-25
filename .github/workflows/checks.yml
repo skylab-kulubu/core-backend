@@ -356,7 +356,7 @@ jobs:
 
   # pdf-tools/: the test stage of its image runs its pytest, under the
   # limits it runs with (pdf-tools/README.md); then the image itself starts
-  # with them and answers /healthz and an inspect.
+  # with them and answers /healthz, an inspect and a font sanitize.
   pdf-tools:
     needs: scope
     if: needs.scope.outputs.pdf_tools == 'true'
@@ -391,6 +391,10 @@ jobs:
             'import sys; sys.path.insert(0, "tests"); import fixtures; sys.stdout.buffer.write(fixtures.turkish())' > turkish.pdf
           curl -fsS -H 'Content-Type: application/pdf' --data-binary @turkish.pdf http://127.0.0.1:18080/v1/inspect > inspect.json
           jq -e '.textCount == 3 and .spans[1].text == "Ayşe Yıldız"' inspect.json
+          docker run --rm pdf-tools-test python -c \
+            'import sys; sys.path.insert(0, "tests"); import font_fixtures; sys.stdout.buffer.write(font_fixtures.ttf())' > font.ttf
+          curl -fsS -H 'Content-Type: font/ttf' --data-binary @font.ttf http://127.0.0.1:18080/v1/font/sanitize > font.json
+          jq -e '.family == "Deneme Sans" and .missingTurkish == "" and (.woff2 | startswith("d09GMg"))' font.json
           docker inspect --format '{{.State.Health.Status}} {{.Config.User}}' pdf-tools
 
       - if: always()
