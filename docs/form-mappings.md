@@ -29,7 +29,12 @@ per Event and form, for a form the Event lists as its application
 
 All under `/v1/events/{id}/forms/{formId}`, with the organizer's token.
 The caller is a person who may edit the Event (authz `Update` on the Event,
-its Co-organizers included); a product's service account never is.
+its Co-organizers included), and the form's owner or an editor in Forms: a
+viewer of the form, or someone not on its team, is refused (orchestrator's
+decision, 2026-11-25). A product's service account never is. Each route
+reads the form from Forms for its team (`collaborators: [{userId, role}]`,
+forms-backend #43; removed members are left out by Forms); a Forms that
+sends no `collaborators` lets nobody in.
 
 | Route | Answer |
 | --- | --- |
@@ -39,8 +44,8 @@ its Co-organizers included); a product's service account never is.
 | `DELETE …/mapping` | `204`; `404 mapping_not_found` without one |
 
 `questions` comes from Forms' form read (`GET {FORMS_INTERNAL_URL}/internal/v1/forms/{formId}`,
-core's service account, forms-backend #43), so it works whether or not the
-organizer collaborates on the form in Forms. `inputType` and `identity` are
+core's service account, forms-backend #43); the team in it is not passed
+on. `inputType` and `identity` are
 left out when Forms has none. `suggestion` is what the form's identity
 fields give (hub SPEC §11 K5, Yusuf 2026-11-25): a field one
 question claims is filled, else `null`. The panel guesses the rest from
@@ -54,15 +59,16 @@ questions.
 | `400` | an id in the path that is not a UUID, or a body that is not JSON |
 | `404` | no such current Event (archived too), or a draft the caller may not edit |
 | `403` | the caller may not edit the Event, or is a service account |
+| `403 forms_access_denied` | the caller is not the form's owner or an editor in Forms (a viewer is not), or Forms does not say who is |
 | `404 form_not_listed` | the Event does not list the form as its application or an extra form |
 | `400 mapping_invalid` | the mapping breaks the rule above |
 | `422 mapping_question_missing` | the form has no question of some ids: `missing` lists them |
-| `404 form_not_found` | Forms has no such form (deleted, or a Forms without the route yet) |
-| `503 forms_pull_off` | `questions` only: `EVENTS_FORMS_ENABLED` is not `true` |
+| `404 form_not_found` | Forms has no such form (deleted, or a Forms without the route yet); `DELETE` still removes the mapping |
+| `503 forms_pull_off` | `EVENTS_FORMS_ENABLED` is not `true` (every route reads Forms) |
 | `503 forms_unavailable` | core has no Forms address or service account, or Forms did not answer, refused core or answered what core cannot read |
 
-A mapping is saved, read and deleted with the switch off, so it is ready
-when Forms' integration opens; the save still needs Forms' form read.
+With the switch off every route answers `503 forms_pull_off` once the
+Event's own checks pass: each needs Forms' form read for the team check.
 
 Each questions read, save and delete writes one line,
 `"event":"form_mapping"`: `action` (`questions`, `put`, `delete`), the

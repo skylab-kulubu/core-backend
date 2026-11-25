@@ -164,6 +164,8 @@ func (h *FormMappingHandler) error(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusNotFound, "Not Found")
 	case errors.Is(err, formsfeed.ErrMappingForbidden):
 		return problem(c, fiber.StatusForbidden, "Forbidden")
+	case errors.Is(err, formsfeed.ErrFormsAccessDenied):
+		return problemCode(c, fiber.StatusForbidden, "Forbidden", "forms_access_denied")
 	case errors.Is(err, formsfeed.ErrMappingNotListed):
 		return problemCode(c, fiber.StatusNotFound, "Not Found", "form_not_listed")
 	case errors.Is(err, formsfeed.ErrMappingNotFound):
