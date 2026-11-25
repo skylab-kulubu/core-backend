@@ -7,8 +7,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// The SkyMail templates of the feedback mails (etkinlik geri bildirim
-// formu, tickets 06 and 07; skymail-frontend core-feedback-*): variables
+// The SkyNotify templates of the feedback mails (etkinlik geri bildirim
+// formu, tickets 06 and 07; skynotify-frontend core-feedback-*): variables
 // FirstName (may be empty), EventName and Items, a list of {Title, URL}.
 const (
 	DefaultFeedbackRequestTemplateKey  = "core.feedback-request"
@@ -39,7 +39,7 @@ type FeedbackRecipient struct {
 }
 
 // FeedbackTemplateKey is kind's template key, empty when it is off.
-func (s *SkyMail) FeedbackTemplateKey(kind FeedbackKind) string {
+func (s *SkyNotify) FeedbackTemplateKey(kind FeedbackKind) string {
 	if s == nil {
 		return ""
 	}
@@ -54,21 +54,21 @@ func (s *SkyMail) FeedbackTemplateKey(kind FeedbackKind) string {
 }
 
 // FeedbackConfigured reports whether kind's mail has a template key.
-func (s *SkyMail) FeedbackConfigured(kind FeedbackKind) bool {
+func (s *SkyNotify) FeedbackConfigured(kind FeedbackKind) bool {
 	return s.FeedbackTemplateKey(kind) != ""
 }
 
-// Feedback sends kind's mail and reports what SkyMail answered, as
+// Feedback sends kind's mail and reports what SkyNotify answered, as
 // EventStatus does. Its variables are not all text: Items is a list, which
-// SkyMail's templates range over; EventId fills the inbox item's link.
+// SkyNotify's templates range over; EventId fills the inbox item's link.
 //
 // With FeedbackNotification on, a member's mail is a Notification of the
 // template's type (the type's e-mail text is the template of the same key,
-// ADR 0070), under idempotencyKey: SkyMail sends it by e-mail and to the
-// member's inbox. A guest has no subject SkyMail could take, so a guest's
+// ADR 0070), under idempotencyKey: SkyNotify sends it by e-mail and to the
+// member's inbox. A guest has no subject SkyNotify could take, so a guest's
 // mail, and every mail while it is off, is the template by address
 // (/v1/mail_tasks/single, which reads no key).
-func (s *SkyMail) Feedback(ctx context.Context, kind FeedbackKind, idempotencyKey string, to FeedbackRecipient, eventID uuid.UUID, eventName string, items []FeedbackItem) error {
+func (s *SkyNotify) Feedback(ctx context.Context, kind FeedbackKind, idempotencyKey string, to FeedbackRecipient, eventID uuid.UUID, eventName string, items []FeedbackItem) error {
 	key := s.FeedbackTemplateKey(kind)
 	if key == "" || s.noBaseURL() {
 		return ErrTemplateUnconfigured

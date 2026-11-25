@@ -16,7 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Mailer sends the confirmation mail of a pending grant through SkyMail.
+// Mailer sends the confirmation mail of a pending grant through SkyNotify.
 // Sending is best effort: a mail that does not go leaves the grant pending.
 // The mail greets nobody by name: whoever typed the address may have typed
 // any name with it.
@@ -86,7 +86,7 @@ func (s *Service) Config() Config { return s.config }
 // SetClock replaces the clock (tests and tools).
 func (s *Service) SetClock(now func() time.Time) { s.now = now }
 
-// SetMailer sets the confirmation mail's sender (startup builds SkyMail
+// SetMailer sets the confirmation mail's sender (startup builds SkyNotify
 // after the service).
 func (s *Service) SetMailer(mail Mailer) { s.mail = mail }
 
@@ -312,7 +312,7 @@ func (s *Service) grantOnce(ctx context.Context, g Grant, verified bool) (GrantR
 // request that recorded it. It names nobody: no name travels with it.
 func (s *Service) sendConfirmation(id uuid.UUID, g Grant) {
 	if s.mail == nil || s.config.ConfirmTemplateKey == "" {
-		log.Printf("contact consent: confirmation mail not sent (SkyMail or %s not configured); the grant stays pending", ConfirmTemplateKeyEnv)
+		log.Printf("contact consent: confirmation mail not sent (SkyNotify or %s not configured); the grant stays pending", ConfirmTemplateKeyEnv)
 		return
 	}
 	now := s.now()
@@ -347,7 +347,7 @@ func (s *Service) sent() {
 // the mail was sent before it goes (the request is answered first), so
 // shutdown waits on Idle after the last request was answered: a mail that
 // is going is not cut off with the process. A mail cut off all the same
-// (SkyMail slower than the shutdown deadline) leaves the grant pending; the
+// (SkyNotify slower than the shutdown deadline) leaves the grant pending; the
 // person's next request mails it again after ConfirmationResend.
 func (s *Service) Idle() <-chan struct{} {
 	if s == nil {
@@ -682,7 +682,7 @@ const RenewalAnchorSQL = `GREATEST(c.confirmed_at, c.renewed_at, CASE
 // ends the grant (the retention sweep's consent_renewal_unanswered).
 const RenewalQuestionSQL = `CASE WHEN c.renewal_requested_at >= ` + RenewalAnchorSQL + ` THEN c.renewal_requested_at END`
 
-// AudienceEntry is one address SkyMail may send a purpose's mail to.
+// AudienceEntry is one address SkyNotify may send a purpose's mail to.
 type AudienceEntry struct {
 	// ID is the grant: the cursor, and what a renewal request names.
 	ID    uuid.UUID `json:"id"`
@@ -698,7 +698,7 @@ type AudienceEntry struct {
 	// header, with List-Unsubscribe-Post: List-Unsubscribe=One-Click.
 	WithdrawURL string `json:"withdrawUrl"`
 	// RenewalDue: nothing showed for RenewalAfter that the person still
-	// wants these mails. SkyMail sends the renewal question with RenewURL
+	// wants these mails. SkyNotify sends the renewal question with RenewURL
 	// instead of an invitation, then reports it (RequestRenewal). Always
 	// false for a purpose that does not renew (promotional).
 	RenewalDue bool `json:"renewalDue"`
@@ -778,7 +778,7 @@ func (s *Service) Audience(ctx context.Context, purpose Purpose, after uuid.UUID
 	return out, last, nil
 }
 
-// RequestRenewal records that SkyMail sent the renewal question for the
+// RequestRenewal records that SkyNotify sent the renewal question for the
 // named grants. Only open, confirmed grants of purpose that are due and have
 // no standing question change (a question answered by attending stands no
 // more, RenewalQuestionSQL). RenewalAnswerWindow later the retention sweep

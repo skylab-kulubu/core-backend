@@ -36,19 +36,19 @@ const (
 	ResendAll    = "all"
 )
 
-// MailRetryWindow is how long a mail is tried while SkyMail is unreachable,
+// MailRetryWindow is how long a mail is tried while SkyNotify is unreachable,
 // from its first try, before it is given up as failed: tries 1, 2, 4 … 60
 // minutes apart, then hourly. It ends well before MailKeyLimit.
 const MailRetryWindow = 24 * time.Hour
 
-// MailKeyLimit is the hard end of a mail's tries, from its first: SkyMail
+// MailKeyLimit is the hard end of a mail's tries, from its first: SkyNotify
 // keeps an Idempotency-Key 72 hours, and a try after that could mail twice.
 // A row first tried longer ago than this (a worker stopped for days) fails
 // as "expired" without being sent.
 const MailKeyLimit = 48 * time.Hour
 
 // MailSendTimeout bounds one request core makes to send a mail (the token,
-// a post, the template id's post): cmd/core-backend's skyMailTimeout.
+// a post, the template id's post): cmd/core-backend's skyNotifyTimeout.
 const MailSendTimeout = 15 * time.Second
 
 // mailSendBudget is the most one mail's send may take: the token and two
@@ -78,7 +78,7 @@ const ResendAllCooldown = 10 * time.Minute
 // ResendAllCooldown ago.
 var ErrResendTooSoon = errors.New("certificate: resend to all too soon")
 
-// MailIdempotencyKeyPrefix names a queued mail at SkyMail: the prefix and
+// MailIdempotencyKeyPrefix names a queued mail at SkyNotify: the prefix and
 // the row's id, the same on every try.
 const MailIdempotencyKeyPrefix = "core-certificate-mail:"
 
@@ -142,8 +142,8 @@ type MailQueue interface {
 	MailStates(ctx context.Context, eventID uuid.UUID) (map[string]MailState, error)
 }
 
-// CertificateMailer sends one queued certificate mail and says what SkyMail
-// answered (*mail.SkyMail). A Mailer without it is sent to directly, as
+// CertificateMailer sends one queued certificate mail and says what SkyNotify
+// answered (*mail.SkyNotify). A Mailer without it is sent to directly, as
 // before the queue.
 type CertificateMailer interface {
 	CertificateMail(ctx context.Context, idempotencyKey, recipientEmail, fullName string, vars map[string]string) error
@@ -245,7 +245,7 @@ func (s *service) deliverMail(ctx context.Context, sender CertificateMailer, m M
 		// Erased meanwhile, or a certificate with no address.
 		return MailFailed, "no_recipient", now
 	case now.After(m.FirstTriedAt.Add(MailKeyLimit)):
-		// SkyMail may have forgotten the key: a try could mail twice.
+		// SkyNotify may have forgotten the key: a try could mail twice.
 		return MailFailed, "expired", now
 	}
 	attachments := s.mailAttachments(ctx, sender, m)
@@ -254,13 +254,13 @@ func (s *service) deliverMail(ctx context.Context, sender CertificateMailer, m M
 	err := s.postMail(sendCtx, sender, m, attachments)
 	var refused *mail.SendError
 	if attachments != nil && errors.As(err, &refused) && refused.Permanent() && strings.HasPrefix(refused.Code, "attachment.") {
-		// SkyMail refused the file (400 attachment.*): the verify link is
+		// SkyNotify refused the file (400 attachment.*): the verify link is
 		// in the mail, so it goes without. A refused request leaves no key
 		// behind, and the file is not part of the key's digest: the same key
 		// is free. Any other refusal is the body's own and settles the mail
 		// as before.
 		s.mailPDF.skip(pdfSkipRefused)
-		log.Printf("WARN certificate mail %s: SkyMail refused the mail with the PDF (%d %s); sent without it", m.ID, refused.Status, refused.Code)
+		log.Printf("WARN certificate mail %s: SkyNotify refused the mail with the PDF (%d %s); sent without it", m.ID, refused.Status, refused.Code)
 		err = s.postMail(sendCtx, sender, m, nil)
 	}
 	if err == nil {
@@ -269,10 +269,10 @@ func (s *service) deliverMail(ctx context.Context, sender CertificateMailer, m M
 	if errors.Is(err, mail.ErrTemplateUnconfigured) {
 		return MailFailed, "mail_unconfigured", now
 	}
-	code = "skymail_unreachable"
+	code = "skynotify_unreachable"
 	if errors.As(err, &refused) {
 		if refused.Status != 0 {
-			code = "skymail_" + strconv.Itoa(refused.Status)
+			code = "skynotify_" + strconv.Itoa(refused.Status)
 		}
 		if refused.Permanent() {
 			return MailFailed, code, now

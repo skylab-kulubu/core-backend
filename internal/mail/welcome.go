@@ -16,23 +16,23 @@ import (
 type WelcomeOutcome string
 
 const (
-	// WelcomeSent: SkyMail took the mail task (2xx).
+	// WelcomeSent: SkyNotify took the mail task (2xx).
 	WelcomeSent WelcomeOutcome = "sent"
-	// WelcomeRefused: SkyMail refused the mail itself for good (400, 413,
+	// WelcomeRefused: SkyNotify refused the mail itself for good (400, 413,
 	// 422: an address or body it will not take). No mail task was written,
 	// and sending the same mail again would be refused again.
 	WelcomeRefused WelcomeOutcome = "refused"
-	// WelcomeDeferred: SkyMail refused the mail for now: any other status,
-	// which is about core's setup or SkyMail's state rather than the mail
+	// WelcomeDeferred: SkyNotify refused the mail for now: any other status,
+	// which is about core's setup or SkyNotify's state rather than the mail
 	// (401, 403: token, role or audience; 404: template not seeded; 409:
 	// template not publishable; 408, 429, 5xx). No mail task was written; a
 	// later try may succeed.
 	WelcomeDeferred WelcomeOutcome = "deferred"
 	// WelcomeNotSent: nothing left core: no template is configured, no token
-	// came, or SkyMail could not be connected to.
+	// came, or SkyNotify could not be connected to.
 	WelcomeNotSent WelcomeOutcome = "not_sent"
 	// WelcomeUnknown: the request went out and no answer came back, so
-	// SkyMail may have taken it.
+	// SkyNotify may have taken it.
 	WelcomeUnknown WelcomeOutcome = "unknown"
 )
 
@@ -48,16 +48,16 @@ const (
 )
 
 // WelcomeConfigured reports whether the Welcome mail can be addressed (a
-// template key or id) and sent (a SkyMail address).
-func (s *SkyMail) WelcomeConfigured() bool {
+// template key or id) and sent (a SkyNotify address).
+func (s *SkyNotify) WelcomeConfigured() bool {
 	return s != nil && strings.TrimSpace(s.BaseURL) != "" && s.welcomeTemplate().configured()
 }
 
 // Welcome posts u's Welcome mail by its template key, falling back to the
-// template id when SkyMail does not know the key, and says what became of it.
+// template id when SkyNotify does not know the key, and says what became of it.
 // Every outcome but sent is warned about in the log (event
-// skymail_call_failed, kind welcome) with no recipient, name or template.
-func (s *SkyMail) Welcome(ctx context.Context, u user.User) WelcomeOutcome {
+// skynotify_call_failed, kind welcome) with no recipient, name or template.
+func (s *SkyNotify) Welcome(ctx context.Context, u user.User) WelcomeOutcome {
 	tpl := s.welcomeTemplate()
 	if s.noBaseURL() || !s.WelcomeConfigured() {
 		// Said once at startup (WarnUnconfiguredTemplates).
@@ -97,7 +97,7 @@ func (s *SkyMail) Welcome(ctx context.Context, u user.User) WelcomeOutcome {
 	}
 	if tpl.key != "" {
 		status, outcome := attempt(template{key: tpl.key})
-		// A key SkyMail does not know is the one refusal the id can still
+		// A key SkyNotify does not know is the one refusal the id can still
 		// answer, because the key may not be seeded yet.
 		if status != http.StatusNotFound || tpl.id == uuid.Nil {
 			return outcome
@@ -109,9 +109,9 @@ func (s *SkyMail) Welcome(ctx context.Context, u user.User) WelcomeOutcome {
 }
 
 // permanentRefusal reports a refusal of the mail itself, which sending it
-// again cannot get past: a body SkyMail will not take (400), one too large
+// again cannot get past: a body SkyNotify will not take (400), one too large
 // (413), or an address or variables it cannot use (422). Every other refusal
-// is about core's setup or SkyMail's state (a token, a role, a template) and
+// is about core's setup or SkyNotify's state (a token, a role, a template) and
 // may pass once that is fixed.
 func permanentRefusal(status int) bool {
 	return status == http.StatusBadRequest || status == http.StatusRequestEntityTooLarge || status == http.StatusUnprocessableEntity

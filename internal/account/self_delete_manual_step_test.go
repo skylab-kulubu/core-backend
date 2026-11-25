@@ -24,7 +24,7 @@ func TestSelfDeletionViewSaysWhenAnOperatorCarriesOutAStepByHand(t *testing.T) {
 	}{
 		{"the CMS has no endpoint", user.DeletionRequestManualIntervention, &blocked, "erase_cms_rejected_404", true},
 		{"Forms has no endpoint", user.DeletionRequestManualIntervention, &blocked, "erase_forms_rejected_404", true},
-		{"SkyMail has no endpoint", user.DeletionRequestManualIntervention, &blocked, "erase_skymail_rejected_404", true},
+		{"SkyNotify has no endpoint", user.DeletionRequestManualIntervention, &blocked, "erase_skynotify_rejected_404", true},
 		{"a refused role", user.DeletionRequestManualIntervention, &blocked, "erase_cms_rejected_403", false},
 		{"a service down past the budget", user.DeletionRequestManualIntervention, &blocked, "erase_forms_failed", false},
 		{"Keycloak down past the budget", user.DeletionRequestManualIntervention, &blocked, "delete_identity_failed", false},

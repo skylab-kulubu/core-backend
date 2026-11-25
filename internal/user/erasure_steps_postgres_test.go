@@ -42,7 +42,7 @@ func TestPostgresServiceErasureCheckpointKeepsCountsUnderTheLeaseFence(t *testin
 	}
 
 	counts := map[string]int64{"recipients_deleted": 1, "queue_rows_cleared": 12}
-	if err := store.CompleteServiceErasureStep(ctx, request.ID, *first.LeaseToken, user.DeletionStepEraseSkyMail, now, counts); !errors.Is(err, user.ErrLeaseLost) {
+	if err := store.CompleteServiceErasureStep(ctx, request.ID, *first.LeaseToken, user.DeletionStepEraseSkyNotify, now, counts); !errors.Is(err, user.ErrLeaseLost) {
 		t.Fatalf("stale checkpoint error = %v", err)
 	}
 	if records, err := store.DeletionStepRecords(ctx, request.ID); err != nil || len(records) != 0 {
@@ -50,11 +50,11 @@ func TestPostgresServiceErasureCheckpointKeepsCountsUnderTheLeaseFence(t *testin
 	}
 
 	at := now.Add(3 * time.Second).Truncate(time.Microsecond)
-	if err := store.CompleteServiceErasureStep(ctx, request.ID, *second.LeaseToken, user.DeletionStepEraseSkyMail, at, counts); err != nil {
+	if err := store.CompleteServiceErasureStep(ctx, request.ID, *second.LeaseToken, user.DeletionStepEraseSkyNotify, at, counts); err != nil {
 		t.Fatal(err)
 	}
 	// A repeated checkpoint (a replayed 200) keeps the first proof.
-	if err := store.CompleteServiceErasureStep(ctx, request.ID, *second.LeaseToken, user.DeletionStepEraseSkyMail, at.Add(time.Minute), map[string]int64{"recipients_deleted": 0}); err != nil {
+	if err := store.CompleteServiceErasureStep(ctx, request.ID, *second.LeaseToken, user.DeletionStepEraseSkyNotify, at.Add(time.Minute), map[string]int64{"recipients_deleted": 0}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CompleteServiceErasureStep(ctx, request.ID, *second.LeaseToken, user.DeletionStepEraseCMS, at, map[string]int64{}); err != nil {
@@ -71,9 +71,9 @@ func TestPostgresServiceErasureCheckpointKeepsCountsUnderTheLeaseFence(t *testin
 	for _, record := range records {
 		byStep[record.Step] = record
 	}
-	skymail := byStep[user.DeletionStepEraseSkyMail]
-	if !skymail.CompletedAt.Equal(at) || len(skymail.Counts) != 2 || skymail.Counts["recipients_deleted"] != 1 || skymail.Counts["queue_rows_cleared"] != 12 {
-		t.Fatalf("skymail proof = %+v", skymail)
+	skynotify := byStep[user.DeletionStepEraseSkyNotify]
+	if !skynotify.CompletedAt.Equal(at) || len(skynotify.Counts) != 2 || skynotify.Counts["recipients_deleted"] != 1 || skynotify.Counts["queue_rows_cleared"] != 12 {
+		t.Fatalf("skynotify proof = %+v", skynotify)
 	}
 	if cms := byStep[user.DeletionStepEraseCMS]; cms.Counts == nil || len(cms.Counts) != 0 {
 		t.Fatalf("empty counts must stay an empty object: %+v", cms)
@@ -82,7 +82,7 @@ func TestPostgresServiceErasureCheckpointKeepsCountsUnderTheLeaseFence(t *testin
 		t.Fatalf("a core step has no counts: %+v", disable)
 	}
 	completed, err := store.CompletedDeletionSteps(ctx, request.ID, *second.LeaseToken)
-	if _, forms := completed[user.DeletionStepEraseForms]; err != nil || !completed[user.DeletionStepEraseSkyMail].Equal(at) ||
+	if _, forms := completed[user.DeletionStepEraseForms]; err != nil || !completed[user.DeletionStepEraseSkyNotify].Equal(at) ||
 		completed[user.DeletionStepEraseCMS].IsZero() || forms {
 		t.Fatalf("completed = %v err=%v", completed, err)
 	}
@@ -197,9 +197,9 @@ func TestPostgresRecordOperatorErasureStep(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The request waits on erase_cms: not on Forms or SkyMail, and a core
+	// The request waits on erase_cms: not on Forms or SkyNotify, and a core
 	// step is never the operator's to record.
-	refused("another service's step", request.ID, user.DeletionStepEraseSkyMail, user.ErrOperatorStepRefused)
+	refused("another service's step", request.ID, user.DeletionStepEraseSkyNotify, user.ErrOperatorStepRefused)
 	if _, err := pool.Exec(ctx, `UPDATE account_deletion_requests SET last_error_code = 'anonymize_core_failed' WHERE id = $1`, request.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestPostgresRecordOperatorErasureStep(t *testing.T) {
 		{"erase_cms_rejected_403", user.DeletionStepEraseCMS},
 		{"erase_cms_not_configured", user.DeletionStepEraseCMS},
 		{"erase_cms_rejected_404x", user.DeletionStepEraseCMS},
-		{"erase_skymail_rejected_409", user.DeletionStepEraseSkyMail},
+		{"erase_skynotify_rejected_409", user.DeletionStepEraseSkyNotify},
 	} {
 		if _, err := pool.Exec(ctx, `UPDATE account_deletion_requests SET last_error_code = $2 WHERE id = $1`, request.ID, waiting.code); err != nil {
 			t.Fatal(err)

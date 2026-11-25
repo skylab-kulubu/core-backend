@@ -10,7 +10,7 @@ import (
 )
 
 // A change that may already have reached the person (it is being sent, its
-// send failed after SkyMail may have taken it, or its core died mid-send)
+// send failed after SkyNotify may have taken it, or its core died mid-send)
 // is not cancelled by the opposite change: the opposite one is queued, is
 // not sent while the first is being sent, and once the first is no longer
 // being sent the later change wins and the earlier one is dropped. So the

@@ -3,7 +3,7 @@
 // 18:00 Istanbul time the day before a published Event starts, everyone
 // holding an active Ticket of it gets one mail, event.reminder, with their
 // Ticket and the way to cancel it. It is a transactional mail about the
-// holder's own Ticket: SkyMail's type is required (no one turns it off).
+// holder's own Ticket: SkyNotify's type is required (no one turns it off).
 //
 // It follows the feedback mail's schedule (internal/feedbackmail): every
 // pass plans what is due under an advisory lock, one row per Ticket in a
@@ -99,7 +99,7 @@ type Queue interface {
 	Retry(ctx context.Context, claimed Mail, at time.Time) error
 }
 
-// Mailer posts the reminder (mail.SkyMail).
+// Mailer posts the reminder (mail.SkyNotify).
 type Mailer interface {
 	EventReminder(ctx context.Context, typ, idempotencyKey string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time) error
 }
@@ -124,7 +124,7 @@ type Config struct {
 	Events  Events
 	Users   Users
 	Mail    Mailer
-	// Type is the template key (SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY):
+	// Type is the template key (SKYNOTIFY_EVENT_REMINDER_TEMPLATE_KEY):
 	// empty plans and sends nothing.
 	Type string
 	// Page is the ticket page's settings (docs/ticket-page.md): while its
@@ -191,7 +191,7 @@ func PlanWindow(now time.Time, location *time.Location) (Window, bool) {
 
 // Report counts one pass: Events and Planned rows; mails Sent, Dropped
 // (the Event is no longer published, or not on that day), Skipped (no one
-// to write to), Rejected by SkyMail, Expired (the Event's day began before
+// to write to), Rejected by SkyNotify, Expired (the Event's day began before
 // it went), Uncertain (a guest's mail went out and no answer came; it is
 // not tried again) and Retried later. Limited is true when the per-minute
 // bound stopped the pass.
@@ -349,7 +349,7 @@ func (s *Service) deliver(ctx context.Context, claimed Mail, report *Report) ([]
 		report.Uncertain++
 		return group, Uncertain, nil
 	case errors.As(err, &refused) && refused.Permanent():
-		// SkyMail refuses this body itself (400, 422): the same body would
+		// SkyNotify refuses this body itself (400, 422): the same body would
 		// be refused again.
 		report.Rejected++
 		return group, Rejected, nil
@@ -393,9 +393,9 @@ func (s *Service) recipientOf(ctx context.Context, m Mail) (recipient, bool, err
 	return recipient{ticket: t, sub: *t.OwnerID, email: strings.ToLower(strings.TrimSpace(u.Email))}, true, nil
 }
 
-// vars are the type's variables (skymail-frontend emails/event-reminder.tsx,
+// vars are the type's variables (skynotify-frontend emails/event-reminder.tsx,
 // #179): the Event as it is now and the Ticket the mail carries. Every key
-// is always there, empty without a value: SkyMail renders with
+// is always there, empty without a value: SkyNotify renders with
 // missingkey=error. TicketUrl, TicketQrUrl and TicketCode while
 // TICKET_PAGE_URL is set (the ticket created mail's rule); MapUrl is the
 // ticket page's directions link.
@@ -456,7 +456,7 @@ func (s *Service) Run(ctx context.Context, logf func(string, ...any)) <-chan str
 			case err != nil && ctx.Err() == nil:
 				logf("event reminder: %v", err)
 			case report.any():
-				logf("event reminder: %d events and %d tickets planned; %d sent, %d dropped, %d skipped, %d refused by SkyMail, %d expired, %d guest mails unanswered and not tried again, %d tried again later",
+				logf("event reminder: %d events and %d tickets planned; %d sent, %d dropped, %d skipped, %d refused by SkyNotify, %d expired, %d guest mails unanswered and not tried again, %d tried again later",
 					report.Events, report.Planned, report.Sent, report.Dropped, report.Skipped, report.Rejected, report.Expired, report.Uncertain, report.Retried)
 			}
 			select {

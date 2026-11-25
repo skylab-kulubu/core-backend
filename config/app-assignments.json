@@ -9,11 +9,11 @@
       "suggestedRoles": ["skyforms:access"]
     },
     {
-      "client": "skymail",
-      "name": "SkyMail",
+      "client": "skynotify",
+      "name": "SkyNotify",
       "assignmentRequired": true,
-      "roles": ["skymail:access", "skymail:templates:read"],
-      "suggestedRoles": ["skymail:access", "skymail:templates:read"]
+      "roles": ["skynotify:access", "skynotify:templates:read"],
+      "suggestedRoles": ["skynotify:access", "skynotify:templates:read"]
     },
     {
       "client": "core",

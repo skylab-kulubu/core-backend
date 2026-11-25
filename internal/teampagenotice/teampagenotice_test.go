@@ -228,7 +228,7 @@ func TestARefusedMailGoesNextRunAnUnansweredOneNever(t *testing.T) {
 	}
 }
 
-// A run stopped while a mail is on its way, before it reached SkyMail,
+// A run stopped while a mail is on its way, before it reached SkyNotify,
 // still takes that person's row out: the next run tells them.
 func TestAStoppedRunLeavesNoRowForAMailThatDidNotGo(t *testing.T) {
 	f := newFixture()
