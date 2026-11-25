@@ -2012,6 +2012,19 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM information_schema.columns
 			WHERE table_schema = 'public' AND table_name = 'privilege_notice_mails' AND column_name = 'via'
 		)`,
+	// The editor's choice about telling an Event's Ticket holders
+	// (docs/event-updated-notification.md#the-editors-choice): the told
+	// fields of a waiting notice and the record of the answers with its
+	// two indexes.
+	20261126140000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'event_update_notifications' AND column_name = 'told_fields'
+		)
+		AND to_regclass('public.event_change_notice_choices') IS NOT NULL
+		AND to_regclass('public.event_change_notice_choices_event_idx') IS NOT NULL
+		AND to_regclass('public.event_change_notice_choices_decided_by_idx') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
