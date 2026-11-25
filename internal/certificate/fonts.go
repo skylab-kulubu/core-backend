@@ -39,6 +39,7 @@ var catalogFonts = []catalogFont{
 	{"Poppins", "poppins", `Poppins,'Liberation Sans',sans-serif`},
 	{"Open Sans", "opensans", `'Open Sans','Liberation Sans',sans-serif`},
 	{"Roboto", "roboto", `Roboto,'Liberation Sans',sans-serif`},
+	{"Inter", "inter", `Inter,'Liberation Sans',sans-serif`},
 	{"Raleway", "raleway", `Raleway,'Liberation Sans',sans-serif`},
 	{"Playfair Display", "playfairdisplay", `'Playfair Display','Liberation Serif',serif`},
 	{"Merriweather", "merriweather", `Merriweather,'Liberation Serif',serif`},

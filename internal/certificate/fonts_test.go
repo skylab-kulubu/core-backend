@@ -60,8 +60,8 @@ func TestCatalogFontsDrawTurkish(t *testing.T) {
 func TestCatalogFontsAreComplete(t *testing.T) {
 	t.Parallel()
 	script := map[string]bool{"greatvibes": true, "dancingscript": true}
-	if len(catalogFonts) != 9 {
-		t.Fatalf("%d catalog fonts, want 9", len(catalogFonts))
+	if len(catalogFonts) != 10 {
+		t.Fatalf("%d catalog fonts, want 10", len(catalogFonts))
 	}
 	for _, font := range catalogFonts {
 		if _, err := catalogFiles.ReadFile(path.Join("fonts", font.Dir, "OFL.txt")); err != nil {
@@ -105,7 +105,7 @@ func TestLayoutHTMLEmbedsTheFontsItUses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for family, want := range map[string]int{"Montserrat": 4, "Great Vibes": 2, "Poppins": 0, "Roboto": 0} {
+	for family, want := range map[string]int{"Montserrat": 4, "Great Vibes": 2, "Poppins": 0, "Roboto": 0, "Inter": 0} {
 		if got := strings.Count(html, "@font-face{font-family:'"+family+"'"); got != want {
 			t.Errorf("%s: %d @font-face rules, want %d", family, got, want)
 		}

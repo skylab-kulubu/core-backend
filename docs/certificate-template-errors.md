@@ -38,7 +38,7 @@ A layout needs the recipient's name (`recipientName`) and at least one of the ve
 
 ## Fonts
 
-An element's `fontFamily` is one of the renderer's fonts (Arial, Helvetica, Carlito, Noto Sans, Noto Sans Display, DejaVu Sans, DejaVu Sans Condensed, Liberation Sans, Georgia, Times New Roman, Caladea, Noto Serif, Noto Serif Display, DejaVu Serif, DejaVu Serif Condensed, Liberation Serif, Courier New, DejaVu Sans Mono, Liberation Mono) or one of core's catalog: Montserrat, Poppins, Open Sans, Roboto, Raleway, Playfair Display, Merriweather, Great Vibes, Dancing Script. Any other name prints in Liberation Sans. Names match in any case.
+An element's `fontFamily` is one of the renderer's fonts (Arial, Helvetica, Carlito, Noto Sans, Noto Sans Display, DejaVu Sans, DejaVu Sans Condensed, Liberation Sans, Georgia, Times New Roman, Caladea, Noto Serif, Noto Serif Display, DejaVu Serif, DejaVu Serif Condensed, Liberation Serif, Courier New, DejaVu Sans Mono, Liberation Mono) or one of core's catalog: Montserrat, Poppins, Open Sans, Roboto, Inter, Raleway, Playfair Display, Merriweather, Great Vibes, Dancing Script. Any other name prints in Liberation Sans. Names match in any case.
 
 A catalog font used by the layout's text is embedded in the page it prints (`@font-face`, WOFF2 data URIs, Google Fonts' latin and latin-ext subsets, which hold every Turkish letter); a font the layout does not use is not. Each has 400 and 700 and an italic 400; Great Vibes and Dancing Script have 400 alone. The files and each family's `OFL.txt` are in `internal/certificate/fonts/`.
 
