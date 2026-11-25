@@ -111,3 +111,29 @@ func (s *PostgresStore) recordLegacyAnswerPublicDeleted(ctx context.Context, id 
 	_, err := s.pool.Exec(ctx, `UPDATE media_legacy_answer_moves SET public_deleted_at = COALESCE(public_deleted_at, GREATEST($2, moved_at)) WHERE media_id = $1`, id, at)
 	return err
 }
+
+// legacyAnswersLockKey is the session advisory lock every writing run of
+// the legacy Answer move holds, so two runs never move or finalize at once
+// (two moves of one Media would write its private copy twice, under two
+// data keys).
+const legacyAnswersLockKey int64 = 0x5341_4135_4c41 // "SA" "A5" "LA"
+
+// LockLegacyAnswers takes the move's advisory lock on a connection of its
+// own, held until release is called. locked is false, and nothing is held,
+// when another run holds it.
+func (s *PostgresStore) LockLegacyAnswers(ctx context.Context) (release func(), locked bool, err error) {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, legacyAnswersLockKey).Scan(&locked); err != nil || !locked {
+		conn.Release()
+		return nil, false, err
+	}
+	return func() {
+		// Closing the session would free it too; unlocking keeps the pooled
+		// connection clean.
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, legacyAnswersLockKey)
+		conn.Release()
+	}, true, nil
+}
