@@ -31,6 +31,9 @@ func ValidateLayout(layout Layout) error {
 	if layout.BackgroundColor != "" && !cssColorPattern.MatchString(layout.BackgroundColor) {
 		return invalid(CodeLayoutColorInvalid)
 	}
+	if p := layout.BackgroundPlacement; p != nil && (layout.BackgroundMediaID == nil || !validPlacement(*p)) {
+		return invalid(CodeLayoutPlacementInvalid)
+	}
 	if len(layout.Elements) == 0 || len(layout.Elements) > maxLayoutElements {
 		return invalid(CodeLayoutElementCount)
 	}
@@ -121,14 +124,22 @@ func LayoutHTML(ctx context.Context, layout Layout, data PreviewData, verifyURL 
 		return "", err
 	}
 	background := ""
-	if layout.BackgroundMediaID != nil {
-		uri, err := assetDataURI(ctx, assets, *layout.BackgroundMediaID)
-		if err != nil {
-			return "", err
-		}
-		background = `background-image:url("` + uri + `");background-size:cover;background-position:center;`
-	}
 	var body strings.Builder
+	if layout.BackgroundMediaID != nil {
+		if layout.BackgroundPlacement == nil {
+			uri, err := assetDataURI(ctx, assets, *layout.BackgroundMediaID)
+			if err != nil {
+				return "", err
+			}
+			background = `background-image:url("` + uri + `");background-size:cover;background-position:center;`
+		} else {
+			img, err := placedBackground(ctx, layout, assets)
+			if err != nil {
+				return "", err
+			}
+			body.WriteString(img)
+		}
+	}
 	for _, el := range layout.Elements {
 		content, image, err := elementContent(ctx, el, data, verifyURL, assets)
 		if err != nil {
@@ -170,12 +181,26 @@ func LayoutHTML(ctx context.Context, layout Layout, data PreviewData, verifyURL 
 	if bg == "" {
 		bg = "#ffffff"
 	}
+	faces, err := fontFaces(layout, assets)
+	if err != nil {
+		return "", err
+	}
+	fitText := `document.querySelectorAll('.fit').forEach(fit)
+document.querySelectorAll('[data-short]').forEach(function(el){if(over(el)){el.style.fontSize=el.dataset.font+'px';el.textContent=el.dataset.short;if(el.classList.contains('fit'))fit(el)}})`
+	if faces != "" {
+		// Measure the text once the embedded fonts are in, not in the
+		// fallback the page starts with, then tell the renderer the page
+		// is ready to print (fitDoneFlag; also when fitting throws, so
+		// the renderer never waits in vain).
+		fitText = `document.fonts.ready.then(function(){try{
+` + fitText + `
+}finally{` + fitDoneFlag + `}})`
+	}
 	return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><style>
-@page{size:` + number(layout.Width) + `px ` + number(layout.Height) + `px;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif}.page{position:relative;width:` + number(layout.Width) + `px;height:` + number(layout.Height) + `px;overflow:hidden;background:` + html.EscapeString(bg) + `;` + background + `}.fit{display:flex;align-items:center;white-space:nowrap;overflow:hidden}
+` + faces + `@page{size:` + number(layout.Width) + `px ` + number(layout.Height) + `px;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif}.page{position:relative;width:` + number(layout.Width) + `px;height:` + number(layout.Height) + `px;overflow:hidden;background:` + html.EscapeString(bg) + `;` + background + `}.fit{display:flex;align-items:center;white-space:nowrap;overflow:hidden}
 </style></head><body><main class="page">` + body.String() + `</main><script>
 function over(el){return el.scrollWidth>el.clientWidth||el.scrollHeight>el.clientHeight}function fit(el){var size=parseFloat(getComputedStyle(el).fontSize);var min=parseFloat(el.dataset.minFont||'8');while(over(el)&&size>min){size-=1;el.style.fontSize=size+'px'}}
-document.querySelectorAll('.fit').forEach(fit)
-document.querySelectorAll('[data-short]').forEach(function(el){if(over(el)){el.style.fontSize=el.dataset.font+'px';el.textContent=el.dataset.short;if(el.classList.contains('fit'))fit(el)}})
+` + fitText + `
 </script></body></html>`, nil
 }
 
@@ -217,22 +242,44 @@ func elementContent(ctx context.Context, el Element, data PreviewData, verifyURL
 }
 
 func assetDataURI(ctx context.Context, assets AssetReader, id uuid.UUID) (string, error) {
+	_, uri, err := imageAsset(ctx, assets, id)
+	return uri, err
+}
+
+// imageAsset reads an image Media and its data URI.
+func imageAsset(ctx context.Context, assets AssetReader, id uuid.UUID) (Asset, string, error) {
 	if assets == nil {
-		return "", invalid(CodeAssetStorageUnavailable)
+		return Asset{}, "", invalid(CodeAssetStorageUnavailable)
 	}
 	asset, err := assets.ReadAsset(ctx, id)
 	if err != nil {
-		return "", err
+		return Asset{}, "", err
 	}
 	switch {
 	case !strings.HasPrefix(asset.ContentType, "image/"):
-		return "", invalid(CodeAssetTypeUnsupported)
+		return Asset{}, "", invalid(CodeAssetTypeUnsupported)
 	case len(asset.Data) == 0:
-		return "", invalid(CodeAssetEmpty)
+		return Asset{}, "", invalid(CodeAssetEmpty)
 	case len(asset.Data) > 20<<20:
-		return "", invalid(CodeAssetTooLarge)
+		return Asset{}, "", invalid(CodeAssetTooLarge)
 	}
-	return "data:" + asset.ContentType + ";base64," + base64.StdEncoding.EncodeToString(asset.Data), nil
+	return asset, "data:" + asset.ContentType + ";base64," + base64.StdEncoding.EncodeToString(asset.Data), nil
+}
+
+// placedBackground is the image background of a layout with a placement:
+// an <img> in the box PlaceBackground gives, under every element. The
+// page clips what reaches past it.
+func placedBackground(ctx context.Context, layout Layout, assets AssetReader) (string, error) {
+	asset, uri, err := imageAsset(ctx, assets, *layout.BackgroundMediaID)
+	if err != nil {
+		return "", err
+	}
+	w, h, err := backgroundSize(asset.ContentType, asset.Data)
+	if err != nil {
+		return "", err
+	}
+	box := PlaceBackground(layout.Width, layout.Height, w, h, *layout.BackgroundPlacement)
+	return `<img alt="" aria-hidden="true" style="position:absolute;left:` + number(box.Left) + `px;top:` + number(box.Top) + `px;width:` + number(box.Width) + `px;height:` + number(box.Height) + `px" src="` + uri + `"/>`, nil
 }
 
 func elementStyle(el Element) string {
@@ -269,6 +316,9 @@ func (el Element) opacity() float64 {
 }
 
 func safeFont(font string) string {
+	if catalog, ok := catalogFontNamed(font); ok {
+		return catalog.Stack
+	}
 	switch strings.ToLower(strings.TrimSpace(font)) {
 	case "arial":
 		return `'Liberation Sans',Arial,sans-serif`

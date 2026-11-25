@@ -311,7 +311,9 @@ func TestCapabilitiesRoute(t *testing.T) {
 				t.Errorf("privileged permissions %v", c.Permissions)
 			}
 		case "leader":
-			if len(c.Permissions) != 0 || !weblab["event.update"] || weblab["event.assignDoorStaff"] {
+			// The Owner team's Leader assigns door staff (Yusuf S3,
+			// 2026-11-25; docs/co-organizers.md).
+			if len(c.Permissions) != 0 || !weblab["event.update"] || !weblab["event.assignDoorStaff"] {
 				t.Errorf("leader %+v", c)
 			}
 		case "member":

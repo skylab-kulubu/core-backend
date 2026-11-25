@@ -50,6 +50,8 @@ const (
 	CodeLayoutImageMissing      = "layout_image_missing"
 	CodeLayoutRecipientMissing  = "layout_recipient_name_missing"
 	CodeLayoutNotVerifiable     = "layout_not_verifiable"
+	CodeLayoutPlacementInvalid  = "layout_background_placement_invalid"
+	CodeBackgroundSizeUnknown   = "background_size_unknown"
 	CodeAssetEmpty              = "asset_empty"
 	CodeAssetTooLarge           = "asset_too_large"
 	CodeAssetTypeUnsupported    = "asset_type_unsupported"
@@ -59,4 +61,9 @@ const (
 	CodeBackgroundPDFPages      = "background_pdf_pages"
 	CodeRendererUnavailable     = "renderer_unavailable"
 	CodeRenderFailed            = "render_failed"
+	// CodeTemplateEventScoped is an Event template bound to another scope
+	// or another Event (400); CodeTemplateEventExists a second Event
+	// template for an Event (409, EventTemplateExistsError).
+	CodeTemplateEventScoped = "template_event_scoped"
+	CodeTemplateEventExists = "template_event_exists"
 )

@@ -33,6 +33,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/consent"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
 	"github.com/skylab-kulubu/core-backend/internal/doorqr"
+	"github.com/skylab-kulubu/core-backend/internal/doorstaffmail"
 	"github.com/skylab-kulubu/core-backend/internal/editablesites"
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
@@ -90,6 +91,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == mediaLegacyReleaseHoldCommandName {
 		os.Exit(runMediaLegacyReleaseHold(os.Args[2:], os.Getenv, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == mediaLegacyAnswersCommandName {
+		os.Exit(runMediaLegacyAnswers(os.Args[2:], os.Getenv, os.Stdin, os.Stderr))
 	}
 	if len(os.Args) > 1 && os.Args[1] == mediaLookupCommandName {
 		os.Exit(runMediaLookup(os.Args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
@@ -988,7 +992,18 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	worker("event updated notification", startEventUpdatedNotification(workers, eventUpdatedOn, events, eventupdatenotify.NewPostgresQueue(pool), tickets, users, sky, ticketPageConfig, log.Printf))
+	// Its other details, when the editor says to tell (event.changed).
+	eventChangedOn, err := eventChangedNotificationOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	worker("event updated notification", startEventUpdatedNotification(workers, eventUpdatedOn, eventChangedOn, events, eventupdatenotify.NewPostgresQueue(pool), tickets, users, sky, ticketPageConfig, log.Printf))
+	// A person added to an Event's door staff (docs/door-staff-mail.md).
+	doorStaffMail, err := doorStaffMailOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	worker("door staff mail", startDoorStaffMail(workers, doorStaffMail, events, doorstaffmail.NewPostgresQueue(pool), users, sky, strings.TrimSpace(os.Getenv("PANEL_URL")), log.Printf))
 
 	var render certificate.Renderer
 	if baseURL := gotenbergURL(); baseURL != "" {
@@ -1075,6 +1090,7 @@ func main() {
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
+		PublicPageOrigin: certificatePageOrigin(os.Getenv),
 		Templates:        certs,
 		Jobs:             certs,
 		Artifacts:        blobs,
@@ -1251,6 +1267,14 @@ func main() {
 		Logf: log.Printf,
 	})
 
+	// The Co-organizer writes (EVENT_CO_ORGANIZERS_WRITE,
+	// docs/co-organizers.md): off until the decisions, the audit record and
+	// the mails ship with them.
+	coOrganizersWrite, err := coOrganizersWriteOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("event co-organizers: writes %s (EVENT_CO_ORGANIZERS_WRITE)", map[bool]string{false: "off", true: "on"}[coOrganizersWrite])
 	app := httpx.New(httpx.Deps{
 		Users:        user.NewService(users, dir),
 		Identity:     identityService,
@@ -1260,6 +1284,10 @@ func main() {
 			ImageAddressMode: imageAddressMode,
 			FormLinks:        eventFormLinks{urls: urlSvc},
 			Media:            media.NewLinker(mediaStore),
+			Policy:           authzPolicy,
+			Teams:            teamTree,
+
+			CoOrganizersWrite: coOrganizersWrite,
 		}),
 		Seasons:         season.NewService(seasons, az),
 		SubjectRequests: subjectrequest.NewService(subjectrequest.NewPostgresStore(pool), az, nil),

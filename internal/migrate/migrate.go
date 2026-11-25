@@ -2012,6 +2012,84 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM information_schema.columns
 			WHERE table_schema = 'public' AND table_name = 'privilege_notice_mails' AND column_name = 'via'
 		)`,
+	// The editor's choice about telling an Event's Ticket holders
+	// (docs/event-updated-notification.md#the-editors-choice): the told
+	// fields of a waiting notice and the record of the answers with its
+	// two indexes.
+	20261126140000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'event_update_notifications' AND column_name = 'told_fields'
+		)
+		AND to_regclass('public.event_change_notice_choices') IS NOT NULL
+		AND to_regclass('public.event_change_notice_choices_event_idx') IS NOT NULL
+		AND to_regclass('public.event_change_notice_choices_decided_by_idx') IS NOT NULL`,
+	// The door staff mail's queue (docs/door-staff-mail.md) and its two
+	// indexes.
+	20261126150000: `
+		SELECT 1
+		WHERE to_regclass('public.door_staff_notifications') IS NOT NULL
+		  AND to_regclass('public.door_staff_notifications_due_idx') IS NOT NULL
+		  AND to_regclass('public.door_staff_notifications_user_idx') IS NOT NULL`,
+	// An Event's Co-organizers (docs/co-organizers.md): the table with its
+	// choices' check, its two indexes and the guards of its two account
+	// links.
+	20261126151000: `
+		SELECT 1
+		WHERE to_regclass('public.event_co_organizers') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.event_co_organizers')
+			  AND conname = 'event_co_organizers_choices_check' AND convalidated
+		  )
+		  AND to_regclass('public.event_co_organizers_user_idx') IS NOT NULL
+		  AND to_regclass('public.event_co_organizers_team_idx') IS NOT NULL
+		  AND (
+			SELECT count(*) FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.event_co_organizers')
+			  AND tgname IN ('event_co_organizers_require_active_subject', 'event_co_organizers_require_active_adder')
+			  AND tgfoid = to_regprocedure('public.require_active_account_reference()')
+			  AND NOT tgisinternal
+		  ) = 2`,
+	// The digests of the details a waiting notice tells
+	// (docs/event-updated-notification.md#other-details).
+	20261126160000: `
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'event_update_notifications' AND column_name = 'before_details'`,
+	// Event templates (docs/certificate-event-templates.md): the column
+	// with its key to events, and the partial unique index of one current
+	// Event template per Event.
+	20261126173000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'certificate_templates' AND column_name = 'event_id'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.certificate_templates') AND contype = 'f'
+			  AND confrelid = to_regclass('public.events') AND confdeltype = 'r'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public' AND tablename = 'certificate_templates'
+			  AND indexname = 'certificate_templates_one_per_event'
+			  AND indexdef LIKE 'CREATE UNIQUE INDEX%(event_id)%archived_at IS NULL%'
+		)`,
+	// The record of legacy Answer files moved into private storage
+	// (docs/media-lifecycle.md, "Legacy Answer files").
+	20261126180000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'media_legacy_answer_moves'
+			  AND column_name IN ('media_id', 'public_key', 'moved_at', 'public_deleted_at')
+		) = 4
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.media_legacy_answer_moves') AND conname = 'media_legacy_answer_moves_order_check'
+		)`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

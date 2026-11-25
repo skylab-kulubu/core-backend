@@ -48,7 +48,7 @@ func TestEventCopyEndpoint(t *testing.T) {
 	copied, _ := first.body["event"].(map[string]any)
 	skipped, _ := first.body["skipped"].([]any)
 	if first.status != fiber.StatusCreated || copied["id"] != id.String() || copied["status"] != "draft" ||
-		copied["copiedFromEventId"] != pub || len(skipped) != 1 || skipped[0] != "doorStaff" {
+		copied["copiedFromEventId"] != pub || len(skipped) != 0 {
 		t.Fatalf("copy %d %s", first.status, first.raw)
 	}
 	again := draftCall(t, editor, fiber.MethodPost, "/v1/events/"+pub+"/copy", body(id, ""))

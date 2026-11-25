@@ -104,7 +104,8 @@ func loadPackages(root string) ([]modulePackage, error) {
 //   - a file in a package's directory, or below it (testdata, embedded
 //     files): that package and each package above it, and every package
 //     whose test binary imports one of them;
-//   - Markdown outside every package (docs/): no package by itself;
+//   - Markdown outside every package (docs/), and pdf-tools/ (the Python
+//     service, tested by a job of its own): no package by itself;
 //   - any other file outside every package (the workflow, the Dockerfiles,
 //     deploy/): every package;
 //
@@ -133,7 +134,7 @@ func affected(pkgs []modulePackage, changed []string) []string {
 				break
 			}
 		}
-		if !found && !strings.HasSuffix(file, ".md") {
+		if !found && !strings.HasSuffix(file, ".md") && !strings.HasPrefix(file, "pdf-tools/") {
 			all = true
 			break
 		}

@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -37,12 +38,31 @@ type ServiceOptions struct {
 	// rules (purpose, state) to the database's guards; the Team media
 	// library rule holds either way.
 	Media media.Linker
+	// Policy is the authorization policy az decides with: the Owner teams'
+	// rules and the Privileged roots the Co-organizer checks read. Without
+	// EventPermissions it is authz.DefaultPolicy().
+	Policy authz.Policy
+	// Teams finds a Co-organizer team's Group (docs/co-organizers.md); nil
+	// finds none, so no team can be added.
+	Teams authz.TeamTree
+	// CoOrganizersWrite lets PUT /v1/events/{id}/organizers write
+	// (EVENT_CO_ORGANIZERS_WRITE); off, it is refused
+	// (ErrCoOrganizersDisabled) and GET still answers.
+	CoOrganizersWrite bool
+	// Now is the clock a Co-organizer person's end is read against; nil is
+	// time.Now.
+	Now func() time.Time
 }
 
 func NewServiceWithOptions(store Store, az authz.Authorizer, options ServiceOptions) Service {
+	policy := options.Policy
+	if policy.EventPermissions == nil {
+		policy = authz.DefaultPolicy()
+	}
 	return &service{
 		store: store, authz: az, formLinks: options.FormLinks, media: options.Media,
 		addresses: media.Addresses{Base: options.PublicBase, Mode: options.ImageAddressMode},
+		policy:    policy, teams: options.Teams, coOrganizersWrite: options.CoOrganizersWrite, now: options.Now,
 	}
 }
 

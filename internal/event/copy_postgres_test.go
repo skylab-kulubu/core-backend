@@ -197,10 +197,10 @@ func TestPostgresCopySkips(t *testing.T) {
 	leader := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
 	in := copyIn("Kopya", "2027-03-13T19:00:00+03:00")
 	in.IncludeDoorStaff, in.IncludeCompetitions = true, true
-	// A WEBLAB Leader binds templates and manages Competitions, but does
-	// not assign door staff (event:manage).
+	// A WEBLAB Leader binds templates, manages Competitions and assigns
+	// door staff (Yusuf S3, 2026-11-25; docs/co-organizers.md).
 	got, _, err := d.svc.Copy(ctx, leader, d.source.ID, in)
-	if err != nil || !slices.Equal(got.Skipped, []string{event.SkippedDoorStaff}) {
+	if err != nil || len(got.Skipped) != 0 {
 		t.Fatalf("leader: %v %v", got.Skipped, err)
 	}
 	// Another team's template does not serve WEBLAB.
@@ -213,6 +213,19 @@ func TestPostgresCopySkips(t *testing.T) {
 	}
 	if n := d.count(t, `SELECT count(*) FROM certificate_template_bindings WHERE scope_key = $1`, got.Event.ID.String()); n != 0 {
 		t.Fatalf("binding written: %d", n)
+	}
+	// Asked to leave the certificate template out: named, not written.
+	in3 := copyIn("Kopya 3", "2027-03-13T19:00:00+03:00")
+	in3.SkipCertificateTemplate = true
+	if _, err := d.pool.Exec(ctx, `UPDATE certificate_templates SET owner_team = 'WEBLAB' WHERE id = $1`, d.template); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err = d.svc.Copy(ctx, d.yk, d.source.ID, in3)
+	if err != nil || !slices.Equal(got.Skipped, []string{event.SkippedCertificateTemplate}) {
+		t.Fatalf("left out: %v %v", got.Skipped, err)
+	}
+	if n := d.count(t, `SELECT count(*) FROM certificate_template_bindings WHERE scope_key = $1`, got.Event.ID.String()); n != 0 {
+		t.Fatalf("binding written when left out: %d", n)
 	}
 	// Not asked for, Competitions are not copied and not named.
 	if n := d.count(t, `SELECT count(*) FROM competitions WHERE event_id = $1`, got.Event.ID); n != 0 {
@@ -334,5 +347,45 @@ func TestPostgresCopyIntoAnotherTeam(t *testing.T) {
 	got, _, err = d.svc.Copy(ctx, d.yk, d.source.ID, in)
 	if err != nil || len(got.Skipped) != 0 || d.count(t, `SELECT count(*) FROM certificate_template_bindings WHERE scope_key = $1`, got.Event.ID.String()) != 1 {
 		t.Fatalf("no-team template: %v %v", got.Skipped, err)
+	}
+}
+
+// A copy with its door staff queues their door staff mail while the mail is
+// on (docs/door-staff-mail.md): they are new to the copy. Off, or without
+// the door staff, nothing is queued.
+func TestPostgresCopyQueuesTheDoorStaffMail(t *testing.T) {
+	d := newCopyDatabase(t)
+	ctx := context.Background()
+	queued := func(eventID uuid.UUID) int {
+		t.Helper()
+		return d.count(t, `SELECT count(*) FROM door_staff_notifications WHERE event_id = $1 AND user_id = $2`, eventID, d.staff)
+	}
+	copyWith := func(name, start string, staff bool) uuid.UUID {
+		t.Helper()
+		in := copyIn(name, start)
+		in.IncludeDoorStaff = staff
+		got, _, err := d.svc.Copy(ctx, d.yk, d.source.ID, in)
+		if err != nil {
+			t.Fatalf("copy %s: %v", name, err)
+		}
+		return got.Event.ID
+	}
+
+	off := copyWith("Kapalıyken", "2027-03-13T19:00:00+03:00", true)
+	if n := queued(off); n != 0 {
+		t.Fatalf("queued %d while the mail is off", n)
+	}
+
+	d.store.NotifyDoorStaff(true)
+	on := copyWith("Açıkken", "2027-04-13T19:00:00+03:00", true)
+	if n := queued(on); n != 1 {
+		t.Fatalf("queued %d, want the copied door staff", n)
+	}
+	if n := d.count(t, `SELECT count(*) FROM event_door_staff WHERE event_id = $1`, on); n != 1 {
+		t.Fatalf("door staff %d", n)
+	}
+	without := copyWith("Görevlisiz", "2027-05-13T19:00:00+03:00", false)
+	if n := queued(without); n != 0 {
+		t.Fatalf("queued %d for a copy without door staff", n)
 	}
 }

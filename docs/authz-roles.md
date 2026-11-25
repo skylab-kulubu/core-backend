@@ -53,7 +53,7 @@ The names are a contract with Keycloak: the table "Sözleşme: core'un kaynak ro
 
 | Role (`core`) | Check sites (`internal/authz/authorizer.go`) | Requests behind them (examples) |
 |---|---|---|
-| `event:manage` | `allowEvent`: Create, Update, Delete of `TypeEvent`, `TypeEventDay`, `TypeSession` for every Owner team and none; `Assign` (door staff) | `POST/PUT/DELETE /v1/events…`, `/v1/event-days…`, `/v1/sessions…`; Event media uploads (upload rule `event_editor`); Guest apply trust (Event update) |
+| `event:manage` | `allowEvent`: Create, Update, Delete of `TypeEvent`, `TypeEventDay`, `TypeSession` for every Owner team and none; `Assign` (door staff; also the Owner team's Leaders, [co-organizers.md](co-organizers.md)) | `POST/PUT/DELETE /v1/events…`, `/v1/event-days…`, `/v1/sessions…`; Event media uploads (upload rule `event_editor`); Guest apply trust (Event update) |
 | `season:manage` | `Allow` `TypeSeason`: every action but Read | `POST/PUT/DELETE /v1/seasons…`, restore, archived Seasons (assigning an Event to a Season is the Event update decision) |
 | `ticket:manage` | `allowTicket`: Read and Assign | `GET /v1/events/{id}/tickets`, `GET /v1/events/{id}/assignable-users`, `POST …/applications/users/{id}`, dashboard summary scope, Guest apply trust (Ticket assign) |
 | `ticket:validate` | `allowDoorCheckIn` (`Validate`) | door check-in routes, guest door QR (`/v1/sessions/{id}/door-qr`), `POST /v1/skypass/verify`, `GET /v1/skypass/card` |
