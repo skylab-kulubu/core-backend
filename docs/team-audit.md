@@ -45,8 +45,11 @@ group grants it (the nearest one at or above the Group). A Leader's Sub-team cre
 it too. So do a Leader's `leader.add` and `leader.remove` (ticket 06,
 [team-delegation.md](team-delegation.md#leaders)) and `team.move` (ticket
 07). `team.profile` is for ticket 08.
-Reads are not recorded. A change made in Keycloak's own console is not
-recorded either: core does not see it.
+Reads are not recorded. A change made in Keycloak's own console is recorded
+once `KEYCLOAK_CONSOLE_AUDIT` is on: core reads it back from Keycloak's admin
+events, within a minute, as a finished row with `via` `console` and basis
+`console` ([console-audit.md](console-audit.md)). Off (the default), core does
+not see it.
 
 ### How a change came (`via`)
 
@@ -58,6 +61,7 @@ another way carries it (migration `20261123200000`):
 | `invitation` | the `member.add` of an accepted Invitation | the person who sent the Invitation |
 | `access_request` | the `member.add` of an approved Access request | the person who approved it |
 | `access_review` | a removal an Access review decided (`member.remove`, `app.unassign`) | the person who decided it |
+| `console` | a change made in Keycloak's console, outside core ([console-audit.md](console-audit.md)); the row also carries the Keycloak admin event's id (`keycloak_event_id`, once each) and the actions `user.roles`, `keycloak.client` and `keycloak.role` come only this way | whoever Keycloak names (basis `console`; `client` `keycloak:reconcile`, `keycloak:master` or `keycloak:realm`) |
 
 The actor and the basis are always those of the person who made or decided
 the change, as for a direct one; `via` only says how it came. Every row

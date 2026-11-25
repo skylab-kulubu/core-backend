@@ -79,6 +79,41 @@ func (p *Postgres) insert(ctx context.Context, r Record, outcome Outcome, errorC
 	return id, nil
 }
 
+// RecordConsole writes the finished row of a console change, once per
+// Keycloak admin event (docs/console-audit.md).
+func (p *Postgres) RecordConsole(ctx context.Context, r Record, occurredAt time.Time, eventID string) (bool, error) {
+	if bad := r.checkConsole(occurredAt, eventID); bad != "" {
+		return false, unavailable(bad)
+	}
+	r, bad := r.normalize()
+	if bad != "" {
+		return false, unavailable(bad)
+	}
+	before, err := stateJSON(r.Before)
+	if err != nil {
+		return false, unavailable("encode")
+	}
+	after, err := stateJSON(r.After)
+	if err != nil {
+		return false, unavailable("encode")
+	}
+	ctx, cancel := context.WithTimeout(ctx, beginTimeout)
+	defer cancel()
+	tag, err := p.pool.Exec(ctx, `
+		INSERT INTO team_audit_records (
+			id, occurred_at, actor_id, actor_basis, actor_via_group_id, action, group_id, group_path,
+			target_user_id, before, after, outcome, error_code, correlation_id, client, via, keycloak_event_id)
+		VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8, $9, $10, 'ok', NULL, '', $11, $12, $13)
+		ON CONFLICT (keycloak_event_id) WHERE keycloak_event_id IS NOT NULL DO NOTHING`,
+		uuid.New(), occurredAt.UTC(), r.Actor.ID, string(r.Actor.Basis), string(r.Action),
+		nullUUID(r.GroupID), r.GroupPath, nullID(r.TargetUserID), before, after, r.Actor.Client,
+		string(r.Via), eventID)
+	if err != nil {
+		return false, unavailable(dbErrorCode(err))
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 func (p *Postgres) Finish(ctx context.Context, id uuid.UUID, outcome Outcome, errorCode string, after *State) error {
 	if err := checkFinish(outcome, errorCode); err != nil {
 		return err

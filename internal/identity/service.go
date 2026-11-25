@@ -253,6 +253,11 @@ type GroupRolesChange struct {
 	Removed []ClientRole
 	// ActorID is the caller's subject (authz.Principal.ID).
 	ActorID string
+	// Console and At are a change made in Keycloak's console, read back
+	// from its admin events (docs/console-audit.md): the notice names the
+	// console, and At is when Keycloak made it. Zero for core's own writes.
+	Console bool
+	At      time.Time
 }
 
 // membershipReadTimeout bounds the reads an add makes for the notifier, so
@@ -269,6 +274,9 @@ type MembershipChange struct {
 	// ActorID is the caller's subject (authz.Principal.ID), as the token
 	// carried it.
 	ActorID string
+	// Console and At: as GroupRolesChange's.
+	Console bool
+	At      time.Time
 }
 
 type DeletionProjector interface {

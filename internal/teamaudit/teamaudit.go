@@ -104,6 +104,19 @@ const (
 	ActionUserIdentityUnlink   Action = "user.idp.unlink"
 	ActionUserLockoutClear     Action = "user.lockout.clear"
 	ActionUserProfile          Action = "user.profile"
+	// ActionUserRoles is a role mapped to, or unmapped from, a person
+	// directly (not through a Group) in Keycloak's console
+	// (docs/console-audit.md): the groups-only model has none, so each
+	// one is worth a row.
+	ActionUserRoles Action = "user.roles"
+)
+
+// The keycloak.* actions are Keycloak configuration changed in its own
+// console (docs/console-audit.md): a client, or a client or realm role
+// (its creation, deletion or composites). No Group, no target person.
+const (
+	ActionKeycloakClient Action = "keycloak.client"
+	ActionKeycloakRole   Action = "keycloak.role"
 )
 
 // UserActions are the user.* actions, in the order the table's check lists
@@ -112,7 +125,7 @@ var UserActions = []Action{
 	ActionUserEnable, ActionUserDisable, ActionUserPasswordSet, ActionUserPasswordMail,
 	ActionUserEmailChange, ActionUserEmailVerify, ActionUserEmailMail, ActionUserEmailPrimary,
 	ActionUserRequiredActions, ActionUserCredentialRemove, ActionUserIdentityUnlink,
-	ActionUserLockoutClear, ActionUserProfile,
+	ActionUserLockoutClear, ActionUserProfile, ActionUserRoles,
 }
 
 // Actions are every action the table's check accepts.
@@ -126,7 +139,8 @@ var Actions = []Action{
 	ActionUserEnable, ActionUserDisable, ActionUserPasswordSet, ActionUserPasswordMail,
 	ActionUserEmailChange, ActionUserEmailVerify, ActionUserEmailMail, ActionUserEmailPrimary,
 	ActionUserRequiredActions, ActionUserCredentialRemove, ActionUserIdentityUnlink,
-	ActionUserLockoutClear, ActionUserProfile,
+	ActionUserLockoutClear, ActionUserProfile, ActionUserRoles,
+	ActionKeycloakClient, ActionKeycloakRole,
 }
 
 // targetsPerson reports whether the action is about one person: they, and
@@ -150,6 +164,12 @@ func (a Action) IsApp() bool {
 // target is the person alone, with no Group.
 func (a Action) IsUser() bool {
 	return slices.Contains(UserActions, a)
+}
+
+// IsKeycloak reports whether the action is a Keycloak configuration
+// change's (keycloak.*): no Group and no target person.
+func (a Action) IsKeycloak() bool {
+	return a == ActionKeycloakClient || a == ActionKeycloakRole
 }
 
 // Outcome is how the write ended.
@@ -191,6 +211,11 @@ const (
 	// taking back (docs/ticket-cancellation.md) carry it; Actor.ViaGroupID
 	// names the Event's team.
 	BasisEventEditor Basis = "event_editor"
+	// BasisConsole is a change made in Keycloak's own console (or its Admin
+	// REST API by anyone but core), read back from Keycloak's admin events
+	// (docs/console-audit.md): the actor is whoever Keycloak names, in the
+	// master realm or the club's; the row's via is console.
+	BasisConsole Basis = "console"
 )
 
 // SystemTermExpiry is the Client of the rows the management term job
@@ -240,10 +265,13 @@ const (
 	ViaInvitation    Via = "invitation"
 	ViaAccessRequest Via = "access_request"
 	ViaAccessReview  Via = "access_review"
+	// ViaConsole is a change made in Keycloak's console, outside core
+	// (docs/console-audit.md); its basis is BasisConsole.
+	ViaConsole Via = "console"
 )
 
 // Vias are every way the table's check accepts.
-var Vias = []Via{ViaInvitation, ViaAccessRequest, ViaAccessReview}
+var Vias = []Via{ViaInvitation, ViaAccessRequest, ViaAccessReview, ViaConsole}
 
 type viaKey struct{}
 
@@ -340,6 +368,14 @@ type State struct {
 	Fields          []string `json:"fields,omitempty"`
 	// Import is a ticket.import row's counts; absent on every other row.
 	Import *ImportCounts `json:"import,omitempty"`
+	// Operation and ResourceType are Keycloak's names of a console change
+	// (CREATE, UPDATE, DELETE, ACTION; GROUP, CLIENT, CLIENT_ROLE …), on a
+	// via console row; Composites the roles a role's composites gained or
+	// lost, as "client:role" (a realm role ":ROLE"), on a keycloak.role
+	// row. Absent on every other row.
+	Operation    string   `json:"operation,omitempty"`
+	ResourceType string   `json:"resourceType,omitempty"`
+	Composites   []string `json:"composites,omitempty"`
 }
 
 // ImportCounts are what an attendee import did (docs/attendee-import.md):
@@ -496,7 +532,14 @@ func (r Record) normalize() (Record, string) {
 				r.Action != ActionTicketImport && r.Action != ActionTicketImportPreview) {
 			return r, "invalid_basis"
 		}
+	case BasisConsole:
+		if r.Actor.ViaGroupID != "" || r.Via != ViaConsole {
+			return r, "invalid_basis"
+		}
 	default:
+		return r, "invalid_basis"
+	}
+	if r.Via == ViaConsole && r.Actor.Basis != BasisConsole {
 		return r, "invalid_basis"
 	}
 	if !slices.Contains(Actions, r.Action) {
@@ -524,6 +567,14 @@ func (r Record) normalize() (Record, string) {
 		if r.GroupID != "" || r.GroupPath != "" {
 			return r, "invalid_path"
 		}
+	} else if r.Action.IsKeycloak() {
+		// Keycloak's configuration: no Group, no path, no person.
+		if r.TargetUserID != uuid.Nil {
+			return r, "invalid_target"
+		}
+		if r.GroupID != "" || r.GroupPath != "" {
+			return r, "invalid_path"
+		}
 	} else if r.GroupID == "" && r.Action != ActionTeamCreate {
 		return r, "no_group"
 	}
@@ -532,12 +583,12 @@ func (r Record) normalize() (Record, string) {
 			return r, "invalid_group"
 		}
 	}
-	if r.GroupID != "" || (!r.Action.IsApp() && !r.Action.IsUser()) {
+	if r.GroupID != "" || (!r.Action.IsApp() && !r.Action.IsUser() && !r.Action.IsKeycloak()) {
 		if !strings.HasPrefix(r.GroupPath, "/") || utf8.RuneCountInString(r.GroupPath) > MaxPath || !utf8.ValidString(r.GroupPath) {
 			return r, "invalid_path"
 		}
 	}
-	if !r.Action.IsApp() && !r.Action.IsUser() && r.Action.targetsPerson() != (r.TargetUserID != uuid.Nil) {
+	if !r.Action.IsApp() && !r.Action.IsUser() && !r.Action.IsKeycloak() && r.Action.targetsPerson() != (r.TargetUserID != uuid.Nil) {
 		return r, "invalid_target"
 	}
 	r.Actor.Client = cut(r.Actor.Client, MaxIdentifier)
@@ -592,6 +643,15 @@ func (s *State) normalize() *State {
 	out.Provider = cut(s.Provider, MaxIdentifier)
 	out.RequiredActions = names(s.RequiredActions)
 	out.Fields = names(s.Fields)
+	out.Operation = cut(s.Operation, MaxIdentifier)
+	out.ResourceType = cut(s.ResourceType, MaxIdentifier)
+	composites := slices.Sorted(slices.Values(s.Composites))
+	for _, role := range slices.Compact(composites) {
+		if len(out.Composites) == MaxRoles {
+			break
+		}
+		out.Composites = append(out.Composites, cut(role, MaxIdentifier))
+	}
 	if s.Import != nil {
 		counts := *s.Import
 		out.Import = &counts
@@ -687,4 +747,31 @@ func AttributeChange(old, next map[string]string) (before, after map[string]stri
 		}
 	}
 	return before, after, others
+}
+
+// ConsoleRecorder writes the rows of changes made in Keycloak's console
+// (docs/console-audit.md). Such a change has already happened: its row is
+// written finished (ok) at once, with the time Keycloak gives, and each
+// admin event once (keycloak_event_id): Record reports whether it wrote a
+// new row, false for an event already recorded.
+type ConsoleRecorder interface {
+	RecordConsole(ctx context.Context, r Record, occurredAt time.Time, eventID string) (bool, error)
+}
+
+// MaxEventID bounds a Keycloak admin event id (a UUID in practice).
+const MaxEventID = 64
+
+// checkConsole refuses a console row that is not one: basis and via
+// console, an event id, a time.
+func (r Record) checkConsole(occurredAt time.Time, eventID string) string {
+	if r.Actor.Basis != BasisConsole || r.Via != ViaConsole {
+		return "invalid_basis"
+	}
+	if eventID == "" || len(eventID) > MaxEventID || !correlationIDPattern.MatchString(eventID) {
+		return "invalid_event_id"
+	}
+	if occurredAt.IsZero() {
+		return "invalid_time"
+	}
+	return ""
 }

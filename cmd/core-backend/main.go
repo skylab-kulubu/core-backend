@@ -1223,6 +1223,16 @@ func main() {
 		TeamPage:              &identity.TeamPageVisibility{Consents: consents},
 	})
 	terms.UseMemberships(identityService)
+	// Keycloak's console changes in the same record (docs/console-audit.md,
+	// KEYCLOAK_CONSOLE_AUDIT): read back from Keycloak's admin events and
+	// told as the panel's are, the management terms included.
+	consoleAudit, err := consoleAuditFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	consoleAuditMetrics, consoleAuditStopped := startConsoleAudit(workers, consoleAudit, dir, pool, teamAudit,
+		teamMembership, managementTermsNotifier(terms), groupRolesNotice, log.Printf)
+	worker("keycloak console audit", consoleAuditStopped)
 	userAccounts := identity.NewUserAccounts(identity.UserAccountOptions{
 		Accounts: accountDir, People: dir, Users: users, Authz: az,
 		PrivilegedRoots: privilegedRoots, Audit: teamAudit, YTUProvider: ytuIdentityProvider,
@@ -1269,7 +1279,7 @@ func main() {
 		AccountAccessMetrics:   accessMetrics,
 		AccountErasureMetrics:  optionalErasureMetrics(erasureGauges),
 		MediaCDNPurgeMetrics:   cdnPurgeMetrics,
-		TeamMailMetrics:        teamMembershipMetrics,
+		TeamMailMetrics:        joinedMetrics{teamMembershipMetrics, consoleAuditMetrics},
 		ManagementTerms:        terms,
 		TeamDelegationMetrics:  delegationMetrics,
 		RetentionMetrics:       retentionMetrics,
