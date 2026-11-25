@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/doorqr"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
@@ -1274,7 +1275,12 @@ func TestCheckInGuestHTTPTicketKeyAndRegistrationURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app := ticketApp(t, authn.Identity{}, events, tickets)
+	gate := doorqr.NewGate([]byte("handler door qr key, handler doo"), doorqr.Config{})
+	app := ticketApp(t, authn.Identity{}, events, tickets, gate)
+	pass, err := gate.MintFor(doorqr.ClassDisplay, sess.ID, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	post := func(body string) (int, map[string]any) {
 		req := httptest.NewRequest(fiber.MethodPost, "/v1/sessions/"+sess.ID.String()+"/check-in/guest", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -1293,9 +1299,16 @@ func TestCheckInGuestHTTPTicketKeyAndRegistrationURL(t *testing.T) {
 	if status, body := post(`{"ticketKey":"` + held.AccessKey + `"}`); status != fiber.StatusForbidden || body["code"] != "door_qr_required" {
 		t.Fatalf("key without a token: %d %v", status, body)
 	}
-	status, body := post(`{"email":"nobody@example.com"}`)
+	if status, body := post(`{"ticketKey":"` + held.AccessKey + `","doorToken":"` + pass.Token + `"}`); status != fiber.StatusCreated {
+		t.Fatalf("key with a token: %d %v", status, body)
+	}
+	status, body := post(`{"email":"nobody@example.com","doorToken":"` + pass.Token + `"}`)
 	if status != fiber.StatusNotFound || body["registrationUrl"] != "https://forms.yildizskylab.com/f/hack" {
 		t.Fatalf("nobody: %d %v", status, body)
+	}
+	// Without a token a member was not looked for: no link.
+	if status, body := post(`{"email":"nobody@example.com"}`); status != fiber.StatusNotFound || body["registrationUrl"] != nil {
+		t.Fatalf("nobody without a token: %d %v", status, body)
 	}
 	if status, body := post(`{}`); status != fiber.StatusBadRequest {
 		t.Fatalf("empty: %d %v", status, body)

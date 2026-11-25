@@ -1493,7 +1493,13 @@ func (s *service) checkInGuest(ctx context.Context, sessionID uuid.UUID, g Guest
 		// Whoever has no Ticket is shown where to register, while the
 		// Event takes registrations. The token was checked first, so this
 		// tells nothing a stranger could not read on the Event's page.
-		return ci, &GuestNotFoundError{RegistrationURL: registrationLink(ev)}
+		// Without a token (open mode) a member's Ticket was not looked
+		// for: "register" could be wrong, so no link.
+		link := ""
+		if withToken {
+			link = registrationLink(ev)
+		}
+		return ci, &GuestNotFoundError{RegistrationURL: link}
 	}
 	return ci, err
 }

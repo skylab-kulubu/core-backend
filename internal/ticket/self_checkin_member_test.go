@@ -154,8 +154,12 @@ func TestOpenModeNeedsATokenForMembersAndKeys(t *testing.T) {
 	if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, ticket.GuestCheckIn{Email: "ada@example.com"}); err != nil {
 		t.Fatalf("guest without a token: %v", err)
 	}
-	if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, ticket.GuestCheckIn{Email: "grace@example.com"}); !errors.Is(err, ticket.ErrNotFound) {
-		t.Fatalf("member without a token: %v", err)
+	// A member without a token is not looked for: 404, and no link to
+	// register (they may well have registered).
+	_, err := f.svc.CheckInGuest(ctx, f.sess.ID, ticket.GuestCheckIn{Email: "grace@example.com"})
+	var missing *ticket.GuestNotFoundError
+	if !errors.As(err, &missing) || missing.RegistrationURL != "" {
+		t.Fatalf("member without a token: %v %+v", err, missing)
 	}
 	if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, ticket.GuestCheckIn{TicketKey: f.key}); !errors.Is(err, ticket.ErrDoorQRRequired) {
 		t.Fatalf("key without a token: %v", err)

@@ -101,7 +101,8 @@ sky-app):
 - The key and a member's e-mail need a valid `doorToken` **in every mode**
   (ticket 19): a key without one is `403 door_qr_required`; in `open` mode
   an e-mail without one finds a guest Ticket only, as before, and a
-  member's is 404.
+  member's is 404 without `registrationUrl` (the member was not looked
+  for, so "register" could be wrong).
 
 Accepted risks (Yusuf's ticket 19 decision, the guest path's own): someone
 in the room, holding a fresh token, can type another person's school or
