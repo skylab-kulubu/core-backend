@@ -578,7 +578,7 @@ func TestSessionlessWelcomeCertificateLine(t *testing.T) {
 	}
 }
 
-// A retry SkyMail refuses as a reused key went the first time: sent, not
+// A retry SkyNotify refuses as a reused key went the first time: sent, not
 // rejected.
 func TestKeyReusedCountsAsSent(t *testing.T) {
 	ctx := context.Background()

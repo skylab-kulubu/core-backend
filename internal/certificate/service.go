@@ -58,7 +58,7 @@ type Options struct {
 	Mails MailQueue
 	// MailPDF sends each certificate's PDF with its queued mail
 	// (CERTIFICATE_PDF_ATTACHMENT; docs/certificate-mail.md). It needs a
-	// Mailer that is a CertificateAttachmentMailer; a PDF over SkyMail's
+	// Mailer that is a CertificateAttachmentMailer; a PDF over SkyNotify's
 	// bound, or one that cannot be read, leaves the mail without it.
 	MailPDF bool
 }

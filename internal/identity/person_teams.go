@@ -23,7 +23,7 @@ const (
 
 // PersonTeam is a Team a person is in or leads (GET
 // /internal/v1/users/{sub}/teams, docs/team-delegation.md "A person's
-// Teams"): who SkyMail lets send Team mail to it (ADR-0067 addendum of
+// Teams"): who SkyNotify lets send Team mail to it (ADR-0067 addendum of
 // 2026-11-08), and the Teams Forms offers as a form's owner team (ADR-0075
 // addendum of 2026-11-08). It names no other person and counts nobody.
 type PersonTeam struct {

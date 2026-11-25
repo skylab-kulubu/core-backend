@@ -82,7 +82,7 @@ func TestTicketVariablesFollowTheTicketPage(t *testing.T) {
 	}
 }
 
-// The bodies SkyMail gets, as they go: a member's Notification by subject,
+// The bodies SkyNotify gets, as they go: a member's Notification by subject,
 // a guest's mail by address, each with the eight variables, under the
 // Ticket's key of before (:v1).
 func TestTicketCreatedBodiesSnapshot(t *testing.T) {
@@ -108,7 +108,7 @@ func TestTicketCreatedBodiesSnapshot(t *testing.T) {
 	withKeys(e, m.ID, memberKey, "K7M2-QX9F")
 	g := e.guest("can@example.com")
 	withKeys(e, g.ID, guestKey, "AB12-CD34")
-	sky := &mail.SkyMail{BaseURL: srv.URL, Tokens: mail.StaticToken("tok"), HTTP: srv.Client()}
+	sky := &mail.SkyNotify{BaseURL: srv.URL, Tokens: mail.StaticToken("tok"), HTTP: srv.Client()}
 	worker := pageWorker(t, e, sky, "https://yildizskylab.com/bilet/{key}")
 	report, err := worker.Pass(t.Context())
 	if err != nil || report.Sent != 2 {

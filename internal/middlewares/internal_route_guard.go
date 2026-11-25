@@ -16,7 +16,7 @@ const InternalRoutePrefix = "/internal"
 // on, and a service calling core over the internal network sends none. It
 // is a second layer only: any container on the network reaches core
 // without Traefik, so the token checks behind it stay the boundary (the
-// same guard as SkyMail's, docs/account-erasure-command.md).
+// same guard as SkyNotify's, docs/account-erasure-command.md).
 func InternalRouteGuard() fiber.Handler {
 	return func(c fiber.Ctx) error {
 		if CameThroughIngress(c) {

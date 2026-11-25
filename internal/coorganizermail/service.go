@@ -61,7 +61,7 @@ type Queue interface {
 	Retry(ctx context.Context, claimed Queued, at time.Time) error
 }
 
-// Mailer posts the Notification (mail.SkyMail).
+// Mailer posts the Notification (mail.SkyNotify).
 type Mailer interface {
 	CoOrganizer(ctx context.Context, typ, idempotencyKey string, subs []uuid.UUID, vars map[string]string, source mail.NotificationSource) error
 }

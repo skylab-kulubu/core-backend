@@ -67,7 +67,7 @@ A move ([team-delegation.md](team-delegation.md#moving-a-team)) changes a Team's
 | `team_door_scan` (`GetGroup(name)`) | kept | breaks |
 | Team membership mail queue (72 hours) | the Group is found by its id (`group_id`), named where it is now; a row without one by its path | the same |
 | `/v1/teams/:team` | by name: kept; by path: breaks (no site uses it) | breaks |
-| Short links, form short links, SkyMail lists | kept (owned by a person, a form, a Group id) | kept |
+| Short links, form short links, SkyNotify lists | kept (owned by a person, a form, a Group id) | kept |
 | Group overage cache | forgotten | forgotten |
 | Account Center "Yetkilerim" | the new path once the token is refreshed | the same |
 

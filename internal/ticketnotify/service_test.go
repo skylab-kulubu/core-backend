@@ -222,7 +222,7 @@ func TestMemberGetsOneNotificationBySubject(t *testing.T) {
 
 // The mail's "Düzenleyen" row is the organizer as the club shows it: an
 // Event of the Board (YK), DK or ADMIN says the club's name, which the
-// OwnerTeam variable carries (Yusuf, 2026-11-23; SkyMail's template reads
+// OwnerTeam variable carries (Yusuf, 2026-11-23; SkyNotify's template reads
 // only that variable).
 func TestClubEventMailNamesTheClub(t *testing.T) {
 	for _, team := range []string{"YK", "DK", "ADMIN", ""} {
@@ -251,7 +251,7 @@ func TestGuestGetsTheMailByAddress(t *testing.T) {
 	}
 }
 
-// SkyMail renders the inbox text with missingkey=error: an Event without a
+// SkyNotify renders the inbox text with missingkey=error: an Event without a
 // start still sends EventDate, empty.
 func TestEventWithoutAStartSendsAnEmptyDate(t *testing.T) {
 	e := newEnv(t)
@@ -378,7 +378,7 @@ func TestEventWithoutAnEndIsToldOfUntilADayAfterItsStart(t *testing.T) {
 }
 
 // A row the panel queued again goes under its resend's key (…:r<n>), so
-// SkyMail sends it instead of answering the first mail's replay.
+// SkyNotify sends it instead of answering the first mail's replay.
 func TestResendGoesUnderItsOwnKey(t *testing.T) {
 	e := newEnv(t)
 	tk := e.member(user.AccountActive)

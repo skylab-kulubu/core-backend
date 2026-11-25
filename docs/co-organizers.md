@@ -130,7 +130,7 @@ Every variable is always sent (empty when it does not apply): `TeamName`, `Manag
 
 Retries as the door staff mail ([door-staff-mail.md](door-staff-mail.md#retries)): `400`/`422` done with (but `notification.type_unknown`), anything else tried again from 30 seconds up to 30 minutes, for 7 days. Account erasure deletes the person's rows and forgets the actor. Rollback: `CO_ORGANIZER_MAIL=off`; waiting rows stay unsent.
 
-Before turning it on: SkyNotify seeds both types with their templates and inbox texts (variables above); `core`'s service account already holds `skymail:notifications:send`.
+Before turning it on: SkyNotify seeds both types with their templates and inbox texts (variables above); `core`'s service account already holds `skynotify:notifications:send`.
 
 ## Lists
 

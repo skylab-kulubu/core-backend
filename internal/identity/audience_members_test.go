@@ -42,8 +42,8 @@ func TestKeycloakAudienceMembers(t *testing.T) {
 			for i := first; i < min(first+max, members); i++ {
 				u := map[string]any{"id": ids[i], "username": "u" + strconv.Itoa(i), "email": "u" + strconv.Itoa(i) + "@example.test", "enabled": true, "emailVerified": i != 1}
 				if i == 2 {
-					u["username"] = "service-account-skymail"
-					u["serviceAccountClientId"] = "skymail"
+					u["username"] = "service-account-skynotify"
+					u["serviceAccountClientId"] = "skynotify"
 				}
 				out = append(out, u)
 			}

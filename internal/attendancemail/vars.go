@@ -68,9 +68,9 @@ func (s *Service) counts(ev event.Event, p Progress) counts {
 	return c
 }
 
-// vars are the type's variables (skymail-frontend
+// vars are the type's variables (skynotify-frontend
 // emails/event-attendance-welcome.tsx and event-attendance-recorded.tsx):
-// every key always there, empty or 0 without a value (SkyMail renders with
+// every key always there, empty or 0 without a value (SkyNotify renders with
 // missingkey=error). A welcome carries the receipts that went along in
 // Recorded.
 func (s *Service) vars(kind string, ev event.Event, firstName string, rows []Mail, p Progress) map[string]any {

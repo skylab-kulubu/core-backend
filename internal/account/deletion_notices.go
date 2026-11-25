@@ -36,7 +36,7 @@ type DeletionNoticeClaims interface {
 }
 
 // DeletionNoticeMailer sends one notice to one address and keeps no record
-// of it (mail.SkyMail, erase_after_send).
+// of it (mail.SkyNotify, erase_after_send).
 type DeletionNoticeMailer interface {
 	AccountDeletionNotice(ctx context.Context, templateKey, recipient string, vars map[string]string) error
 }
@@ -50,7 +50,7 @@ type DeletionNoticeMailer interface {
 type DeletionNotices struct {
 	Claims DeletionNoticeClaims
 	Mailer DeletionNoticeMailer
-	// ReceivedTemplateKey and CompletedTemplateKey address the SkyMail
+	// ReceivedTemplateKey and CompletedTemplateKey address the SkyNotify
 	// templates; an empty key turns that notice off.
 	ReceivedTemplateKey  string
 	CompletedTemplateKey string
@@ -114,9 +114,9 @@ func (n *DeletionNotices) send(ctx context.Context, request user.DeletionRequest
 	}
 }
 
-// noticeReceived sends the received notice once SkyMail has erased the
-// person (erase_skymail checkpointed, in this pass or an earlier one), at
-// most once per request. Sent after that step, the notice is the one SkyMail
+// noticeReceived sends the received notice once SkyNotify has erased the
+// person (erase_skynotify checkpointed, in this pass or an earlier one), at
+// most once per request. Sent after that step, the notice is the one SkyNotify
 // keeps no record of (erase_after_send) and no erasure waits for. Only the
 // person's own request gets it: one that came in through Account Center's
 // self intake. An administrator's asked the person nothing. Tried once per
@@ -125,7 +125,7 @@ func (n *DeletionNotices) send(ctx context.Context, request user.DeletionRequest
 // leaves the notice for the next pass instead of using up its claim.
 func (w *Worker) noticeReceived(ctx context.Context, request user.DeletionRequest, leaseToken uuid.UUID, completed map[user.DeletionStep]bool, services *ServiceErasure, pass *erasurePass) {
 	notices := w.config.Notices
-	if pass.receivedNoticeTried || !completed[user.DeletionStepEraseSkyMail] || notices.key(user.DeletionNoticeReceived) == "" {
+	if pass.receivedNoticeTried || !completed[user.DeletionStepEraseSkyNotify] || notices.key(user.DeletionNoticeReceived) == "" {
 		return
 	}
 	pass.receivedNoticeTried = true

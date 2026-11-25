@@ -371,7 +371,7 @@ func TestEachAddressGetsOneReminderAndOnlyActiveTicketsCount(t *testing.T) {
 }
 
 // With TICKET_PAGE_URL unset the Ticket's link, QR and code are empty, and
-// still sent: SkyMail renders with missingkey=error.
+// still sent: SkyNotify renders with missingkey=error.
 func TestWithoutTheTicketPageTheTicketVariablesAreEmpty(t *testing.T) {
 	t.Parallel()
 	f := newFixture()

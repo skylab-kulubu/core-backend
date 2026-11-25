@@ -65,7 +65,7 @@ func (s *service) Sync(ctx context.Context, p authz.Principal, eventID uuid.UUID
 	if !event.VisibleTo(s.authz, &p, ev) {
 		return Result{}, ErrNotFound
 	}
-	// A sync writes: it creates the Event's SkyMail list and puts the
+	// A sync writes: it creates the Event's SkyNotify list and puts the
 	// applicants' names and addresses on it. Reading the applicants is not
 	// enough (a Privileged reader such as DK reads them, grup-yonetimi
 	// GY1); the caller must also operate the Event: update it or assign its

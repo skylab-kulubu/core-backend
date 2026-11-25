@@ -182,7 +182,7 @@ func TestAppAssignmentsYKAndADMINAssignAndRemove(t *testing.T) {
 	}
 
 	for _, path := range []string{"/UYELER/ARGE/WEBLAB/FRONT", "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER", "/UYELER/ARGE/MOBILAB/LIDERLER"} {
-		wantStatus(t, "YK assigns "+path, e.send(yk, fiber.MethodPost, "/v1/apps/skymail/assignments", groupTarget(e, path, "skymail:access")), fiber.StatusCreated, "")
+		wantStatus(t, "YK assigns "+path, e.send(yk, fiber.MethodPost, "/v1/apps/skynotify/assignments", groupTarget(e, path, "skynotify:access")), fiber.StatusCreated, "")
 	}
 	got = e.send(admin, fiber.MethodPost, "/v1/apps/forms/assignments", userTarget(e, "mobMember", "skyforms:access"))
 	wantStatus(t, "ADMIN assigns a person", got, fiber.StatusCreated, "")
@@ -215,7 +215,7 @@ func TestAppAssignmentsYKAndADMINAssignAndRemove(t *testing.T) {
 	if err := json.Unmarshal(e.send(yk, fiber.MethodGet, "/v1/apps", "").body, &apps); err != nil {
 		t.Fatal(err)
 	}
-	if len(apps) == 0 || apps[0].ClientID != "forms" || apps[0].Groups != 1 || apps[0].Users != 1 || apps[1].ClientID != "skymail" || apps[1].Groups != 3 {
+	if len(apps) == 0 || apps[0].ClientID != "forms" || apps[0].Groups != 1 || apps[0].Users != 1 || apps[1].ClientID != "skynotify" || apps[1].Groups != 3 {
 		t.Fatalf("apps %+v", apps)
 	}
 
@@ -277,17 +277,17 @@ func TestAppAssignmentsRefusals(t *testing.T) {
 		t.Fatal("a caller who reads nothing wrote rows")
 	}
 
-	// skymail:templates:read holds Keycloak administration.
-	e.dir.PutCompositeRole(identity.ClientRole{ClientID: "skymail", Role: "skymail:templates:read"}, identity.ClientRole{ClientID: "realm-management", Role: "manage-users"})
+	// skynotify:templates:read holds Keycloak administration.
+	e.dir.PutCompositeRole(identity.ClientRole{ClientID: "skynotify", Role: "skynotify:templates:read"}, identity.ClientRole{ClientID: "realm-management", Role: "manage-users"})
 	for _, tc := range []struct {
 		name, client, body string
 		status             int
 		code, reason       string
 	}{
 		{"admin role", "forms", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:*"), fiber.StatusConflict, "role_placement", authz.PlacementAdminRole},
-		{"another app's role", "forms", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skymail:access"), fiber.StatusConflict, "role_placement", authz.PlacementAdminRole},
+		{"another app's role", "forms", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skynotify:access"), fiber.StatusConflict, "role_placement", authz.PlacementAdminRole},
 		{"unknown role", "forms", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:nothing"), fiber.StatusConflict, "role_placement", authz.PlacementAdminRole},
-		{"keycloak composite", "skymail", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skymail:templates:read"), fiber.StatusForbidden, "keycloak_admin_role", ""},
+		{"keycloak composite", "skynotify", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skynotify:templates:read"), fiber.StatusForbidden, "keycloak_admin_role", ""},
 		{"YK root", "forms", groupTarget(e, "/UYELER/YK", "skyforms:access"), fiber.StatusConflict, "role_placement", authz.PlacementCodeArea},
 		{"YK duty group", "forms", groupTarget(e, "/UYELER/YK/BASKAN", "skyforms:access"), fiber.StatusConflict, "role_placement", authz.PlacementCodeArea},
 		{"ADMIN", "forms", groupTarget(e, "/ADMIN", "skyforms:access"), fiber.StatusConflict, "role_placement", authz.PlacementCodeArea},
@@ -474,12 +474,12 @@ func TestAppAssignmentsRefuseACompositeAdminRole(t *testing.T) {
 	// url:access holds url:get, which holds Forms' skyforms:*.
 	e.dir.PutCompositeRole(role("core", "url:access"), role("core", "url:get"))
 	e.dir.PutCompositeRole(role("core", "url:get"), role("forms", "skyforms:*"))
-	e.dir.PutCompositeRole(role("skymail", "skymail:access"), role("skymail", "skymail:mails:send"))
+	e.dir.PutCompositeRole(role("skynotify", "skynotify:access"), role("skynotify", "skynotify:mails:send"))
 	e.dir.PutCompositeRole(role("core", "url:create"), role("forms", "forms:editor"))
 	e.dir.PutCompositeRole(role("core", "certificate:issue"), role("core", "certificate:revoke"), role("frontend-main", "content:read"))
 	for _, tc := range []struct{ name, client, body string }{
 		{"another app's admin role, two deep", "core", groupTarget(e, "/UYELER/ARGE/WEBLAB", "url:access")},
-		{"its own app's admin role", "skymail", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skymail:access")},
+		{"its own app's admin role", "skynotify", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skynotify:access")},
 		{"an unclassified role", "core", groupTarget(e, "/UYELER/ARGE/WEBLAB", "url:create")},
 		{"to a person", "core", userTarget(e, "mobMember", "url:access")},
 	} {
@@ -499,10 +499,10 @@ func TestAppAssignmentsRefuseACompositeAdminRole(t *testing.T) {
 	}
 	wantStatus(t, "app roles only", e.send(yk, fiber.MethodPost, "/v1/apps/core/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "certificate:issue")), fiber.StatusCreated, "")
 	// Taking one off is never refused for what it holds.
-	if err := e.dir.AddGroupClientRole(context.Background(), e.ids["/UYELER/ARGE/WEBLAB"], role("skymail", "skymail:access")); err != nil {
+	if err := e.dir.AddGroupClientRole(context.Background(), e.ids["/UYELER/ARGE/WEBLAB"], role("skynotify", "skynotify:access")); err != nil {
 		t.Fatal(err)
 	}
-	wantStatus(t, "remove", e.send(yk, fiber.MethodDelete, "/v1/apps/skymail/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skymail:access")), fiber.StatusNoContent, "")
+	wantStatus(t, "remove", e.send(yk, fiber.MethodDelete, "/v1/apps/skynotify/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skynotify:access")), fiber.StatusNoContent, "")
 }
 
 // A person whose account core is erasing (Keycloak still enabled) is given
@@ -519,12 +519,12 @@ func TestAppAssignmentsAPersonBeingErased(t *testing.T) {
 		t.Fatal(err)
 	}
 	yk := e.appToken("yk")
-	got := e.send(yk, fiber.MethodPost, "/v1/apps/skymail/assignments", userTarget(e, "erasing", "skymail:access"))
+	got := e.send(yk, fiber.MethodPost, "/v1/apps/skynotify/assignments", userTarget(e, "erasing", "skynotify:access"))
 	wantStatus(t, "assign", got, fiber.StatusConflict, "role_placement")
 	if reason, _ := got.problem()["reason"].(string); reason != authz.PlacementInactiveUser {
 		t.Errorf("reason %q", reason)
 	}
-	if e.userMaps("erasing", identity.ClientRole{ClientID: "skymail", Role: "skymail:access"}) {
+	if e.userMaps("erasing", identity.ClientRole{ClientID: "skynotify", Role: "skynotify:access"}) {
 		t.Fatal("mapped")
 	}
 	wantStatus(t, "remove", e.send(yk, fiber.MethodDelete, "/v1/apps/forms/assignments", userTarget(e, "erasing", "skyforms:access")), fiber.StatusNoContent, "")
@@ -544,7 +544,7 @@ func TestAppAssignmentsOldGroupRolesRoute(t *testing.T) {
 	}
 	const seat = `{"clientId":"forms","role":"skyforms:access"}`
 	const cms = `{"clientId":"frontend-main","role":"cms:access"}`
-	const mail = `{"clientId":"skymail","role":"skymail:access"}`
+	const mail = `{"clientId":"skynotify","role":"skynotify:access"}`
 
 	off := newAppsEnv(t, false)
 	wantStatus(t, "off: a Team's app role", put(off, "/UYELER/ARGE/WEBLAB", `[`+seat+`]`), fiber.StatusNoContent, "")
@@ -574,10 +574,10 @@ func TestAppAssignmentsOldGroupRolesRoute(t *testing.T) {
 	wantStatus(t, "unchanged", put(e, "/UYELER/ARGE/WEBLAB", `[`+seat+`]`), fiber.StatusNoContent, "")
 
 	wantStatus(t, "a Leader group's admin role", put(e, "/UYELER/ARGE/WEBLAB/LIDERLER", `[`+cms+`]`), fiber.StatusNoContent, "")
-	wantStatus(t, "panel, Leader group", e.send(yk, fiber.MethodPost, "/v1/apps/skymail/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB/LIDERLER", "skymail:access")), fiber.StatusCreated, "")
+	wantStatus(t, "panel, Leader group", e.send(yk, fiber.MethodPost, "/v1/apps/skynotify/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB/LIDERLER", "skynotify:access")), fiber.StatusCreated, "")
 	wantStatus(t, "its admin role off, the app role kept", put(e, "/UYELER/ARGE/WEBLAB/LIDERLER", `[`+mail+`]`), fiber.StatusNoContent, "")
 	wantReason("its app role off", put(e, "/UYELER/ARGE/WEBLAB/LIDERLER", `[`+cms+`]`))
-	if !e.groupMaps("/UYELER/ARGE/WEBLAB/LIDERLER", identity.ClientRole{ClientID: "skymail", Role: "skymail:access"}) ||
+	if !e.groupMaps("/UYELER/ARGE/WEBLAB/LIDERLER", identity.ClientRole{ClientID: "skynotify", Role: "skynotify:access"}) ||
 		e.groupMaps("/UYELER/ARGE/WEBLAB/LIDERLER", identity.ClientRole{ClientID: "frontend-main", Role: "cms:access"}) {
 		t.Fatal("Leader group's mappings")
 	}

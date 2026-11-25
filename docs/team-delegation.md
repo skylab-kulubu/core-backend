@@ -101,7 +101,7 @@ its name alone (`authz.ClassifyRole`):
   | `core` | `certificate:issue`, `certificate:revoke`, `certificate:template:manage`, `certificate:binding:manage` |
   | `core` | `url:create`, `url:get`, `url:update`, `url:delete`, `url:access` |
   | `forms` | `skyforms:access`, `skyforms:form:manage`, `skyforms:response:manage`, `skyforms:feedback:manage` (screens only: forms-backend decides each form by its collaborators or `skyforms:*`) |
-  | `skymail` | `skymail:access`, `skymail:templates:read` |
+  | `skynotify` | `skynotify:access`, `skynotify:templates:read` |
   | `frontend-main`, `frontend-arge`, `frontend-artlab`, `frontend-yildizjam`, `frontend-skydays` (the Site clients) | `content:read` |
 
   The broker's `read-token` left the list (ekip-yetkileri ticket 15,
@@ -117,7 +117,7 @@ its name alone (`authz.ClassifyRole`):
   `client:admin`, `content:write`, `cms:access` and `schema:sync` on any
   client; every role of `realm-management`; Forms' `skyforms:*`,
   `skyforms:feedback:*`, `skyforms:read-all` (DK's read-only role: every
-  form and answer), `skyforms:account:erase`; SkyMail's
+  form and answer), `skyforms:account:erase`; SkyNotify's
   `templates:write`, `lists:*`, `mails:*`, `system-mails:read`,
   `announcements:send`, `account:erase`; Place's `place:admin` and
   `place:moderator`; `skycms`'s `cms:account:erase`. A pair on both lists
@@ -238,7 +238,7 @@ The role cleanup (sky_lab_genel `.scratch/rol-temizligi`, ticket 06; Yusuf, 2026
 - **Role placement (K4, S5).** `PUT /v1/groups/{id}/client-roles` adds a client role only to:
   - a Privileged root itself (`/ADMIN`, `/UYELER/YK`, …), not a Group under one (a YK duty group);
   - a top Team's Leader group (`/UYELER/<area>/<team>/LIDERLER` or `KOORDINATORLER`), not a Sub-team's;
-  - a top Team itself (`/UYELER/<area>/<team>`), an **app role only** (the app roles list above: Forms' seat `skyforms:access`, SkyMail's `skymail:access` and `skymail:templates:read`, …; ekip-yetkileri ticket 04, ADR 0065 addendum). Every member of the Team and its Sub-teams gets it, and the Team stays delegable. An admin role or an unclassified one there is `409 role_placement` with `reason` `top_team_admin_role`: it would make the Team Protected. The class is read by the role's name;
+  - a top Team itself (`/UYELER/<area>/<team>`), an **app role only** (the app roles list above: Forms' seat `skyforms:access`, SkyNotify's `skynotify:access` and `skynotify:templates:read`, …; ekip-yetkileri ticket 04, ADR 0065 addendum). Every member of the Team and its Sub-teams gets it, and the Team stays delegable. An admin role or an unclassified one there is `409 role_placement` with `reason` `top_team_admin_role`: it would make the Team Protected. The class is read by the role's name;
   - a role group: a leaf right under `/ROLLER` (`/ROLLER/<APP>-<ROLE>`, S4).
 
   Anywhere else the write is `409 role_placement`, with a `reason` member and a `detail`: `members_root` (`/UYELER`), `area`, `team` (a Sub-team), `top_team_admin_role`, `sub_team_leader_group`, `privileged_subgroup`, `roles_root` (`/ROLLER` itself), `roles_group_not_leaf` (a role group with Groups under it), `roles_nested`, `outside_role_places` (any other Group). Only an add is refused: a write that keeps or takes off mappings made before the rule goes through, so they can be cleaned. When the Group's mappings cannot be read, every role counts as an add. One exception: with `APP_ASSIGNMENTS=on`, a write that adds or takes off an app role of a Team, a Sub-team or a Leader group is `409 role_placement` with `reason` `use_app_assignments`, before the other rules; those app roles are the Uygulamalar page's ([app-assignments.md](app-assignments.md)), and a mapping read that fails refuses the write. Realm roles are not this route's (they leave in F3).
@@ -556,7 +556,7 @@ GET /internal/v1/users/{sub}/teams
 - No other person, no address, no count. An unknown `sub` is `{"teams":
   []}`.
 - **Callers**: a **service account** token with core's client role
-  `audience:read` (SkyMail's alone), or Forms' service account (its
+  `audience:read` (SkyNotify's alone), or Forms' service account (its
   client in `MEDIA_SERVICE_CLIENTS`) with `users:read`; both already hold
   theirs, nothing new in Keycloak. `users:read` is shared (profile reads),
   so another product's service account holding it is refused. A person's
@@ -568,7 +568,7 @@ GET /internal/v1/users/{sub}/teams
 - Keycloak that cannot be read is `503 person_teams_directory_unavailable`
   with `Retry-After: 30`, never a partial answer; no Team reads configured
   is `503 person_teams_unavailable`.
-- **SkyMail** lets a person send Team mail (Mail onayı) to the `leader`
+- **SkyNotify** lets a person send Team mail (Mail onayı) to the `leader`
   rows and counts the recipients itself; **Forms** offers both kinds as a
   form's owner team. Each service decides with the answer; neither copies
   the rule.

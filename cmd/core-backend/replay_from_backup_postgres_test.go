@@ -35,7 +35,7 @@ CREATE TABLE user_attribute (
 INSERT INTO realm (id, name) VALUES ('0c7e5a52-7d4f-4b1e-9d0a-5f3b2c1d0e9f', 'e-skylab');
 `
 
-// replayService stands for the restored SkyMail: its token endpoint on the
+// replayService stands for the restored SkyNotify: its token endpoint on the
 // Keycloak side and its erase endpoint, recording what core sends.
 type replayService struct {
 	mu      sync.Mutex
@@ -51,7 +51,7 @@ func (s *replayService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	if r.Method == http.MethodPost && r.URL.Path == "/realms/e-skylab/protocol/openid-connect/token" {
 		form, _ := url.ParseQuery(string(body))
-		if form.Get("client_id") != "core-erasure" || form.Get("scope") != "openid account-erase-skymail" {
+		if form.Get("client_id") != "core-erasure" || form.Get("scope") != "openid account-erase-skynotify" {
 			http.Error(w, "wrong client", http.StatusBadRequest)
 			return
 		}
@@ -123,8 +123,8 @@ func replayExec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 }
 
 // The command as the restore wizard runs it: the live core database, the
-// core and Keycloak dumps taken with the SkyMail dump at T restored beside
-// it, and a SkyMail that answers the Erasure command.
+// core and Keycloak dumps taken with the SkyNotify dump at T restored beside
+// it, and a SkyNotify that answers the Erasure command.
 func TestPostgresReplayFromBackupSendsTheSnapshotsAddressesToTheRestoredService(t *testing.T) {
 	var logs bytes.Buffer
 	previous := log.Writer()
@@ -185,7 +185,7 @@ func TestPostgresReplayFromBackupSendsTheSnapshotsAddressesToTheRestoredService(
 		"DATABASE_URL":                  server.Config().ConnString(),
 		"KEYCLOAK_URL":                  httpServer.URL,
 		"KEYCLOAK_REALM":                "e-skylab",
-		"ACCOUNT_ERASURE_SKYMAIL_URL":   httpServer.URL,
+		"ACCOUNT_ERASURE_SKYNOTIFY_URL": httpServer.URL,
 		"ACCOUNT_ERASURE_CLIENT_ID":     "core-erasure",
 		"ACCOUNT_ERASURE_CLIENT_SECRET": "s3cr3t-value-never-printed",
 		// The snapshots' DSNs carry passwords: environment, never argv.
@@ -193,7 +193,7 @@ func TestPostgresReplayFromBackupSendsTheSnapshotsAddressesToTheRestoredService(
 		"KEYCLOAK_SNAPSHOT_DATABASE_URL": keycloakDSN,
 	}
 	getenv := func(key string) string { return env[key] }
-	args := []string{"--service", "skymail", "--dumped-at", dumpedAt.Format(time.RFC3339)}
+	args := []string{"--service", "skynotify", "--dumped-at", dumpedAt.Format(time.RFC3339)}
 	var outputs []string
 	run := func(apply bool) (int, string) {
 		t.Helper()
@@ -235,7 +235,7 @@ func TestPostgresReplayFromBackupSendsTheSnapshotsAddressesToTheRestoredService(
 	}
 
 	// Apply: exactly the normal Erasure command, with the union of both
-	// snapshots, to the restored SkyMail; the missing subject still fails.
+	// snapshots, to the restored SkyNotify; the missing subject still fails.
 	service.reset()
 	code, out = run(true)
 	if code != 1 {
@@ -270,7 +270,7 @@ func TestPostgresReplayFromBackupSendsTheSnapshotsAddressesToTheRestoredService(
 		}
 	}
 
-	// Grace turns up in a Keycloak snapshot; SkyMail is still at work on
+	// Grace turns up in a Keycloak snapshot; SkyNotify is still at work on
 	// Alan: nothing failed, but the replay is not finished.
 	keycloakPerson(people["grace"], "grace.hopper@example.com", "Grace", "Hopper")
 	service.reset(people["alan"].request.String())

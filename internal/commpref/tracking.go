@@ -11,7 +11,7 @@ import (
 )
 
 // Open and click tracking (hub ticket iletisim-servisi 16,
-// docs/communication-preferences.md "Tracking"): SkyMail records whether a
+// docs/communication-preferences.md "Tracking"): SkyNotify records whether a
 // person opened a mail and which link they clicked. Since ADR-0074's
 // 2026-11-24 addendum (B9) every mail is tracked: a person's objection, a
 // non-Member and a recipient without an account no longer stop it. Only an
@@ -35,7 +35,7 @@ type TrackingMode string
 const (
 	// TrackingOptOut tracks every active account. The default.
 	TrackingOptOut TrackingMode = "opt_out"
-	// TrackingOptIn is the brake: core lets SkyMail track no one
+	// TrackingOptIn is the brake: core lets SkyNotify track no one
 	// (tracking_off), whatever a person ever chose.
 	TrackingOptIn TrackingMode = "opt_in"
 )
@@ -58,7 +58,7 @@ func TrackingModeFromEnv(getenv func(string) string) (TrackingMode, error) {
 // TrackingStartupLine is the startup log line of tracking: the mode.
 func TrackingStartupLine(mode TrackingMode) string {
 	if !mode.on() {
-		return fmt.Sprintf("WARNING communication tracking: mode %s (%s): the brake is on, SkyMail may track no one", mode, TrackingModeEnv)
+		return fmt.Sprintf("WARNING communication tracking: mode %s (%s): the brake is on, SkyNotify may track no one", mode, TrackingModeEnv)
 	}
 	return fmt.Sprintf("communication tracking: mode %s (%s)", mode, TrackingModeEnv)
 }
@@ -74,7 +74,7 @@ func (m TrackingMode) on() bool { return m != TrackingOptIn }
 type TrackingState struct {
 	// Enabled is whether the mode tracks anyone.
 	Enabled bool `json:"enabled"`
-	// Effective is whether core lets SkyMail track the person now; for the
+	// Effective is whether core lets SkyNotify track the person now; for the
 	// signed-in person, the same as Enabled.
 	Effective bool         `json:"effective"`
 	Mode      TrackingMode `json:"mode"`
@@ -97,12 +97,12 @@ func (s *Service) TrackingMode() TrackingMode {
 }
 
 // TrackingResolveRole is core's client role of the service account that may
-// ask whom a send may track: SkyMail's (hub ticket 17). A person's token
+// ask whom a send may track: SkyNotify's (hub ticket 17). A person's token
 // never may, whatever roles it carries. It follows audience:read: core's
 // client roles carry no "core:" prefix.
 const TrackingResolveRole = "communication-preferences:read"
 
-// MaxTrackingSubjects is the most people one question names (SkyMail asks
+// MaxTrackingSubjects is the most people one question names (SkyNotify asks
 // in batches of 1000).
 const MaxTrackingSubjects = 1000
 
@@ -131,7 +131,7 @@ func (a *Audience) TrackingAvailable() bool {
 	return a != nil && a.prefs != nil && a.dir != nil && a.accounts != nil
 }
 
-// ResolveTracking answers, for each subject in order, whether SkyMail may
+// ResolveTracking answers, for each subject in order, whether SkyNotify may
 // track mail to them (B9): an active account, and the mode on. A Member or
 // not, with an objection on record or not, makes no difference. Inactive is
 // the erased subject, an account core holds as being erased or erased, or a
@@ -159,7 +159,7 @@ func (a *Audience) ResolveTracking(ctx context.Context, subjects []uuid.UUID) ([
 		return out, nil
 	}
 	// The brake answers without Keycloak or the accounts: it must hold
-	// while they do not answer, when SkyMail would otherwise track everyone.
+	// while they do not answer, when SkyNotify would otherwise track everyone.
 	if mode := a.prefs.TrackingMode(); !mode.on() {
 		for _, id := range subjects {
 			out = append(out, TrackingDecision{Subject: id, Reason: TrackingOff})
