@@ -45,7 +45,7 @@ click list and a form's channel statistics keep looking 90 days back
 clicks turn 90 days old. Until apply it is the clicks of the last 90 days;
 from apply on it only grows, counting every click since then.
 
-## Rules (rule set v10)
+## Rules (rule set v12)
 
 "Event end" is the Event's `end_date`, else its last day's `end_date`, else
 its `start_date` (ADR-0062). For `guest_identity`, an Event with none of them
@@ -156,6 +156,12 @@ The record of the editors' answers about telling an Event's Ticket holders ([`ev
 | Rule | Selects | Period | Action |
 |---|---|---|---|
 | `event_change_notices_age` | an `event_change_notice_choices` row | `EventChangeNoticePeriod`, 3 years after `decided_at` (as the Team audit record) | row deleted |
+
+The Unticketed respondents ([`form-respondents.md`](form-respondents.md#data); rule set v12, hub SPEC form-alan-eslestirme §7.6, 2026-11-25; v11 is taken by the Co-organizer people rule of a parallel change):
+
+| Rule | Selects | Period | Action |
+|---|---|---|---|
+| `form_respondents` | an `event_form_respondents` row | `FormRespondentPeriod`, the Event end + 2 years (as `guest_identity`); an Event with no date counts from the row's `created_at`, so every row is dated | row deleted (it holds nothing but who answered) |
 
 ## Schedule, lock and periods
 

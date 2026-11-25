@@ -6,11 +6,14 @@ the rule the HTTP report and the `core.forms` events take
 ([integration-events.md](integration-events.md#coreforms-forms-events)). Two
 things ask for it (hub SPEC §10 eki, R13 eki; rabbitmq-olaylar 18):
 
-- **An organizer's backfill.** A form linked to an Event after people had
-  answered it: core keeps no answer of a form no Event listed (`not_listed`),
-  so those answers have no Ticket. The panel's "Bu kişilere de bilet yaz"
-  asks core to pull every accepted answer (Yusuf, 2026-11-22, K1: only the
-  button does; linking a form pulls nothing).
+- **The gathering (`collect`).** A form linked to an Event after people had
+  answered it: core keeps no answer of a form no Event listed
+  (`not_listed`). Linking the form (or first saving its mapping), and the
+  organizer's button below, queue a gathering of every answer that is not
+  archived, kept as Unticketed respondents; **it writes no Ticket** (Yusuf,
+  2026-11-25, K1: a Ticket is always the organizer's choice, sent from the
+  list; this replaces 2026-11-22's "only the button pulls, and writes
+  Tickets"). Its rules are in [form-respondents.md](form-respondents.md#gathering-a-linked-form).
 - **The daily catch-up.** Once a day for each form the current Events list,
   the answers changed since the last pull: whatever an event (or the HTTP
   report) missed (ADR-0071 karar 6).
@@ -27,7 +30,9 @@ POST /v1/events/{id}/forms/{formId}/backfill
 Authorization: Bearer <the organizer's token>
 ```
 
-No body. The caller is a person who may edit the Event (a product's
+No body. It queues the form's gathering (`collect`,
+[form-respondents.md](form-respondents.md#gathering-a-linked-form)); before
+bilet 04 it queued a pull that wrote Tickets. The caller is a person who may edit the Event (a product's
 service account never asks). Then, in order:
 
 | Answer | When |
@@ -41,14 +46,16 @@ service account never asks). Then, in order:
 | `429` `backfill_cooldown` | the form's backfill was asked for less than 15 minutes ago (`Retry-After`: the seconds left); a button pressed again and again |
 | `503` `forms_pull_off` | `EVENTS_FORMS_ENABLED` is not `true` (below) |
 | `202 {"queued": true}` | a job is queued |
-| `200 {"queued": false}` | a backfill of the form waits already |
+| `200 {"queued": false}` | a gathering of the form waits already |
 
 The request writes one line, `"event":"form_backfill_request"`, with the
 Event, the form and `outcome` (`queued`, `waiting`, `cooldown`, `refused`),
 never who asked. The ask is kept on the form (`last_backfill_at`); a form
 the daily pass had not seen gets its watermark then.
 
-The job pulls every accepted answer of the form (no `changedSince`). Each
+The gathering reads every answer of the form, any status, and keeps rows,
+never a Ticket. What follows is the daily catch-up's way, as the backfill
+did before bilet 04. Each
 answer takes the Ticket rule as the HTTP report's does: on every current
 Event that lists the form, not cancelled, not ended, open to applications
 when the answer was sent (`submittedAt`), within capacity or on the waiting
@@ -71,11 +78,14 @@ extra forms, and keeps a row for each in `form_pull_watermarks`:
 
 - A form seen the first time gets `watermark` = now and its first pass a
   day later: the pass never reaches answers from before the form was seen
-  linked (those are the backfill's).
+  linked (those are the gathering's).
 - A form whose pass is due (`next_catchup_at`) gets a catch-up job that asks
   for the answers changed since `watermark − 5 minutes` (a margin for an
   answer committed at the watermark's time, or clocks a little apart; a
-  repeat is harmless), and its next pass a day later.
+  repeat is harmless), and its next pass a day later. With
+  `EVENTS_FORMS_ENABLED=true` it asks for every status (no `status`
+  filter): a pending or declined change an event missed reaches the
+  Unticketed respondents and K6's mark ([form-respondents.md](form-respondents.md)).
 - A form no current Event lists keeps its row 30 days, then loses it.
 
 ## The job
@@ -115,7 +125,8 @@ or a list past 1,000 pages in one run, stops the job with an error
   between tries and writes a line each time.
 
 Each run of a job writes one line, `"event":"form_pull"`: `kind`
-(`backfill`, `catchup`), `form_id`, `event_id` (a backfill's), `outcome`
+(`collect`, `catchup`; a `backfill` job from the release before runs and
+counts as `collect`), `form_id`, `event_id` (a gathering's), `outcome`
 (`done`, `retry`, `abandoned`), `reason` (`not_found`, `forbidden`,
 `invalid`, `failed`), `attempts`, `pages`, `items`, `skipped`,
 `tickets_written`, `failed` and `outcomes` (the count of each answer's
@@ -140,14 +151,15 @@ Migration `20261124161000` (expand only):
 
 | Table | Rows | Kept |
 | --- | --- | --- |
-| `form_pulls` | one job: `form_id`, `kind`, `event_id` and `requested_by` (a backfill's Event and the organizer's subject), `requested_at`, `changed_since` (a catch-up's), `cursor`, `attempts`, `next_attempt_at`; one job of each kind a form | until done, at most a week |
+| `form_pulls` | one job: `form_id`, `kind` (`collect` since migration `20261127170000`), `event_id` and `requested_by` (a gathering's Event and, for the button, the organizer's subject), `requested_at`, `changed_since` (a catch-up's), `cursor`, `attempts`, `next_attempt_at`; one job of each kind a form | until done, at most a week |
 | `form_pull_watermarks` | one form: `watermark`, `next_catchup_at`, `last_backfill_at`, `updated_at` | while an Event lists the form, then 30 days |
 
 Ids and times only; `requested_by` is a person's subject for at most a week.
 
 ## Metrics
 
-`/v1/metrics`: `skylab_form_pulls_total{kind,outcome="done|retry|abandoned"}`,
+`/v1/metrics`: `skylab_form_pulls_total{kind="collect|catchup",outcome="done|retry|abandoned"}`
+(`kind="backfill"` before bilet 04),
 and the answers' `skylab_forms_answers_total{via="pull",outcome}` and
 `skylab_forms_answer_reads_total{result}` (shared with `core.forms`).
 

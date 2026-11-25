@@ -35,7 +35,7 @@ its Co-organizers included); a product's service account never is.
 | --- | --- |
 | `GET …/questions` | `200 {formId, title, questions: [{id, type, question, inputType, identity}], suggestion: {firstName, lastName, fullName, email}}` |
 | `GET …/mapping` | `200 {firstName, lastName, fullName, email, updatedAt}`; `404 mapping_not_found` without one |
-| `PUT …/mapping` | body `{firstName, lastName, fullName, email}`; `201` the first time, `200` when it replaced one, with the mapping |
+| `PUT …/mapping` | body `{firstName, lastName, fullName, email}`; `201` the first time, `200` when it replaced one, with the mapping. The first save (with `EVENTS_FORMS_ENABLED=true`) queues the form's gathering, so answers that named nobody before are kept with the guests it builds ([form-respondents.md](form-respondents.md#gathering-a-linked-form)) |
 | `DELETE …/mapping` | `204`; `404 mapping_not_found` without one |
 
 `questions` comes from Forms' form read (`GET {FORMS_INTERNAL_URL}/internal/v1/forms/{formId}`,

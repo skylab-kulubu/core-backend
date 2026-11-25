@@ -20,8 +20,11 @@ events (`forms.response.created` and `forms.response.status_changed`, with
 `EVENTS_FORMS_ENABLED=true`; [integration-events.md](integration-events.md#coreforms-forms-events)),
 which carry no guest's name or e-mail (core reads them from Forms) and the
 invite code as the `davet` hidden field. A third, the pull from Forms'
-list (an organizer's backfill and the daily catch-up,
-[form-pulls.md](form-pulls.md)), takes the same rule. All end in
+list (the daily catch-up, [form-pulls.md](form-pulls.md)), takes the same
+rule. With `EVENTS_FORMS_ENABLED=true` every way in also keeps the answers
+that earn no Ticket now as Unticketed respondents (pending in Forms, or the
+Event's "Otomatik bilet gönder" off), for the organizer to send
+([form-respondents.md](form-respondents.md)); off, the rule alone, as below. All end in
 `ticket.Service.RecordFormResponse`; what this page says of an answer holds
 for each. An accepted answer that names nobody (no `userId`, no `guest`) to
 a form an Event maps gets the guest its mapped answers give, by every way
@@ -128,6 +131,13 @@ operator's cancellation, [ticket-cancellation.md](ticket-cancellation.md)).
   mail from core (Forms sends its own). The answer is still `204`; the
   log's `outcome` is `forms_rejected`, else `not_accepted`.
 - A later `accepted` report of the same answer clears the mark.
+- `pending` (Forms' reviewer took an accepted answer back) marks the
+  answer's Tickets that are not cancelled `formsPendingAt` (migration
+  `20261127170000`): the Ticket stays, nobody is mailed; the log's
+  `outcome` is `forms_pending`, else `not_accepted`. Its acceptance or
+  decline clears the mark. Ticket answers carry `formsStatus` (`accepted`,
+  `pending`, `declined`; none for a Ticket no answer wrote) for the panel's
+  badge ([form-respondents.md](form-respondents.md#the-tickets-forms-status)).
 - A Ticket Forms' decline cancelled before K6 (`cancelledBy: form`) is
   reopened by its answer's acceptance, as below.
 - Account erasure clears `form_response_id` with the person's other data;
@@ -164,7 +174,7 @@ other than the three), `outcome`, `tickets_written` (new Tickets only),
 status (`0` when the report ended before they were read). More than one is a
 form shared before the one-place rule; such a form is left as it is and the
 line is how it shows.
-`outcome` is `recorded`, `not_accepted`, `forms_rejected`, `cancelled` (before K6), `no_respondent`, `not_listed`,
+`outcome` is `recorded`, `not_accepted`, `forms_rejected`, `forms_pending`, `respondent_kept` ([form-respondents.md](form-respondents.md)), `cancelled` (before K6), `no_respondent`, `not_listed`,
 `event_cancelled`, `event_ended`, `registration_closed`, `waitlisted`, `event_full`, `person_unavailable`, `invalid` or `failed`. The line never carries the
 `userId`, a name or an e-mail.
 
