@@ -61,7 +61,9 @@ type FormsRejectionStore interface {
 	// MarkFormsRejected marks the Ticket declined in Forms at at (its
 	// answer's status declined); false when it is cancelled or marked
 	// already.
-	MarkFormsRejected(ctx context.Context, id uuid.UUID, at time.Time) (bool, error)
+	// A Ticket whose answer's form is not kept (bound before migration
+	// 20261127110000) takes formID, the report's.
+	MarkFormsRejected(ctx context.Context, id, formID uuid.UUID, at time.Time) (bool, error)
 	// MarkFormResponsePending keeps that the answer responseID waits for
 	// Forms' review again: its Tickets (not cancelled) lose their mark.
 	MarkFormResponsePending(ctx context.Context, responseID uuid.UUID) error

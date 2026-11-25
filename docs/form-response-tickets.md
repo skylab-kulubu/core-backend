@@ -129,7 +129,14 @@ operator's cancellation, [ticket-cancellation.md](ticket-cancellation.md)).
   someone typing the holder's e-mail into the form while the holder's
   answer stands gets nothing of the Ticket. The Ticket's own answer
   accepted again clears its mark. A Ticket whose answer was kept before the
-  migration (no form) is never taken over.
+  migration (no form) is not taken over until its answer's decline names
+  the form (the decline fills it in).
+- Known limit: when the corrected answer's acceptance (R2) is handled
+  before the first answer's decline (R1), R2 does not take the Ticket over
+  (R1 still stands then), and R1's decline arriving afterwards marks the
+  Ticket. Forms sends `Returned` before the person can answer again, so
+  this needs reports out of order (a retry); the mark is a warning the
+  organizer clears by hand, never a cancellation.
 - A `pending` report of the Ticket's answer (Forms' review opened again)
   sets it `pending` and clears the mark; nothing else changes.
 - `declined` marks, on the Events that list the form and have not ended,

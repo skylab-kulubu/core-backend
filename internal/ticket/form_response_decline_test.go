@@ -293,3 +293,29 @@ func TestKeepFormResponseNeedsTheHolder(t *testing.T) {
 		t.Fatalf("the holder: %t %v", kept, err)
 	}
 }
+
+// A Ticket whose answer was kept before its form was (migration
+// 20261127110000) takes the form from its decline: the corrected answer to
+// that form then takes it over.
+func TestADeclineFillsAnOldTicketsForm(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	e := newDeclineEnv(t)
+	first := acceptedGuest(e.formID, "Ada", "Lovelace", "ada@example.com")
+	old, err := e.store.CreateAdmitted(ctx, ticket.Ticket{EventID: e.ev.ID, TicketType: ticket.Guest, GuestFirstName: "Ada", GuestLastName: "Lovelace", GuestEmail: "ada@example.com"}, ticket.Admission{FormResponse: first.ResponseID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := e.report(t, declined(first)); got.TicketsMarked != 1 {
+		t.Fatalf("decline %+v", got)
+	}
+	second := acceptedGuest(e.formID, "Ada", "Lovelace", "ada@example.com")
+	e.report(t, second)
+	stored, _ := e.store.Get(ctx, old.ID)
+	if stored.FormsRejectedAt != nil {
+		t.Fatalf("not taken over %+v", stored)
+	}
+	if tickets, _ := e.store.FormResponseTickets(ctx, second.ResponseID); len(tickets) != 1 {
+		t.Fatalf("the corrected answer's Tickets %+v", tickets)
+	}
+}

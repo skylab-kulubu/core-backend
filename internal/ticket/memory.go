@@ -774,7 +774,7 @@ type formAnswer struct {
 }
 
 // MarkFormsRejected is the database's.
-func (s *MemoryStore) MarkFormsRejected(_ context.Context, id uuid.UUID, at time.Time) (bool, error) {
+func (s *MemoryStore) MarkFormsRejected(_ context.Context, id, formID uuid.UUID, at time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.byID[id]
@@ -789,6 +789,9 @@ func (s *MemoryStore) MarkFormsRejected(_ context.Context, id uuid.UUID, at time
 	s.byID[id] = t
 	answer := s.formAnswers[id]
 	answer.status = FormResponseDeclined
+	if answer.form == uuid.Nil {
+		answer.form = formID
+	}
 	s.formAnswers[id] = answer
 	return true, nil
 }
