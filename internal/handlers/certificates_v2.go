@@ -3,7 +3,6 @@ package handlers
 import (
 	"net/url"
 	"os"
-	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -12,8 +11,10 @@ import (
 )
 
 func (h *CertificateHandler) PublicPage(c fiber.Ctx) error {
-	origin := strings.TrimRight(os.Getenv("CERTIFICATE_PUBLIC_PAGE_ORIGIN"), "/")
-	if origin == "" {
+	// The same validated value pdfUrl uses (certificate.PublicPageOrigin;
+	// core stops at startup on a bad one); unset, production's page.
+	origin, err := certificate.PublicPageOrigin(os.Getenv("CERTIFICATE_PUBLIC_PAGE_ORIGIN"))
+	if err != nil || origin == "" {
 		origin = "https://yildizskylab.com/sertifika"
 	}
 	c.Set(fiber.HeaderLocation, origin+"/"+url.PathEscape(c.Params("serial")))
