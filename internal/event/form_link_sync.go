@@ -37,12 +37,24 @@ type ServiceOptions struct {
 	// rules (purpose, state) to the database's guards; the Team media
 	// library rule holds either way.
 	Media media.Linker
+	// Policy is the authorization policy az decides with: the Owner teams'
+	// rules and the Privileged roots the Co-organizer checks read. Without
+	// EventPermissions it is authz.DefaultPolicy().
+	Policy authz.Policy
+	// Teams finds a Co-organizer team's Group (docs/co-organizers.md); nil
+	// finds none, so no team can be added.
+	Teams authz.TeamTree
 }
 
 func NewServiceWithOptions(store Store, az authz.Authorizer, options ServiceOptions) Service {
+	policy := options.Policy
+	if policy.EventPermissions == nil {
+		policy = authz.DefaultPolicy()
+	}
 	return &service{
 		store: store, authz: az, formLinks: options.FormLinks, media: options.Media,
 		addresses: media.Addresses{Base: options.PublicBase, Mode: options.ImageAddressMode},
+		policy:    policy, teams: options.Teams,
 	}
 }
 

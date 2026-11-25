@@ -2012,6 +2012,26 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM information_schema.columns
 			WHERE table_schema = 'public' AND table_name = 'privilege_notice_mails' AND column_name = 'via'
 		)`,
+	// An Event's Co-organizers (docs/co-organizers.md): the table with its
+	// choices' check, its two indexes and the guards of its two account
+	// links.
+	20261126120000: `
+		SELECT 1
+		WHERE to_regclass('public.event_co_organizers') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.event_co_organizers')
+			  AND conname = 'event_co_organizers_choices_check' AND convalidated
+		  )
+		  AND to_regclass('public.event_co_organizers_user_idx') IS NOT NULL
+		  AND to_regclass('public.event_co_organizers_team_idx') IS NOT NULL
+		  AND (
+			SELECT count(*) FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.event_co_organizers')
+			  AND tgname IN ('event_co_organizers_require_active_subject', 'event_co_organizers_require_active_adder')
+			  AND tgfoid = to_regprocedure('public.require_active_account_reference()')
+			  AND NOT tgisinternal
+		  ) = 2`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

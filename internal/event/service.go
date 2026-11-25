@@ -3,6 +3,7 @@ package event
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -97,6 +98,11 @@ type Service interface {
 	// (docs/certificate-rule.md).
 	CertificateRule(ctx context.Context, p authz.Principal, eventID uuid.UUID) (CertificateRule, error)
 	SetCertificateRule(ctx context.Context, p authz.Principal, eventID uuid.UUID, in CertificateRuleInput) (CertificateRule, error)
+	// Organizers reads the Event's Owner team and Co-organizers, for who
+	// may edit it; SetOrganizers replaces the Co-organizer lists
+	// (docs/co-organizers.md).
+	Organizers(ctx context.Context, p authz.Principal, id uuid.UUID) (Organizers, error)
+	SetOrganizers(ctx context.Context, p authz.Principal, id uuid.UUID, in OrganizersInput) (Organizers, error)
 	// ListBySeason reads the Season's Events, drafts left out.
 	ListBySeason(ctx context.Context, seasonID uuid.UUID) ([]Event, error)
 	AssignSeason(ctx context.Context, p authz.Principal, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error)
@@ -108,6 +114,11 @@ type service struct {
 	addresses media.Addresses // of the Event's images: base and address mode
 	formLinks FormLinkSync
 	media     media.Linker
+	// policy is the authorization policy: the Owner teams' rules, the
+	// Privileged roots and leader subgroups the Co-organizer checks read.
+	policy authz.Policy
+	// teams finds a Co-organizer team's Group; nil finds none.
+	teams authz.TeamTree
 }
 
 func NewService(store Store, az authz.Authorizer, publicBase ...string) Service {
@@ -115,7 +126,7 @@ func NewService(store Store, az authz.Authorizer, publicBase ...string) Service 
 	if len(publicBase) > 0 {
 		base = publicBase[0]
 	}
-	return &service{store: store, authz: az, addresses: media.Addresses{Base: base}}
+	return &service{store: store, authz: az, addresses: media.Addresses{Base: base}, policy: authz.DefaultPolicy()}
 }
 
 func (s *service) publish(e Event) Event {
@@ -153,6 +164,14 @@ func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
 		in.DoorStaffIDs = nil
 	}
 	in.TicketCount, in.WaitlistCount = nil, nil
+	// The Co-organizers in full (helper teams and people) only to who may
+	// edit the Event; anyone sees the teams shown as Co-organizer.
+	in.CoOrganizersView, in.CoOrganizerIDsView = nil, nil
+	in.CoOrganizerTeams = PublicCoOrganizerTeams(in)
+	if p != nil && len(in.CoOrganizers)+len(in.CoOrganizerIDs) > 0 && s.authz.Allow(*p, resource(in.OwnerTeam), authz.Update) {
+		in.CoOrganizersView = slices.Clone(in.CoOrganizers)
+		in.CoOrganizerIDsView = slices.Clone(in.CoOrganizerIDs)
+	}
 	// The attendee note (the venue's Wi-Fi) only to who may edit the Event,
 	// and to who reads its Tickets (DK; Yusuf, 2026-11-25), read-only.
 	in.AttendeeNoteView = nil
@@ -282,6 +301,8 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (_ Ev
 	in.PublishedAt, in.PublishedBy = nil, nil
 	in.CancelledAt, in.CancelledBy, in.CancelReason = nil, nil, ""
 	in.CopiedFromEventID = nil
+	// Only SetOrganizers writes the Co-organizers.
+	in.CoOrganizers, in.CoOrganizerIDs = nil, nil
 	if in.Status == StatusPublished {
 		in.PublishedBy = lifecycle.ActorID(p.ID)
 	}

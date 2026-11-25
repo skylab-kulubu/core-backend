@@ -1260,6 +1260,8 @@ func main() {
 			ImageAddressMode: imageAddressMode,
 			FormLinks:        eventFormLinks{urls: urlSvc},
 			Media:            media.NewLinker(mediaStore),
+			Policy:           authzPolicy,
+			Teams:            teamTree,
 		}),
 		Seasons:         season.NewService(seasons, az),
 		SubjectRequests: subjectrequest.NewService(subjectrequest.NewPostgresStore(pool), az, nil),

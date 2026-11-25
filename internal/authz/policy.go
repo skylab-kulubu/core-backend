@@ -1,5 +1,7 @@
 package authz
 
+import "slices"
+
 type Action string
 
 const (
@@ -153,6 +155,28 @@ func DefaultPolicy() Policy {
 			},
 		},
 	}
+}
+
+// RequiredLevels are the levels in the Owner team that action on its Event
+// takes: the Owner team's row of EventPermissions, or the _default row when
+// it has none or the row does not name the action.
+func (p Policy) RequiredLevels(ownerTeam string, action Action) []Level {
+	table, ok := p.EventPermissions[ownerTeam]
+	if !ok {
+		table = p.EventPermissions["_default"]
+	}
+	levels, ok := table[action]
+	if !ok {
+		return p.EventPermissions["_default"][action]
+	}
+	return levels
+}
+
+// MembersUpdate reports whether a member of ownerTeam who is no Leader may
+// edit its Events (Update takes LevelMember: GECEKODU). A Co-organizer
+// team's management defaults to it (docs/co-organizers.md).
+func (p Policy) MembersUpdate(ownerTeam string) bool {
+	return slices.Contains(p.RequiredLevels(ownerTeam, Update), LevelMember)
 }
 
 // MediaUploader is who may upload Media of a Media purpose. The Media purpose

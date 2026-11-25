@@ -413,6 +413,10 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 		}
 		return Event{}, err
 	}
+	// A Co-organizer team that becomes the Owner team leaves the list.
+	if err := dropOwnerCoOrganizer(ctx, tx, e.ID, e.OwnerTeam); err != nil {
+		return Event{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Event{}, err
 	}
@@ -669,10 +673,11 @@ func (s *PostgresStore) TeamsUsingMedia(ctx context.Context, mediaID, except uui
 	return teams, rows.Err()
 }
 
-// withGalleriesAndDoorStaff reads the gallery images and door staff of every
-// Event, in one query each whatever the number of Events: a gallery image
-// comes with the Media it is (media.LinkedImageSQL), so its sizes need no
-// query either. Every Event gets empty lists, never nil ones.
+// withGalleriesAndDoorStaff reads the gallery images, door staff and
+// Co-organizers of every Event, in one query each whatever the number of
+// Events: a gallery image comes with the Media it is (media.LinkedImageSQL),
+// so its sizes need no query either. Every Event gets empty gallery and door
+// staff lists, never nil ones; its Co-organizer lists stay nil for none.
 func (s *PostgresStore) withGalleriesAndDoorStaff(ctx context.Context, events []Event) error {
 	if len(events) == 0 {
 		return nil
@@ -728,7 +733,11 @@ func (s *PostgresStore) withGalleriesAndDoorStaff(ctx context.Context, events []
 		e := &events[byID[eventID]]
 		e.DoorStaffIDs = append(e.DoorStaffIDs, userID)
 	}
-	return staff.Err()
+	if err := staff.Err(); err != nil {
+		return err
+	}
+	staff.Close()
+	return s.withCoOrganizers(ctx, ids, events, byID)
 }
 
 func (s *PostgresStore) replaceDoorStaff(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, ids []uuid.UUID) error {
