@@ -2012,6 +2012,13 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM information_schema.columns
 			WHERE table_schema = 'public' AND table_name = 'privilege_notice_mails' AND column_name = 'via'
 		)`,
+	// The door staff mail's queue (docs/door-staff-mail.md) and its two
+	// indexes.
+	20261126150000: `
+		SELECT 1
+		WHERE to_regclass('public.door_staff_notifications') IS NOT NULL
+		  AND to_regclass('public.door_staff_notifications_due_idx') IS NOT NULL
+		  AND to_regclass('public.door_staff_notifications_user_idx') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

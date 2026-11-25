@@ -103,6 +103,9 @@ services:
       TICKET_STATUS_MAIL: ${TICKET_STATUS_MAIL:-off}
       # A published Event's new time or place (docs/event-updated-notification.md).
       EVENT_UPDATED_NOTIFICATION: ${EVENT_UPDATED_NOTIFICATION:-off}
+      # The mail a person added to an Event's door staff gets (docs/door-staff-mail.md).
+      DOOR_STAFF_MAIL: ${DOOR_STAFF_MAIL:-off}
+      PANEL_URL: ${PANEL_URL:-}
       # The reminder the day before an Event (docs/event-reminder.md).
       EVENT_REMINDER_NOTIFICATION: ${EVENT_REMINDER_NOTIFICATION:-off}
       SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY: ${SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY-event.reminder}
