@@ -49,9 +49,9 @@ func TestAppCatalogueIsAppRoles(t *testing.T) {
 	if !ok || !forms.AssignmentRequired || !slices.Equal(forms.SuggestedRoles, []string{"skyforms:access"}) {
 		t.Errorf("forms = %+v", forms)
 	}
-	mail, ok := AppOf(apps, "skymail")
-	if !ok || !mail.AssignmentRequired || !slices.Equal(mail.SuggestedRoles, []string{"skymail:access", "skymail:templates:read"}) {
-		t.Errorf("skymail = %+v", mail)
+	mail, ok := AppOf(apps, "skynotify")
+	if !ok || !mail.AssignmentRequired || !slices.Equal(mail.SuggestedRoles, []string{"skynotify:access", "skynotify:templates:read"}) {
+		t.Errorf("skynotify = %+v", mail)
 	}
 	if _, ok := AppOf(apps, "broker"); ok {
 		t.Error("broker is in the catalogue")
@@ -70,7 +70,7 @@ func TestParseAppsRefuses(t *testing.T) {
 		"role twice":    `{"apps": [{"client": "forms", "name": "A", "roles": ["skyforms:access", "skyforms:access"]}]}`,
 		"admin role":    `{"apps": [{"client": "forms", "name": "A", "roles": ["skyforms:*"]}]}`,
 		"unclassified":  `{"apps": [{"client": "skycloud", "name": "A", "roles": ["skycloud:access"]}]}`,
-		"other client":  `{"apps": [{"client": "skymail", "name": "A", "roles": ["skyforms:access"]}]}`,
+		"other client":  `{"apps": [{"client": "skynotify", "name": "A", "roles": ["skyforms:access"]}]}`,
 		"broker":        `{"apps": [{"client": "broker", "name": "A", "roles": ["read-token"]}]}`,
 		"suggest other": `{"apps": [{"client": "forms", "name": "A", "roles": ["skyforms:access"], "suggestedRoles": ["skyforms:form:manage"]}]}`,
 	} {

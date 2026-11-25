@@ -197,7 +197,7 @@ func TestSyncForbiddenForMember(t *testing.T) {
 	}
 }
 
-// A sync writes (a SkyMail list with the applicants on it): DK, who reads
+// A sync writes (a SkyNotify list with the applicants on it): DK, who reads
 // the applicants (grup-yonetimi GY1), and global:read may not run one; YK
 // may (review of #244, A1).
 func TestSyncNeedsAWriteDecision(t *testing.T) {

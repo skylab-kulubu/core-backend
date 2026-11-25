@@ -14,7 +14,7 @@ func TestRegistryListsTheThreeServicesInSagaOrder(t *testing.T) {
 
 	got := erasure.Registry()
 	want := []erasure.Service{
-		{Name: "skymail", Step: user.DeletionStepEraseSkyMail, URLVar: "ACCOUNT_ERASURE_SKYMAIL_URL", Scope: "account-erase-skymail"},
+		{Name: "skynotify", Step: user.DeletionStepEraseSkyNotify, URLVar: "ACCOUNT_ERASURE_SKYNOTIFY_URL", Scope: "account-erase-skynotify"},
 		// inscribed has no access gate: its step waits until a token issued
 		// before the identity was closed has expired (300 s + 30 s skew).
 		{Name: "cms", Step: user.DeletionStepEraseCMS, URLVar: "ACCOUNT_ERASURE_CMS_URL", Scope: "account-erase-cms", WaitAfterIdentityClosed: 6 * time.Minute},
@@ -29,14 +29,14 @@ func TestRegistryListsTheThreeServicesInSagaOrder(t *testing.T) {
 		}
 	}
 	got[0].Scope = "changed"
-	if erasure.Registry()[0].Scope != "account-erase-skymail" {
+	if erasure.Registry()[0].Scope != "account-erase-skynotify" {
 		t.Fatal("registry is mutable through a returned slice")
 	}
 }
 
 func completeEnv() map[string]string {
 	return map[string]string{
-		"ACCOUNT_ERASURE_SKYMAIL_URL":   "http://skymail-backend:8080/",
+		"ACCOUNT_ERASURE_SKYNOTIFY_URL": "http://skynotify-backend:8080/",
 		"ACCOUNT_ERASURE_CMS_URL":       "http://inscribed:5000",
 		"ACCOUNT_ERASURE_FORMS_URL":     "https://forms-backend.internal",
 		"ACCOUNT_ERASURE_CLIENT_ID":     "core-erasure",
@@ -71,7 +71,7 @@ func TestConfigRequiresEveryServiceAndTheClientWhenEnabled(t *testing.T) {
 	t.Parallel()
 
 	for _, name := range []string{
-		"ACCOUNT_ERASURE_SKYMAIL_URL",
+		"ACCOUNT_ERASURE_SKYNOTIFY_URL",
 		"ACCOUNT_ERASURE_CMS_URL",
 		"ACCOUNT_ERASURE_FORMS_URL",
 		"ACCOUNT_ERASURE_CLIENT_ID",
@@ -94,7 +94,7 @@ func TestConfigRejectsABadValueByNameOnly(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]string{
-		"ACCOUNT_ERASURE_SKYMAIL_URL":   "skymail-backend:8080",
+		"ACCOUNT_ERASURE_SKYNOTIFY_URL": "skynotify-backend:8080",
 		"ACCOUNT_ERASURE_CMS_URL":       "ftp://cms-backend",
 		"ACCOUNT_ERASURE_FORMS_URL":     "http://forms-backend/?token=leak",
 		"ACCOUNT_ERASURE_ALERT_AFTER":   "-1h",
@@ -129,7 +129,7 @@ func TestConfigBuildsEndpointsInRegistryOrder(t *testing.T) {
 	if len(config.Endpoints) != 3 {
 		t.Fatalf("endpoints = %+v", config.Endpoints)
 	}
-	wantURLs := []string{"http://skymail-backend:8080", "http://inscribed:5000", "https://forms-backend.internal"}
+	wantURLs := []string{"http://skynotify-backend:8080", "http://inscribed:5000", "https://forms-backend.internal"}
 	for i, endpoint := range config.Endpoints {
 		if endpoint.Service != erasure.Registry()[i] || endpoint.BaseURL != wantURLs[i] {
 			t.Fatalf("endpoint[%d] = %+v", i, endpoint)
@@ -188,7 +188,7 @@ func TestServiceNamedFindsARegistryEntry(t *testing.T) {
 			t.Fatalf("%s = %+v %v", entry.Name, got, ok)
 		}
 	}
-	if _, ok := erasure.ServiceNamed("SkyMail"); ok {
+	if _, ok := erasure.ServiceNamed("SkyNotify"); ok {
 		t.Fatal("a name that is not in the registry was found")
 	}
 }
@@ -197,16 +197,16 @@ func TestClientFromEnvBuildsOneServicesClientWithoutTheWorkerFlag(t *testing.T) 
 	t.Parallel()
 
 	values := completeEnv()
-	service, _ := erasure.ServiceNamed("skymail")
+	service, _ := erasure.ServiceNamed("skynotify")
 	client, err := erasure.ClientFromEnv(func(key string) string { return values[key] }, service, "http://keycloak:8080/realms/e-skylab/protocol/openid-connect/token")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if client.Service != service || client.BaseURL != "http://skymail-backend:8080" {
+	if client.Service != service || client.BaseURL != "http://skynotify-backend:8080" {
 		t.Fatalf("client = %+v", client)
 	}
 	tokens, ok := client.Tokens.(*erasure.ClientCredentials)
-	if !ok || tokens.ClientID != "core-erasure" || tokens.Scope != "account-erase-skymail" ||
+	if !ok || tokens.ClientID != "core-erasure" || tokens.Scope != "account-erase-skynotify" ||
 		tokens.TokenURL != "http://keycloak:8080/realms/e-skylab/protocol/openid-connect/token" {
 		t.Fatalf("tokens = %+v", client.Tokens)
 	}

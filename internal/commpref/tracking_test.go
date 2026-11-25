@@ -229,7 +229,7 @@ func (s *fakeSender) Withdraw(_ context.Context, subject uuid.UUID) WithdrawalRe
 	return r
 }
 
-// The worker sends each waiting withdrawal until SkyMail confirms it: a
+// The worker sends each waiting withdrawal until SkyNotify confirms it: a
 // failure waits its backoff (Retry-After kept between 30 s and 15 min; 403
 // and 404 the longest), a 400 is dropped, nothing is ever given up on.
 func TestWithdrawalsRetryUntilSent(t *testing.T) {
@@ -356,12 +356,12 @@ func (s *staticTokens) Invalidate() {
 // The HTTP sender: PUT …/internal/v1/tracking-withdrawals/{sub} with the
 // token, no body, no forwarding header; each answer classified; the token
 // forgotten on 401 and 403; a redirect never followed.
-func TestSkyMailWithdrawals(t *testing.T) {
+func TestSkyNotifyWithdrawals(t *testing.T) {
 	subject := uuid.MustParse("7d3c1f6e-0b9a-4c55-9a51-3f4d2b8e6a10")
 	var status int
 	var retryAfterHeader string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut || r.URL.Path != "/skymail/internal/v1/tracking-withdrawals/"+subject.String() ||
+		if r.Method != http.MethodPut || r.URL.Path != "/skynotify/internal/v1/tracking-withdrawals/"+subject.String() ||
 			r.Header.Get("Authorization") != "Bearer t0k" || r.ContentLength > 0 {
 			t.Errorf("request %s %s %q len=%d", r.Method, r.URL.Path, r.Header.Get("Authorization"), r.ContentLength)
 		}
@@ -380,7 +380,7 @@ func TestSkyMailWithdrawals(t *testing.T) {
 	}))
 	defer srv.Close()
 	tokens := &staticTokens{token: "t0k"}
-	sender := &SkyMailWithdrawals{BaseURL: srv.URL + "/skymail", Tokens: tokens}
+	sender := &SkyNotifyWithdrawals{BaseURL: srv.URL + "/skynotify", Tokens: tokens}
 	for _, c := range []struct {
 		status      int
 		retryAfter  string
@@ -420,13 +420,13 @@ func TestWithdrawalURLFromEnv(t *testing.T) {
 	if base, from, err := WithdrawalURLFromEnv(env(nil)); base != "" || from != "" || err != nil {
 		t.Fatalf("unset: %q %q %v", base, from, err)
 	}
-	if base, from, err := WithdrawalURLFromEnv(env(map[string]string{withdrawalURLFallbackEnv: "http://skymail-backend-x:8080/"})); base != "http://skymail-backend-x:8080" || from != withdrawalURLFallbackEnv || err != nil {
+	if base, from, err := WithdrawalURLFromEnv(env(map[string]string{withdrawalURLFallbackEnv: "http://skynotify-backend-x:8080/"})); base != "http://skynotify-backend-x:8080" || from != withdrawalURLFallbackEnv || err != nil {
 		t.Fatalf("fallback: %q %q %v", base, from, err)
 	}
 	if base, from, err := WithdrawalURLFromEnv(env(map[string]string{WithdrawalURLEnv: "http://a:1", withdrawalURLFallbackEnv: "http://b:2"})); base != "http://a:1" || from != WithdrawalURLEnv || err != nil {
 		t.Fatalf("own: %q %q %v", base, from, err)
 	}
-	for _, bad := range []string{"skymail:8080", "http://u:p@a", "http://a/?q=1", "ftp://a"} {
+	for _, bad := range []string{"skynotify:8080", "http://u:p@a", "http://a/?q=1", "ftp://a"} {
 		if _, _, err := WithdrawalURLFromEnv(env(map[string]string{WithdrawalURLEnv: bad})); err == nil || strings.Contains(err.Error(), bad) {
 			t.Fatalf("%q: %v", bad, err)
 		}

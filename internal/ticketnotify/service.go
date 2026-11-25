@@ -1,6 +1,6 @@
 // Package ticketnotify tells a new Ticket's holder that the Ticket is there
 // (iletişim-servisi 06, ADR 0070; docs/ticket-created-notification.md):
-// core says what happened and to whom, SkyMail picks the channels (inbox and
+// core says what happened and to whom, SkyNotify picks the channels (inbox and
 // e-mail) and the text. Member apply, Apply-for-other and Guest apply queue
 // the Ticket in the statement that writes it (ticket_notifications); this
 // worker reads the holder when it sends, posts the Notification under a key
@@ -91,13 +91,13 @@ type Queue interface {
 	Retry(ctx context.Context, claimed Queued, at time.Time) error
 }
 
-// Mailer posts the Notification (mail.SkyMail).
+// Mailer posts the Notification (mail.SkyNotify).
 type Mailer interface {
 	TicketCreated(ctx context.Context, idempotencyKey string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time, attachments []mail.Attachment) error
 }
 
 // StatusMailer posts the waiting list's and the cancellation's mails
-// (mail.SkyMail): typ is mail.WaitlistJoinedType, mail.WaitlistPromotedType
+// (mail.SkyNotify): typ is mail.WaitlistJoinedType, mail.WaitlistPromotedType
 // or mail.TicketCancelledType. A Mailer that is not one drops those rows.
 type StatusMailer interface {
 	TicketStatus(ctx context.Context, typ, idempotencyKey string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time, attachments []mail.Attachment) error
@@ -174,16 +174,16 @@ func NewService(config Config) (*Service, error) {
 
 // Report counts one pass.
 type Report struct {
-	// Sent: SkyMail took the Notification. Dropped: nothing to tell any
+	// Sent: SkyNotify took the Notification. Dropped: nothing to tell any
 	// more (the Ticket, its Event or its holder is gone, the Event is not
-	// published, or is over). Rejected: SkyMail refused the request itself.
+	// published, or is over). Rejected: SkyNotify refused the request itself.
 	// Expired: tried for GiveUpAfter. Retried: tried again later.
 	// Uncertain: a guest's mail went out and no answer came; it is not
 	// tried again, so the guest is not mailed twice.
 	Sent, Dropped, Rejected, Expired, Retried, Uncertain int
 	// PDFSkipped: while the PDF goes along, a mail sent (or tried) without
 	// it: Gotenberg failed or took longer than PDFTimeout, the PDF was over
-	// SkyMail's 512 KB, or SkyMail refused the body with it.
+	// SkyNotify's 512 KB, or SkyNotify refused the body with it.
 	PDFSkipped int
 }
 
@@ -198,7 +198,7 @@ func IdempotencyKey(ticketID uuid.UUID) string {
 }
 
 // ResendKey is the key of the n-th time the panel sent a Ticket's mail
-// again: …:r<n>, its own, so SkyMail sends it rather than answering the
+// again: …:r<n>, its own, so SkyNotify sends it rather than answering the
 // first mail's replay (docs/ticket-resend.md). n 0 is the first mail's.
 func ResendKey(ticketID uuid.UUID, n int) string {
 	if n <= 0 {
@@ -383,10 +383,10 @@ func (s *Service) deliver(ctx context.Context, q Queued, pdf *bool, report *Repo
 	err = send(attachments)
 	var refused *mail.SendError
 	if attachments != nil && errors.As(err, &refused) && refused.Permanent() {
-		// SkyMail refused the body with the file (400 attachment.*, say):
+		// SkyNotify refused the body with the file (400 attachment.*, say):
 		// the link, the QR and the code are in the mail, so it goes without.
 		// A refused request leaves no key behind: the same key is free.
-		s.logger.Printf("ticket notification: SkyMail refused the mail with the PDF (%d %s); sent without it", refused.Status, refused.Code)
+		s.logger.Printf("ticket notification: SkyNotify refused the mail with the PDF (%d %s); sent without it", refused.Status, refused.Code)
 		report.PDFSkipped++
 		err = send(nil)
 	}
@@ -394,7 +394,7 @@ func (s *Service) deliver(ctx context.Context, q Queued, pdf *bool, report *Repo
 	case errors.Is(err, mail.ErrMaybeDelivered):
 		return uncertain, nil
 	case errors.As(err, &refused) && refused.Permanent():
-		// SkyMail refuses this body itself (400, 422): the same body would be
+		// SkyNotify refuses this body itself (400, 422): the same body would be
 		// refused again.
 		return rejected, nil
 	case err != nil:
@@ -404,10 +404,10 @@ func (s *Service) deliver(ctx context.Context, q Queued, pdf *bool, report *Repo
 }
 
 // attachment is t's PDF as the mail's attachment, drawn now (a retry draws
-// it again; SkyMail keeps the first try's file under the same key), or nil
+// it again; SkyNotify keeps the first try's file under the same key), or nil
 // when the mail goes without it: Gotenberg failed or took longer than
 // PDFTimeout (and then *pdf turns off for the rest of the pass), or the
-// file is over SkyMail's 512 KB. The log names the Event, never the holder.
+// file is over SkyNotify's 512 KB. The log names the Event, never the holder.
 // An error only when ctx ends: core is stopping.
 func (s *Service) attachment(ctx context.Context, t ticket.Ticket, ev event.Event, pdf *bool) ([]mail.Attachment, error) {
 	if !*pdf {
@@ -424,7 +424,7 @@ func (s *Service) attachment(ctx context.Context, t ticket.Ticket, ev event.Even
 		s.logger.Printf("ticket notification: no PDF for event %s, the rest of this pass goes without it: %v", ev.ID, err)
 		return nil, nil
 	case len(data) > mail.MaxAttachmentBytes:
-		s.logger.Printf("ticket notification: the PDF of event %s is %d KB, over SkyMail's %d KB; the mail goes without it", ev.ID, (len(data)+1023)/1024, mail.MaxAttachmentBytes/1024)
+		s.logger.Printf("ticket notification: the PDF of event %s is %d KB, over SkyNotify's %d KB; the mail goes without it", ev.ID, (len(data)+1023)/1024, mail.MaxAttachmentBytes/1024)
 		return nil, nil
 	}
 	return []mail.Attachment{mail.PDFAttachment(name, data)}, nil
@@ -456,9 +456,9 @@ func (s *Service) holder(ctx context.Context, t ticket.Ticket) (mail.TicketHolde
 	return mail.TicketHolder{Sub: *t.OwnerID}, true, nil
 }
 
-// vars are the type's variables (SkyMail emails/event-ticket-created.tsx):
+// vars are the type's variables (SkyNotify emails/event-ticket-created.tsx):
 // the Event's, the same for any holder. EventId fills the inbox item's link.
-// Every key is always there, EventDate empty without a start: SkyMail
+// Every key is always there, EventDate empty without a start: SkyNotify
 // renders the inbox text with missingkey=error.
 //
 // While TICKET_PAGE_URL is set, the Ticket's own three join them (ADR 0082,
@@ -489,7 +489,7 @@ func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]string {
 	return vars
 }
 
-// waitlistedVars are event.waitlist-joined's variables (skymail-frontend
+// waitlistedVars are event.waitlist-joined's variables (skynotify-frontend
 // #179): the Event's and TicketUrl, the ticket page where the holder may
 // leave the list (empty without TICKET_PAGE_URL). No QR and no code: a
 // waitlisted Ticket opens no door (its QR answers 410).
@@ -501,7 +501,7 @@ func waitlistedVars(vars map[string]string) map[string]string {
 	return out
 }
 
-// cancelledVars are event.ticket-cancelled's variables (skymail-frontend
+// cancelledVars are event.ticket-cancelled's variables (skynotify-frontend
 // #179): the Event's, CancelledBy (holder or operator) and Reason, the
 // operator's reason (empty for the holder, or when none was given), all of
 // them always. No link, QR or code: a cancelled Ticket opens nothing.
@@ -544,7 +544,7 @@ func (s *Service) Run(ctx context.Context, logf func(string, ...any)) <-chan str
 			case err != nil && ctx.Err() == nil:
 				logf("ticket notification: queue: %v", err)
 			case report.any():
-				logf("ticket notification: %d sent, %d dropped, %d refused by SkyMail, %d given up, %d tried again later, %d guest mails unanswered and not tried again, %d pdf_skipped",
+				logf("ticket notification: %d sent, %d dropped, %d refused by SkyNotify, %d given up, %d tried again later, %d guest mails unanswered and not tried again, %d pdf_skipped",
 					report.Sent, report.Dropped, report.Rejected, report.Expired, report.Retried, report.Uncertain, report.PDFSkipped)
 			}
 			select {
