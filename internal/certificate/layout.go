@@ -189,10 +189,12 @@ func LayoutHTML(ctx context.Context, layout Layout, data PreviewData, verifyURL 
 document.querySelectorAll('[data-short]').forEach(function(el){if(over(el)){el.style.fontSize=el.dataset.font+'px';el.textContent=el.dataset.short;if(el.classList.contains('fit'))fit(el)}})`
 	if faces != "" {
 		// Measure the text once the embedded fonts are in, not in the
-		// fallback the page starts with.
-		fitText = `document.fonts.ready.then(function(){
+		// fallback the page starts with, then tell the renderer the page
+		// is ready to print (fitDoneFlag; also when fitting throws, so
+		// the renderer never waits in vain).
+		fitText = `document.fonts.ready.then(function(){try{
 ` + fitText + `
-})`
+}finally{` + fitDoneFlag + `}})`
 	}
 	return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><style>
 ` + faces + `@page{size:` + number(layout.Width) + `px ` + number(layout.Height) + `px;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif}.page{position:relative;width:` + number(layout.Width) + `px;height:` + number(layout.Height) + `px;overflow:hidden;background:` + html.EscapeString(bg) + `;` + background + `}.fit{display:flex;align-items:center;white-space:nowrap;overflow:hidden}

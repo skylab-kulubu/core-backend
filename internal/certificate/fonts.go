@@ -59,6 +59,14 @@ func catalogFontNamed(family string) (catalogFont, bool) {
 	return catalogFont{}, false
 }
 
+// A page that embeds fonts fits its text once they are in, after the page
+// loaded, and then sets fitDoneFlag; the renderer prints it once
+// fitDoneExpression is true (Gotenberg's waitForExpression).
+const (
+	fitDoneFlag       = "window.__certFitDone=true"
+	fitDoneExpression = "window.__certFitDone === true"
+)
+
 var (
 	fontFaceCSS     = map[string]string{}
 	fontFaceCSSLock sync.Mutex

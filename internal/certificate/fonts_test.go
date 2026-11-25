@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"path"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -23,6 +24,7 @@ func TestCatalogFontsDrawTurkish(t *testing.T) {
 	t.Parallel()
 	for _, font := range catalogFonts {
 		faces := map[string]map[rune]bool{}
+		drawn := map[string]map[rune]bool{}
 		names, err := fs.Glob(catalogFiles, path.Join("fonts", font.Dir, "*.woff2"))
 		if err != nil || len(names) == 0 {
 			t.Fatalf("%s: no files: %v", font.Family, err)
@@ -38,6 +40,17 @@ func TestCatalogFontsDrawTurkish(t *testing.T) {
 			}
 			base := path.Base(name)
 			face := base[:strings.LastIndex(base, "-latin")]
+			// A letter is drawn only from a file whose unicode-range holds
+			// it (ı is in both ranges and in the latin file alone).
+			subset := strings.TrimSuffix(base[len(face)+1:], ".woff2")
+			if drawn[face] == nil {
+				drawn[face] = map[rune]bool{}
+			}
+			for r := range runes {
+				if inUnicodeRange(subsetRanges[subset], r) {
+					drawn[face][r] = true
+				}
+			}
 			if faces[face] == nil {
 				faces[face] = map[rune]bool{}
 			}
@@ -49,6 +62,8 @@ func TestCatalogFontsDrawTurkish(t *testing.T) {
 			for _, r := range turkishLetters + "AZaz09.,'-" {
 				if !runes[r] {
 					t.Errorf("%s %s does not draw %q", font.Family, face, r)
+				} else if !drawn[face][r] {
+					t.Errorf("%s %s has %q only in a file whose unicode-range leaves it out", font.Family, face, r)
 				}
 			}
 		}
@@ -113,8 +128,8 @@ func TestLayoutHTMLEmbedsTheFontsItUses(t *testing.T) {
 	if !strings.Contains(html, "font-family:Montserrat,'Liberation Sans',sans-serif;") || !strings.Contains(html, "font-family:'Great Vibes','Liberation Serif',cursive;") {
 		t.Fatalf("the elements do not name their fonts: %s", html[strings.Index(html, "<main"):])
 	}
-	if !strings.Contains(html, "document.fonts.ready.then(function(){") {
-		t.Fatal("the fit script measures text before the embedded fonts are in")
+	if !strings.Contains(html, "document.fonts.ready.then(function(){try{") || !strings.Contains(html, "}finally{"+fitDoneFlag+"}})") || !waitsForFit(html) {
+		t.Fatal("the fit script measures text before the embedded fonts are in, or does not tell the renderer it is done")
 	}
 
 	layout, _ = legacyFixture(t)
@@ -124,8 +139,8 @@ func TestLayoutHTMLEmbedsTheFontsItUses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(html, "@font-face") || strings.Contains(html, "document.fonts") {
-		t.Fatal("a page without catalog fonts embeds fonts")
+	if strings.Contains(html, "@font-face") || strings.Contains(html, "document.fonts") || waitsForFit(html) {
+		t.Fatal("a page without catalog fonts embeds fonts or waits for them")
 	}
 	if !strings.Contains(html, "font-family:'Liberation Sans',Arial,sans-serif;") {
 		t.Fatal("an unknown font no longer falls back to Liberation Sans")
@@ -244,4 +259,20 @@ func cmapRunes(cmap []byte) (map[rune]bool, error) {
 		return nil, fmt.Errorf("no Unicode cmap subtable")
 	}
 	return runes, nil
+}
+
+// inUnicodeRange is r inside a CSS unicode-range ("U+0000-00FF,U+0131").
+func inUnicodeRange(ranges string, r rune) bool {
+	for _, part := range strings.Split(ranges, ",") {
+		lo, hi, _ := strings.Cut(strings.TrimPrefix(strings.TrimSpace(part), "U+"), "-")
+		if hi == "" {
+			hi = lo
+		}
+		a, err1 := strconv.ParseUint(lo, 16, 32)
+		b, err2 := strconv.ParseUint(hi, 16, 32)
+		if err1 == nil && err2 == nil && uint64(r) >= a && uint64(r) <= b {
+			return true
+		}
+	}
+	return false
 }
