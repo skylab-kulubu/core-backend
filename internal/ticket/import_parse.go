@@ -46,7 +46,23 @@ var (
 	// import_unreadable). Bytes that are not UTF-8 are not: they make
 	// their rows invalid (badCharacters).
 	ErrImportUnreadable = errors.New("ticket: the import list cannot be read")
+	// ErrImportAmbiguousEmail is a list with more than one column that may
+	// be the e-mail and holds addresses ("E-posta" and "Okul e-postası"):
+	// core does not guess (400 import_ambiguous_email_column). The error is
+	// an *ImportAmbiguousEmailError naming the columns.
+	ErrImportAmbiguousEmail = errors.New("ticket: more than one e-mail column in the import list")
 )
+
+// ImportAmbiguousEmailError names the columns that may each be the e-mail.
+type ImportAmbiguousEmailError struct {
+	Columns []string
+}
+
+func (e *ImportAmbiguousEmailError) Error() string {
+	return ErrImportAmbiguousEmail.Error() + ": " + strings.Join(e.Columns, ", ")
+}
+
+func (e *ImportAmbiguousEmailError) Is(target error) bool { return target == ErrImportAmbiguousEmail }
 
 // ImportColumns says which of the list's columns were read as what: the
 // header's text, or "1", "2"… for a list without a header. Empty for a
@@ -127,6 +143,56 @@ func foldHeader(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// possessiveEndings are the Turkish second person endings a form's question
+// puts on a word, folded ("Adınız", "Numaran", "Durumun"), longest first.
+var possessiveEndings = []string{"iniz", "unuz", "niz", "nuz", "in", "un", "n"}
+
+// stemAliases are words read as another: stems the endings leave that are
+// not themselves a name ("İsminiz" is "isim" with its vowel dropped) and
+// possessive words headerNames knows alone.
+var stemAliases = map[string]string{
+	"ism": "isim", "soyism": "soyisim", "isminiz": "isim", "soyisminiz": "soyisim",
+	"adi": "ad", "adiniz": "ad", "soyadi": "soyad", "soyadiniz": "soyad",
+}
+
+// classifyHeader is what a header cell names. The e-mail is any header
+// that says so ("E-mail adresin:", "Okul e-postası", "Your email"): its
+// words hold "mail" or "eposta". The others are read word by word, the
+// possessive endings off ("Adınız Soyadınız" is "Ad Soyad"). A cell holding
+// an address is a row, never a header.
+func classifyHeader(cell string) columnKind {
+	if strings.Contains(cell, "@") {
+		return colNone
+	}
+	folded := foldHeader(cell)
+	if folded == "" {
+		return colNone
+	}
+	if kind, ok := headerNames[folded]; ok {
+		return kind
+	}
+	if strings.Contains(folded, "mail") || strings.Contains(folded, "eposta") {
+		return colEmail
+	}
+	var stems strings.Builder
+	for _, word := range strings.FieldsFunc(cell, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }) {
+		w := foldHeader(word)
+		if _, ok := headerNames[w]; !ok && stemAliases[w] == "" {
+			for _, end := range possessiveEndings {
+				if stem, cut := strings.CutSuffix(w, end); cut && len(stem) >= 2 {
+					w = stem
+					break
+				}
+			}
+		}
+		if alias, ok := stemAliases[w]; ok {
+			w = alias
+		}
+		stems.WriteString(w)
+	}
+	return headerNames[stems.String()]
 }
 
 // cleanCell is a cell without the blanks around it and the invisible
@@ -226,7 +292,7 @@ func parseImport(text string) ([]importLine, ImportColumns, error) {
 	header := records[0]
 	candidates := map[columnKind][]int{}
 	for i, cell := range header {
-		if kind, ok := headerNames[foldHeader(cell)]; ok {
+		if kind := classifyHeader(cell); kind != colNone {
 			candidates[kind] = append(candidates[kind], i)
 		}
 	}
@@ -243,7 +309,7 @@ func parseImport(text string) ([]importLine, ImportColumns, error) {
 	if msFormsExport(header) {
 		respEmail, respName := -1, -1
 		for i := 1; i < msFormsColumns; i++ {
-			switch headerNames[foldHeader(header[i])] {
+			switch classifyHeader(header[i]) {
 			case colEmail:
 				respEmail = i
 			case colFirst, colLast, colFull:
@@ -251,7 +317,13 @@ func parseImport(text string) ([]importLine, ImportColumns, error) {
 			}
 		}
 		for kind, at := range candidates {
-			if own := slices.DeleteFunc(slices.Clone(at), func(i int) bool { return i < msFormsColumns }); len(own) > 0 {
+			own := slices.DeleteFunc(slices.Clone(at), func(i int) bool { return i < msFormsColumns })
+			// A question that only mentions e-mail ("E-posta ile haber
+			// verelim mi?") does not push out the respondent's addresses.
+			if kind == colEmail && !slices.ContainsFunc(own, func(i int) bool { return holdsAddresses(records[1:], i) }) {
+				own = nil
+			}
+			if len(own) > 0 {
 				candidates[kind] = own
 			} else {
 				delete(candidates, kind)
@@ -271,15 +343,23 @@ func parseImport(text string) ([]importLine, ImportColumns, error) {
 		for kind, at := range candidates {
 			idx[kind] = at[0]
 		}
-		// Of two e-mail columns (Microsoft Forms' respondent column and the
-		// form's own question), the one whose first row holds an address.
-		if len(candidates[colEmail]) > 1 && len(data) > 0 {
-			for _, at := range candidates[colEmail] {
-				if at < len(data[0]) && strings.Contains(data[0][at], "@") {
-					idx[colEmail] = at
-					break
+		// Of several columns that may be the e-mail, the one holding
+		// addresses; a column of answers ("E-posta ile haber verelim mi?")
+		// holds none. Two holding addresses ("E-posta" and "Okul
+		// e-postası") are refused: core names them and does not guess.
+		if emails := candidates[colEmail]; len(emails) > 1 {
+			holding := slices.DeleteFunc(slices.Clone(emails), func(at int) bool { return !holdsAddresses(data, at) })
+			if len(holding) != 1 {
+				if len(holding) == 0 {
+					holding = emails
 				}
+				names := make([]string, len(holding))
+				for i, at := range holding {
+					names[i] = header[at]
+				}
+				return nil, ImportColumns{}, &ImportAmbiguousEmailError{Columns: names}
 			}
+			idx[colEmail] = holding[0]
 		}
 	} else {
 		// No header: the first column holding an address is the e-mail;
@@ -359,6 +439,16 @@ func parseImport(text string) ([]importLine, ImportColumns, error) {
 		out = append(out, l)
 	}
 	return out, cols, nil
+}
+
+// holdsAddresses reports whether column at holds an address in any row.
+func holdsAddresses(data [][]string, at int) bool {
+	for _, rec := range data {
+		if at < len(rec) && strings.Contains(rec[at], "@") {
+			return true
+		}
+	}
+	return false
 }
 
 // msFormsColumns is how many columns a Microsoft Forms export starts with
