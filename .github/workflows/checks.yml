@@ -16,6 +16,9 @@ name: Checks
 # The tests run in shards (test (N)), split by the last runs' timings, a long
 # package by its test names (scripts/ci/testplan plan); each shard runs one
 # PostgreSQL server and each test a database of its own on it.
+# pdf-tools/ (the Python PDF service) has a job of its own: its image's tests,
+# run in the image, and the image itself started once; in a full run and when
+# pdf-tools/ or a workflow changed.
 # One required check: gate.
 on:
   pull_request:
@@ -54,6 +57,7 @@ jobs:
       full: ${{ steps.scope.outputs.full }}
       promoted: ${{ steps.scope.outputs.promoted }}
       lint: ${{ steps.scope.outputs.lint }}
+      pdf_tools: ${{ steps.scope.outputs.pdf_tools }}
       tests: ${{ steps.plan.outputs.tests }}
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
@@ -96,25 +100,27 @@ jobs:
           out "full=$FULL"
           if [[ $FULL == true && $PROMOTABLE == true ]] && bash scripts/ci/tested-tree.sh "$(git rev-parse 'HEAD^{tree}')"; then
             echo 'promoted: this tree passed a full run already; nothing to test again'
-            out promoted=true lint=false
+            out promoted=true lint=false pdf_tools=false
             : > packages.txt
             exit 0
           fi
           out promoted=false
           if [[ $FULL == true ]]; then
             echo 'full run: every package'
-            out lint=true
+            out lint=true pdf_tools=true
             go run ./scripts/ci/testplan affected -all > packages.txt
             exit 0
           fi
           if ! changed=$(git diff --name-only --no-renames HEAD^1 HEAD) || [[ -z $changed ]]; then
             echo 'the PR diff could not be read: every package' >&2
-            out lint=true
+            out lint=true pdf_tools=true
             go run ./scripts/ci/testplan affected -all > packages.txt
             exit 0
           fi
-          # Markdown only: no Go changed, nothing to format, vet or build.
-          if grep -qv '\.md$' <<<"$changed"; then out lint=true; else out lint=false; fi
+          # Markdown and pdf-tools/ only: no Go changed, nothing to format,
+          # vet or build.
+          if grep -qvE '(\.md$|^pdf-tools/)' <<<"$changed"; then out lint=true; else out lint=false; fi
+          if grep -qE '^(pdf-tools/|\.github/workflows/)' <<<"$changed"; then out pdf_tools=true; else out pdf_tools=false; fi
           go run ./scripts/ci/testplan affected <<<"$changed" > packages.txt
           echo "fast run: the tests of $(wc -l < packages.txt) packages"
 
@@ -348,6 +354,50 @@ jobs:
           path: ${{ runner.temp }}/test-results/
           retention-days: 7
 
+  # pdf-tools/: the test stage of its image runs its pytest, under the
+  # limits it runs with (pdf-tools/README.md); then the image itself starts
+  # with them and answers /healthz and an inspect.
+  pdf-tools:
+    needs: scope
+    if: needs.scope.outputs.pdf_tools == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the test and service images
+        run: |
+          docker build --target test -t pdf-tools-test pdf-tools
+          docker build -t pdf-tools pdf-tools
+          docker image ls --format '{{.Repository}} {{.Size}}' | grep '^pdf-tools'
+
+      - name: pytest in the image, with the service's limits
+        run: |
+          docker run --rm --read-only --tmpfs /tmp:size=64m --security-opt no-new-privileges \
+            --cap-drop ALL --pids-limit 64 --memory 512m --cpus 0.5 --network none \
+            pdf-tools-test python -m pytest -q -p no:cacheprovider -rA tests
+
+      - name: The service image starts and answers
+        run: |
+          docker run -d --name pdf-tools --read-only --tmpfs /tmp:size=64m \
+            --security-opt no-new-privileges --cap-drop ALL --pids-limit 64 --memory 512m --cpus 0.5 \
+            -p 127.0.0.1:18080:8080 pdf-tools
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:18080/healthz && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18080/healthz
+          docker run --rm pdf-tools-test python -c \
+            'import sys; sys.path.insert(0, "tests"); import fixtures; sys.stdout.buffer.write(fixtures.turkish())' > turkish.pdf
+          curl -fsS -H 'Content-Type: application/pdf' --data-binary @turkish.pdf http://127.0.0.1:18080/v1/inspect > inspect.json
+          jq -e '.textCount == 3 and .spans[1].text == "Ayşe Yıldız"' inspect.json
+          docker inspect --format '{{.State.Health.Status}} {{.Config.User}}' pdf-tools
+
+      - if: always()
+        run: |
+          docker logs pdf-tools 2>&1 | tail -50 || true
+          docker rm -f -v pdf-tools || true
+
   # The shards' timings, merged into the last ones, for the next plan. Not a
   # check: the gate does not wait for it, and its failure does not fail the
   # run (a run's success is what scripts/ci/tested-tree.sh looks for).
@@ -384,7 +434,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
-    needs: [scope, lint, test]
+    needs: [scope, lint, test, pdf-tools]
     steps:
       - name: Every selected job passed
         env:

@@ -143,11 +143,27 @@ type Event struct {
 	Images                 []GalleryImage `json:"images"`
 	ImageURLs              []string       `json:"imageUrls"`
 	DoorStaffIDs           []uuid.UUID    `json:"doorStaffIds,omitempty"`
-	MailListID             *uuid.UUID     `json:"mailListId,omitempty"`
-	ArchivedAt             *time.Time     `json:"archivedAt,omitempty"`
-	ArchivedBy             *uuid.UUID     `json:"archivedBy,omitempty"`
-	CreatedAt              time.Time      `json:"createdAt"`
-	UpdatedAt              time.Time      `json:"updatedAt"`
+	// CoOrganizers are the Event's Co-organizer teams and CoOrganizerIDs
+	// its Co-organizer people (docs/co-organizers.md), as the store read
+	// them; nil for none. Only SetOrganizers writes them: a Create, an
+	// Update or a Patch never does. Neither is in a JSON answer by itself:
+	// ProjectFor copies them to CoOrganizersView and CoOrganizerIDsView for
+	// who may edit the Event, so a public answer cannot carry them by
+	// mistake. CoOrganizerTeams are the team codes anyone may see
+	// (PublicCoOrganizerTeams): never a helper team, never a person.
+	CoOrganizers       []CoOrganizerTeam `json:"-"`
+	CoOrganizerIDs     []uuid.UUID       `json:"-"`
+	CoOrganizersView   []CoOrganizerTeam `json:"coOrganizers,omitempty"`
+	CoOrganizerIDsView []uuid.UUID       `json:"coOrganizerIds,omitempty"`
+	CoOrganizerTeams   []string          `json:"coOrganizerTeams,omitempty"`
+	// Viewer is what the signed-in caller may do on the Event (ProjectFor
+	// answers it); left out for who is signed out.
+	Viewer     *Viewer    `json:"viewer,omitempty"`
+	MailListID *uuid.UUID `json:"mailListId,omitempty"`
+	ArchivedAt *time.Time `json:"archivedAt,omitempty"`
+	ArchivedBy *uuid.UUID `json:"archivedBy,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	UpdatedAt  time.Time  `json:"updatedAt"`
 
 	// Files and Videos are the Event's files and videos, in their
 	// organizers' order (media redesign ticket 22). Only an Event's detail
@@ -170,6 +186,13 @@ type Event struct {
 	// it does only while the Event is cancelled: an update body that sends
 	// cancelReason (Patch) sets it.
 	cancelReasonSent bool
+	// notifyHolders is the editor's answer to "tell the Ticket holders?"
+	// for this update (Patch.NotifyTicketHolders); nil when the body did
+	// not say, which tells them, as before the question
+	// (docs/event-updated-notification.md#the-editors-choice).
+	notifyHolders *bool
+	// changedBy is who saves the update, for the record of that answer.
+	changedBy *uuid.UUID
 }
 
 type GalleryImage struct {

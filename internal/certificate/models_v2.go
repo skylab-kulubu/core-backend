@@ -25,7 +25,12 @@ type Layout struct {
 	Orientation       string     `json:"orientation"`
 	BackgroundColor   string     `json:"backgroundColor"`
 	BackgroundMediaID *uuid.UUID `json:"backgroundMediaId,omitempty"`
-	Elements          []Element  `json:"elements"`
+	// BackgroundPlacement places the background; nil (a layout written
+	// before it) prints the background as before (LegacyImagePlacement,
+	// LegacyPDFPlacement), and is stored as before, so the checksum of
+	// such a layout does not change.
+	BackgroundPlacement *BackgroundPlacement `json:"backgroundPlacement,omitempty"`
+	Elements            []Element            `json:"elements"`
 }
 
 type Element struct {
@@ -65,9 +70,14 @@ type TemplateDraft struct {
 }
 
 type Template struct {
-	ID               uuid.UUID        `json:"id"`
-	Name             string           `json:"name"`
-	OwnerTeam        string           `json:"ownerTeam"`
+	ID        uuid.UUID `json:"id"`
+	Name      string    `json:"name"`
+	OwnerTeam string    `json:"ownerTeam"`
+	// EventID names the Event an Event template belongs to: it is bound to
+	// that Event only and its rules follow the Event's
+	// (docs/certificate-event-templates.md). Nil for a team or club
+	// template.
+	EventID          *uuid.UUID       `json:"eventId,omitempty"`
 	SourceKind       string           `json:"sourceKind"`
 	SourceRef        string           `json:"sourceRef"`
 	SourceEditURL    string           `json:"sourceEditUrl"`
@@ -270,8 +280,17 @@ type MineCertificateEvent struct {
 	OrganizerName string `json:"organizerName"`
 }
 
+// TemplateFilter narrows ListTemplates. The zero filter lists the team and
+// club templates, never an Event template; EventID lists only that Event's.
+type TemplateFilter struct {
+	EventID *uuid.UUID
+}
+
 type TemplateStore interface {
-	ListTemplates(ctx context.Context) ([]Template, error)
+	// ListTemplates lists the current (not archived) templates filter
+	// names. CreateTemplate answers ErrConflict for a second current Event
+	// template of an Event.
+	ListTemplates(ctx context.Context, filter TemplateFilter) ([]Template, error)
 	GetTemplate(ctx context.Context, id uuid.UUID) (Template, error)
 	CreateTemplate(ctx context.Context, t Template) (Template, error)
 	UpdateTemplate(ctx context.Context, t Template) (Template, error)

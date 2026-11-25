@@ -25,11 +25,20 @@ type PostgresStore struct {
 	// notifyUpdated queues the change of a published Event's time or place
 	// for its Ticket holders (event_update_notifications,
 	// docs/event-updated-notification.md) in the transaction that writes
-	// it. Set at startup, read by every request: atomic.
+	// it, unless the editor said no. Set at startup, read by every
+	// request: atomic.
 	notifyUpdated atomic.Bool
+	// notifyChanged also queues a change of a published Event's other
+	// details (name, description, attendee note, capacity, links) when the
+	// editor says to tell (EVENT_CHANGED_NOTIFICATION, event.changed).
+	notifyChanged atomic.Bool
 	// notifyTickets lets Publish queue a draft's Tickets' Notifications
 	// (event.ticket-created) when the publisher asks (NotifyTicketsOnPublish).
 	notifyTickets atomic.Bool
+	// notifyDoorStaff queues the mail a person added to an Event's door
+	// staff gets (DOOR_STAFF_MAIL, docs/door-staff-mail.md) in the write
+	// that adds them.
+	notifyDoorStaff atomic.Bool
 	// notifyStatus queues a Ticket promoted from the waiting list as
 	// event.waitlist-promoted (TICKET_STATUS_MAIL, NotifyTicketStatus);
 	// off, as the new Ticket's mail while notifyTickets is on.
@@ -340,11 +349,11 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 	if err := lockFormPlaces(ctx, tx, e.formGuard); err != nil {
 		return Event{}, err
 	}
-	var before *updateBefore
-	if s.notifyUpdated.Load() {
-		if before, err = readUpdateBefore(ctx, tx, e.ID); err != nil {
-			return Event{}, err
-		}
+	// Read always: the editor's answer about telling the Ticket holders is
+	// recorded while the Notification is off too.
+	before, err := readUpdateBefore(ctx, tx, e.ID)
+	if err != nil {
+		return Event{}, err
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE events SET
@@ -398,7 +407,13 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 	if tag.RowsAffected() == 0 {
 		return Event{}, ErrNotFound
 	}
-	if err := queueUpdateNotification(ctx, tx, e.ID, before); err != nil {
+	// The Event's template follows its Owner team, in the same
+	// transaction (docs/certificate-event-templates.md#copy-and-team-change).
+	if _, err := tx.Exec(ctx, `UPDATE certificate_templates SET owner_team = upper(btrim($2))
+		WHERE event_id = $1 AND owner_team IS DISTINCT FROM upper(btrim($2))`, e.ID, e.OwnerTeam); err != nil {
+		return Event{}, err
+	}
+	if err := s.noticeChanges(ctx, tx, e, before); err != nil {
 		return Event{}, err
 	}
 	// A larger capacity, none, or the waiting list turned on frees places:
@@ -411,6 +426,10 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 		if subjectlock.IsInactiveAccountReference(err) {
 			return Event{}, ErrForbidden
 		}
+		return Event{}, err
+	}
+	// A Co-organizer team that becomes the Owner team leaves the list.
+	if err := dropOwnerCoOrganizer(ctx, tx, e.ID, e.OwnerTeam); err != nil {
 		return Event{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -669,10 +688,11 @@ func (s *PostgresStore) TeamsUsingMedia(ctx context.Context, mediaID, except uui
 	return teams, rows.Err()
 }
 
-// withGalleriesAndDoorStaff reads the gallery images and door staff of every
-// Event, in one query each whatever the number of Events: a gallery image
-// comes with the Media it is (media.LinkedImageSQL), so its sizes need no
-// query either. Every Event gets empty lists, never nil ones.
+// withGalleriesAndDoorStaff reads the gallery images, door staff and
+// Co-organizers of every Event, in one query each whatever the number of
+// Events: a gallery image comes with the Media it is (media.LinkedImageSQL),
+// so its sizes need no query either. Every Event gets empty gallery and door
+// staff lists, never nil ones; its Co-organizer lists stay nil for none.
 func (s *PostgresStore) withGalleriesAndDoorStaff(ctx context.Context, events []Event) error {
 	if len(events) == 0 {
 		return nil
@@ -713,29 +733,59 @@ func (s *PostgresStore) withGalleriesAndDoorStaff(ctx context.Context, events []
 		return err
 	}
 	rows.Close()
-	staff, err := s.pool.Query(ctx, `
-		SELECT event_id, user_id FROM event_door_staff WHERE event_id = ANY($1) ORDER BY user_id
-	`, ids)
+	// The door staff and the Co-organizers in one query, a list costs no
+	// more queries for them (coOrganizersSQL).
+	people, err := s.pool.Query(ctx, `
+		SELECT event_id, false, NULL::text, user_id, NULL::text, NULL::text
+		FROM event_door_staff WHERE event_id = ANY($1)
+		UNION ALL `+coOrganizersSQL+`
+		ORDER BY 1, 2, 3 NULLS LAST, 4`, ids)
 	if err != nil {
 		return err
 	}
-	defer staff.Close()
-	for staff.Next() {
-		var eventID, userID uuid.UUID
-		if err := staff.Scan(&eventID, &userID); err != nil {
+	defer people.Close()
+	for people.Next() {
+		var eventID uuid.UUID
+		var coOrganizer bool
+		var code, management, visibility *string
+		var userID *uuid.UUID
+		if err := people.Scan(&eventID, &coOrganizer, &code, &userID, &management, &visibility); err != nil {
 			return err
 		}
 		e := &events[byID[eventID]]
-		e.DoorStaffIDs = append(e.DoorStaffIDs, userID)
+		switch {
+		case coOrganizer:
+			e.addCoOrganizer(code, userID, management, visibility)
+		case userID != nil:
+			e.DoorStaffIDs = append(e.DoorStaffIDs, *userID)
+		}
 	}
-	return staff.Err()
+	return people.Err()
 }
 
 func (s *PostgresStore) replaceDoorStaff(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, ids []uuid.UUID) error {
-	if _, err := tx.Exec(ctx, `DELETE FROM event_door_staff WHERE event_id = $1`, eventID); err != nil {
+	rows, err := tx.Query(ctx, `DELETE FROM event_door_staff WHERE event_id = $1 RETURNING user_id`, eventID)
+	if err != nil {
+		return err
+	}
+	before, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
 		return err
 	}
 	seen := map[uuid.UUID]struct{}{}
+	for _, id := range before {
+		seen[id] = struct{}{}
+	}
+	var added []uuid.UUID
+	for _, id := range ids {
+		if _, ok := seen[id]; !ok && id != uuid.Nil && !slices.Contains(added, id) {
+			added = append(added, id)
+		}
+	}
+	if err := s.queueDoorStaffMail(ctx, tx, eventID, added); err != nil {
+		return err
+	}
+	seen = map[uuid.UUID]struct{}{}
 	for _, id := range ids {
 		if id == uuid.Nil {
 			continue

@@ -79,6 +79,12 @@ type Patch struct {
 	FeedbackFormURL   optional.Field[string]       `json:"feedbackFormUrl"`
 	FeedbackFormAlias optional.Field[string]       `json:"feedbackFormAlias"`
 	FeedbackAutoSend  optional.Field[bool]         `json:"feedbackAutoSend"`
+	// NotifyTicketHolders is the editor's answer to "tell the Ticket
+	// holders?" when the save changes a published Event's start, end or
+	// location (docs/event-updated-notification.md#the-editors-choice):
+	// false tells nobody of this change. Left out, they are told, as
+	// before the question (an older client, sky-app); null is ErrInvalid.
+	NotifyTicketHolders optional.Field[bool] `json:"notifyTicketHolders"`
 }
 
 // required is the value of a field that may not be emptied: sent, it must
@@ -110,7 +116,7 @@ func (p Patch) apply(existing Event) (Event, error) {
 	e.LocationLng = p.LocationLng.Or(existing.LocationLng)
 	e.LocationAddress = p.LocationAddress.Or(existing.LocationAddress)
 	if p.Ranked.Null || p.RegistrationClosed.Null || p.FeedbackMode.Null || p.FeedbackAutoSend.Null || p.AttendanceAutoFinalize.Null || p.WaitlistEnabled.Null ||
-		p.AttendanceWelcomeMail.Null || p.AttendanceRecordedMail.Null {
+		p.AttendanceWelcomeMail.Null || p.AttendanceRecordedMail.Null || p.NotifyTicketHolders.Null {
 		return Event{}, ErrInvalid
 	}
 	if e.FeedbackMode = p.FeedbackMode.Or(existing.FeedbackMode); !e.FeedbackMode.Valid() {
@@ -167,6 +173,10 @@ func (p Patch) apply(existing Event) (Event, error) {
 			return Event{}, ErrInvalid
 		}
 		e.CancelReason, e.cancelReasonSent = reason, true
+	}
+	if p.NotifyTicketHolders.Set {
+		notify := p.NotifyTicketHolders.Value
+		e.notifyHolders = &notify
 	}
 	return e, nil
 }
