@@ -98,11 +98,26 @@ sky-app):
   Ticket of the member whose account e-mail it is (primary, or school
   e-mail), on this Event. Case and spaces do not matter.
 - With both, the key is used.
+- The key and a member's e-mail need a valid `doorToken` **in every mode**
+  (ticket 19): a key without one is `403 door_qr_required`; in `open` mode
+  an e-mail without one finds a guest Ticket only, as before, and a
+  member's is 404.
+
+Accepted risks (Yusuf's ticket 19 decision, the guest path's own): someone
+in the room, holding a fresh token, can type another person's school or
+account e-mail and check them in; and 201/409 against 404 tells them whether
+that address holds a Ticket of this Event. The token proves presence; the
+route's per-address budget (10 failures a minute) bounds the guessing.
+**Deviation from ticket 19:** the failed attempts are not counted per key
+(nor per e-mail): only the per-address budget applies. A key is 128 bits of
+random, so guessing one is not the risk; an e-mail is, and it is bounded as
+a guest's is.
 
 | Status | `code` | Meaning |
 |---|---|---|
 | 201 | | checked in |
 | 400 | | neither an e-mail nor a ticket key |
+| 403 | `door_qr_required` | a ticket key without a `doorToken`, in any mode |
 | 403 | `session_closed` | the Session is cancelled or outside its time window |
 | 403 | `door_qr_required` | `qr` mode and no `doorToken` |
 | 403 | `door_qr_invalid` | not a door QR of this Session and Event (forged, another key, garbled, over 1 KB) |

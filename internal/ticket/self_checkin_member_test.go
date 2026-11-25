@@ -30,9 +30,14 @@ type selfFixture struct {
 
 func newSelfFixture(t *testing.T) selfFixture {
 	t.Helper()
+	return newSelfFixtureMode(t, doorqr.ModeQR)
+}
+
+func newSelfFixtureMode(t *testing.T, mode doorqr.Mode) selfFixture {
+	t.Helper()
 	ctx := context.Background()
 	now := time.Date(2026, 10, 3, 18, 0, 0, 0, time.UTC)
-	gate := doorqr.NewGate([]byte("door qr test key, door qr test k"), doorqr.Config{Mode: doorqr.ModeQR, MaxUses: 20, SessionGrace: 30 * time.Minute})
+	gate := doorqr.NewGate([]byte("door qr test key, door qr test k"), doorqr.Config{Mode: mode, MaxUses: 20, SessionGrace: 30 * time.Minute})
 	gate.Now = func() time.Time { return now }
 	events := event.NewMemoryStore()
 	users := user.NewMemoryStore()
@@ -136,5 +141,29 @@ func TestSelfCheckInWithoutATicketShowsWhereToRegister(t *testing.T) {
 	_, err = f.svc.CheckInGuest(ctx, f.sess.ID, ticket.GuestCheckIn{Email: "nobody@example.com", DoorToken: f.token(t)})
 	if !errors.As(err, &missing) || missing.RegistrationURL != "" {
 		t.Fatalf("closed: %v %+v", err, missing)
+	}
+}
+
+// GUEST_SELF_CHECKIN_MODE=open keeps the guest's e-mail without a token,
+// as before; a member's e-mail and a ticket key need a valid token in
+// every mode (bilet-qr-ve-pdf 19).
+func TestOpenModeNeedsATokenForMembersAndKeys(t *testing.T) {
+	t.Parallel()
+	f := newSelfFixtureMode(t, doorqr.ModeOpen)
+	ctx := context.Background()
+	if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, ticket.GuestCheckIn{Email: "ada@example.com"}); err != nil {
+		t.Fatalf("guest without a token: %v", err)
+	}
+	if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, ticket.GuestCheckIn{Email: "grace@example.com"}); !errors.Is(err, ticket.ErrNotFound) {
+		t.Fatalf("member without a token: %v", err)
+	}
+	if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, ticket.GuestCheckIn{TicketKey: f.key}); !errors.Is(err, ticket.ErrDoorQRRequired) {
+		t.Fatalf("key without a token: %v", err)
+	}
+	if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, ticket.GuestCheckIn{Email: "grace@example.com", DoorToken: "v1.garbled"}); !errors.Is(err, ticket.ErrDoorQRInvalid) {
+		t.Fatalf("member with a bad token: %v", err)
+	}
+	if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, ticket.GuestCheckIn{Email: "grace@example.com", DoorToken: f.token(t)}); err != nil {
+		t.Fatalf("member with a token: %v", err)
 	}
 }

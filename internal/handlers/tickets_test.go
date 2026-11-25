@@ -1251,8 +1251,8 @@ func TestListTicketsQuerySelfUserAndVictimEmailIsIntersection(t *testing.T) {
 }
 
 // The attendance QR's page (docs/guest-self-check-in.md): the Ticket's
-// access key checks anyone in, and nobody's Ticket answers 404 with where
-// to register while the Event takes registrations.
+// access key needs the QR's token, and nobody's Ticket answers 404 with
+// where to register while the Event takes registrations.
 func TestCheckInGuestHTTPTicketKeyAndRegistrationURL(t *testing.T) {
 	t.Parallel()
 	events := event.NewMemoryStore()
@@ -1289,8 +1289,9 @@ func TestCheckInGuestHTTPTicketKeyAndRegistrationURL(t *testing.T) {
 	if held.AccessKey == "" {
 		t.Fatal("no access key")
 	}
-	if status, body := post(`{"ticketKey":"` + held.AccessKey + `"}`); status != fiber.StatusCreated {
-		t.Fatalf("key: %d %v", status, body)
+	// A key needs the QR's token in every mode.
+	if status, body := post(`{"ticketKey":"` + held.AccessKey + `"}`); status != fiber.StatusForbidden || body["code"] != "door_qr_required" {
+		t.Fatalf("key without a token: %d %v", status, body)
 	}
 	status, body := post(`{"email":"nobody@example.com"}`)
 	if status != fiber.StatusNotFound || body["registrationUrl"] != "https://forms.yildizskylab.com/f/hack" {

@@ -1481,7 +1481,8 @@ func (s *service) checkInGuest(ctx context.Context, sessionID uuid.UUID, g Guest
 	if err != nil {
 		return CheckIn{}, err
 	}
-	ci, err := s.checkInGuestTicket(ctx, sessionID, eventID, email, key)
+	withToken := strings.TrimSpace(g.DoorToken) != ""
+	ci, err := s.checkInGuestTicket(ctx, sessionID, eventID, email, key, withToken)
 	// Only a guest who is now checked in (or already was) spends a place on
 	// the token; an e-mail without a Ticket gives it back, so junk e-mails
 	// cannot use a door QR up. The route's per-address budget limits those.
@@ -1501,8 +1502,16 @@ func (s *service) checkInGuest(ctx context.Context, sessionID uuid.UUID, g Guest
 // its access key (any Ticket of the Event, a member's too), or by e-mail: a
 // guest Ticket written for it first, then the Ticket of the member whose
 // account e-mail (primary or school) it is.
-func (s *service) checkInGuestTicket(ctx context.Context, sessionID, eventID uuid.UUID, email, key string) (CheckIn, error) {
+//
+// The key and the member's e-mail need a valid door or attendance token in
+// every mode (bilet-qr-ve-pdf 19): GUEST_SELF_CHECKIN_MODE=open keeps only
+// the guest's e-mail without one, as before. withToken says the token was
+// sent (admitDoorQR has checked it by now).
+func (s *service) checkInGuestTicket(ctx context.Context, sessionID, eventID uuid.UUID, email, key string, withToken bool) (CheckIn, error) {
 	if key != "" {
+		if !withToken {
+			return CheckIn{}, ErrDoorQRRequired
+		}
 		t, err := s.tickets.GetByAccessKey(ctx, key)
 		if err != nil {
 			return CheckIn{}, err
@@ -1521,6 +1530,10 @@ func (s *service) checkInGuestTicket(ctx context.Context, sessionID, eventID uui
 		if t.EventID == eventID {
 			return s.addSessionCheckIn(ctx, t, sessionID, selfEntry)
 		}
+	}
+	if !withToken {
+		// open mode without a token: the guest's e-mail alone, as before.
+		return CheckIn{}, ErrNotFound
 	}
 	return s.checkInMemberByEmail(ctx, sessionID, eventID, email)
 }
