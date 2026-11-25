@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"log"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -21,7 +22,15 @@ func certError(c fiber.Ctx, err error) error {
 	if handled, problemErr := linkProblem(c, err); handled {
 		return problemErr
 	}
+	// A template's layout, asset or rendering refused, with what to change
+	// (docs/certificate-template-errors.md).
+	var refused *certificate.InvalidError
+	var unavailable *certificate.UnavailableError
+	var eventTemplateExists *certificate.EventTemplateExistsError
 	switch {
+	case errors.As(err, &eventTemplateExists):
+		return problemWithFields(c, fiber.StatusConflict, "Conflict", "Conflict", certificate.CodeTemplateEventExists,
+			fiber.Map{"templateId": eventTemplateExists.TemplateID})
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
 	case errors.Is(err, certificate.ErrForbidden):
@@ -36,6 +45,11 @@ func certError(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "justification_required")
 	case errors.Is(err, certificate.ErrJustificationTooLong):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "justification_too_long")
+	case errors.As(err, &unavailable):
+		log.Printf("certificate renderer unavailable: %s %s: %v", c.Method(), loggedPath(c.Path()), err)
+		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", unavailable.Code)
+	case errors.As(err, &refused):
+		return problemCode(c, fiber.StatusBadRequest, "Bad Request", refused.Code)
 	case errors.Is(err, certificate.ErrInvalid):
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	default:

@@ -26,6 +26,8 @@ type Memory struct {
 	rows []Row
 	down bool
 	now  func() time.Time
+	// events are the Keycloak admin event ids of console rows.
+	events map[string]bool
 }
 
 // NewMemory is an empty memory writer.
@@ -85,6 +87,30 @@ func (m *Memory) insert(r Record, outcome Outcome, errorCode string) (uuid.UUID,
 	row := Row{Record: r, ID: uuid.New(), OccurredAt: now().UTC(), Outcome: outcome, ErrorCode: errorCode}
 	m.rows = append(m.rows, row)
 	return row.ID, nil
+}
+
+func (m *Memory) RecordConsole(_ context.Context, r Record, occurredAt time.Time, eventID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.down {
+		return false, unavailable("down")
+	}
+	if bad := r.checkConsole(occurredAt, eventID); bad != "" {
+		return false, unavailable(bad)
+	}
+	r, bad := r.normalize()
+	if bad != "" {
+		return false, unavailable(bad)
+	}
+	if m.events[eventID] {
+		return false, nil
+	}
+	if m.events == nil {
+		m.events = map[string]bool{}
+	}
+	m.events[eventID] = true
+	m.rows = append(m.rows, Row{Record: r, ID: uuid.New(), OccurredAt: occurredAt.UTC(), Outcome: OutcomeOK})
+	return true, nil
 }
 
 func (m *Memory) AppRows(_ context.Context, client string, limit int) ([]Row, error) {

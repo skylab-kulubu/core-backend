@@ -131,6 +131,12 @@ func (s *Signer) Mint(u user.User) (Token, error) {
 }
 
 func (s *Signer) Verify(raw string) (passClaims, error) {
+	return s.VerifyAt(raw, s.clock())
+}
+
+// VerifyAt is Verify with the expiry read at at: a scan an offline door
+// took then and sends later (docs/offline-door.md).
+func (s *Signer) VerifyAt(raw string, at time.Time) (passClaims, error) {
 	if s == nil || s.key == nil {
 		return passClaims{}, ErrInvalid
 	}
@@ -140,7 +146,7 @@ func (s *Signer) Verify(raw string) (passClaims, error) {
 	}
 	parser := jwt.NewParser(
 		jwt.WithValidMethods([]string{jwt.SigningMethodES256.Alg()}),
-		jwt.WithTimeFunc(s.clock),
+		jwt.WithTimeFunc(func() time.Time { return at }),
 		jwt.WithExpirationRequired(),
 	)
 	var claims passClaims

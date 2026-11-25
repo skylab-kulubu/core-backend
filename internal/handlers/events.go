@@ -98,6 +98,8 @@ func eventError(c fiber.Ctx, err error) error {
 		return problemWithFields(c, fiber.StatusConflict, "Conflict", "Conflict", "form_in_use", formInUseFields(inUse))
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
+	case errors.Is(err, event.ErrCoOrganizerPersonDates):
+		return problemCode(c, fiber.StatusForbidden, "Forbidden", "co_organizer_person_dates")
 	case errors.Is(err, event.ErrForbidden):
 		return problem(c, fiber.StatusForbidden, "Forbidden")
 	case errors.Is(err, event.ErrNotFound):
@@ -415,9 +417,17 @@ type copyBody struct {
 	StartDate           *time.Time `json:"startDate"`
 	IncludeDoorStaff    bool       `json:"includeDoorStaff"`
 	IncludeCompetitions bool       `json:"includeCompetitions"`
+	// IncludeExternalRegistration and IncludeAttendeeNote copy the
+	// source's external registration link and attendee note; none copies
+	// neither.
+	IncludeExternalRegistration bool `json:"includeExternalRegistration"`
+	IncludeAttendeeNote         bool `json:"includeAttendeeNote"`
 	// OwnerTeam is the copy's Owner team (ticket 16); none is the
 	// source's.
 	OwnerTeam string `json:"ownerTeam"`
+	// IncludeCertificateTemplate false leaves the certificate template
+	// out (its Event template and binding); none copies it.
+	IncludeCertificateTemplate *bool `json:"includeCertificateTemplate"`
 }
 
 // Copy copies an Event's structure into a new draft: POST
@@ -438,12 +448,15 @@ func (h *EventHandler) Copy(c fiber.Ctx) error {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
 	copied, fresh, err := h.svc.Copy(c.Context(), p, id, event.CopyInput{
-		ID:                  *body.ID,
-		Name:                body.Name,
-		StartDate:           body.StartDate,
-		IncludeDoorStaff:    body.IncludeDoorStaff,
-		IncludeCompetitions: body.IncludeCompetitions,
-		OwnerTeam:           body.OwnerTeam,
+		ID:                          *body.ID,
+		Name:                        body.Name,
+		StartDate:                   body.StartDate,
+		IncludeDoorStaff:            body.IncludeDoorStaff,
+		IncludeCompetitions:         body.IncludeCompetitions,
+		OwnerTeam:                   body.OwnerTeam,
+		SkipCertificateTemplate:     body.IncludeCertificateTemplate != nil && !*body.IncludeCertificateTemplate,
+		IncludeExternalRegistration: body.IncludeExternalRegistration,
+		IncludeAttendeeNote:         body.IncludeAttendeeNote,
 	})
 	if err != nil {
 		return eventError(c, err)

@@ -75,6 +75,13 @@ type mailFixture struct {
 // mailSetup issues two certificates for an ended Event through the queue.
 func mailSetup(t *testing.T) mailFixture {
 	t.Helper()
+	return mailSetupWith(t, &queueMailer{}, &recRender{}, certificate.Options{})
+}
+
+// mailSetupWith is mailSetup with mailer, render and the options' MailPDF
+// and Artifacts.
+func mailSetupWith(t *testing.T, mailer certificate.Mailer, render *recRender, opts certificate.Options) mailFixture {
+	t.Helper()
 	ctx := context.Background()
 	events := event.NewMemoryStore()
 	tickets := ticket.NewMemoryStore()
@@ -82,9 +89,9 @@ func mailSetup(t *testing.T) mailFixture {
 	store := certificate.NewMemoryStore()
 	authorizer := authz.NewAuthorizer(authz.DefaultPolicy())
 	ticketService := ticket.NewService(tickets, events, authorizer, users)
-	mailer := &queueMailer{}
-	svc := certificate.NewServiceWithOptions(store, tickets, events, users, authorizer, &recRender{}, mailer, certificate.Options{
+	svc := certificate.NewServiceWithOptions(store, tickets, events, users, authorizer, render, mailer, certificate.Options{
 		PublicAPIOrigin: "https://api.example.test", VerifyOrigin: "https://skyl.app/c", Templates: store, Jobs: store,
+		MailPDF: opts.MailPDF, Artifacts: opts.Artifacts,
 	})
 	start, end := time.Now().Add(-3*time.Hour), time.Now().Add(time.Hour)
 	ev, err := events.Create(ctx, event.Event{Name: "ARTLAB", Location: "YTÜ", OwnerTeam: "ARTLAB", AttendanceRule: certificate.RuleOnce, StartDate: &start, EndDate: &end})
@@ -133,7 +140,11 @@ func mailSetup(t *testing.T) mailFixture {
 	if err != nil || len(certs) != 2 {
 		t.Fatalf("certificates %v %d", err, len(certs))
 	}
-	return mailFixture{store: store, svc: svc, mailer: mailer, leader: leader, event: ev, certs: certs}
+	queue, _ := mailer.(*queueMailer)
+	if withFiles, ok := mailer.(*fileMailer); ok {
+		queue = &withFiles.queueMailer
+	}
+	return mailFixture{store: store, svc: svc, mailer: queue, leader: leader, event: ev, certs: certs}
 }
 
 func (f mailFixture) states(t *testing.T) map[string]certificate.MailState {

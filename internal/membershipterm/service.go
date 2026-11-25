@@ -51,9 +51,23 @@ type Memberships interface {
 	MembershipWriteDecision(ctx context.Context, p authz.Principal, groupRef string) (identity.MembershipDecision, error)
 }
 
+// SystemMemberships take a person out of a Group for one of core's own
+// jobs (identity's RemoveMemberAsSystem): recorded with the system basis
+// and the job as its client, mailed and noticed as the member route's
+// removal. A person not directly in the Group is identity.ErrNotFound.
+type SystemMemberships interface {
+	RemoveMemberAsSystem(ctx context.Context, client, groupRef string, userID uuid.UUID) error
+}
+
 // Config is what a Service takes.
 type Config struct {
 	Mode Mode
+	// AutoRemove is MANAGEMENT_TERMS_AUTO_REMOVE: whether the daily job
+	// takes an expired term's holder out of the Group RemoveAfter past the
+	// end (apply, in an apply run with Memberships that are
+	// SystemMemberships), only counts them (dry-run), or neither (off, or
+	// empty: the default).
+	AutoRemove Mode
 	// Weekly turns the weekly summary to ADMIN on.
 	Weekly    bool
 	Rules     Rules
@@ -103,12 +117,17 @@ func NewService(config Config) (*Service, error) {
 	switch {
 	case config.Mode != ModeOff && config.Mode != ModeDryRun && config.Mode != ModeApply:
 		return nil, fmt.Errorf("membershipterm: mode %q", config.Mode)
+	case config.AutoRemove != "" && config.AutoRemove != ModeOff && config.AutoRemove != ModeDryRun && config.AutoRemove != ModeApply:
+		return nil, fmt.Errorf("membershipterm: auto remove %q", config.AutoRemove)
 	case config.Store == nil:
 		return nil, errors.New("membershipterm: no store")
 	case config.Directory == nil || config.Seasons == nil || config.Rosters == nil:
 		return nil, errors.New("membershipterm: no directory, seasons or rosters")
 	case config.Audit == nil:
 		return nil, errors.New("membershipterm: no audit writer")
+	}
+	if config.AutoRemove == "" {
+		config.AutoRemove = ModeOff
 	}
 	if config.Rules.PrivilegedRoots == nil {
 		config.Rules = DefaultRules()
@@ -134,6 +153,9 @@ func (s *Service) UseMemberships(m Memberships) {
 
 // Mode is the configured mode.
 func (s *Service) Mode() Mode { return s.config.Mode }
+
+// AutoRemove is the removal's configured mode (AutoRemoveEnv).
+func (s *Service) AutoRemove() Mode { return s.config.AutoRemove }
 
 func (s *Service) applies() bool { return s != nil && s.config.Mode == ModeApply }
 

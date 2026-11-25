@@ -168,10 +168,10 @@ type CertificateRule struct {
 
 // mayReadCertificateRule is whether p may read the Event's rule: who may
 // edit the Event, or read its certificates' workspace.
-func (s *service) mayReadCertificateRule(p authz.Principal, ownerTeam string) bool {
-	return s.authz.Allow(p, resource(ownerTeam), authz.Update) ||
-		s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificate, OwnerTeam: ownerTeam}, authz.Read) ||
-		s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: ownerTeam}, authz.Read)
+func (s *service) mayReadCertificateRule(p authz.Principal, e Event) bool {
+	return s.authz.Allow(p, s.eventResource(e, authz.TypeEvent), authz.Update) ||
+		s.authz.Allow(p, s.eventResource(e, authz.TypeCertificate), authz.Read) ||
+		s.authz.Allow(p, s.eventResource(e, authz.TypeCertificateTemplate), authz.Read)
 }
 
 // CertificateRule reads the Event's certificate rule and its current
@@ -181,7 +181,7 @@ func (s *service) CertificateRule(ctx context.Context, p authz.Principal, eventI
 	if err != nil {
 		return CertificateRule{}, err
 	}
-	if !s.mayReadCertificateRule(p, e.OwnerTeam) {
+	if !s.mayReadCertificateRule(p, e) {
 		return CertificateRule{}, ErrForbidden
 	}
 	return s.certificateRule(ctx, e)
@@ -236,7 +236,7 @@ func (s *service) SetCertificateRule(ctx context.Context, p authz.Principal, eve
 	if err != nil {
 		return CertificateRule{}, err
 	}
-	if !s.authz.Allow(p, resource(e.OwnerTeam), authz.Update) {
+	if !s.authz.Allow(p, s.eventResource(e, authz.TypeEvent), authz.Update) {
 		return CertificateRule{}, ErrForbidden
 	}
 	rule := strings.ToLower(strings.TrimSpace(in.Rule))

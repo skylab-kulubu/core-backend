@@ -23,79 +23,80 @@ var cssColorPattern = regexp.MustCompile(`^(#[0-9a-fA-F]{3,8}|[a-zA-Z]{3,20}|rgb
 
 func ValidateLayout(layout Layout) error {
 	if layout.Width < 300 || layout.Width > 4000 || layout.Height < 300 || layout.Height > 4000 {
-		return ErrInvalid
+		return invalid(CodeLayoutSizeInvalid)
 	}
 	if layout.Orientation != "landscape" && layout.Orientation != "portrait" {
-		return ErrInvalid
+		return invalid(CodeLayoutOrientation)
 	}
 	if layout.BackgroundColor != "" && !cssColorPattern.MatchString(layout.BackgroundColor) {
-		return ErrInvalid
+		return invalid(CodeLayoutColorInvalid)
+	}
+	if p := layout.BackgroundPlacement; p != nil && (layout.BackgroundMediaID == nil || !validPlacement(*p)) {
+		return invalid(CodeLayoutPlacementInvalid)
 	}
 	if len(layout.Elements) == 0 || len(layout.Elements) > maxLayoutElements {
-		return ErrInvalid
+		return invalid(CodeLayoutElementCount)
 	}
-	// A layout must name its recipient and its Event. The verification QR
-	// is optional (ADR-0040 addendum 2026-11-24): the default template keeps
-	// one, a template may drop it, and the certificate is still verified at
-	// its address by serial (yildizskylab.com/sertifika/{serial}). It must
-	// keep the QR or the serial, so a paper certificate can be verified.
-	required := map[string]bool{"recipientName": false, "eventName": false}
-	verifiable := false
+	// A layout must name its recipient. The Event's name is optional
+	// (ADR-0040 addendum 2026-11-25): a background may print it already. The
+	// verification QR is optional too (addendum 2026-11-24): the default
+	// template keeps one, a template may drop it, and the certificate is
+	// still verified at its address by serial
+	// (yildizskylab.com/sertifika/{serial}). It must keep the QR or the
+	// serial, so a paper certificate can be verified.
+	hasRecipient, verifiable := false, false
 	ids := make(map[string]struct{}, len(layout.Elements))
 	for _, el := range layout.Elements {
 		if strings.TrimSpace(el.ID) == "" || len(el.ID) > 80 {
-			return ErrInvalid
+			return invalid(CodeLayoutElementID)
 		}
 		if _, exists := ids[el.ID]; exists {
-			return ErrInvalid
+			return invalid(CodeLayoutElementID)
 		}
 		ids[el.ID] = struct{}{}
 		switch el.Kind {
 		case "staticText", "recipientName", "eventName", "eventDates", "issueDate", "ownerTeam", "serial", "verificationQr", "image", "shape":
 		default:
-			return ErrInvalid
+			return invalid(CodeLayoutElementKind)
 		}
-		if _, ok := required[el.Kind]; ok {
-			required[el.Kind] = true
-		}
-		if el.Kind == "verificationQr" || el.Kind == "serial" {
-			verifiable = true
-		}
-		if !finite(el.X, el.Y, el.Width, el.Height, el.FontSize, el.MinFontSize, el.LineHeight, el.LetterSpacing, el.BorderWidth, el.BorderRadius, el.Rotation, el.opacity()) ||
+		hasRecipient = hasRecipient || el.Kind == "recipientName"
+		verifiable = verifiable || el.Kind == "verificationQr" || el.Kind == "serial"
+		if !finite(el.X, el.Y, el.Width, el.Height) ||
 			el.X < 0 || el.Y < 0 || el.Width <= 0 || el.Height <= 0 ||
-			el.X+el.Width > layout.Width+0.01 || el.Y+el.Height > layout.Height+0.01 ||
+			el.X+el.Width > layout.Width+0.01 || el.Y+el.Height > layout.Height+0.01 {
+			return invalid(CodeLayoutOutOfBounds)
+		}
+		if !finite(el.FontSize, el.MinFontSize, el.LineHeight, el.LetterSpacing, el.BorderWidth, el.BorderRadius, el.Rotation, el.opacity()) ||
 			el.FontSize < 0 || el.FontSize > 300 || el.MinFontSize < 0 || el.MinFontSize > 300 ||
 			el.FontWeight < 0 || el.FontWeight > 1000 || el.LineHeight < 0 || el.LineHeight > 5 ||
 			el.LetterSpacing < -20 || el.LetterSpacing > 100 || el.BorderWidth < 0 || el.BorderWidth > 100 ||
 			el.BorderRadius < 0 || el.BorderRadius > 2000 ||
 			el.Rotation < -360 || el.Rotation > 360 || el.opacity() < 0 || el.opacity() > 1 {
-			return ErrInvalid
+			return invalid(CodeLayoutElementStyle)
 		}
 		for _, color := range []string{el.Color, el.BackgroundColor, el.BorderColor} {
 			if color != "" && !cssColorPattern.MatchString(color) {
-				return ErrInvalid
+				return invalid(CodeLayoutColorInvalid)
 			}
 		}
 		if el.Align != "" && el.Align != "left" && el.Align != "center" && el.Align != "right" {
-			return ErrInvalid
+			return invalid(CodeLayoutElementStyle)
 		}
 		if el.Kind == "image" && el.MediaID == nil {
-			return ErrInvalid
+			return invalid(CodeLayoutImageMissing)
 		}
 		if len(el.Text) > 4000 {
-			return ErrInvalid
+			return invalid(CodeLayoutTextTooLong)
 		}
 		if len(el.FontFamily) > 80 {
-			return ErrInvalid
+			return invalid(CodeLayoutElementStyle)
 		}
 	}
-	for _, present := range required {
-		if !present {
-			return ErrInvalid
-		}
+	if !hasRecipient {
+		return invalid(CodeLayoutRecipientMissing)
 	}
 	if !verifiable {
-		return ErrInvalid
+		return invalid(CodeLayoutNotVerifiable)
 	}
 	return nil
 }
@@ -123,14 +124,22 @@ func LayoutHTML(ctx context.Context, layout Layout, data PreviewData, verifyURL 
 		return "", err
 	}
 	background := ""
-	if layout.BackgroundMediaID != nil {
-		uri, err := assetDataURI(ctx, assets, *layout.BackgroundMediaID)
-		if err != nil {
-			return "", err
-		}
-		background = `background-image:url("` + uri + `");background-size:cover;background-position:center;`
-	}
 	var body strings.Builder
+	if layout.BackgroundMediaID != nil {
+		if layout.BackgroundPlacement == nil {
+			uri, err := assetDataURI(ctx, assets, *layout.BackgroundMediaID)
+			if err != nil {
+				return "", err
+			}
+			background = `background-image:url("` + uri + `");background-size:cover;background-position:center;`
+		} else {
+			img, err := placedBackground(ctx, layout, assets)
+			if err != nil {
+				return "", err
+			}
+			body.WriteString(img)
+		}
+	}
 	for _, el := range layout.Elements {
 		content, image, err := elementContent(ctx, el, data, verifyURL, assets)
 		if err != nil {
@@ -172,12 +181,26 @@ func LayoutHTML(ctx context.Context, layout Layout, data PreviewData, verifyURL 
 	if bg == "" {
 		bg = "#ffffff"
 	}
+	faces, err := fontFaces(layout, assets)
+	if err != nil {
+		return "", err
+	}
+	fitText := `document.querySelectorAll('.fit').forEach(fit)
+document.querySelectorAll('[data-short]').forEach(function(el){if(over(el)){el.style.fontSize=el.dataset.font+'px';el.textContent=el.dataset.short;if(el.classList.contains('fit'))fit(el)}})`
+	if faces != "" {
+		// Measure the text once the embedded fonts are in, not in the
+		// fallback the page starts with, then tell the renderer the page
+		// is ready to print (fitDoneFlag; also when fitting throws, so
+		// the renderer never waits in vain).
+		fitText = `document.fonts.ready.then(function(){try{
+` + fitText + `
+}finally{` + fitDoneFlag + `}})`
+	}
 	return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><style>
-@page{size:` + number(layout.Width) + `px ` + number(layout.Height) + `px;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif}.page{position:relative;width:` + number(layout.Width) + `px;height:` + number(layout.Height) + `px;overflow:hidden;background:` + html.EscapeString(bg) + `;` + background + `}.fit{display:flex;align-items:center;white-space:nowrap;overflow:hidden}
+` + faces + `@page{size:` + number(layout.Width) + `px ` + number(layout.Height) + `px;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif}.page{position:relative;width:` + number(layout.Width) + `px;height:` + number(layout.Height) + `px;overflow:hidden;background:` + html.EscapeString(bg) + `;` + background + `}.fit{display:flex;align-items:center;white-space:nowrap;overflow:hidden}
 </style></head><body><main class="page">` + body.String() + `</main><script>
 function over(el){return el.scrollWidth>el.clientWidth||el.scrollHeight>el.clientHeight}function fit(el){var size=parseFloat(getComputedStyle(el).fontSize);var min=parseFloat(el.dataset.minFont||'8');while(over(el)&&size>min){size-=1;el.style.fontSize=size+'px'}}
-document.querySelectorAll('.fit').forEach(fit)
-document.querySelectorAll('[data-short]').forEach(function(el){if(over(el)){el.style.fontSize=el.dataset.font+'px';el.textContent=el.dataset.short;if(el.classList.contains('fit'))fit(el)}})
+` + fitText + `
 </script></body></html>`, nil
 }
 
@@ -207,29 +230,56 @@ func elementContent(ctx context.Context, el Element, data PreviewData, verifyURL
 		return "data:image/png;base64," + base64.StdEncoding.EncodeToString(png), true, nil
 	case "image":
 		if el.MediaID == nil {
-			return "", false, ErrInvalid
+			return "", false, invalid(CodeLayoutImageMissing)
 		}
 		uri, err := assetDataURI(ctx, assets, *el.MediaID)
 		return uri, true, err
 	case "shape":
 		return "", false, nil
 	default:
-		return "", false, ErrInvalid
+		return "", false, invalid(CodeLayoutElementKind)
 	}
 }
 
 func assetDataURI(ctx context.Context, assets AssetReader, id uuid.UUID) (string, error) {
+	_, uri, err := imageAsset(ctx, assets, id)
+	return uri, err
+}
+
+// imageAsset reads an image Media and its data URI.
+func imageAsset(ctx context.Context, assets AssetReader, id uuid.UUID) (Asset, string, error) {
 	if assets == nil {
-		return "", ErrInvalid
+		return Asset{}, "", invalid(CodeAssetStorageUnavailable)
 	}
 	asset, err := assets.ReadAsset(ctx, id)
 	if err != nil {
+		return Asset{}, "", err
+	}
+	switch {
+	case !strings.HasPrefix(asset.ContentType, "image/"):
+		return Asset{}, "", invalid(CodeAssetTypeUnsupported)
+	case len(asset.Data) == 0:
+		return Asset{}, "", invalid(CodeAssetEmpty)
+	case len(asset.Data) > 20<<20:
+		return Asset{}, "", invalid(CodeAssetTooLarge)
+	}
+	return asset, "data:" + asset.ContentType + ";base64," + base64.StdEncoding.EncodeToString(asset.Data), nil
+}
+
+// placedBackground is the image background of a layout with a placement:
+// an <img> in the box PlaceBackground gives, under every element. The
+// page clips what reaches past it.
+func placedBackground(ctx context.Context, layout Layout, assets AssetReader) (string, error) {
+	asset, uri, err := imageAsset(ctx, assets, *layout.BackgroundMediaID)
+	if err != nil {
 		return "", err
 	}
-	if !strings.HasPrefix(asset.ContentType, "image/") || len(asset.Data) == 0 || len(asset.Data) > 20<<20 {
-		return "", ErrInvalid
+	w, h, err := backgroundSize(asset.ContentType, asset.Data)
+	if err != nil {
+		return "", err
 	}
-	return "data:" + asset.ContentType + ";base64," + base64.StdEncoding.EncodeToString(asset.Data), nil
+	box := PlaceBackground(layout.Width, layout.Height, w, h, *layout.BackgroundPlacement)
+	return `<img alt="" aria-hidden="true" style="position:absolute;left:` + number(box.Left) + `px;top:` + number(box.Top) + `px;width:` + number(box.Width) + `px;height:` + number(box.Height) + `px" src="` + uri + `"/>`, nil
 }
 
 func elementStyle(el Element) string {
@@ -266,6 +316,9 @@ func (el Element) opacity() float64 {
 }
 
 func safeFont(font string) string {
+	if catalog, ok := catalogFontNamed(font); ok {
+		return catalog.Stack
+	}
 	switch strings.ToLower(strings.TrimSpace(font)) {
 	case "arial":
 		return `'Liberation Sans',Arial,sans-serif`

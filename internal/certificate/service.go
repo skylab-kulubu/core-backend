@@ -30,6 +30,14 @@ type Options struct {
 	// PrivateArtifacts keeps the copies of private assets a published
 	// version takes. Nil while private Media is off.
 	PrivateArtifacts media.PrivateObjects
+	// PublicPageOrigin is the certificate page's address on the club's site
+	// (CERTIFICATE_PUBLIC_PAGE_ORIGIN, read through PublicPageOrigin), e.g.
+	// https://yildizskylab.com/sertifika. With it a certificate's pdfUrl is
+	// {PublicPageOrigin}/{serial}.pdf, which the site streams from core
+	// (docs/certificate-pdf-address.md); empty keeps core's own
+	// {PublicAPIOrigin}/v1/certificates/verify/{serial}/pdf. Core's route keeps
+	// answering either way, for the links already sent.
+	PublicPageOrigin string
 	LegacyImmediate  bool
 	// Media checks each Media a template draft is about to link. Nil leaves
 	// the Media's rules to the database's guards.
@@ -47,6 +55,11 @@ type Options struct {
 	// only with a Mailer that is a CertificateMailer; any other is sent to
 	// directly, as before.
 	Mails MailQueue
+	// MailPDF sends each certificate's PDF with its queued mail
+	// (CERTIFICATE_PDF_ATTACHMENT; docs/certificate-mail.md). It needs a
+	// Mailer that is a CertificateAttachmentMailer; a PDF over SkyNotify's
+	// bound, or one that cannot be read, leaves the mail without it.
+	MailPDF bool
 }
 
 type service struct {
@@ -59,6 +72,7 @@ type service struct {
 	mail             Mailer
 	apiOrigin        string
 	verifyOrigin     string
+	pageOrigin       string
 	templates        TemplateStore
 	jobs             JobStore
 	artifacts        ArtifactStore
@@ -70,6 +84,8 @@ type service struct {
 	autoFinalize     AutoFinalizeStore
 	autoMetrics      autoFinalizeMetrics
 	mails            MailQueue
+	mailPDFOn        bool
+	mailPDF          mailPDFMetrics
 }
 
 // NewService preserves the original synchronous contract for existing embedders.
@@ -97,6 +113,7 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 	if verifyOrigin == "" {
 		verifyOrigin = "https://skyl.app/c"
 	}
+	pageOrigin := strings.TrimRight(strings.TrimSpace(opts.PublicPageOrigin), "/")
 	if opts.Templates == nil {
 		opts.Templates, _ = store.(TemplateStore)
 	}
@@ -117,10 +134,11 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 	}
 	return &service{
 		store: store, tickets: tickets, events: events, users: users, authz: az,
-		render: render, mail: mail, apiOrigin: apiOrigin, verifyOrigin: verifyOrigin,
+		render: render, mail: mail, apiOrigin: apiOrigin, verifyOrigin: verifyOrigin, pageOrigin: pageOrigin,
 		templates: opts.Templates, jobs: opts.Jobs, artifacts: opts.Artifacts,
 		assets: opts.Assets, legacyImmediate: opts.LegacyImmediate, media: opts.Media, privateArtifacts: opts.PrivateArtifacts,
 		attendance: opts.Attendance, autoFinalize: opts.AutoFinalize, mails: opts.Mails,
+		mailPDFOn: opts.MailPDF,
 	}
 }
 
@@ -197,7 +215,12 @@ func (s *service) verifyURL(serial string) string {
 	return s.verifyOrigin + "/" + serial
 }
 
+// pdfURL is where a certificate's PDF opens: on the club's site when the
+// page origin is set, else on core (Options.PublicPageOrigin).
 func (s *service) pdfURL(serial string) string {
+	if s.pageOrigin != "" {
+		return s.pageOrigin + "/" + serial + ".pdf"
+	}
 	return s.apiOrigin + "/v1/certificates/verify/" + serial + "/pdf"
 }
 

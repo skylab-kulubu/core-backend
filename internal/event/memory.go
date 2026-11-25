@@ -228,6 +228,7 @@ func (s *MemoryStore) Create(ctx context.Context, e Event) (Event, error) {
 		e.AttendeeNote = new(string)
 	}
 	e.AttendeeNoteView = nil
+	e.CoOrganizers, e.CoOrganizerIDs = nil, nil
 	e.FeedbackMode = feedbackMode(e.FeedbackMode)
 	now := time.Now().UTC()
 	e.RegistrationClosedAt = nil
@@ -293,6 +294,9 @@ func (s *MemoryStore) Update(ctx context.Context, e Event) (Event, error) {
 	e.Images = existing.Images
 	e.ImageURLs = existing.ImageURLs
 	e.Files, e.Videos = existing.Files, existing.Videos
+	// Only SetCoOrganizers writes the Co-organizers; a team that becomes
+	// the Owner team leaves the list.
+	e.CoOrganizers, e.CoOrganizerIDs = withoutOwner(existing.CoOrganizers, e.OwnerTeam), existing.CoOrganizerIDs
 	if e.MailListID == nil {
 		e.MailListID = existing.MailListID
 	}
@@ -922,6 +926,7 @@ func (s *MemoryStore) Copy(_ context.Context, plan CopyPlan) (Event, []string, e
 	e := plan.Event
 	e.Status, e.PublishedAt, e.PublishedBy = StatusDraft, nil, nil
 	e.SeasonID, e.DoorStaffIDs = nil, nil
+	e.CoOrganizers, e.CoOrganizerIDs = nil, nil
 	if e.AttendanceRule == "" {
 		e.AttendanceRule = "none"
 	}
@@ -931,6 +936,12 @@ func (s *MemoryStore) Copy(_ context.Context, plan CopyPlan) (Event, []string, e
 	case CopyWrite:
 	default:
 		e.CoverImageID = nil
+	}
+	if plan.AttendeeNote == CopyRefused {
+		skippedParts[SkippedAttendeeNote] = true
+	}
+	if e.AttendeeNote == nil {
+		e.AttendeeNote = new(string)
 	}
 	switch plan.DoorStaff {
 	case CopyRefused:

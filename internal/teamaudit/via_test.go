@@ -51,7 +51,7 @@ func testVia(t *testing.T, w viaWriter) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := w.Begin(teamaudit.WithVia(ctx, "console"), memberAdd(actor, uuid.New())); !errors.Is(err, teamaudit.ErrUnavailable) {
+	if _, err := w.Begin(teamaudit.WithVia(ctx, "import"), memberAdd(actor, uuid.New())); !errors.Is(err, teamaudit.ErrUnavailable) {
 		t.Fatalf("an unknown way from the context: %v", err)
 	}
 	bad := memberAdd(actor, uuid.New())
@@ -93,7 +93,7 @@ func TestPostgresVia(t *testing.T) {
 	ctx := context.Background()
 	insert := `INSERT INTO team_audit_records (id, occurred_at, actor_id, actor_basis, action, group_id, group_path, target_user_id, outcome, via)
 		VALUES ($1, now(), gen_random_uuid(), 'privileged', 'member.add', gen_random_uuid(), '/UYELER', gen_random_uuid(), 'pending', $2)`
-	if _, err := pool.Exec(ctx, insert, uuid.New(), "console"); err == nil {
+	if _, err := pool.Exec(ctx, insert, uuid.New(), "import"); err == nil {
 		t.Fatal("the table took an unknown way")
 	}
 	if _, err := pool.Exec(ctx, insert, uuid.New(), ""); err == nil {

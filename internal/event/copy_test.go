@@ -340,8 +340,22 @@ func TestCopySkipsWhatItMayNotWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(got.Skipped, []string{event.SkippedDoorStaff, event.SkippedCover}) || got.Event.CoverImageID != nil || len(got.Event.DoorStaffIDs) != 0 {
+	// The Owner team's Leader assigns door staff (Yusuf S3, 2026-11-25):
+	// they come along; the cover does not.
+	if !slices.Equal(got.Skipped, []string{event.SkippedCover}) || got.Event.CoverImageID != nil || !slices.Equal(got.Event.DoorStaffIDs, source.DoorStaffIDs) {
 		t.Fatalf("skipped %v cover %v staff %v", got.Skipped, got.Event.CoverImageID, got.Event.DoorStaffIDs)
+	}
+	// A member who may copy (GECEKODU's) but assigns none: door staff are
+	// left out and named.
+	gecekodu, err := store.Create(ctx, event.Event{Name: "Gece", Location: "YTÜ", OwnerTeam: "GECEKODU", DoorStaffIDs: source.DoorStaffIDs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU"}}
+	memberIn := copyIn("Gece kopya", "2027-01-01T10:00:00+03:00")
+	memberIn.IncludeDoorStaff = true
+	if got, _, err = svc.Copy(ctx, member, gecekodu.ID, memberIn); err != nil || !slices.Equal(got.Skipped, []string{event.SkippedDoorStaff}) || len(got.Event.DoorStaffIDs) != 0 {
+		t.Fatalf("a member's copy: %v %v %v", got.Skipped, got.Event.DoorStaffIDs, err)
 	}
 	// Not asked for, door staff are not named.
 	got, _, err = svc.Copy(ctx, copyLeader, source.ID, copyIn("Kopya 2", "2027-01-01T10:00:00+03:00"))
@@ -390,9 +404,9 @@ func TestCopyIntoAnotherTeam(t *testing.T) {
 		t.Fatalf("both: %v %v", fresh, err)
 	}
 	// The cover is WEBLAB's Event's: the Team media library keeps it out of
-	// ARTLAB; door staff need event:manage in ARTLAB.
+	// ARTLAB; door staff come along, assigned by ARTLAB's Leader.
 	if got.Event.OwnerTeam != "ARTLAB" || got.Event.Status != event.StatusDraft || got.Event.CoverImageID != nil ||
-		!slices.Equal(got.Skipped, []string{event.SkippedDoorStaff, event.SkippedCover}) {
+		!slices.Equal(got.Skipped, []string{event.SkippedCover}) {
 		t.Fatalf("into ARTLAB: %s %v %v", got.Event.OwnerTeam, got.Event.CoverImageID, got.Skipped)
 	}
 	// Retried into the same team: the same copy; into another: a conflict.
@@ -409,5 +423,74 @@ func TestCopyIntoAnotherTeam(t *testing.T) {
 	yk.IncludeDoorStaff = true
 	if got, _, err := svc.Copy(ctx, copyYK, source.ID, yk); err != nil || got.Event.OwnerTeam != "GECEKODU" || len(got.Event.DoorStaffIDs) != 1 {
 		t.Fatalf("yk: %+v %v", got, err)
+	}
+}
+
+// The external registration link and the attendee note come along only when
+// asked for (an older client asks for neither); the note only for who may
+// read it on the source.
+func TestCopyExternalRegistrationAndAttendeeNote(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := event.NewMemoryStore()
+	svc := event.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()))
+	note := "Wi-Fi: SKYLAB"
+	source, err := store.Create(ctx, event.Event{
+		Name: "Gecekodu 2026", Location: "YTÜ", OwnerTeam: "WEBLAB", StartDate: stamp("2026-03-14T19:00:00+03:00"),
+		ExternalRegistrationURL: "https://forms.office.com/r/abc", AttendeeNote: &note, Status: event.StatusPublished,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	noteOf := func(e event.Event) string {
+		if e.AttendeeNote == nil {
+			return ""
+		}
+		return *e.AttendeeNote
+	}
+
+	got, _, err := svc.Copy(ctx, copyLeader, source.ID, copyIn("Eski istemci", "2027-03-13T19:00:00+03:00"))
+	if err != nil || got.Event.ExternalRegistrationURL != "" || noteOf(got.Event) != "" || len(got.Skipped) != 0 {
+		t.Fatalf("not asked: %q %q %v %v", got.Event.ExternalRegistrationURL, noteOf(got.Event), got.Skipped, err)
+	}
+
+	in := copyIn("İkisi de", "2027-03-13T19:00:00+03:00")
+	in.IncludeExternalRegistration, in.IncludeAttendeeNote = true, true
+	got, _, err = svc.Copy(ctx, copyLeader, source.ID, in)
+	if err != nil || got.Event.ExternalRegistrationURL != "https://forms.office.com/r/abc" || noteOf(got.Event) != note || len(got.Skipped) != 0 {
+		t.Fatalf("both: %q %q %v %v", got.Event.ExternalRegistrationURL, noteOf(got.Event), got.Skipped, err)
+	}
+
+	in = copyIn("Yalnız bağlantı", "2027-03-13T19:00:00+03:00")
+	in.IncludeExternalRegistration = true
+	got, _, err = svc.Copy(ctx, copyLeader, source.ID, in)
+	if err != nil || got.Event.ExternalRegistrationURL != "https://forms.office.com/r/abc" || noteOf(got.Event) != "" {
+		t.Fatalf("link only: %q %q %v", got.Event.ExternalRegistrationURL, noteOf(got.Event), err)
+	}
+
+	// A team where a member creates Events but does not edit them: the
+	// member copies, the note is left out and named.
+	policy := authz.DefaultPolicy()
+	policy.EventPermissions["WEBLAB"] = map[authz.Action][]authz.Level{
+		authz.Create: {authz.LevelLeader, authz.LevelMember},
+		authz.Update: {authz.LevelLeader},
+		authz.Delete: {authz.LevelLeader},
+	}
+	narrow := event.NewService(store, authz.NewAuthorizer(policy))
+	in = copyIn("Üye", "2027-03-13T19:00:00+03:00")
+	in.IncludeExternalRegistration, in.IncludeAttendeeNote = true, true
+	got, _, err = narrow.Copy(ctx, copyMember, source.ID, in)
+	if err != nil || noteOf(got.Event) != "" || !slices.Equal(got.Skipped, []string{event.SkippedAttendeeNote}) ||
+		got.Event.ExternalRegistrationURL != "https://forms.office.com/r/abc" {
+		t.Fatalf("member: %q %v %v", noteOf(got.Event), got.Skipped, err)
+	}
+
+	// A source without them: nothing to copy, nothing named.
+	bare := copySource(t, store)
+	in = copyIn("Boş", "2027-03-13T19:00:00+03:00")
+	in.IncludeExternalRegistration, in.IncludeAttendeeNote = true, true
+	got, _, err = narrow.Copy(ctx, copyMember, bare.ID, in)
+	if err != nil || got.Event.ExternalRegistrationURL != "" || noteOf(got.Event) != "" || slices.Contains(got.Skipped, event.SkippedAttendeeNote) {
+		t.Fatalf("bare: %q %q %v %v", got.Event.ExternalRegistrationURL, noteOf(got.Event), got.Skipped, err)
 	}
 }

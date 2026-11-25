@@ -82,12 +82,12 @@ type autoFinalizeMetrics struct {
 	errors    atomic.Int64
 }
 
-// Prometheus is the automatic finalization's counters in Prometheus' text
-// format. No Event or person appears.
+// Prometheus is the automatic finalization's counters and the mail PDF's
+// (mailPDFMetrics) in Prometheus' text format. No Event or person appears.
 func (s *service) Prometheus() string {
 	return fmt.Sprintf("# TYPE core_certificate_auto_finalized_total counter\ncore_certificate_auto_finalized_total %d\n"+
 		"# TYPE core_certificate_auto_finalize_errors_total counter\ncore_certificate_auto_finalize_errors_total %d\n",
-		s.autoMetrics.finalized.Load(), s.autoMetrics.errors.Load())
+		s.autoMetrics.finalized.Load(), s.autoMetrics.errors.Load()) + s.mailPDF.prometheus()
 }
 
 // AutoFinalize closes, at now, the attendance of every Event due: published

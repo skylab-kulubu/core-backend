@@ -9,12 +9,12 @@ import (
 	"github.com/google/uuid"
 )
 
-func (s *MemoryStore) ListTemplates(context.Context) ([]Template, error) {
+func (s *MemoryStore) ListTemplates(_ context.Context, filter TemplateFilter) ([]Template, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Template, 0, len(s.templates))
 	for _, item := range s.templates {
-		if item.ArchivedAt == nil {
+		if item.ArchivedAt == nil && sameEvent(item.EventID, filter.EventID) {
 			item.PublishedVersion = s.latestVersionLocked(item.ID)
 			out = append(out, item)
 		}
@@ -43,10 +43,23 @@ func (s *MemoryStore) CreateTemplate(_ context.Context, item Template) (Template
 	if _, exists := s.templates[item.ID]; exists {
 		return Template{}, ErrConflict
 	}
+	for _, other := range s.templates {
+		if item.EventID != nil && other.ArchivedAt == nil && sameEvent(other.EventID, item.EventID) {
+			return Template{}, ErrConflict
+		}
+	}
 	now := time.Now().UTC()
 	item.CreatedAt, item.UpdatedAt = now, now
 	s.templates[item.ID] = item
 	return item, nil
+}
+
+// sameEvent reports whether a and b name the same Event, or both none.
+func sameEvent(a, b *uuid.UUID) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 func (s *MemoryStore) UpdateTemplate(_ context.Context, item Template) (Template, error) {

@@ -12,12 +12,23 @@ import (
 func (s *Service) Refresh(ctx context.Context) {
 	readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	counts, err := s.config.Store.Counts(readCtx, s.now())
+	now := s.now()
+	counts, err := s.config.Store.Counts(readCtx, now)
+	var open []Term
+	if err == nil {
+		open, err = s.config.Store.Open(readCtx)
+	}
 	if err != nil {
 		if ctx.Err() == nil {
 			s.logf("management terms: gauges: %s", errorCode(err))
 		}
 		return
+	}
+	// The removal's own rule, as remove picks the terms.
+	for _, t := range open {
+		if _, ok := s.config.Rules.ScopeOf(t.GroupPath); ok && t.RemovalDue(now) {
+			counts.RemovalDue++
+		}
 	}
 	s.count(func() { s.counts, s.counted = counts, true })
 }
@@ -37,6 +48,18 @@ func (s *Service) Prometheus() string {
 			value = 1
 		}
 		fmt.Fprintf(&out, "skylab_management_terms_mode{mode=%q} %d\n", m, value)
+	}
+	out.WriteString("# TYPE skylab_management_terms_auto_remove_mode gauge\n")
+	removal := ModeOff
+	if s != nil {
+		removal = s.config.AutoRemove
+	}
+	for _, m := range []Mode{ModeOff, ModeDryRun, ModeApply} {
+		value := 0
+		if m == removal {
+			value = 1
+		}
+		fmt.Fprintf(&out, "skylab_management_terms_auto_remove_mode{mode=%q} %d\n", m, value)
 	}
 	if s == nil || mode == ModeOff {
 		return out.String()
@@ -61,6 +84,8 @@ func (s *Service) Prometheus() string {
 	gauge("skylab_management_terms_expiring", int64(c.Expiring))
 	// The ticket's metric: expired terms whose holder is still in the Group.
 	gauge("skylab_management_terms_expired_in_group", int64(c.ExpiredInGroup))
+	// Of those, the holders due to leave their Group (30 days past the end).
+	gauge("skylab_management_terms_removal_due", int64(c.RemovalDue))
 	var last int64
 	if c.LastSuccess != nil {
 		last = c.LastSuccess.Unix()

@@ -13,11 +13,24 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
-func (s *service) ListTemplates(ctx context.Context, p authz.Principal) ([]Template, error) {
+// ListTemplates lists the team and club templates p may read; with
+// filter.EventID, that Event's Event template alone (an Event template is
+// never among the others: docs/certificate-event-templates.md).
+func (s *service) ListTemplates(ctx context.Context, p authz.Principal, filter TemplateFilter) ([]Template, error) {
 	if s.templates == nil {
 		return nil, ErrInvalid
 	}
-	all, err := s.templates.ListTemplates(ctx)
+	if filter.EventID != nil {
+		ev, err := s.templateEvent(ctx, p, *filter.EventID)
+		if err != nil {
+			return nil, err
+		}
+		if !s.canReadEventTemplates(p, ev) {
+			return nil, ErrForbidden
+		}
+		return s.templates.ListTemplates(ctx, TemplateFilter{EventID: &ev.ID})
+	}
+	all, err := s.templates.ListTemplates(ctx, TemplateFilter{})
 	if err != nil {
 		return nil, err
 	}
@@ -38,15 +51,18 @@ func (s *service) GetTemplate(ctx context.Context, p authz.Principal, id uuid.UU
 	if err != nil {
 		return Template{}, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: item.OwnerTeam}, authz.Read) {
-		return Template{}, ErrForbidden
+	if err := s.allowTemplate(ctx, p, item, authz.Read); err != nil {
+		return Template{}, err
 	}
 	return item, nil
 }
 
 func (s *service) CreateTemplate(ctx context.Context, p authz.Principal, in TemplateDraft) (Template, error) {
-	if s.templates == nil || !validTemplateDraft(in) {
+	if s.templates == nil {
 		return Template{}, ErrInvalid
+	}
+	if err := checkTemplateDraft(in); err != nil {
+		return Template{}, err
 	}
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: in.OwnerTeam}, authz.Create) {
 		return Template{}, ErrForbidden
@@ -63,23 +79,30 @@ func (s *service) CreateTemplate(ctx context.Context, p authz.Principal, in Temp
 }
 
 func (s *service) UpdateTemplate(ctx context.Context, p authz.Principal, id uuid.UUID, in TemplateDraft) (Template, error) {
-	if s.templates == nil || !validTemplateDraft(in) {
+	if s.templates == nil {
 		return Template{}, ErrInvalid
+	}
+	if err := checkTemplateDraft(in); err != nil {
+		return Template{}, err
 	}
 	existing, err := s.templates.GetTemplate(ctx, id)
 	if err != nil {
 		return Template{}, err
 	}
-	oldResource := authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: existing.OwnerTeam}
-	newResource := authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: in.OwnerTeam}
-	if !s.authz.Allow(p, oldResource, authz.Update) || !s.authz.Allow(p, newResource, authz.Update) {
-		return Template{}, ErrForbidden
+	if err := s.allowTemplate(ctx, p, existing, authz.Update); err != nil {
+		return Template{}, err
+	}
+	// An Event template's Owner team is its Event's: the body's is ignored.
+	if existing.EventID == nil {
+		if !s.authz.Allow(p, templateResource(in.OwnerTeam), authz.Update) {
+			return Template{}, ErrForbidden
+		}
+		existing.OwnerTeam = normalizeTeam(in.OwnerTeam)
 	}
 	if err := s.checkLayoutMedia(ctx, in.Layout, existing.DraftLayout); err != nil {
 		return Template{}, err
 	}
 	existing.Name = strings.TrimSpace(in.Name)
-	existing.OwnerTeam = normalizeTeam(in.OwnerTeam)
 	existing.SourceKind = in.SourceKind
 	existing.SourceRef = strings.TrimSpace(in.SourceRef)
 	existing.SourceEditURL = strings.TrimSpace(in.SourceEditURL)
@@ -113,14 +136,14 @@ func (s *service) PublishTemplate(ctx context.Context, p authz.Principal, id uui
 	if err != nil {
 		return TemplateVersion{}, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: item.OwnerTeam}, authz.Update) {
-		return TemplateVersion{}, ErrForbidden
+	if err := s.allowTemplate(ctx, p, item, authz.Update); err != nil {
+		return TemplateVersion{}, err
 	}
 	if err := ValidateLayout(item.DraftLayout); err != nil {
 		return TemplateVersion{}, err
 	}
 	if s.render == nil {
-		return TemplateVersion{}, ErrInvalid
+		return TemplateVersion{}, rendererUnavailable(nil)
 	}
 	sample := PreviewData{
 		RecipientName: "Örnek Katılımcı",
@@ -142,7 +165,15 @@ func (s *service) PublishTemplate(ctx context.Context, p authz.Principal, id uui
 		// The private copies are this attempt's own; nothing refers to them.
 		s.discardPrivateCopies(ctx, privateCopyKeys(manifest))
 	}
-	return published, err
+	if err != nil || item.EventID == nil {
+		return published, err
+	}
+	// An Event template serves its Event once published. A binding that
+	// fails leaves the version; publishing again binds it.
+	if err := s.bindEventTemplate(ctx, p, item); err != nil {
+		return TemplateVersion{}, err
+	}
+	return published, nil
 }
 
 // versionNotStored reports whether the version is provably absent. A store
@@ -158,7 +189,7 @@ func (s *service) createVersion(ctx context.Context, p authz.Principal, item Tem
 		if err != nil {
 			return TemplateVersion{}, err
 		}
-		return TemplateVersion{}, ErrInvalid
+		return TemplateVersion{}, invalid(CodeRenderFailed)
 	}
 	checksum, err := LayoutChecksum(item.DraftLayout)
 	if err != nil {
@@ -175,7 +206,7 @@ func (s *service) PreviewTemplate(ctx context.Context, p authz.Principal, id uui
 		return nil, err
 	}
 	if s.render == nil {
-		return nil, ErrInvalid
+		return nil, rendererUnavailable(nil)
 	}
 	if sample.RecipientName == "" {
 		sample.RecipientName = "Ada Lovelace"
@@ -200,11 +231,11 @@ func (s *service) PreviewEvent(ctx context.Context, p authz.Principal, eventID u
 	if err != nil {
 		return nil, err
 	}
-	if !s.canReadWorkspace(p, ev.OwnerTeam) {
+	if !s.canReadEventTemplates(p, ev) {
 		return nil, ErrForbidden
 	}
 	if s.render == nil {
-		return nil, ErrInvalid
+		return nil, rendererUnavailable(nil)
 	}
 	resolved, err := s.resolveForEvent(ctx, ev)
 	if err != nil {
@@ -226,25 +257,31 @@ func (s *service) ResolveTemplate(ctx context.Context, p authz.Principal, eventI
 	if err != nil {
 		return ResolvedTemplate{}, err
 	}
-	if !s.canReadWorkspace(p, ev.OwnerTeam) {
+	if !s.canReadEventTemplates(p, ev) {
 		return ResolvedTemplate{}, ErrForbidden
 	}
 	resolved, err := s.resolveForEvent(ctx, ev)
 	if err != nil {
 		return ResolvedTemplate{}, err
 	}
-	return s.projectResolution(p, resolved), nil
+	return s.projectResolution(p, ev, resolved), nil
 }
 
-func (s *service) projectResolution(p authz.Principal, resolved ResolvedTemplate) ResolvedTemplate {
-	resource := authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: resolved.Template.OwnerTeam}
-	if s.authz.Allow(p, resource, authz.Read) {
+// projectResolution is resolved in full to who may read its template (an
+// Event template: who may read ev's), else its names and version only.
+func (s *service) projectResolution(p authz.Principal, ev event.Event, resolved ResolvedTemplate) ResolvedTemplate {
+	full := s.authz.Allow(p, templateResource(resolved.Template.OwnerTeam), authz.Read)
+	if resolved.Template.EventID != nil && *resolved.Template.EventID == ev.ID {
+		full = s.canReadEventTemplates(p, ev)
+	}
+	if full {
 		return resolved
 	}
 	resolved.Template = Template{
 		ID:         resolved.Template.ID,
 		Name:       resolved.Template.Name,
 		OwnerTeam:  resolved.Template.OwnerTeam,
+		EventID:    resolved.Template.EventID,
 		SourceKind: resolved.Template.SourceKind,
 		System:     resolved.Template.System,
 	}
@@ -268,7 +305,7 @@ func (s *service) ListBindings(ctx context.Context, p authz.Principal) ([]Bindin
 	}
 	out := make([]Binding, 0, len(bindings))
 	for _, binding := range bindings {
-		owner, _, err := s.bindingOwner(ctx, p, binding.Scope, binding.ScopeKey)
+		owner, _, _, err := s.bindingScope(ctx, p, binding.Scope, binding.ScopeKey)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
@@ -323,14 +360,20 @@ func (s *service) SetBinding(ctx context.Context, p authz.Principal, in Binding)
 	if err != nil {
 		return Binding{}, err
 	}
-	owner, key, err := s.bindingOwner(ctx, p, in.Scope, in.ScopeKey)
+	owner, key, ev, err := s.bindingScope(ctx, p, in.Scope, in.ScopeKey)
 	if err != nil {
 		return Binding{}, err
 	}
-	if item.OwnerTeam != "" && normalizeTeam(item.OwnerTeam) != normalizeTeam(owner) {
+	switch {
+	case item.EventID != nil:
+		// An Event template serves its own Event only.
+		if in.Scope != ScopeEvent || key != item.EventID.String() {
+			return Binding{}, invalid(CodeTemplateEventScoped)
+		}
+	case item.OwnerTeam != "" && normalizeTeam(item.OwnerTeam) != normalizeTeam(owner):
 		return Binding{}, ErrInvalid
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: owner}, authz.Assign) {
+	if !s.canAssign(p, owner, ev) {
 		return Binding{}, ErrForbidden
 	}
 	if _, err := s.templates.LatestVersion(ctx, item.ID); err != nil {
@@ -346,63 +389,76 @@ func (s *service) ClearBinding(ctx context.Context, p authz.Principal, scope, sc
 	if s.templates == nil || !validScope(scope) || scope == ScopeClub {
 		return ErrInvalid
 	}
-	owner, key, err := s.bindingOwner(ctx, p, scope, scopeKey)
+	owner, key, ev, err := s.bindingScope(ctx, p, scope, scopeKey)
 	if err != nil {
 		return err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: owner}, authz.Assign) {
+	if !s.canAssign(p, owner, ev) {
 		return ErrForbidden
 	}
 	return s.templates.DeleteBinding(ctx, scope, key)
 }
 
-// bindingOwner is the Owner team and the stored key of a binding's scope. An
-// Event scope names a current Event p may see: a draft p may not see is
-// ErrNotFound, like its other certificate paths.
-func (s *service) bindingOwner(ctx context.Context, p authz.Principal, scope, key string) (string, string, error) {
+// canAssign is whether p may set or clear a binding of owner's scope: the
+// template rule's Assign, and for an Event's binding (ev) who may edit the
+// Event too.
+func (s *service) canAssign(p authz.Principal, owner string, ev *event.Event) bool {
+	if ev != nil && s.canEditEvent(p, *ev) {
+		return true
+	}
+	return s.authz.Allow(p, templateResource(owner), authz.Assign)
+}
+
+// bindingScope is the Owner team and the stored key of a binding's scope,
+// and for an Event scope its Event. An Event scope names a current Event p
+// may see: a draft p may not see is ErrNotFound, like its other certificate
+// paths.
+func (s *service) bindingScope(ctx context.Context, p authz.Principal, scope, key string) (string, string, *event.Event, error) {
 	switch scope {
 	case ScopeClub:
-		return "", "SKY_LAB", nil
+		return "", "SKY_LAB", nil, nil
 	case ScopeOwnerTeam:
 		team := normalizeTeam(key)
 		if team == "" {
-			return "", "", ErrInvalid
+			return "", "", nil, ErrInvalid
 		}
-		return team, team, nil
+		return team, team, nil, nil
 	case ScopeEvent:
 		id, err := uuid.Parse(key)
 		if err != nil {
-			return "", "", ErrInvalid
+			return "", "", nil, ErrInvalid
 		}
 		ev, err := s.visibleEvent(ctx, p, id)
 		if err != nil {
-			return "", "", err
+			return "", "", nil, err
 		}
-		return ev.OwnerTeam, id.String(), nil
+		return ev.OwnerTeam, id.String(), &ev, nil
 	default:
-		return "", "", ErrInvalid
+		return "", "", nil, ErrInvalid
 	}
 }
 
-func validTemplateDraft(in TemplateDraft) bool {
+// checkTemplateDraft is nil for a draft that may be saved, else an
+// InvalidError that says what to change.
+func checkTemplateDraft(in TemplateDraft) error {
 	if strings.TrimSpace(in.Name) == "" || len(strings.TrimSpace(in.Name)) > 160 {
-		return false
+		return invalid(CodeTemplateNameInvalid)
 	}
 	switch in.SourceKind {
 	case "upload", "canva", "figma", "sky":
 	default:
-		return false
+		return invalid(CodeTemplateSourceInvalid)
 	}
 	if len(in.SourceRef) > 500 || len(in.SourceEditURL) > 2000 {
-		return false
+		return invalid(CodeTemplateSourceInvalid)
 	}
 	if strings.TrimSpace(in.SourceEditURL) != "" {
 		parsed, err := url.ParseRequestURI(strings.TrimSpace(in.SourceEditURL))
 		if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
-			return false
+			return invalid(CodeTemplateSourceInvalid)
 		}
 	}
-	return ValidateLayout(in.Layout) == nil
+	return ValidateLayout(in.Layout)
 }
 
 func validScope(scope string) bool {

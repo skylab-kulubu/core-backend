@@ -33,6 +33,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/consent"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
 	"github.com/skylab-kulubu/core-backend/internal/doorqr"
+	"github.com/skylab-kulubu/core-backend/internal/doorstaffmail"
 	"github.com/skylab-kulubu/core-backend/internal/editablesites"
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
@@ -90,6 +91,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == mediaLegacyReleaseHoldCommandName {
 		os.Exit(runMediaLegacyReleaseHold(os.Args[2:], os.Getenv, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == mediaLegacyAnswersCommandName {
+		os.Exit(runMediaLegacyAnswers(os.Args[2:], os.Getenv, os.Stdin, os.Stderr))
 	}
 	if len(os.Args) > 1 && os.Args[1] == mediaLookupCommandName {
 		os.Exit(runMediaLookup(os.Args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
@@ -988,7 +992,18 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	worker("event updated notification", startEventUpdatedNotification(workers, eventUpdatedOn, events, eventupdatenotify.NewPostgresQueue(pool), tickets, users, sky, ticketPageConfig, log.Printf))
+	// Its other details, when the editor says to tell (event.changed).
+	eventChangedOn, err := eventChangedNotificationOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	worker("event updated notification", startEventUpdatedNotification(workers, eventUpdatedOn, eventChangedOn, events, eventupdatenotify.NewPostgresQueue(pool), tickets, users, sky, ticketPageConfig, log.Printf))
+	// A person added to an Event's door staff (docs/door-staff-mail.md).
+	doorStaffMail, err := doorStaffMailOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	worker("door staff mail", startDoorStaffMail(workers, doorStaffMail, events, doorstaffmail.NewPostgresQueue(pool), users, sky, strings.TrimSpace(os.Getenv("PANEL_URL")), log.Printf))
 
 	var render certificate.Renderer
 	if baseURL := gotenbergURL(); baseURL != "" {
@@ -1061,15 +1076,28 @@ func main() {
 	if mapWorker := startEventMaps(workers, worker, render, publicBlobs, mediaStore, mediaPurposes, decodeBudget, mapRegions); mapWorker != nil {
 		eventMapMetrics = mapWorker
 	}
+	// The certificate's PDF with its queued mail (CERTIFICATE_PDF_ATTACHMENT):
+	// read from storage just before each send.
+	certificatePDFAttachment, err := certificatePDFAttachmentOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if certificatePDFAttachment {
+		log.Printf("certificate mail: PDF attachment on")
+	} else {
+		log.Printf("certificate mail: PDF attachment off (CERTIFICATE_PDF_ATTACHMENT is not on)")
+	}
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
+		PublicPageOrigin: certificatePageOrigin(os.Getenv),
 		Templates:        certs,
 		Jobs:             certs,
 		Artifacts:        blobs,
 		Assets:           certificate.MediaAssets{Media: mediaStore, Blobs: blobs},
 		PrivateArtifacts: privateArtifacts,
 		Media:            media.NewLinker(mediaStore),
+		MailPDF:          certificatePDFAttachment,
 	})
 	worker("certificate issuance worker", certificate.MaintainIssuance(workers, certSvc, 2*time.Second, 10, func(err error) {
 		log.Printf("certificate issuance worker: %v", err)
@@ -1191,7 +1219,8 @@ func main() {
 
 	// Management membership terms (docs/management-membership-terms.md,
 	// grup-yonetimi 11): YK, DK and Team Leader memberships end with the
-	// season; core warns, marks and lists, and never takes anyone out.
+	// season; core warns, marks and lists, and 30 days after the end takes
+	// the holder out (MANAGEMENT_TERMS_AUTO_REMOVE, off by default).
 	terms, err := startManagementTerms(workers, os.Getenv, managementTermsDeps{
 		pool: pool, dir: dir, seasons: seasons, users: users, sky: sky, audit: teamAudit, az: az,
 		rules: membershipterm.Rules{PrivilegedRoots: privilegedRoots, LeaderSubgroups: authzPolicy.LeaderSubgroups},
@@ -1222,12 +1251,30 @@ func main() {
 		TeamPage:              &identity.TeamPageVisibility{Consents: consents},
 	})
 	terms.UseMemberships(identityService)
+	// Keycloak's console changes in the same record (docs/console-audit.md,
+	// KEYCLOAK_CONSOLE_AUDIT): read back from Keycloak's admin events and
+	// told as the panel's are, the management terms included.
+	consoleAudit, err := consoleAuditFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	consoleAuditMetrics, consoleAuditStopped := startConsoleAudit(workers, consoleAudit, dir, pool, teamAudit,
+		teamMembership, managementTermsNotifier(terms), groupRolesNotice, log.Printf)
+	worker("keycloak console audit", consoleAuditStopped)
 	userAccounts := identity.NewUserAccounts(identity.UserAccountOptions{
 		Accounts: accountDir, People: dir, Users: users, Authz: az,
 		PrivilegedRoots: privilegedRoots, Audit: teamAudit, YTUProvider: ytuIdentityProvider,
 		Logf: log.Printf,
 	})
 
+	// The Co-organizer writes (EVENT_CO_ORGANIZERS_WRITE,
+	// docs/co-organizers.md): off until the decisions, the audit record and
+	// the mails ship with them.
+	coOrganizersWrite, err := coOrganizersWriteOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("event co-organizers: writes %s (EVENT_CO_ORGANIZERS_WRITE)", map[bool]string{false: "off", true: "on"}[coOrganizersWrite])
 	app := httpx.New(httpx.Deps{
 		Users:        user.NewService(users, dir),
 		Identity:     identityService,
@@ -1237,6 +1284,10 @@ func main() {
 			ImageAddressMode: imageAddressMode,
 			FormLinks:        eventFormLinks{urls: urlSvc},
 			Media:            media.NewLinker(mediaStore),
+			Policy:           authzPolicy,
+			Teams:            teamTree,
+
+			CoOrganizersWrite: coOrganizersWrite,
 		}),
 		Seasons:         season.NewService(seasons, az),
 		SubjectRequests: subjectrequest.NewService(subjectrequest.NewPostgresStore(pool), az, nil),
@@ -1268,7 +1319,7 @@ func main() {
 		AccountAccessMetrics:   accessMetrics,
 		AccountErasureMetrics:  optionalErasureMetrics(erasureGauges),
 		MediaCDNPurgeMetrics:   cdnPurgeMetrics,
-		TeamMailMetrics:        teamMembershipMetrics,
+		TeamMailMetrics:        joinedMetrics{teamMembershipMetrics, consoleAuditMetrics},
 		ManagementTerms:        terms,
 		TeamDelegationMetrics:  delegationMetrics,
 		RetentionMetrics:       retentionMetrics,

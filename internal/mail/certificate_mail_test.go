@@ -107,3 +107,37 @@ func TestCertificateMailUnconfigured(t *testing.T) {
 		t.Fatalf("nil client: %v", err)
 	}
 }
+
+// The certificate's PDF goes in the body's attachments, by the key and by
+// the id fallback alike, under the same Idempotency-Key as without it;
+// without one the body has no attachments field.
+func TestCertificateMailAttachments(t *testing.T) {
+	t.Parallel()
+	srv, calls := certificateMailServer(t, http.StatusNotFound, http.StatusCreated, http.StatusCreated)
+	id := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	m := &SkyNotify{BaseURL: srv.URL, CertificateTemplateKey: DefaultCertificateTemplateKey, CertificateTemplateID: id, Tokens: StaticToken(testAccessToken), HTTP: srv.Client()}
+	pdf := PDFAttachment("SKY-LAB-sertifika-0A1B.pdf", []byte("%PDF-1.4 x"))
+	if err := m.CertificateMailAttachments(context.Background(), "k", testRecipient, "Ada", nil, []Attachment{pdf}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.CertificateMail(context.Background(), "plain", testRecipient, "Ada", nil); err != nil {
+		t.Fatal(err)
+	}
+	got := calls()
+	if len(got) != 3 || got[0].key != "k" || got[1].key != "k:id" || got[2].key != "plain" {
+		t.Fatalf("calls %+v", got)
+	}
+	for _, call := range got[:2] {
+		files, _ := call.body["attachments"].([]any)
+		if len(files) != 1 {
+			t.Fatalf("attachments %+v", call.body["attachments"])
+		}
+		file, _ := files[0].(map[string]any)
+		if file["filename"] != pdf.Filename || file["content_type"] != "application/pdf" || file["content_base64"] != pdf.ContentBase64 {
+			t.Fatalf("attachment %+v", file)
+		}
+	}
+	if _, ok := got[2].body["attachments"]; ok {
+		t.Fatalf("a mail without a file sent attachments: %+v", got[2].body)
+	}
+}

@@ -482,3 +482,29 @@ func TestNewServiceNeedsTheNoticeParts(t *testing.T) {
 		t.Fatal("a notice without rosters and a mailer")
 	}
 }
+
+// A change made in Keycloak's console (docs/console-audit.md) names the
+// console as where: after the actor core can name, alone for one it cannot
+// (a master realm account). The notice keeps Keycloak's time of the change.
+func TestNoticeOfAConsoleChangeNamesTheConsole(t *testing.T) {
+	t.Parallel()
+	f := newNoticeFixture(t)
+	at := time.Date(2026, 10, 12, 19, 5, 0, 0, time.UTC)
+	f.svc.MembershipChanged(context.Background(), identity.MembershipChange{
+		UserID: f.ada, Group: identity.Group{ID: "g-yk", Path: "/UYELER/YK"}, Added: true, ActorID: f.act.String(), Console: true, At: at,
+	})
+	f.svc.GroupRolesChanged(context.Background(), identity.GroupRolesChange{
+		Group: identity.Group{ID: "g-uyeler", Path: "/UYELER"}, Added: []identity.ClientRole{{ClientID: "forms", Role: "admin"}},
+		ActorID: uuid.NewString(), Console: true, At: at,
+	})
+	f.pass(t)
+	names := map[string]bool{}
+	for _, s := range f.mail.sent {
+		names[s.vars["Change"]+"|"+s.vars["ActorName"]+"|"+s.vars["OccurredAt"]] = true
+	}
+	for _, want := range []string{"member-added|Aktör Kişi (Keycloak konsolu)|12.10.2026 22:05", "roles-changed|Keycloak konsolu|12.10.2026 22:05"} {
+		if !names[want] {
+			t.Fatalf("missing %q in %v", want, names)
+		}
+	}
+}

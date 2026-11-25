@@ -38,6 +38,11 @@ func jpegOrientation(data []byte) int {
 	return 1
 }
 
+// JPEGOrientation is the EXIF Orientation of a JPEG (1 when it has none):
+// a certificate background is placed by the size a browser draws it, and
+// a browser turns a JPEG by it.
+func JPEGOrientation(data []byte) int { return jpegOrientation(data) }
+
 // exifOrientation reads the Orientation tag from an APP1 payload
 // ("Exif\0\0" and a TIFF header), when it is there and valid.
 func exifOrientation(payload []byte) (int, bool) {

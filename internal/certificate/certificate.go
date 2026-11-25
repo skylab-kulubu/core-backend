@@ -109,7 +109,7 @@ type Service interface {
 	ProcessMails(ctx context.Context, limit int) (int, error)
 	ResendMail(ctx context.Context, p authz.Principal, serial string) (MailResend, error)
 	ResendEventMails(ctx context.Context, p authz.Principal, eventID uuid.UUID, scope string) (MailResend, error)
-	ListTemplates(ctx context.Context, p authz.Principal) ([]Template, error)
+	ListTemplates(ctx context.Context, p authz.Principal, filter TemplateFilter) ([]Template, error)
 	GetTemplate(ctx context.Context, p authz.Principal, id uuid.UUID) (Template, error)
 	CreateTemplate(ctx context.Context, p authz.Principal, in TemplateDraft) (Template, error)
 	UpdateTemplate(ctx context.Context, p authz.Principal, id uuid.UUID, in TemplateDraft) (Template, error)
@@ -120,4 +120,8 @@ type Service interface {
 	ListBindings(ctx context.Context, p authz.Principal) ([]Binding, error)
 	SetBinding(ctx context.Context, p authz.Principal, in Binding) (Binding, error)
 	ClearBinding(ctx context.Context, p authz.Principal, scope, scopeKey string) error
+	// EventTemplate and CreateEventTemplate are an Event's own template
+	// (docs/certificate-event-templates.md).
+	EventTemplate(ctx context.Context, p authz.Principal, eventID uuid.UUID) (EventTemplateState, error)
+	CreateEventTemplate(ctx context.Context, p authz.Principal, eventID uuid.UUID, in EventTemplateInput) (Template, error)
 }

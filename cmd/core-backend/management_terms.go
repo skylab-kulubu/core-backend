@@ -33,10 +33,11 @@ type managementTermsDeps struct {
 	rules   membershipterm.Rules
 }
 
-// newManagementTerms builds the terms' service in mode.
-func newManagementTerms(mode membershipterm.Mode, weekly bool, deps managementTermsDeps, logf func(string, ...any)) (*membershipterm.Service, error) {
+// newManagementTerms builds the terms' service in mode, its removal in
+// removal.
+func newManagementTerms(mode, removal membershipterm.Mode, weekly bool, deps managementTermsDeps, logf func(string, ...any)) (*membershipterm.Service, error) {
 	return membershipterm.NewService(membershipterm.Config{
-		Mode: mode, Weekly: weekly, Rules: deps.rules,
+		Mode: mode, AutoRemove: removal, Weekly: weekly, Rules: deps.rules,
 		Store: membershipterm.NewPostgresStore(deps.pool), Directory: deps.dir, Seasons: deps.seasons,
 		Rosters:  teammail.DirectoryRosters{Directory: deps.dir},
 		People:   teammail.DirectoryPeople{Directory: deps.dir, Accounts: deps.users},
@@ -53,8 +54,9 @@ func managementTermsNotifier(terms *membershipterm.Service) identity.MembershipN
 	return terms
 }
 
-// startManagementTerms reads MANAGEMENT_TERMS_MODE and
-// MANAGEMENT_TERMS_WEEKLY_SUMMARY and starts the daily job and the mail
+// startManagementTerms reads MANAGEMENT_TERMS_MODE,
+// MANAGEMENT_TERMS_AUTO_REMOVE and MANAGEMENT_TERMS_WEEKLY_SUMMARY and
+// starts the daily job and the mail
 // worker until ctx is cancelled (none while off). The service always
 // exists: off, it hears of no membership, serves no route and its metrics
 // say off.
@@ -63,11 +65,15 @@ func startManagementTerms(ctx context.Context, getenv func(string) string, deps 
 	if err != nil {
 		return nil, err
 	}
+	removal, err := membershipterm.AutoRemoveFromEnv(getenv)
+	if err != nil {
+		return nil, err
+	}
 	weekly, err := membershipterm.WeeklySummaryFromEnv(getenv)
 	if err != nil {
 		return nil, err
 	}
-	terms, err := newManagementTerms(mode, weekly, deps, logf)
+	terms, err := newManagementTerms(mode, removal, weekly, deps, logf)
 	if err != nil {
 		return nil, err
 	}
@@ -77,9 +83,12 @@ func startManagementTerms(ctx context.Context, getenv func(string) string, deps 
 	case mode == membershipterm.ModeOff:
 		logf("management terms: off (%s is not dry-run or apply)", membershipterm.ModeEnv)
 	case deps.sky.ManagementTermConfigured():
-		logf("management terms: %s (%s), daily; mail %s, weekly summary %t", mode, membershipterm.ModeEnv, deps.sky.ManagementTermTemplateKey, weekly)
+		logf("management terms: %s (%s), daily; removal %s (%s); mail %s, weekly summary %t", mode, membershipterm.ModeEnv, removal, membershipterm.AutoRemoveEnv, deps.sky.ManagementTermTemplateKey, weekly)
 	default:
-		logf("management terms: %s (%s), daily; mail off (SKYNOTIFY_MANAGEMENT_TERM_TEMPLATE_KEY empty or no SkyNotify)", mode, membershipterm.ModeEnv)
+		logf("management terms: %s (%s), daily; removal %s (%s); mail off (SKYNOTIFY_MANAGEMENT_TERM_TEMPLATE_KEY empty or no SkyNotify)", mode, membershipterm.ModeEnv, removal, membershipterm.AutoRemoveEnv)
+	}
+	if removal == membershipterm.ModeApply && mode != membershipterm.ModeApply {
+		logf("management terms: WARN %s=apply takes nobody out while %s is not apply", membershipterm.AutoRemoveEnv, membershipterm.ModeEnv)
 	}
 	return terms, nil
 }
@@ -92,7 +101,9 @@ func startManagementTerms(ctx context.Context, getenv func(string) string, deps 
 //
 // It runs inside the core container, which has the environment, takes the
 // schedule's lock and records the run (triggered_by cli). It prints counts
-// only: no person, Group or path.
+// only: no person, Group or path. It takes nobody out of a Group: with
+// MANAGEMENT_TERMS_AUTO_REMOVE on it counts the holders due, and the
+// schedule takes them out.
 const managementTermsCommandName = "management-terms"
 
 const managementTermsExitLocked = 3
@@ -108,6 +119,11 @@ func runManagementTerms(args []string, getenv func(string) string, out io.Writer
 		return code
 	}
 	mode, err := membershipterm.ModeFromEnv(getenv)
+	if err != nil {
+		fmt.Fprintln(out, err)
+		return 2
+	}
+	removal, err := membershipterm.AutoRemoveFromEnv(getenv)
 	if err != nil {
 		fmt.Fprintln(out, err)
 		return 2
@@ -147,7 +163,7 @@ func runManagementTerms(args []string, getenv func(string) string, out io.Writer
 	if apply {
 		runMode = membershipterm.ModeApply
 	}
-	terms, err := newManagementTerms(runMode, true, managementTermsDeps{
+	terms, err := newManagementTerms(runMode, removal, true, managementTermsDeps{
 		pool: pool, dir: keycloak, seasons: season.NewPostgresStore(pool), users: user.NewPostgresStore(pool),
 		audit: teamaudit.NewPostgres(pool),
 		rules: membershipterm.Rules{PrivilegedRoots: roots, LeaderSubgroups: authz.DefaultPolicy().LeaderSubgroups},
@@ -193,6 +209,12 @@ func managementTermsCommand(ctx context.Context, terms managementTermsRunner, mo
 	fmt.Fprintf(w, "14-day warnings\t%d\n", run.Warned14d)
 	fmt.Fprintf(w, "1-day warnings\t%d\n", run.Warned1d)
 	fmt.Fprintf(w, "terms marked expired\t%d\n", run.Expired)
+	fmt.Fprintf(w, "removal (%s)\t%s\n", membershipterm.AutoRemoveEnv, removalOrOff(run.Removal))
+	if run.Removal == membershipterm.ModeApply {
+		fmt.Fprintf(w, "holders taken out (30 days past the end)\t%d\n", run.Removed)
+	} else if run.Removal == membershipterm.ModeDryRun {
+		fmt.Fprintf(w, "holders due to be taken out (30 days past the end; the schedule does it)\t%d\n", run.Removed)
+	}
 	fmt.Fprintf(w, "mails queued\t%d\n", run.Mails)
 	fmt.Fprintf(w, "weekly summary\t%s\n", run.Weekly)
 	fmt.Fprintf(w, "status\t%s\n", run.Status)
@@ -202,4 +224,11 @@ func managementTermsCommand(ctx context.Context, terms managementTermsRunner, mo
 		return 1
 	}
 	return 0
+}
+
+func removalOrOff(m membershipterm.Mode) membershipterm.Mode {
+	if m == "" {
+		return membershipterm.ModeOff
+	}
+	return m
 }

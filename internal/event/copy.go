@@ -19,10 +19,11 @@ const (
 	SkippedDoorStaff           = "doorStaff"
 	SkippedCover               = "cover"
 	SkippedCompetitions        = "competitions"
+	SkippedAttendeeNote        = "attendeeNote"
 )
 
 // skippedOrder is the order the answer lists skipped parts in.
-var skippedOrder = []string{SkippedCertificateTemplate, SkippedDoorStaff, SkippedCover, SkippedCompetitions}
+var skippedOrder = []string{SkippedCertificateTemplate, SkippedDoorStaff, SkippedCover, SkippedCompetitions, SkippedAttendeeNote}
 
 // CopyInput is what POST /v1/events/{id}/copy asks for (ADR 0066, ticket
 // 06): the copy's id (the client makes it, so a retried request finds the
@@ -33,9 +34,18 @@ type CopyInput struct {
 	StartDate           *time.Time
 	IncludeDoorStaff    bool
 	IncludeCompetitions bool
+	// IncludeExternalRegistration copies the source's external
+	// registration link; IncludeAttendeeNote its attendee note. The panel
+	// asks for each; a client that sends neither copies neither.
+	IncludeExternalRegistration bool
+	IncludeAttendeeNote         bool
 	// OwnerTeam is the copy's Owner team (ticket 16); empty is the
 	// source's.
 	OwnerTeam string
+	// SkipCertificateTemplate leaves the source's certificate template out:
+	// its Event template and its binding (named skipped when it has one).
+	// The default copies them.
+	SkipCertificateTemplate bool
 }
 
 // Copied is a copy and the parts of its source it left out.
@@ -70,11 +80,25 @@ type CopyPlan struct {
 	// Shift moves the source's days, Sessions and Competition stages.
 	Shift Shift
 	// By is who copies, nil when unknown.
-	By                  *uuid.UUID
-	DoorStaff           CopyPart
-	Cover               CopyPart
+	By        *uuid.UUID
+	DoorStaff CopyPart
+	Cover     CopyPart
+	// CertificateTemplate is the copy's binding to the source's team or
+	// club template: CopyWrite for who may bind in the copy's Owner team.
 	CertificateTemplate CopyPart
-	Competitions        CopyPart
+	// EventTemplate is the source's Event template, copied as the copy's
+	// own (docs/certificate-event-templates.md): CopyWrite unless the
+	// copier asked to leave it out, since who creates the copy may make
+	// its Event template. EventTemplateSourceLinks copies the design's
+	// reference and edit address too, for who may read the source
+	// template.
+	EventTemplate            CopyPart
+	EventTemplateSourceLinks bool
+	Competitions             CopyPart
+	// AttendeeNote is CopyWrite when Event carries the source's note,
+	// CopyRefused when the copier may not read it (the answer names it
+	// skipped).
+	AttendeeNote CopyPart
 }
 
 // skipped puts the parts in the answer's order, each once, never nil.
@@ -174,9 +198,10 @@ func earliest(a, b *time.Time) *time.Time {
 }
 
 // Copy copies the source Event's structure into a new draft (ADR 0066,
-// ticket 06): its details, cover, capacity, certificate rule and Event
-// template binding, days and Sessions, and, when asked, its door staff and
-// Competitions with their stages. People and history (Tickets, check-ins,
+// ticket 06): its details, cover, capacity, certificate rule, Event
+// template (an own copy) or template binding, days and Sessions, and, when asked, its door staff,
+// Competitions with their stages, external registration link and attendee
+// note. People and history (Tickets, check-ins,
 // certificates, Competitors, the mail list), the gallery, files and videos,
 // the forms and their short links are never copied. The dates move with the
 // new start (Shift). Whoever may see the source and create Events in its
@@ -259,9 +284,14 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 		Shift:               shift,
 		By:                  lifecycle.ActorID(p.ID),
 		CertificateTemplate: CopyRefused,
+		EventTemplate:       CopyRefused,
 	}
-	if s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: team}, authz.Assign) {
-		plan.CertificateTemplate = CopyWrite
+	if !in.SkipCertificateTemplate {
+		plan.EventTemplate = CopyWrite
+		plan.EventTemplateSourceLinks = s.authz.Allow(p, AuthzResource(source, authz.TypeCertificateTemplate, time.Now()), authz.Read)
+		if s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: team}, authz.Assign) {
+			plan.CertificateTemplate = CopyWrite
+		}
 	}
 	if in.IncludeDoorStaff {
 		plan.DoorStaff = CopyRefused
@@ -273,6 +303,21 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 		plan.Competitions = CopyRefused
 		if s.authz.Allow(p, authz.Resource{Type: authz.TypeCompetition, OwnerTeam: team}, authz.Create) {
 			plan.Competitions = CopyWrite
+		}
+	}
+	if in.IncludeExternalRegistration {
+		plan.Event.ExternalRegistrationURL = source.ExternalRegistrationURL
+		if plan.Event, err = normalizeExternalRegistration(plan.Event); err != nil {
+			return Copied{}, false, err
+		}
+	}
+	if in.IncludeAttendeeNote && source.AttendeeNote != nil && *source.AttendeeNote != "" {
+		// The note (the venue's Wi-Fi) comes along only for who may read
+		// it on the source.
+		plan.AttendeeNote = CopyRefused
+		if s.readsAttendeeNote(p, source) {
+			plan.AttendeeNote = CopyWrite
+			plan.Event.AttendeeNote = source.AttendeeNote
 		}
 	}
 	if source.CoverImageID != nil {

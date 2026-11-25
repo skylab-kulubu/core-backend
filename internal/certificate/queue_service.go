@@ -79,7 +79,7 @@ func (s *service) Summary(ctx context.Context, p authz.Principal, eventID uuid.U
 	}
 	out := EventSummary{
 		EventID: eventID, EligibleCount: eligibleCount, IssuedCount: issued, RevokedCount: revoked,
-		QueuedCount: queued, FailedCount: failed, Resolution: s.projectResolution(p, resolution),
+		QueuedCount: queued, FailedCount: failed, Resolution: s.projectResolution(p, ev, resolution),
 		CountedTotal: attendance.CountedTotal, EffectiveMin: event.RuleMin(ev, attendance.CountedTotal), BelowCount: belowCount,
 		Sessionless:     attendance.Sessionless,
 		AutoFinalizeAt:  autoFinalizeAt(ev, attendance, finalization != nil, time.Now()),
@@ -475,7 +475,10 @@ func eventDates(ev event.Event) string {
 }
 
 func safeErrorCode(err error) string {
+	var unavailable *UnavailableError
 	switch {
+	case errors.As(err, &unavailable):
+		return unavailable.Code
 	case errors.Is(err, ErrInvalid):
 		return "invalid_input"
 	case errors.Is(err, ErrNotFound):

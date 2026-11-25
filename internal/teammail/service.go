@@ -231,7 +231,7 @@ func (s *Service) MembershipChanged(ctx context.Context, change identity.Members
 			event = NoticeMemberAdded
 		}
 		subject := change.UserID
-		s.queueNotice(ctx, Notice{Event: event, GroupPath: change.Group.Path, SubjectID: &subject}, change.ActorID)
+		s.queueNotice(ctx, Notice{Event: event, GroupPath: change.Group.Path, SubjectID: &subject, Console: change.Console, OccurredAt: change.At}, change.ActorID)
 	}
 	kind, ok := s.kindOf(change.Group.Path)
 	if !ok {
@@ -286,7 +286,7 @@ func (s *Service) GroupRolesChanged(ctx context.Context, change identity.GroupRo
 	if len(added)+len(removed) == 0 {
 		return
 	}
-	s.queueNotice(ctx, Notice{Event: NoticeRolesChanged, GroupPath: change.Group.Path, RolesAdded: added, RolesRemoved: removed}, change.ActorID)
+	s.queueNotice(ctx, Notice{Event: NoticeRolesChanged, GroupPath: change.Group.Path, RolesAdded: added, RolesRemoved: removed, Console: change.Console, OccurredAt: change.At}, change.ActorID)
 }
 
 // RolesPrecheckFailed counts a role mapping write whose mappings could not
@@ -300,7 +300,10 @@ func (s *Service) RolesPrecheckFailed() {
 // who gets it.
 func (s *Service) queueNotice(ctx context.Context, n Notice, actorID string) {
 	n.ID, n.ChangeID = uuid.New(), uuid.New()
-	n.OccurredAt = s.now().UTC()
+	if n.OccurredAt.IsZero() {
+		n.OccurredAt = s.now().UTC()
+	}
+	n.OccurredAt = n.OccurredAt.UTC()
 	if actor, err := uuid.Parse(actorID); err == nil {
 		n.ActorID = &actor
 	}

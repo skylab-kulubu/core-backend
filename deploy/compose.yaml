@@ -60,6 +60,10 @@ services:
       SKYNOTIFY_CERTIFICATE_TEMPLATE_KEY: ${SKYNOTIFY_CERTIFICATE_TEMPLATE_KEY-core.certificate}
       SKYNOTIFY_WELCOME_TEMPLATE_ID: ${SKYNOTIFY_WELCOME_TEMPLATE_ID:-}
       SKYNOTIFY_CERTIFICATE_TEMPLATE_ID: ${SKYNOTIFY_CERTIFICATE_TEMPLATE_ID:-}
+      # The certificate's PDF with its mail (docs/certificate-mail.md).
+      CERTIFICATE_PDF_ATTACHMENT: ${CERTIFICATE_PDF_ATTACHMENT:-off}
+      # The Co-organizer writes (docs/co-organizers.md).
+      EVENT_CO_ORGANIZERS_WRITE: ${EVENT_CO_ORGANIZERS_WRITE:-off}
       # The user sync (docs/user-sync.md); unset takes the defaults.
       USER_SYNC_ENABLED: ${USER_SYNC_ENABLED:-}
       USER_SYNC_INTERVAL: ${USER_SYNC_INTERVAL:-}
@@ -88,6 +92,7 @@ services:
       SKYNOTIFY_FEEDBACK_REMINDER_TEMPLATE_KEY: ${SKYNOTIFY_FEEDBACK_REMINDER_TEMPLATE_KEY-core.feedback-reminder}
       # Management membership terms (docs/management-membership-terms.md).
       MANAGEMENT_TERMS_MODE: ${MANAGEMENT_TERMS_MODE:-off}
+      MANAGEMENT_TERMS_AUTO_REMOVE: ${MANAGEMENT_TERMS_AUTO_REMOVE:-off}
       MANAGEMENT_TERMS_WEEKLY_SUMMARY: ${MANAGEMENT_TERMS_WEEKLY_SUMMARY:-on}
       SKYNOTIFY_MANAGEMENT_TERM_TEMPLATE_KEY: ${SKYNOTIFY_MANAGEMENT_TERM_TEMPLATE_KEY-club.management-term}
       # A member's feedback mail as a Notification (docs/event-feedback.md).
@@ -100,6 +105,11 @@ services:
       TICKET_STATUS_MAIL: ${TICKET_STATUS_MAIL:-off}
       # A published Event's new time or place (docs/event-updated-notification.md).
       EVENT_UPDATED_NOTIFICATION: ${EVENT_UPDATED_NOTIFICATION:-off}
+      # Its other details, when the editor says to tell (event.changed).
+      EVENT_CHANGED_NOTIFICATION: ${EVENT_CHANGED_NOTIFICATION:-off}
+      # The mail a person added to an Event's door staff gets (docs/door-staff-mail.md).
+      DOOR_STAFF_MAIL: ${DOOR_STAFF_MAIL:-off}
+      PANEL_URL: ${PANEL_URL:-}
       # The reminder the day before an Event (docs/event-reminder.md).
       EVENT_REMINDER_NOTIFICATION: ${EVENT_REMINDER_NOTIFICATION:-off}
       SKYNOTIFY_EVENT_REMINDER_TEMPLATE_KEY: ${SKYNOTIFY_EVENT_REMINDER_TEMPLATE_KEY-event.reminder}
@@ -112,6 +122,8 @@ services:
       GOTENBERG_URL: ${GOTENBERG_URL:-http://gotenberg:3000}
       PUBLIC_API_ORIGIN: ${PUBLIC_API_ORIGIN:-}
       PUBLIC_VERIFY_ORIGIN: ${PUBLIC_VERIFY_ORIGIN:-https://skyl.app/c}
+      # The certificate page's address: pdfUrl opens the PDF there (docs/certificate-pdf-address.md).
+      CERTIFICATE_PUBLIC_PAGE_ORIGIN: ${CERTIFICATE_PUBLIC_PAGE_ORIGIN:-}
       # Contact consents (docs/contact-consents.md): off while the key is unset.
       CONTACT_CONSENT_KEY: ${CONTACT_CONSENT_KEY:-}
       CONTACT_CONSENT_SERVICE_CLIENTS: ${CONTACT_CONSENT_SERVICE_CLIENTS:-}
@@ -197,6 +209,25 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
+
+  # The PDF tools (pdf-tools/README.md): inspect, strip-text, place, render.
+  # Internal only, with the settings production runs it with.
+  pdf-tools:
+    build:
+      context: ../pdf-tools
+    profiles: ["certs"]
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    pids_limit: 64
+    mem_limit: 512m
+    cpus: 0.5
+    ports:
+      - "127.0.0.1:3010:8080"
 
 volumes:
   postgres_data:
