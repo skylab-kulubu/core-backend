@@ -33,7 +33,7 @@ migration and no code.
 `azp` selects the namespace here; it never stands in for the audience. The
 token must still carry `aud` `core` like every person's token core accepts
 (CONTEXT "Resource server"). A client whose token has no `core` audience
-(today the SkyMail console) gets it in Keycloak first.
+(today the SkyNotify console) gets it in Keycloak first.
 
 **Production:** `forms` is turned on only after the privacy notice that
 names "uygulama görünüm ayarları" is published (ADR 0081 karar 9). Until

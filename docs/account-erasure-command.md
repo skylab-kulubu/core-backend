@@ -1,6 +1,6 @@
 # Account erasure command
 
-This is the canonical contract of the **Erasure command**: core's instruction to one service to erase one person's data for one deletion request (ADR-0051). SkyMail, CMS and Forms implement it and link here. The CMS is inscribed (ADR-0056); it implements a reduced form of the contract, set out in [§9](#9-cms-inscribed). Forms keeps no receipt either and leaves its short-lived share links to expire ([§10](#10-forms)). Core's side (saga order, where the addresses come from, registry, configuration, retries, watchdog, completion proof) is in [`account-lifecycle.md`](account-lifecycle.md#service-erasure-steps).
+This is the canonical contract of the **Erasure command**: core's instruction to one service to erase one person's data for one deletion request (ADR-0051). SkyNotify, CMS and Forms implement it and link here. The CMS is inscribed (ADR-0056); it implements a reduced form of the contract, set out in [§9](#9-cms-inscribed). Forms keeps no receipt either and leaves its short-lived share links to expire ([§10](#10-forms)). Core's side (saga order, where the addresses come from, registry, configuration, retries, watchdog, completion proof) is in [`account-lifecycle.md`](account-lifecycle.md#service-erasure-steps).
 
 ## 1. Endpoint
 
@@ -10,7 +10,7 @@ This is the canonical contract of the **Erasure command**: core's instruction to
 - **Network:** the call comes over the internal Docker DNS (ADR-0016). There is one server, so the traffic is plain HTTP on the internal network.
 - **Public ingress:** a request that arrives through Traefik gets `404`. The service chooses how to tell: the `X-Forwarded-*` headers Traefik adds, or not routing the path in Dokploy. Core's calls carry none of `X-Forwarded-*`, `Forwarded` or `X-Real-Ip`.
 - **Network location is not authorization:** the ingress guard is an optional second layer. Any container on `dokploy-network` reaches the endpoint without passing Traefik, so the absence of proxy headers proves nothing. The token checks of §5 and, where §5 requires it, the blocked-subject check are mandatory on every request.
-- **Acceptance test:** a `PUT` with no proxy header and no token gets `401`. Example: SkyMail's `account_erasure_routes_test.go:274` (`TestErasureRouteRefusesWhoeverIsNotCoreErasure`, subtest "no token is 401").
+- **Acceptance test:** a `PUT` with no proxy header and no token gets `401`. Example: SkyNotify's `account_erasure_routes_test.go:274` (`TestErasureRouteRefusesWhoeverIsNotCoreErasure`, subtest "no token is 401").
 - **Why PUT:** the caller chooses the identifier and the operation is idempotent. Repeating the same `PUT` also serves as the status query; there is no separate `GET`.
 
 Headers: `Authorization: Bearer <token>`, `Content-Type: application/json`. There is no `Idempotency-Key` header; the key is `request_id`.
@@ -53,7 +53,7 @@ Errors use RFC 7807 (ADR-0010) and carry a fixed `code`. No response writes back
 | Permanent failure | `400 invalid_erasure_command`, `403 erasure_forbidden`, `404` (no endpoint), `409 subject_not_blocked` | problem | The request goes to `manual_intervention` at once. The error code is `erase_<service>_rejected_<http>`, for example `erase_cms_rejected_403`. A `403` also drops the cached token, so the retry after the fix uses a new one |
 
 - **`counts`:** keys the service chooses, snake_case, non-negative integers, at most 32 keys. For example `{"recipients_deleted":1,"queue_rows_cleared":12,"actor_columns_replaced":3}`. No personal data.
-  SkyMail's include `tracking_events_deleted` and `tracking_links_cleared` (open and click tracking; [communication-preferences.md](communication-preferences.md#tracking)), `suppressions_deleted` (the person's addresses on the suppression list), and `inbox_items_deleted` and `inbox_items_naming_deleted` (the in-app inbox: the person's items, and anyone else's whose text names them; skymail-backend #88), 17 keys in all.
+  SkyNotify's include `tracking_events_deleted` and `tracking_links_cleared` (open and click tracking; [communication-preferences.md](communication-preferences.md#tracking)), `suppressions_deleted` (the person's addresses on the suppression list), and `inbox_items_deleted` and `inbox_items_naming_deleted` (the in-app inbox: the person's items, and anyone else's whose text names them; skynotify-backend #88), 17 keys in all.
 - **Deferred retry:** core's existing `RetryAt` path (`internal/account/worker.go`). The attempt is refunded.
   - The wait comes from `Retry-After` and is clamped between 30 seconds and 15 minutes. Without the header it is 5 minutes.
   - The horizon is the existing `DeferredRetryHorizon` (48 hours by default, counted from the request's creation). After the horizon the ordinary budget applies: 8 attempts × 30 seconds, then `manual_intervention` and the alarm.
@@ -70,19 +70,19 @@ Core takes the token from a separate Keycloak client, `core-erasure`.
 - **Token request:** `grant_type=client_credentials`, `scope=openid account-erase-<service>`. Core caches the token per service until `exp − 30 s`. A failure of the token endpoint counts as transient.
 - **Token claims:** `azp=core-erasure`, the service's resource client in `aud`, its erase role in `resource_access`, and `sub` (the service account's), which the client's `basic` default scope adds. Core asks for no other scope.
 - **Why a separate client:** a token for one service must not carry another service's erase role. Otherwise the service that receives the token could replay it to another service and have it erase arbitrary addresses.
-  - Core's own client (`core`) has `fullScopeAllowed` on. Turning it off would affect core's current tokens (SkyMail sends, Admin REST).
+  - Core's own client (`core`) has `fullScopeAllowed` on. Turning it off would affect core's current tokens (SkyNotify sends, Admin REST).
   - The precedent is Keycloak's mail client (`keycloak-mailer`, K5).
 
 | Service | Resource client (`aud` must contain it) | Role (`resource_access.<client>.roles`) | Current check | Added on the erase endpoint |
 |---|---|---|---|---|
-| SkyMail | `skymail` | `skymail:account:erase` | The token is checked with `userinfo`; no `aud`/`azp` check | Local JWKS verification (signature, `iss`, `exp`), then `azp`, `aud` and the role |
+| SkyNotify | `skynotify` | `skynotify:account:erase` | The token is checked with `userinfo`; no `aud`/`azp` check | Local JWKS verification (signature, `iss`, `exp`), then `azp`, `aud` and the role |
 | CMS (inscribed) | `skycms` | `cms:account:erase` | JwtBearer, `Auth__Audience=skycms`, tenant from `azp`, roles from the flat `roles` claim | The role is read from `resource_access.skycms.roles` (not from `roles` or the tenant), plus an `azp` check; the route is not tenant-scoped (§9) |
 | Forms | `forms` | `skyforms:account:erase` | JwtBearer, `aud` ∋ `forms`, `skyforms:*` roles | `azp` and the role |
 
 Rules shared by all three services:
 
 1. `azp` must be exactly `core-erasure`.
-2. The subject must be blocked (SkyMail and Forms; not the CMS, §9): the service reads the marker of `subject_id` in the account-access Redis (`SHA-256(issuer + NUL + subject)`, the existing reader ACL `get`/`mget`). No marker: `409 subject_not_blocked`. Redis unreachable: `503`. A compromised caller therefore cannot have the data of someone who never asked for deletion erased.
+2. The subject must be blocked (SkyNotify and Forms; not the CMS, §9): the service reads the marker of `subject_id` in the account-access Redis (`SHA-256(issuer + NUL + subject)`, the existing reader ACL `get`/`mget`). No marker: `409 subject_not_blocked`. Redis unreachable: `503`. A compromised caller therefore cannot have the data of someone who never asked for deletion erased.
 3. The existing check on the caller's own marker does not change. The `core-erasure` service account is not blocked.
 
 ## 6. Timeouts
@@ -101,7 +101,7 @@ Rules shared by all three services:
 
 - **Silinmiş kullanıcı:** the fixed sub `00000000-0000-4000-8000-000000000000`, display name `Silinmiş kullanıcı`. The same for everyone; there is no per-person pseudonym.
   - Every actor column in a service that names the person takes this value.
-  - Nullable columns take it too, because NULL can mean something else. Example: in SkyMail `actor_sub IS NULL` means "SkyMail itself".
+  - Nullable columns take it too, because NULL can mean something else. Example: in SkyNotify `actor_sub IS NULL` means "SkyNotify itself".
   - Name columns get `Silinmiş kullanıcı`. E-mail columns become NULL, or `''` when NOT NULL.
   - An interface that asks core to resolve a name for this value shows `Silinmiş kullanıcı` instead. Core answers it too: `GET /v1/users/00000000-0000-4000-8000-000000000000` returns `status: "deleted"` and `displayName: "Silinmiş kullanıcı"`, the same answer as for any erased person ([account-lifecycle.md](account-lifecycle.md#reading-a-person)).
   - A service that still holds an erased person's own sub (it missed the Erasure command, or reads a row it keeps) gets the same answer from core for that sub; it shows `displayName` and does not rely on a `404`.

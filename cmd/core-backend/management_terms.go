@@ -27,7 +27,7 @@ type managementTermsDeps struct {
 	dir     identity.Directory
 	seasons season.Store
 	users   user.Store
-	sky     *mail.SkyMail
+	sky     *mail.SkyNotify
 	audit   teamaudit.Writer
 	az      authz.Authorizer
 	rules   membershipterm.Rules
@@ -85,7 +85,7 @@ func startManagementTerms(ctx context.Context, getenv func(string) string, deps 
 	case deps.sky.ManagementTermConfigured():
 		logf("management terms: %s (%s), daily; removal %s (%s); mail %s, weekly summary %t", mode, membershipterm.ModeEnv, removal, membershipterm.AutoRemoveEnv, deps.sky.ManagementTermTemplateKey, weekly)
 	default:
-		logf("management terms: %s (%s), daily; removal %s (%s); mail off (SKYMAIL_MANAGEMENT_TERM_TEMPLATE_KEY empty or no SkyMail)", mode, membershipterm.ModeEnv, removal, membershipterm.AutoRemoveEnv)
+		logf("management terms: %s (%s), daily; removal %s (%s); mail off (SKYNOTIFY_MANAGEMENT_TERM_TEMPLATE_KEY empty or no SkyNotify)", mode, membershipterm.ModeEnv, removal, membershipterm.AutoRemoveEnv)
 	}
 	if removal == membershipterm.ModeApply && mode != membershipterm.ModeApply {
 		logf("management terms: WARN %s=apply takes nobody out while %s is not apply", membershipterm.AutoRemoveEnv, membershipterm.ModeEnv)

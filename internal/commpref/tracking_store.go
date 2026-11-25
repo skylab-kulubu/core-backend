@@ -23,7 +23,7 @@ type TrackingChange struct {
 	ChangedAt time.Time
 }
 
-// Withdrawal is one tracking withdrawal waiting for SkyMail: the person
+// Withdrawal is one tracking withdrawal waiting for SkyNotify: the person
 // turned tracking off at RequestedAt.
 type Withdrawal struct {
 	Subject       uuid.UUID
@@ -38,13 +38,13 @@ type Withdrawal struct {
 	ClaimedAt time.Time
 }
 
-// WithdrawalQueue keeps the withdrawals SkyMail has not confirmed yet (the
+// WithdrawalQueue keeps the withdrawals SkyNotify has not confirmed yet (the
 // outbox Apply writes in the transaction that turns tracking off).
 type WithdrawalQueue interface {
 	// ClaimWithdrawals takes up to limit due withdrawals, the oldest due
 	// first, and holds them for lease.
 	ClaimWithdrawals(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]Withdrawal, error)
-	// CompleteWithdrawal removes a claimed withdrawal SkyMail confirmed (or
+	// CompleteWithdrawal removes a claimed withdrawal SkyNotify confirmed (or
 	// refused for good).
 	CompleteWithdrawal(ctx context.Context, claimed Withdrawal) error
 	// RetryWithdrawal counts a failure, makes the withdrawal due at at and
@@ -58,7 +58,7 @@ type WithdrawalQueue interface {
 // applyTracking writes a change of Tracking() inside Apply's transaction:
 // the row, an audit row when the value changes, and a withdrawal when it
 // turns tracking off. A withdrawal already waiting is replaced: due now,
-// its failures forgotten, its claim cleared (SkyMail's call is idempotent).
+// its failures forgotten, its claim cleared (SkyNotify's call is idempotent).
 func applyTracking(ctx context.Context, tx pgx.Tx, person uuid.UUID, change Change, source Source, now time.Time) error {
 	var previous *bool
 	err := tx.QueryRow(ctx, `

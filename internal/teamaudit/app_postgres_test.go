@@ -48,7 +48,7 @@ func TestPostgresAppRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	mail := group
-	mail.After = &teamaudit.State{ID: groupID, Path: group.GroupPath, Client: "skymail", Role: "skymail:access"}
+	mail.After = &teamaudit.State{ID: groupID, Path: group.GroupPath, Client: "skynotify", Role: "skynotify:access"}
 	finish(mail, teamaudit.OutcomeOK, "")
 
 	rows, err := w.AppRows(ctx, "forms", 100)

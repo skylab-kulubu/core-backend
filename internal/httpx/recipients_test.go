@@ -82,12 +82,12 @@ func newRecipientsEnv(t *testing.T, keyed, down bool) recipientsEnv {
 func (e recipientsEnv) service(t *testing.T, roles ...string) string {
 	t.Helper()
 	return e.keys.Token(t, jwt.MapClaims{
-		"sub": uuid.NewString(), "azp": "skymail", "client_id": "skymail",
+		"sub": uuid.NewString(), "azp": "skynotify", "client_id": "skynotify",
 		"resource_access": map[string]any{"core": map[string]any{"roles": roles}},
 	})
 }
 
-// SkyMail's question as its client sends it: the colon is literal, one
+// SkyNotify's question as its client sends it: the colon is literal, one
 // answer per recipient in the order asked, "reason": null for an allowed
 // person, {"matched": false} alone for an address without an account.
 func TestRecipientsResolveRoute(t *testing.T) {
@@ -197,7 +197,7 @@ func TestRecipientsResolveIsNotOnTheEdge(t *testing.T) {
 
 func TestRecipientsResolveRefusals(t *testing.T) {
 	env := newRecipientsEnv(t, true, false)
-	skymail := env.service(t, commpref.AudienceRole)
+	skynotify := env.service(t, commpref.AudienceRole)
 	id := uuid.New().String()
 	many := make([]string, commpref.MaxRecipients+1)
 	for i := range many {
@@ -230,7 +230,7 @@ func TestRecipientsResolveRefusals(t *testing.T) {
 		{`{"channel":"email","category":"team:g-arge:duyuru","recipients":` + one + `}`, "recipients_resolve_category_unknown"},
 		{`{"channel":"email","category":"team:yok:haber","recipients":` + one + `}`, "recipients_resolve_category_unknown"},
 	} {
-		got := audienceCall(t, env.app, skymail, fiber.MethodPost, recipientsResolvePath, c.body)
+		got := audienceCall(t, env.app, skynotify, fiber.MethodPost, recipientsResolvePath, c.body)
 		if got.status != fiber.StatusBadRequest || !strings.Contains(string(got.raw), c.code) || got.header.Get(fiber.HeaderCacheControl) != "no-store" {
 			t.Fatalf("%.100s: %d %s", c.body, got.status, got.raw)
 		}

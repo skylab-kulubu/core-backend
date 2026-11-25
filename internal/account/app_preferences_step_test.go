@@ -48,7 +48,7 @@ func TestErasureSagaErasesTheAppPreferencesBeforeAnyService(t *testing.T) {
 	if apps < 0 || communication < 0 || apps < communication {
 		t.Fatalf("events = %v", events)
 	}
-	for _, later := range []string{"erase_skymail", "erase_cms", "erase_forms", "anonymize_core", "delete_identity"} {
+	for _, later := range []string{"erase_skynotify", "erase_cms", "erase_forms", "anonymize_core", "delete_identity"} {
 		if index := slices.Index(events, later); index >= 0 && index < apps {
 			t.Fatalf("%s before erase_app_preferences: %v", later, events)
 		}
@@ -83,7 +83,7 @@ func TestErasureSagaStopsWhenTheAppPreferencesCannotBeErased(t *testing.T) {
 		if !worked || err == nil || !strings.Contains(err.Error(), "erase_app_preferences_failed") {
 			t.Fatalf("%s: worked=%v err=%v", tc.name, worked, err)
 		}
-		for _, later := range []string{"erase_skymail", "erase_cms", "erase_forms", "anonymize_core", "delete_identity"} {
+		for _, later := range []string{"erase_skynotify", "erase_cms", "erase_forms", "anonymize_core", "delete_identity"} {
 			if f.events.count(later) != 0 {
 				t.Fatalf("%s: the saga went on to %s: %v", tc.name, later, f.events.list())
 			}

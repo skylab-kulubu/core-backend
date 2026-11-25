@@ -159,7 +159,7 @@ func (p Purpose) Label() string { return purposes[p].label }
 func (p Purpose) Renews() bool { return purposes[p].renews }
 
 // Mailed reports whether purpose p is a contact purpose: its grants allow
-// mails, SkyMail reads its audience and the products record, look up and
+// mails, SkyNotify reads its audience and the products record, look up and
 // withdraw it by address. A purpose that is not (team_page_objection) is
 // given and withdrawn by the person alone, on their account.
 func (p Purpose) Mailed() bool { return purposes[p].channel == ChannelEmail }
@@ -371,8 +371,8 @@ const ServiceSourcesEnv = "CONTACT_CONSENT_SERVICE_CLIENTS"
 // DefaultServiceSources is used when ServiceSourcesEnv is unset.
 const DefaultServiceSources = "forms:forms,place:place,guessr:guessr"
 
-// ConfirmTemplateKeyEnv is the SkyMail template of the confirmation mail.
-const ConfirmTemplateKeyEnv = "SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY"
+// ConfirmTemplateKeyEnv is the SkyNotify template of the confirmation mail.
+const ConfirmTemplateKeyEnv = "SKYNOTIFY_CONSENT_CONFIRM_TEMPLATE_KEY"
 
 // DefaultConfirmTemplateKey is the confirmation mail's template when
 // ConfirmTemplateKeyEnv is unset.
@@ -399,7 +399,7 @@ const (
 	// RoleRecord lets a product's service account record and withdraw
 	// grants for addresses its users typed (Forms, Place, Guessr).
 	RoleRecord = "consent:record"
-	// RoleAudienceRead lets SkyMail's service account read the invitation
+	// RoleAudienceRead lets SkyNotify's service account read the invitation
 	// audience and mark renewal questions as sent.
 	RoleAudienceRead = "consent:audience:read"
 )
@@ -415,7 +415,7 @@ type Config struct {
 	LinkOrigin string
 	// ServiceSources maps a service client id to its source.
 	ServiceSources map[string]Source
-	// ConfirmTemplateKey is the SkyMail template of the confirmation mail.
+	// ConfirmTemplateKey is the SkyNotify template of the confirmation mail.
 	ConfirmTemplateKey string
 	// VerifiedClients are the service clients whose emailVerified counts.
 	VerifiedClients map[string]bool

@@ -12,8 +12,8 @@ import (
 )
 
 // The feedback mail posts by key with Items as a list of {Title, URL}, the
-// contract of skymail-frontend's core.feedback-request.
-func TestSkyMailFeedbackPostsItemsAsAList(t *testing.T) {
+// contract of skynotify-frontend's core.feedback-request.
+func TestSkyNotifyFeedbackPostsItemsAsAList(t *testing.T) {
 	t.Parallel()
 	var payload struct {
 		TemplateKey    string `json:"template_key"`
@@ -32,7 +32,7 @@ func TestSkyMailFeedbackPostsItemsAsAList(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 	}))
 	t.Cleanup(srv.Close)
-	sky := &SkyMail{BaseURL: srv.URL, FeedbackRequestTemplateKey: DefaultFeedbackRequestTemplateKey, Tokens: StaticToken("tok"), HTTP: srv.Client()}
+	sky := &SkyNotify{BaseURL: srv.URL, FeedbackRequestTemplateKey: DefaultFeedbackRequestTemplateKey, Tokens: StaticToken("tok"), HTTP: srv.Client()}
 	items := []FeedbackItem{{Title: "Açılış", URL: "https://forms.yildizskylab.com/x?davet=a"}, {Title: "Go", URL: "https://forms.yildizskylab.com/y?davet=b"}}
 	to := FeedbackRecipient{Email: "ada@example.test", FullName: "Ada Lovelace"}
 	if err := sky.Feedback(t.Context(), FeedbackRequest, "key", to, uuid.New(), "Gecekodu", items); err != nil {
@@ -43,18 +43,18 @@ func TestSkyMailFeedbackPostsItemsAsAList(t *testing.T) {
 		len(b.Items) != 2 || b.Items[0]["Title"] != "Açılış" || b.Items[1]["URL"] != "https://forms.yildizskylab.com/y?davet=b" {
 		t.Fatalf("payload %+v", payload)
 	}
-	off := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok")}
+	off := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok")}
 	if off.FeedbackConfigured(FeedbackRequest) || !errors.Is(off.Feedback(t.Context(), FeedbackRequest, "key", FeedbackRecipient{Email: "a@b.c"}, uuid.New(), "", nil), ErrTemplateUnconfigured) {
 		t.Fatal("an empty key is on")
 	}
 }
 
 // With FeedbackNotification on, a member's feedback mail is a Notification of
-// the template's type (SkyMail sends it by e-mail and to the inbox, ticket 13):
+// the template's type (SkyNotify sends it by e-mail and to the inbox, ticket 13):
 // the member's subject with the address core read, the same variables and
 // EventId for the inbox link, under the caller's Idempotency-Key. A guest,
 // who has no subject, still gets the template by address.
-func TestSkyMailFeedbackNotifiesAMember(t *testing.T) {
+func TestSkyNotifyFeedbackNotifiesAMember(t *testing.T) {
 	t.Parallel()
 	type call struct {
 		path, key string
@@ -71,7 +71,7 @@ func TestSkyMailFeedbackNotifiesAMember(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 	}))
 	t.Cleanup(srv.Close)
-	sky := &SkyMail{BaseURL: srv.URL, FeedbackReminderTemplateKey: DefaultFeedbackReminderTemplateKey, FeedbackNotification: true, Tokens: StaticToken("tok"), HTTP: srv.Client()}
+	sky := &SkyNotify{BaseURL: srv.URL, FeedbackReminderTemplateKey: DefaultFeedbackReminderTemplateKey, FeedbackNotification: true, Tokens: StaticToken("tok"), HTTP: srv.Client()}
 	sub, eventID := uuid.New(), uuid.New()
 	items := []FeedbackItem{{Title: "Açılış", URL: "https://forms.yildizskylab.com/x?davet=a"}}
 
@@ -115,7 +115,7 @@ func TestSkyMailFeedbackNotifiesAMember(t *testing.T) {
 }
 
 // Off (the default), a member's feedback mail stays the template by address.
-func TestSkyMailFeedbackOffMailsAMemberByAddress(t *testing.T) {
+func TestSkyNotifyFeedbackOffMailsAMemberByAddress(t *testing.T) {
 	t.Parallel()
 	paths := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +123,7 @@ func TestSkyMailFeedbackOffMailsAMemberByAddress(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 	}))
 	t.Cleanup(srv.Close)
-	sky := &SkyMail{BaseURL: srv.URL, FeedbackRequestTemplateKey: DefaultFeedbackRequestTemplateKey, Tokens: StaticToken("tok"), HTTP: srv.Client()}
+	sky := &SkyNotify{BaseURL: srv.URL, FeedbackRequestTemplateKey: DefaultFeedbackRequestTemplateKey, Tokens: StaticToken("tok"), HTTP: srv.Client()}
 	member := FeedbackRecipient{Sub: uuid.New(), Email: "ada@example.test"}
 	if err := sky.Feedback(t.Context(), FeedbackRequest, "k", member, uuid.New(), "Gecekodu", nil); err != nil {
 		t.Fatal(err)

@@ -17,7 +17,7 @@ import (
 // (ADR-0053, docs/account-lifecycle.md, Replay after a restore):
 //
 //	CORE_SNAPSHOT_DATABASE_URL=… KEYCLOAK_SNAPSHOT_DATABASE_URL=… \
-//	    core-backend replay-from-backup --service skymail --dumped-at 2026-09-20T03:00:00Z [--apply]
+//	    core-backend replay-from-backup --service skynotify --dumped-at 2026-09-20T03:00:00Z [--apply]
 //
 // T is when the service dump was taken (pg_dump's snapshot, the start of the
 // dump), not when it was restored: a later T would miss the requests that
@@ -130,14 +130,14 @@ func parseReplayOptions(args []string, out io.Writer, now time.Time) (replayOpti
 	flags := flag.NewFlagSet(replayFromBackupCommandName, flag.ContinueOnError)
 	flags.SetOutput(out)
 	flags.Usage = func() {
-		fmt.Fprintf(out, "usage: %s=<dsn> %s=<dsn> core-backend %s --service <skymail|cms|forms> --dumped-at <RFC 3339> [--keycloak-realm e-skylab] [--apply]\n",
+		fmt.Fprintf(out, "usage: %s=<dsn> %s=<dsn> core-backend %s --service <skynotify|cms|forms> --dumped-at <RFC 3339> [--keycloak-realm e-skylab] [--apply]\n",
 			coreSnapshotDatabaseURL, keycloakSnapshotDatabaseURL, replayFromBackupCommandName)
 		fmt.Fprintln(out, "T is when the service dump was taken (the start of the dump), not when it was restored.")
 		fmt.Fprintf(out, "%s and %s are the core and Keycloak dumps taken with the service dump at T, restored into temporary databases.\n",
 			coreSnapshotDatabaseURL, keycloakSnapshotDatabaseURL)
 		flags.PrintDefaults()
 	}
-	service := flags.String("service", "", "the restored service: skymail, cms or forms")
+	service := flags.String("service", "", "the restored service: skynotify, cms or forms")
 	dumpedAt := flags.String("dumped-at", "", "T: when the service dump was taken, its start, not when it was restored (RFC 3339)")
 	realm := flags.String("keycloak-realm", "e-skylab", "the realm of the people in the Keycloak dump")
 	apply := flags.Bool("apply", false, "send the Erasure command; without it the command only counts")
@@ -158,7 +158,7 @@ func parseReplayOptions(args []string, out io.Writer, now time.Time) (replayOpti
 	options := replayOptions{realm: strings.TrimSpace(*realm), apply: *apply}
 	var ok bool
 	if options.service, ok = erasure.ServiceNamed(strings.TrimSpace(*service)); !ok {
-		return usage("--service must be skymail, cms or forms")
+		return usage("--service must be skynotify, cms or forms")
 	}
 	at, err := time.Parse(time.RFC3339, strings.TrimSpace(*dumpedAt))
 	if err != nil {

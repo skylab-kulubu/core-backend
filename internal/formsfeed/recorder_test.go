@@ -282,7 +282,7 @@ func TestPermanentAndTransientFailures(t *testing.T) {
 	}{
 		{name: "another source", event: func() events.Event {
 			e := cloudEvent(TypeResponseCreated, created(applicationForm, StatusAccepted, 1, nil))
-			e.Source = "/skymail"
+			e.Source = "/skynotify"
 			return e
 		}(), permanent: true},
 		{name: "schema 2", event: func() events.Event {
