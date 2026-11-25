@@ -105,6 +105,11 @@ const (
 	WarningFontSubstituted = "fontSubstituted"
 	// WarningFontSizeBounded: a size over 300 px (From) is set at 300.
 	WarningFontSizeBounded = "fontSizeBounded"
+	// WarningOutsidePage: the piece lies outside the page as placed and
+	// makes no element (no ElementID); its text is still removed.
+	WarningOutsidePage = "outsidePage"
+	// WarningTextCut: a paragraph over 4000 bytes (From) is cut (To).
+	WarningTextCut = "textCut"
 )
 
 // The bounds of a conversion request.
@@ -166,6 +171,11 @@ func (s *service) ConvertAssetText(ctx context.Context, p authz.Principal, id uu
 	pdf, text, err := s.assetPDFText(ctx, p, id)
 	if err != nil {
 		return TextConversion{}, err
+	}
+	// The new PDF is the caller's upload: refused before pdf-tools does
+	// any work for it.
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia, MediaUploader: authz.MediaUploaderCertificateTemplateEditor, MediaOwner: authz.ProductCore}, authz.Upload) {
+		return TextConversion{}, ErrForbidden
 	}
 	if text.Info.Pages != 1 {
 		return TextConversion{}, invalid(CodeBackgroundPDFPages)

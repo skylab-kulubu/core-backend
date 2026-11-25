@@ -265,6 +265,39 @@ func TestTextElementsKinds(t *testing.T) {
 		elements[1].Kind != "issueDate" || elements[1].Text != "" {
 		t.Fatalf("elements %+v", elements)
 	}
+	// A field's box reaches the page's margin on its open side (left
+	// aligned: the right) and it may shrink to half: a real name is longer
+	// than the placeholder.
+	margin := fieldMarginRatio * testBox.Width
+	for _, el := range elements {
+		if !nearPx(el.X+el.Width, testBox.Width-margin) || el.MinFontSize != round2(fieldMinFontRatio*el.FontSize) {
+			t.Fatalf("field %+v", el)
+		}
+	}
+	// Centred, it grows on both sides to the nearer margin.
+	centred := pdfText([]PDFSpan{textSpan("60", "Ad Soyad", 421-100, 315, 32, 0, 200, montserratBold)}, nil)
+	fields, _ := convert(t, centred, []string{"60"}, map[string]string{"60": "recipientName"})
+	el := fields[0]
+	if cx, _ := centre(el); el.Align != "center" || !nearPx(cx, 421*pxPerPt) || !nearPx(el.X, margin) {
+		t.Fatalf("centred field %+v", el)
+	}
+}
+
+// A paragraph set in a stand-in font gets room for one more line.
+func TestTextElementsSubstitutedParagraph(t *testing.T) {
+	t.Parallel()
+	brandon := PDFFont{Name: "BrandonGrotesque-Regular"}
+	var spans []PDFSpan
+	lines := map[string][2]int{}
+	for i := range 2 {
+		id := fmt.Sprint(70 + i)
+		spans = append(spans, textSpan(id, fmt.Sprintf("satır %d", i+1), 60, 300+float64(i)*18, 14, 0, 100, brandon))
+		lines[id] = [2]int{i, 4}
+	}
+	elements, warnings := convert(t, pdfText(spans, lines), []string{"70", "71"}, nil)
+	if len(elements) != 1 || !nearPx(elements[0].Height, 3*18*pxPerPt) || len(warnings) != 1 || warnings[0].Kind != WarningFontSubstituted {
+		t.Fatalf("elements %+v, warnings %+v", elements, warnings)
+	}
 }
 
 // The placement maps the PDF onto the page: a contained A4 portrait PDF on
@@ -304,7 +337,24 @@ func TestTextElementsBoundsAndWarnings(t *testing.T) {
 	for _, w := range warnings {
 		kinds[w.Kind] = w
 	}
-	if kinds[WarningFontSizeBounded].ElementID != elements[0].ID || kinds[WarningFontSubstituted].From != "BrandonGrotesque-Black" || kinds[WarningFontSubstituted].To != "Noto Sans" {
+	if kinds[WarningFontSizeBounded].ElementID != elements[0].ID || kinds[WarningFontSubstituted].From != "BrandonGrotesque-Black" || kinds[WarningFontSubstituted].To != "Noto Sans" ||
+		kinds[WarningOutsidePage].SpanID != "2" || kinds[WarningOutsidePage].ElementID != "" {
 		t.Fatalf("warnings %+v", warnings)
+	}
+}
+
+// A paragraph over 4000 bytes is cut, with a warning.
+func TestTextElementsCutLongText(t *testing.T) {
+	t.Parallel()
+	var spans []PDFSpan
+	lines := map[string][2]int{}
+	for i := range 5 {
+		id := fmt.Sprint(80 + i)
+		spans = append(spans, textSpan(id, strings.Repeat("ş", 450), 60, 100+float64(i)*12, 10, 0, 700, helvetica))
+		lines[id] = [2]int{i, 9}
+	}
+	elements, warnings := convert(t, pdfText(spans, lines), []string{"80", "81", "82", "83", "84"}, nil)
+	if len(elements) != 1 || len(elements[0].Text) > maxElementTextByte || len(warnings) != 1 || warnings[0].Kind != WarningTextCut || warnings[0].From != "4504" {
+		t.Fatalf("elements %d, text %d bytes, warnings %+v", len(elements), len(elements[0].Text), warnings)
 	}
 }

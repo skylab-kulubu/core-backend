@@ -27,21 +27,22 @@ type fontAlias struct {
 // family a layout names. Core's catalog families map to themselves
 // (init); these are the renderer's families and their usual PDF names.
 var fontAliases = map[string]fontAlias{
-	"arial":                {"Arial", true},
-	"helvetica":            {"Helvetica", true},
-	"helveticaneue":        {"Helvetica", false},
-	"arimo":                {"Arial", false},
-	"liberationsans":       {"Liberation Sans", true},
-	"timesnewroman":        {"Times New Roman", true},
-	"times":                {"Times New Roman", true},
-	"timesroman":           {"Times New Roman", true},
-	"tinos":                {"Times New Roman", false},
-	"liberationserif":      {"Liberation Serif", true},
-	"couriernew":           {"Courier New", true},
-	"courier":              {"Courier New", true},
-	"cousine":              {"Courier New", false},
-	"liberationmono":       {"Liberation Mono", true},
-	"georgia":              {"Georgia", true},
+	"arial":           {"Arial", true},
+	"helvetica":       {"Helvetica", true},
+	"helveticaneue":   {"Helvetica", false},
+	"arimo":           {"Arial", false},
+	"liberationsans":  {"Liberation Sans", true},
+	"timesnewroman":   {"Times New Roman", true},
+	"times":           {"Times New Roman", true},
+	"timesroman":      {"Times New Roman", true},
+	"tinos":           {"Times New Roman", false},
+	"liberationserif": {"Liberation Serif", true},
+	"couriernew":      {"Courier New", true},
+	"courier":         {"Courier New", true},
+	"cousine":         {"Courier New", false},
+	"liberationmono":  {"Liberation Mono", true},
+	// The renderer has no Georgia: it prints Liberation Serif.
+	"georgia":              {"Georgia", false},
 	"calibri":              {"Carlito", false},
 	"carlito":              {"Carlito", true},
 	"cambria":              {"Caladea", false},
@@ -203,10 +204,16 @@ var weightWords = []struct {
 	{"hairline", 100}, {"thin", 100}, {"light", 300}, {"medium", 500}, {"bold", 700}, {"black", 900}, {"heavy", 900},
 }
 
-// weightFromName is the weight a font's name tells (Thin 100 … Black 900),
-// 0 when it tells none.
+// weightFromName is the weight a font's name tells in its style part, after
+// "-" or "," (Montserrat-Bold, Calibri,Bold: Thin 100 … Black 900), 0 when
+// it tells none: a family's own name (Blackadder, Arial Black) is not a
+// weight.
 func weightFromName(name string) int {
-	low := strings.NewReplacer("-", "", " ", "", "_", "").Replace(strings.ToLower(name))
+	i := strings.IndexAny(name, "-,")
+	if i < 0 {
+		return 0
+	}
+	low := strings.NewReplacer("-", "", " ", "", "_", "").Replace(strings.ToLower(name[i+1:]))
 	for _, w := range weightWords {
 		if strings.Contains(low, w.word) {
 			return w.weight

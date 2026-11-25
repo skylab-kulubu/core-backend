@@ -63,6 +63,9 @@ func TestCertificateAssetTextHTTP(t *testing.T) {
 	if status, problem := call(fiber.MethodGet, base+"/text", ""); status != fiber.StatusServiceUnavailable || problem["code"] != certificate.CodePDFToolsUnavailable {
 		t.Fatalf("text without pdf-tools: %d %v", status, problem)
 	}
+	if status, _ := call(fiber.MethodPost, base+"/text-conversion", `{"spanIds":["3"],"pad":"`+strings.Repeat("x", 256<<10)+`"}`); status != fiber.StatusRequestEntityTooLarge {
+		t.Fatalf("body over 256 KiB: %d", status)
+	}
 	if status, problem := call(fiber.MethodPost, base+"/text-conversion", "{"); status != fiber.StatusBadRequest || problem["code"] != nil {
 		t.Fatalf("malformed body: %d %v", status, problem)
 	}

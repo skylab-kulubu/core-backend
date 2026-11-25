@@ -399,3 +399,30 @@ func TestConvertAssetTextRefusals(t *testing.T) {
 		})
 	}
 }
+
+// Someone who may read the PDF (its uploader) but may not upload a
+// certificate asset is refused before pdf-tools strips anything.
+func TestConvertAssetTextNeedsTheUploadRight(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	tools := &textToolsContract{inspect: certificateInspect(), stripped: []byte("%PDF-1.7 stripped")}
+	c := newTextCertificates(t, tools, true, true)
+	member := authz.Principal{ID: uuid.NewString()}
+	sealed, err := c.storage.Seal(ctx, media.PrivateObjectKey("files/member"), onePagePDF())
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, err := c.media.Create(ctx, media.Media{
+		Name: "uye.pdf", Type: "application/pdf", Kind: media.KindFile, Key: sealed.Key, UploadedBy: uuid.MustParse(member.ID),
+		Purpose: media.PurposeCertificateAsset, Visibility: media.VisibilityPrivate, Encryption: &sealed.Encryption,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.service.ConvertAssetText(ctx, member, own.ID, conversionRequest("3")); !errors.Is(err, certificate.ErrForbidden) {
+		t.Fatalf("got %v", err)
+	}
+	if len(tools.strips) != 0 {
+		t.Fatalf("pdf-tools stripped %v", tools.strips)
+	}
+}

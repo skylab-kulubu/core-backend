@@ -14,6 +14,10 @@ import (
 // edit it reads it.
 const assetCacheControl = "private, max-age=300"
 
+// maxTextConversionBody bounds a text conversion's request: 500 ids and
+// their kinds fit many times over.
+const maxTextConversionBody = 256 << 10
+
 // AssetInfo answers GET /v1/certificate-assets/{id}/info: the asset's size
 // in layout px, with a PDF's page and text counts (pdf-tools).
 func (h *CertificateHandler) AssetInfo(c fiber.Ctx) error {
@@ -78,6 +82,9 @@ func (h *CertificateHandler) ConvertAssetText(c fiber.Ctx) error {
 	p, id, err := certificateTemplateCaller(c)
 	if err != nil {
 		return certError(c, err)
+	}
+	if len(c.Body()) > maxTextConversionBody {
+		return problem(c, fiber.StatusRequestEntityTooLarge, "Request Entity Too Large")
 	}
 	var req certificate.TextConversionRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {

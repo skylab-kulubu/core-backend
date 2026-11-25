@@ -17,7 +17,10 @@ func TestMapFont(t *testing.T) {
 	}{
 		{PDFFont{Name: "ABCDEF+Montserrat-Bold", Weight: 700}, "Montserrat", 700, "", false},
 		{PDFFont{Name: "Montserrat-SemiBoldItalic"}, "Montserrat", 600, "italic", false},
-		{PDFFont{Name: "Montserrat Bold"}, "Montserrat", 700, "", false},
+		{PDFFont{Name: "Montserrat Bold", Weight: 700}, "Montserrat", 700, "", false},
+		// The weight is read from the style part only.
+		{PDFFont{Name: "Montserrat Bold"}, "Montserrat", 400, "", false},
+		{PDFFont{Name: "Blackadder-Regular"}, "Noto Sans", 400, "", true},
 		{PDFFont{Name: "OpenSans-Regular", Weight: 400}, "Open Sans", 400, "", false},
 		{PDFFont{Name: "PlayfairDisplay-Italic", Italic: true}, "Playfair Display", 400, "italic", false},
 		{PDFFont{Name: "Poppins-ExtraBold"}, "Poppins", 800, "", false},
@@ -55,8 +58,8 @@ func TestMapFont(t *testing.T) {
 		{PDFFont{Name: ""}, "Noto Sans", 400, "", true},
 		// A description weight that is not a usual one (Chrome's PDFs) is
 		// not taken.
-		{PDFFont{Name: "Georgia-Italic", Weight: 645, Italic: true}, "Georgia", 400, "italic", false},
-		{PDFFont{Name: "Georgia", Weight: 380}, "Georgia", 400, "", false},
+		{PDFFont{Name: "Georgia-Italic", Weight: 645, Italic: true}, "Georgia", 400, "italic", true},
+		{PDFFont{Name: "Georgia", Weight: 380}, "Georgia", 400, "", true},
 	} {
 		got := mapFont(tc.font, nil)
 		if got.Family != tc.family || got.Weight != tc.weight || got.Style != tc.style || got.Substituted != tc.substituted {

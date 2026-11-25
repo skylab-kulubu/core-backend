@@ -33,6 +33,12 @@ const (
 	// most this part of their mean.
 	lineSpacingSpread = 0.1
 	maxTextFontSize   = 300
+	// A field (kinds) prints values longer than the PDF's placeholder: its
+	// box reaches to the page's margin (this part of the page's width) on
+	// the side(s) its alignment leaves open, and it may shrink to half.
+	fieldMarginRatio   = 0.04
+	fieldMinFontRatio  = 0.5
+	maxElementTextByte = 4000
 )
 
 var hexColorPattern = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
@@ -110,11 +116,10 @@ func textElements(text PDFText, chosen []string, kinds map[string]string, pageW,
 	var warnings []TextWarning
 	for _, group := range paragraphs(pieces, text.Runs, spans) {
 		el, warns, ok := frame.element(group, uploaded, newID)
-		if !ok {
-			continue
-		}
-		elements = append(elements, el)
 		warnings = append(warnings, warns...)
+		if ok {
+			elements = append(elements, el)
+		}
 	}
 	return elements, warnings
 }
@@ -267,9 +272,11 @@ type textFrame struct {
 	pageW, pageH float64
 }
 
-// element is a group's element; false when it falls outside the page.
+// element is a group's element; false (with a warning) when it falls
+// outside the page.
 func (f textFrame) element(group []*textPiece, uploaded []string, newID func() string) (Element, []TextWarning, bool) {
 	first := group[0]
+	font := mapFont(first.first.Font, uploaded)
 	vx, vy := -first.uy, first.ux
 	start, end := math.Inf(1), math.Inf(-1)
 	for _, p := range group {
@@ -286,6 +293,10 @@ func (f textFrame) element(group []*textPiece, uploaded []string, newID func() s
 		lineHeight = gap / first.size
 		height = gap * float64(len(group))
 		top = first.mid - gap/2
+		if font.Substituted {
+			// A wider stand-in may wrap a line more: room for one.
+			height += gap
+		}
 	}
 	if align == "" {
 		align = f.pageAlign(first, start, end)
@@ -308,6 +319,13 @@ func (f textFrame) element(group []*textPiece, uploaded []string, newID func() s
 	acrossScale := math.Hypot(vx*f.sx, vy*f.sy)
 	w, h := (end-start)*alongScale, height*acrossScale
 	x, y := px-w/2, py-h/2
+	rotation := math.Atan2(first.uy*f.sy, first.ux*f.sx) * 180 / math.Pi
+	if math.Abs(rotation) < 0.05 {
+		rotation = 0
+	}
+	if first.kind != "" && rotation == 0 {
+		x, w = f.fieldBox(align, x, w)
+	}
 	// Cut to the page (a text reaching past it, a box grown past it).
 	if x < 0 {
 		w, x = w+x, 0
@@ -317,13 +335,8 @@ func (f textFrame) element(group []*textPiece, uploaded []string, newID func() s
 	}
 	w, h = math.Min(w, f.pageW-x), math.Min(h, f.pageH-y)
 	if w < 1 || h < 1 {
-		return Element{}, nil, false
+		return Element{}, []TextWarning{{SpanID: first.run.ID(), Kind: WarningOutsidePage}}, false
 	}
-	rotation := math.Atan2(first.uy*f.sy, first.ux*f.sx) * 180 / math.Pi
-	if math.Abs(rotation) < 0.05 {
-		rotation = 0
-	}
-	font := mapFont(first.first.Font, uploaded)
 	size := first.size * acrossScale
 	id := newID()
 	var warnings []TextWarning
@@ -357,14 +370,38 @@ func (f textFrame) element(group []*textPiece, uploaded []string, newID func() s
 	}
 	if first.kind != "" {
 		el.Kind = first.kind
+		el.MinFontSize = round2(fieldMinFontRatio * el.FontSize)
 	} else {
 		lines := make([]string, len(group))
 		for i, p := range group {
 			lines[i] = p.text
 		}
-		el.Text = truncateBytes(strings.Join(lines, "\n"), 4000)
+		full := strings.Join(lines, "\n")
+		el.Text = truncateBytes(full, maxElementTextByte)
+		if len(el.Text) < len(full) {
+			warnings = append(warnings, TextWarning{SpanID: first.run.ID(), ElementID: id, Kind: WarningTextCut,
+				From: number(float64(len(full))), To: number(float64(len(el.Text)))})
+		}
 	}
 	return el, warnings, true
+}
+
+// fieldBox widens an upright field's box (x, w in px) to the page's
+// margin on the side(s) its alignment leaves open, never narrower than it
+// was: a recipient's name is longer than the PDF's "Ad Soyad".
+func (f textFrame) fieldBox(align string, x, w float64) (float64, float64) {
+	margin := fieldMarginRatio * f.pageW
+	switch align {
+	case "right":
+		left := math.Min(x, margin)
+		return left, x + w - left
+	case "center":
+		c := x + w/2
+		half := math.Max(w/2, math.Min(c-margin, f.pageW-margin-c))
+		return c - half, 2 * half
+	default:
+		return x, math.Max(w, f.pageW-margin-x)
+	}
 }
 
 // pageAlign is a one-line text's alignment: centred when its middle is
