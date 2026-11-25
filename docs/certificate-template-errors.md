@@ -25,7 +25,7 @@ A layout needs the recipient's name (`recipientName`) and at least one of the ve
 | `layout_recipient_name_missing` | No recipient's name. |
 | `layout_not_verifiable` | Neither the verification QR nor the serial. |
 | `layout_background_placement_invalid` | A background placement with an unknown `fit`, an `x` or `y` outside 0–1, a `scale` outside 0.1–10, or no background. |
-| `background_size_unknown` | An image background with a placement whose natural size core cannot read (PNG, JPEG, GIF, WebP, or an SVG with a size or a `viewBox`). |
+| `background_size_unknown` | An image background with a placement whose natural size core cannot read (PNG, JPEG, GIF, WebP, or an SVG with a `width` and `height` in px, pt, pc, mm, cm or in, or a `viewBox`), or a side under 0.001 px. |
 | `asset_empty` | A background or image Media has no bytes. |
 | `asset_too_large` | An image over 20 MB, or a template's assets over 50 MB together. |
 | `asset_type_unsupported` | A background that is neither an image nor a PDF, or an image element that is not an image. |
@@ -54,7 +54,7 @@ A layout with a `backgroundPlacement` and a PDF background is still printed this
 "backgroundPlacement": { "fit": "contain", "x": 0.5, "y": 0.5, "scale": 1 }
 ```
 
-`x` and `y` are CSS `object-position` fractions (0 left or top, 0.5 centre, 1 right or bottom); `scale` multiplies the scale the `fit` finds. For a `W×H` page and a background of natural size `w×h` (an image's pixels; a PDF's visible box in pt × 96/72):
+`x` and `y` are CSS `object-position` fractions (0 left or top, 0.5 centre, 1 right or bottom); `scale` multiplies the scale the `fit` finds; `fill` ignores it, but it is still sent (1) and checked. For a `W×H` page and a background of natural size `w×h` (an image's pixels; a PDF's visible box in pt × 96/72):
 
 | `fit` | Scale |
 |---|---|

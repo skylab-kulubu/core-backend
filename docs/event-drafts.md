@@ -4,7 +4,7 @@ ADR 0066 and its 2026-10-19 addendum (e-skylab). An Event's `status` is `draft`,
 
 ## Who sees a draft
 
-`event.VisibleTo`: a draft exists only for whoever may edit the Event (`authz.Update` on its Owner team, the team authority handover included) and for a Privileged reader (DK, `global:read`), who only reads it. The authorizer answers both as `ReadFull` on the Event. Everyone else (signed out, a Member, the door staff, another team's Leader, a product's service account) gets `404` on every path below, as if the draft did not exist.
+`event.VisibleTo`: a draft exists only for whoever may edit the Event (`authz.Update` on its Owner team, the team authority handover included, or as one of its Co-organizers: [co-organizers.md](co-organizers.md)) and for a Privileged reader (DK, `global:read`), who only reads it. The authorizer answers both as `ReadFull` on the Event. Everyone else (signed out, a Member, the door staff, another team's Leader, a product's service account) gets `404` on every path below, as if the draft did not exist.
 
 ## Reads
 

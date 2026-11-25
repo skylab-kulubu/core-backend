@@ -1,0 +1,7 @@
+# The service's own dependencies; requirements.txt pins them (and theirs)
+# with hashes:
+#   uv pip compile --generate-hashes --python-version 3.12 \
+#     --python-platform x86_64-manylinux_2_28 requirements.in -o requirements.txt
+pypdfium2==5.15.2
+pikepdf==10.18.2
+pillow==13.0.0

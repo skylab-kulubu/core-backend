@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -81,11 +82,14 @@ func VisibleTo(az authz.Authorizer, p *authz.Principal, e Event) bool {
 	if e.Status != StatusDraft {
 		return true
 	}
-	return p != nil && az.Allow(*p, resource(e.OwnerTeam), authz.ReadFull)
+	return p != nil && az.Allow(*p, AuthzResource(e, authz.TypeEvent, time.Now()), authz.ReadFull)
 }
 
 func (s *service) VisibleTo(p *authz.Principal, e Event) bool {
-	return VisibleTo(s.authz, p, e)
+	if e.Status != StatusDraft {
+		return true
+	}
+	return p != nil && s.authz.Allow(*p, s.eventResource(e, authz.TypeEvent), authz.ReadFull)
 }
 
 // visible is the current Event id names, ErrNotFound when p may not see it.
@@ -122,7 +126,7 @@ func (s *service) statusChange(ctx context.Context, p authz.Principal, id uuid.U
 	if err != nil {
 		return Event{}, err
 	}
-	if !s.authz.Allow(p, resource(e.OwnerTeam), authz.Update) {
+	if !s.authz.Allow(p, s.eventResource(e, authz.TypeEvent), authz.Update) {
 		return Event{}, ErrForbidden
 	}
 	return e, nil

@@ -62,6 +62,8 @@ services:
       SKYMAIL_CERTIFICATE_TEMPLATE_ID: ${SKYMAIL_CERTIFICATE_TEMPLATE_ID:-}
       # The certificate's PDF with its mail (docs/certificate-mail.md).
       CERTIFICATE_PDF_ATTACHMENT: ${CERTIFICATE_PDF_ATTACHMENT:-off}
+      # The Co-organizer writes (docs/co-organizers.md).
+      EVENT_CO_ORGANIZERS_WRITE: ${EVENT_CO_ORGANIZERS_WRITE:-off}
       # The user sync (docs/user-sync.md); unset takes the defaults.
       USER_SYNC_ENABLED: ${USER_SYNC_ENABLED:-}
       USER_SYNC_INTERVAL: ${USER_SYNC_INTERVAL:-}
@@ -103,6 +105,8 @@ services:
       TICKET_STATUS_MAIL: ${TICKET_STATUS_MAIL:-off}
       # A published Event's new time or place (docs/event-updated-notification.md).
       EVENT_UPDATED_NOTIFICATION: ${EVENT_UPDATED_NOTIFICATION:-off}
+      # Its other details, when the editor says to tell (event.changed).
+      EVENT_CHANGED_NOTIFICATION: ${EVENT_CHANGED_NOTIFICATION:-off}
       # The reminder the day before an Event (docs/event-reminder.md).
       EVENT_REMINDER_NOTIFICATION: ${EVENT_REMINDER_NOTIFICATION:-off}
       SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY: ${SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY-event.reminder}
@@ -202,6 +206,25 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
+
+  # The PDF tools (pdf-tools/README.md): inspect, strip-text, place, render.
+  # Internal only, with the settings production runs it with.
+  pdf-tools:
+    build:
+      context: ../pdf-tools
+    profiles: ["certs"]
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    pids_limit: 64
+    mem_limit: 512m
+    cpus: 0.5
+    ports:
+      - "127.0.0.1:3010:8080"
 
 volumes:
   postgres_data:

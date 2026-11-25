@@ -18,6 +18,9 @@ type Authorizer interface {
 	// rests on, the basis a ledger row keeps; "" when p may not write. A
 	// non-empty answer is Allow(p, r, Update) (and Create).
 	CompetitionBasis(p Principal, r Resource) CompetitionBasis
+	// EventVia is what p's right to edit r's Event rests on
+	// (docs/co-organizers.md).
+	EventVia(p Principal, r Resource) Via
 }
 
 // CompetitionBasis is the authority a Competition write rests on
@@ -175,34 +178,33 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 	}
 }
 
+// allowEvent decides on an Event, its days and its Sessions. Editing them
+// is open to every organizer team and Co-organizer person
+// (docs/co-organizers.md); creating, deleting or archiving the Event
+// itself, its door staff (Assign) and its Co-organizer list
+// (ManageOrganizers) stay the Owner team's.
 func (a *authorizer) allowEvent(p Principal, r Resource, action Action) bool {
-	if action == Read {
+	switch action {
+	case Read:
 		return true
-	}
-	if action == Assign {
-		return a.privileged(p, RoleEventManage)
-	}
-	if action == ReadFull {
+	case Assign, ManageOrganizers:
+		// Door staff and the Co-organizer list (Yusuf S3, 2026-11-25):
+		// Privileged and the Owner team's Leaders; on an Event without an
+		// Owner team, Privileged alone.
+		return a.privileged(p, RoleEventManage) || a.ownerLeader(p, r)
+	case ReadFull:
 		// Reading a draft (ADR 0066): who may edit the Event, and a
 		// Privileged reader (DK, global:read), who only reads it.
 		return a.privilegedRead(p, RoleEventManage) || a.allowEvent(p, r, Update)
-	}
-	if action != Create && action != Update && action != Delete {
+	case Create, Update, Delete:
+	default:
 		return false
 	}
 	if a.privileged(p, RoleEventManage) {
 		return true
 	}
-
-	owner := r.OwnerTeam
-	levels := a.ownerLevels(p, owner)
-	needed := a.requiredLevels(owner, action)
-	for _, level := range levels {
-		if slices.Contains(needed, level) {
-			return true
-		}
-	}
-	return false
+	ownerOnly := r.Type == TypeEvent && action != Update
+	return a.organizerAllows(p, r, action, ownerOnly)
 }
 
 func (a *authorizer) allowCompetitor(p Principal, r Resource, action Action) bool {
@@ -289,12 +291,16 @@ func (a *authorizer) competitionBasis(p Principal, r Resource, privileged bool) 
 	if privileged && a.privileged(p, RoleCompetitionManage) {
 		return BasisPrivileged
 	}
-	levels := a.ownerLevels(p, r.OwnerTeam)
-	switch {
-	case slices.Contains(levels, LevelLeader):
+	// A Leader of an organizer team or a Co-organizer person; a member
+	// whose membership counts while that team's setting lets all members.
+	seats := a.seats(p, r)
+	if slices.ContainsFunc(seats, func(s seat) bool { return s.leader }) {
 		return BasisLeader
-	case len(levels) > 0 && a.settings != nil && a.settings.TeamCompetitionManage(r.OwnerTeam):
-		return BasisMemberSetting
+	}
+	for _, s := range seats {
+		if s.member && a.settings != nil && a.settings.TeamCompetitionManage(s.team) {
+			return BasisMemberSetting
+		}
 	}
 	return ""
 }
@@ -311,11 +317,15 @@ func (a *authorizer) competitionBasis(p Principal, r Resource, privileged bool) 
 // plain member enters and withdraws only themselves (allowCompetitor's
 // owner rule).
 func (a *authorizer) competitorWriter(p Principal, r Resource) bool {
-	return a.competitionBasis(p, Resource{Type: TypeCompetition, OwnerTeam: r.OwnerTeam}, false) != ""
+	competition := r
+	competition.Type = TypeCompetition
+	return a.competitionBasis(p, competition, false) != ""
 }
 
+// isOwnerMember reports whether p has a seat on r's Event: in an organizer
+// team, or as a Co-organizer person.
 func (a *authorizer) isOwnerMember(p Principal, r Resource) bool {
-	return len(a.ownerLevels(p, r.OwnerTeam)) > 0
+	return len(a.seats(p, r)) > 0
 }
 
 func (a *authorizer) allowMedia(p Principal, r Resource, action Action) bool {
@@ -415,15 +425,10 @@ func (a *authorizer) allowTicket(p Principal, r Resource, action Action) bool {
 		if a.privilegedRead(p, RoleTicketManage) {
 			return true
 		}
-		if len(a.ownerLevels(p, r.OwnerTeam)) > 0 && hasRole(p, "certificate:issue") {
-			return true
-		}
-		if slices.Contains(a.ownerLevels(p, r.OwnerTeam), LevelLeader) {
-			return true
-		}
-		needed := a.requiredLevels(r.OwnerTeam, Update)
-		for _, level := range a.ownerLevels(p, r.OwnerTeam) {
-			if slices.Contains(needed, level) {
+		// In each organizer team: a member who issues certificates, a
+		// Leader, or who may edit the Event; a Co-organizer person.
+		for _, s := range a.seats(p, r) {
+			if s.leader || (s.member && hasRole(p, "certificate:issue")) || s.holds(a.seatLevels(s, r, Update)) {
 				return true
 			}
 		}
@@ -432,7 +437,7 @@ func (a *authorizer) allowTicket(p Principal, r Resource, action Action) bool {
 		if a.privileged(p, RoleTicketManage) {
 			return true
 		}
-		return slices.Contains(a.ownerLevels(p, r.OwnerTeam), LevelLeader)
+		return a.anyLeaderSeat(p, r)
 	case Validate:
 		return a.allowDoorCheckIn(p, r)
 	default:
@@ -451,29 +456,30 @@ func (a *authorizer) allowCertificate(p Principal, r Resource, action Action) bo
 		if r.OwnerID != "" && r.OwnerID == p.ID {
 			return true
 		}
-		levels := a.ownerLevels(p, r.OwnerTeam)
-		if slices.Contains(levels, LevelLeader) {
-			return true
+		for _, s := range a.seats(p, r) {
+			if s.leader || (s.member && hasRole(p, "certificate:issue", "certificate:revoke")) {
+				return true
+			}
 		}
-		return len(levels) > 0 && hasRole(p, "certificate:issue", "certificate:revoke")
+		return false
 	}
 	if a.privileged(p, RoleCertificateManage) {
 		return true
 	}
-	if r.OwnerTeam == "" {
-		return false
-	}
-	levels := a.ownerLevels(p, r.OwnerTeam)
-	if slices.Contains(levels, LevelLeader) {
-		return true
-	}
-	if len(levels) == 0 {
-		return false
-	}
+	// A Leader of an organizer team, a Co-organizer person, or a member
+	// whose membership counts (Certificate manager: the Owner team, a
+	// "members" Co-organizer team) with the action's role. An Event of no
+	// Owner team and no Co-organizer is Privileged's alone.
+	role := "certificate:revoke"
 	if action == Issue {
-		return hasRole(p, "certificate:issue")
+		role = "certificate:issue"
 	}
-	return hasRole(p, "certificate:revoke")
+	for _, s := range a.seats(p, r) {
+		if s.leader || (s.member && hasRole(p, role)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *authorizer) allowCertificateTemplate(p Principal, r Resource, action Action) bool {
@@ -483,8 +489,25 @@ func (a *authorizer) allowCertificateTemplate(p Principal, r Resource, action Ac
 	if action != Read && a.privileged(p, RoleCertificateManage) {
 		return true
 	}
+	if r.OwnerTeam == "" && action == Read && (a.isAnyLeader(p) || (isAnyTeamMember(p) && hasRole(p, "certificate:template:manage", "certificate:binding:manage"))) {
+		return true
+	}
+	// An Event's Co-organizers (event.AuthzResource) read its templates and
+	// bind one to it, as the Owner team does; a team's own templates are
+	// its Owner team's to write.
+	if action == Read || action == Assign {
+		for _, s := range a.seats(p, r) {
+			if s.owner {
+				continue
+			}
+			if s.leader || (s.member && (action == Assign && hasRole(p, "certificate:binding:manage") ||
+				action == Read && hasRole(p, "certificate:template:manage", "certificate:binding:manage"))) {
+				return true
+			}
+		}
+	}
 	if r.OwnerTeam == "" {
-		return action == Read && (a.isAnyLeader(p) || (isAnyTeamMember(p) && hasRole(p, "certificate:template:manage", "certificate:binding:manage")))
+		return false
 	}
 	levels := a.ownerLevels(p, r.OwnerTeam)
 	if len(levels) == 0 {
@@ -549,11 +572,19 @@ func (a *authorizer) allowDoorCheckIn(p Principal, r Resource) bool {
 	if p.ID != "" && slices.Contains(r.DoorStaffIDs, p.ID) {
 		return true
 	}
-	levels := a.ownerLevels(p, r.OwnerTeam)
-	if slices.Contains(levels, LevelLeader) {
-		return true
+	// A Leader of an organizer team or a Co-organizer person; a member
+	// whose membership counts (the Owner team, a "members" Co-organizer
+	// team) only while that team's Team door scan is on.
+	for _, s := range a.seats(p, r) {
+		if s.leader {
+			return true
+		}
+		scan := slices.ContainsFunc(r.TeamDoorScanTeams, func(team string) bool { return strings.EqualFold(team, s.team) })
+		if s.member && (scan || s.owner && r.TeamDoorScan) {
+			return true
+		}
 	}
-	return r.TeamDoorScan && slices.Contains(levels, LevelMember)
+	return false
 }
 
 func (a *authorizer) allowURL(p Principal, r Resource, action Action) bool {
@@ -763,13 +794,5 @@ func (a *authorizer) ownerLevels(p Principal, owner string) []Level {
 }
 
 func (a *authorizer) requiredLevels(ownerTeam string, action Action) []Level {
-	table, ok := a.policy.EventPermissions[ownerTeam]
-	if !ok {
-		table = a.policy.EventPermissions["_default"]
-	}
-	levels, ok := table[action]
-	if !ok {
-		return a.policy.EventPermissions["_default"][action]
-	}
-	return levels
+	return a.policy.RequiredLevels(ownerTeam, action)
 }

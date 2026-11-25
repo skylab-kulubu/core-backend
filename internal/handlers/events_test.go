@@ -597,7 +597,7 @@ func TestEventDoorStaffAssignHTTP(t *testing.T) {
 	staff := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 	app := eventApp(t, yk(), store)
 	req := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
-		`{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB","doorStaffIds":["`+staff+`"]}`,
+		`{"name":"Hack","location":"YTÜ","ownerTeam":"GECEKODU","doorStaffIds":["`+staff+`"]}`,
 	))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req)
@@ -617,7 +617,7 @@ func TestEventDoorStaffAssignHTTP(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(fiber.MethodPut, "/v1/events/"+created.ID.String(), strings.NewReader(
-		`{"name":"Hack","location":"Davutpaşa","ownerTeam":"WEBLAB"}`,
+		`{"name":"Hack","location":"Davutpaşa","ownerTeam":"GECEKODU"}`,
 	))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err = app.Test(req)
@@ -636,9 +636,11 @@ func TestEventDoorStaffAssignHTTP(t *testing.T) {
 		t.Fatalf("omitted field wiped %+v", omitted)
 	}
 
-	leaderApp := eventApp(t, weblabLeader(), store)
+	// A GECEKODU member edits its Events but assigns no door staff: that
+	// is Privileged's and the Owner team's Leaders' (docs/co-organizers.md).
+	leaderApp := eventApp(t, authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU"}}, store)
 	req = httptest.NewRequest(fiber.MethodPut, "/v1/events/"+created.ID.String(), strings.NewReader(
-		`{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB","doorStaffIds":["bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"]}`,
+		`{"name":"Hack","location":"YTÜ","ownerTeam":"GECEKODU","doorStaffIds":["bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"]}`,
 	))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err = leaderApp.Test(req)
@@ -669,7 +671,7 @@ func TestEventDoorStaffAssignHTTP(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(fiber.MethodPut, "/v1/events/"+created.ID.String(), strings.NewReader(
-		`{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB","doorStaffIds":[]}`,
+		`{"name":"Hack","location":"YTÜ","ownerTeam":"GECEKODU","doorStaffIds":[]}`,
 	))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err = app.Test(req)
