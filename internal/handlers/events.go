@@ -482,6 +482,9 @@ type copyBody struct {
 	// IncludeCoOrganizerPeople copies the source's Co-organizer people
 	// (docs/co-organizers.md); its Co-organizer teams always come along.
 	IncludeCoOrganizerPeople bool `json:"includeCoOrganizerPeople"`
+	// IncludeCertificateTemplate false leaves the certificate template
+	// out (its Event template and binding); none copies it.
+	IncludeCertificateTemplate *bool `json:"includeCertificateTemplate"`
 }
 
 // Copy copies an Event's structure into a new draft: POST
@@ -502,13 +505,13 @@ func (h *EventHandler) Copy(c fiber.Ctx) error {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
 	copied, fresh, err := h.svc.Copy(c.Context(), p, id, event.CopyInput{
-		ID:                  *body.ID,
-		Name:                body.Name,
-		StartDate:           body.StartDate,
-		IncludeDoorStaff:    body.IncludeDoorStaff,
-		IncludeCompetitions: body.IncludeCompetitions,
-		OwnerTeam:           body.OwnerTeam,
-
+		ID:                          *body.ID,
+		Name:                        body.Name,
+		StartDate:                   body.StartDate,
+		IncludeDoorStaff:            body.IncludeDoorStaff,
+		IncludeCompetitions:         body.IncludeCompetitions,
+		OwnerTeam:                   body.OwnerTeam,
+		SkipCertificateTemplate:     body.IncludeCertificateTemplate != nil && !*body.IncludeCertificateTemplate,
 		IncludeExternalRegistration: body.IncludeExternalRegistration,
 		IncludeAttendeeNote:         body.IncludeAttendeeNote,
 		IncludeCoOrganizerPeople:    body.IncludeCoOrganizerPeople,

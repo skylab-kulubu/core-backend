@@ -50,6 +50,10 @@ type CopyInput struct {
 	// whose accounts are active, for who may change the copy's
 	// Co-organizers (docs/co-organizers.md).
 	IncludeCoOrganizerPeople bool
+	// SkipCertificateTemplate leaves the source's certificate template out:
+	// its Event template and its binding (named skipped when it has one).
+	// The default copies them.
+	SkipCertificateTemplate bool
 }
 
 // Copied is a copy and the parts of its source it left out.
@@ -84,11 +88,21 @@ type CopyPlan struct {
 	// Shift moves the source's days, Sessions and Competition stages.
 	Shift Shift
 	// By is who copies, nil when unknown.
-	By                  *uuid.UUID
-	DoorStaff           CopyPart
-	Cover               CopyPart
+	By        *uuid.UUID
+	DoorStaff CopyPart
+	Cover     CopyPart
+	// CertificateTemplate is the copy's binding to the source's team or
+	// club template: CopyWrite for who may bind in the copy's Owner team.
 	CertificateTemplate CopyPart
-	Competitions        CopyPart
+	// EventTemplate is the source's Event template, copied as the copy's
+	// own (docs/certificate-event-templates.md): CopyWrite unless the
+	// copier asked to leave it out, since who creates the copy may make
+	// its Event template. EventTemplateSourceLinks copies the design's
+	// reference and edit address too, for who may read the source
+	// template.
+	EventTemplate            CopyPart
+	EventTemplateSourceLinks bool
+	Competitions             CopyPart
 	// AttendeeNote is CopyWrite when Event carries the source's note,
 	// CopyRefused when the copier may not read it (the answer names it
 	// skipped).
@@ -199,8 +213,8 @@ func earliest(a, b *time.Time) *time.Time {
 }
 
 // Copy copies the source Event's structure into a new draft (ADR 0066,
-// ticket 06): its details, cover, capacity, certificate rule and Event
-// template binding, days and Sessions, and, when asked, its door staff,
+// ticket 06): its details, cover, capacity, certificate rule, Event
+// template (an own copy) or template binding, days and Sessions, and, when asked, its door staff,
 // Competitions with their stages, external registration link and attendee
 // note. People and history (Tickets, check-ins,
 // certificates, Competitors, the mail list), the gallery, files and videos,
@@ -299,6 +313,7 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 		Shift:               shift,
 		By:                  lifecycle.ActorID(p.ID),
 		CertificateTemplate: CopyRefused,
+		EventTemplate:       CopyRefused,
 	}
 	// The Co-organizer teams come along while the list may be written
 	// (EVENT_CO_ORGANIZERS_WRITE: no list changes without its record),
@@ -320,8 +335,12 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 	if byCoOrganizer && !s.authz.Allow(p, s.eventResource(planned, authz.TypeEvent), authz.Update) {
 		return Copied{}, false, ErrForbidden
 	}
-	if s.authz.Allow(p, s.eventResource(planned, authz.TypeCertificateTemplate), authz.Assign) {
-		plan.CertificateTemplate = CopyWrite
+	if !in.SkipCertificateTemplate {
+		plan.EventTemplate = CopyWrite
+		plan.EventTemplateSourceLinks = s.authz.Allow(p, AuthzResource(source, authz.TypeCertificateTemplate, time.Now()), authz.Read)
+		if s.authz.Allow(p, s.eventResource(planned, authz.TypeCertificateTemplate), authz.Assign) {
+			plan.CertificateTemplate = CopyWrite
+		}
 	}
 	if in.IncludeDoorStaff {
 		plan.DoorStaff = CopyRefused
