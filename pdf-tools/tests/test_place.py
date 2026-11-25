@@ -23,30 +23,44 @@ SRC_W, SRC_H = 842.0, 595.0
 PAGE_W, PAGE_H = 595.0, 842.0
 
 
+def _box(fit: str) -> tuple[dict, float, float]:
+    """SPEC §4.2's box for a centred source (x = y = 0.5, scale 1), and the
+    x and y scales it means."""
+    if fit == "fill":
+        kx, ky = PAGE_W / SRC_W, PAGE_H / SRC_H
+    else:
+        k = (min if fit == "contain" else max)(PAGE_W / SRC_W, PAGE_H / SRC_H)
+        kx = ky = k
+    w, h = SRC_W * kx, SRC_H * ky
+    return {"x": (PAGE_W - w) * 0.5, "y": (PAGE_H - h) * 0.5, "w": w, "h": h}, kx, ky
+
+
 @pytest.mark.parametrize(
-    "rect,cm",
+    "fit,expect",
     [
         # contain: k = min(595/842, 842/595) = 0.70665; 595 × 420.46, centred.
-        (
-            {"x": 0, "y": 210.7684, "w": 595.0, "h": 420.4632},
-            "0.706651 0 0 0.706651 0 210.7684 cm",
-        ),
+        ("contain", (0.706651, 0.706651, 0.0, 210.771)),
         # cover: k = 842/595 = 1.41513; 1191.54 × 842, centred, cut by the page.
-        (
-            {"x": -298.2689, "y": 0, "w": 1191.5378, "h": 842.0},
-            "1.415126 0 0 1.415126 -298.2689 0 cm",
-        ),
+        ("cover", (1.415126, 1.415126, -298.268, 0.0)),
         # fill: each side on its own.
-        (
-            {"x": 0, "y": 0, "w": 595.0, "h": 842.0},
-            "0.706651 0 0 1.415126 0 0 cm",
-        ),
+        ("fill", (0.706651, 1.415126, 0.0, 0.0)),
     ],
 )
-def test_place_matrix(rect, cm):
+def test_place_matrix(fit, expect):
+    rect, kx, ky = _box(fit)
     out = ops.place(fixtures.certificate(), {"pageWidthPt": PAGE_W, "pageHeightPt": PAGE_H, "rect": rect})
     pdf, content = content_of(out)
-    assert content == f"q 0 0 595 842 re W n {cm} /Fx0 Do Q".encode()
+    words = content.split()
+    assert words[:8] == b"q 0 0 595 842 re W n".split()
+    assert words[-4:] == b"cm /Fx0 Do Q".split()
+    a, b, c, d, e, f = (float(v) for v in words[8:14])
+    assert (b, c) == (0.0, 0.0)
+    # The matrix maps the source page (842 × 595) onto the box exactly.
+    assert a == pytest.approx(kx, abs=1e-6) and d == pytest.approx(ky, abs=1e-6)
+    assert e == pytest.approx(rect["x"], abs=1e-5)
+    assert f == pytest.approx(PAGE_H - rect["y"] - rect["h"], abs=1e-5)
+    # And the numbers the SPEC's table gives.
+    assert (round(a, 6), round(d, 6), round(e, 3), round(f, 3)) == expect
     page = pdf.pages[0].obj
     assert list(page.MediaBox) == [0, 0, 595, 842]
     assert list(page.CropBox) == [0, 0, 595, 842]
