@@ -2,6 +2,7 @@ package ticket_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -67,6 +68,16 @@ func TestOfflineScanOnPostgres(t *testing.T) {
 	}
 	if n := mails(late.ID); n != 0 {
 		t.Fatalf("a late scan queued %d mails", n)
+	}
+	// Sent again: the record there answers, read from the database.
+	_, err = svc.CheckIn(ticket.WithScannedAt(ctx, lateAt), staff, late.ID, open.ID)
+	var dup *ticket.DuplicateScanError
+	if !errors.As(err, &dup) || dup.ID != ci.ID || dup.ScannedAt == nil || !dup.ScannedAt.Equal(lateAt) || !dup.Resent {
+		t.Fatalf("again %+v %v", dup, err)
+	}
+	entryOn, err := store.VenueEntryOn(ctx, late.ID, ticket.IstanbulDate(start))
+	if err != nil || entryOn.ScannedAt == nil || !entryOn.ScannedAt.Equal(lateAt) {
+		t.Fatalf("entry on its day %+v %v", entryOn, err)
 	}
 
 	recentAt := time.Now().Add(-10 * time.Minute).UTC()

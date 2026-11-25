@@ -67,6 +67,15 @@ func (s *PostgresStore) VenueEntryByID(ctx context.Context, id uuid.UUID) (Venue
 	return e, err
 }
 
+// VenueEntryOn is the Ticket's Venue entry of the venue day (ScanRecords).
+func (s *PostgresStore) VenueEntryOn(ctx context.Context, ticketID uuid.UUID, date string) (VenueEntry, error) {
+	e, err := scanVenueEntry(s.pool.QueryRow(ctx, `SELECT `+venueEntryCols+` FROM venue_entries v WHERE v.ticket_id = $1 AND v.entry_date = $2::date`, ticketID, date))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return VenueEntry{}, ErrNotFound
+	}
+	return e, err
+}
+
 func (s *PostgresStore) RemoveVenueEntry(ctx context.Context, id uuid.UUID) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM venue_entries WHERE id = $1`, id)
 	if err != nil {

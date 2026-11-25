@@ -39,7 +39,14 @@ func TestOfflineDoorRoutes(t *testing.T) {
 	if err := json.Unmarshal([]byte(again.body), &dup); err != nil {
 		t.Fatal(err)
 	}
-	if again.status != fiber.StatusOK || dup["duplicate"] != true || dup["kind"] != "entry" || dup["name"] != "Elif Yılmaz" {
+	// The record there answers: its id and the moment its scan was taken,
+	// not this one's.
+	var first map[string]any
+	if err := json.Unmarshal([]byte(got.body), &first); err != nil {
+		t.Fatal(err)
+	}
+	if again.status != fiber.StatusOK || dup["duplicate"] != true || dup["kind"] != "entry" || dup["name"] != "Elif Yılmaz" ||
+		dup["id"] != first["id"] || dup["scannedAt"] != at.Format(time.RFC3339) {
 		t.Fatalf("offline again: %+v", again)
 	}
 	if online := d.call(app, fiber.MethodPost, entries, `{"token":`+jsonString(token)+`}`); online.status != fiber.StatusConflict || online.code != "already_entered" {
@@ -52,8 +59,17 @@ func TestOfflineDoorRoutes(t *testing.T) {
 		t.Fatalf("offline check-in: %+v", got)
 	}
 	if got := d.call(app, fiber.MethodPost, session, scanBody(token, at)); got.status != fiber.StatusOK ||
-		!strings.Contains(got.body, `"duplicate":true`) || !strings.Contains(got.body, `"kind":"check_in"`) {
+		!strings.Contains(got.body, `"duplicate":true`) || !strings.Contains(got.body, `"kind":"check_in"`) ||
+		!strings.Contains(got.body, `"scannedAt":"`+at.Format(time.RFC3339)+`"`) {
 		t.Fatalf("offline check-in again: %+v", got)
+	}
+	// A record core took as it came: the duplicate says so (scannedAt null).
+	online := "/v1/sessions/" + d.sess.ID.String() + "/check-in/scan"
+	if got := d.call(app, fiber.MethodPost, online, `{"token":`+jsonString(token)+`}`); got.status != fiber.StatusCreated {
+		t.Fatalf("online check-in: %+v", got)
+	}
+	if got := d.call(app, fiber.MethodPost, online, scanBody(token, at)); got.status != fiber.StatusOK || !strings.Contains(got.body, `"scannedAt":null`) {
+		t.Fatalf("offline after online: %+v", got)
 	}
 
 	for body, want := range map[string]scanAnswer{

@@ -148,10 +148,13 @@ func (s *service) enterEvent(ctx context.Context, ev event.Event, t Ticket, how 
 	written, err := s.tickets.AddVenueEntry(ctx, e)
 	var conflict *EntryConflictError
 	if errors.As(err, &conflict) {
-		return DoorEntry{}, &EntryConflictError{Name: name}
+		return DoorEntry{}, s.duplicate(ctx, &EntryConflictError{Name: name}, t.ID, date, uuid.Nil)
 	}
 	if err != nil {
 		return DoorEntry{}, err
+	}
+	if scannedAt != nil {
+		s.scans.recordOffline(nil)
 	}
 	s.scans.recordEntry(written.Source)
 	s.logger.Printf(`{"event":"venue_entry","actorId":%q,"eventId":%q,"source":%q}`,

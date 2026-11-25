@@ -61,46 +61,48 @@ type settleBody struct {
 // clock: 400 scanned_at_invalid for one that is not RFC 3339, 422
 // scanned_at_in_future or scanned_at_too_old outside the bounds. ok false
 // means the answer is written.
-func scanContext(c fiber.Ctx, body settleBody) (context.Context, *time.Time, bool, error) {
+func scanContext(c fiber.Ctx, body settleBody) (context.Context, bool, error) {
 	ctx := c.Context()
 	raw := strings.TrimSpace(body.ScannedAt)
 	if raw == "" {
-		return ctx, nil, true, nil
+		return ctx, true, nil
 	}
 	at, err := time.Parse(time.RFC3339Nano, raw)
 	if err != nil {
-		return ctx, nil, false, problemDetailCode(c, fiber.StatusBadRequest, "Bad Request",
+		return ctx, false, problemDetailCode(c, fiber.StatusBadRequest, "Bad Request",
 			"scannedAt is not an RFC 3339 time.", "scanned_at_invalid")
 	}
 	switch err := ticket.CheckScannedAt(at, time.Now()); {
 	case errors.Is(err, ticket.ErrScannedAtFuture):
-		return ctx, nil, false, problemDetailCode(c, fiber.StatusUnprocessableEntity, "Unprocessable Entity",
+		return ctx, false, problemDetailCode(c, fiber.StatusUnprocessableEntity, "Unprocessable Entity",
 			"scannedAt is ahead of the server's clock; check the device's time.", "scanned_at_in_future")
 	case errors.Is(err, ticket.ErrScannedAtTooOld):
-		return ctx, nil, false, problemDetailCode(c, fiber.StatusUnprocessableEntity, "Unprocessable Entity",
+		return ctx, false, problemDetailCode(c, fiber.StatusUnprocessableEntity, "Unprocessable Entity",
 			"scannedAt is older than the door accepts (72 hours).", "scanned_at_too_old")
 	}
-	at = at.UTC()
-	return skypass.WithScannedAt(ticket.WithScannedAt(ctx, at), at), &at, true, nil
+	return skypass.WithScannedAt(ticket.WithScannedAt(ctx, at), at), true, nil
 }
 
 // offlineDuplicate answers a scan sent later whose Ticket is already in
 // (that day's Venue entry, or that Session's Check-in): 200 with
-// duplicate true, so the door app sending its queue again, or two doors'
-// queues, end as one record (docs/offline-door.md). handled false for
-// anything else, and for a scan core took as it came (409 as before).
-func offlineDuplicate(c fiber.Ctx, scannedAt *time.Time, err error) (bool, error) {
-	if scannedAt == nil {
+// duplicate true and the record that is there (its id, scannedAt: null for
+// a scan core took as it came, createdAt), so the door app sending its
+// queue again, or two doors' queues, end as one record
+// (docs/offline-door.md). handled false for anything else; a scan core took
+// as it came never gets here (409 as before).
+func offlineDuplicate(c fiber.Ctx, err error) (bool, error) {
+	var dup *ticket.DuplicateScanError
+	if !errors.As(err, &dup) {
 		return false, nil
 	}
-	var entered *ticket.EntryConflictError
-	switch {
-	case errors.As(err, &entered):
-		return true, c.Status(fiber.StatusOK).JSON(fiber.Map{"duplicate": true, "kind": ticket.KindEntry, "name": entered.Name, "scannedAt": scannedAt})
-	case errors.Is(err, ticket.ErrAlreadyCheckedIn):
-		return true, c.Status(fiber.StatusOK).JSON(fiber.Map{"duplicate": true, "kind": ticket.KindCheckIn, "scannedAt": scannedAt})
+	body := fiber.Map{"duplicate": true, "kind": dup.Kind, "scannedAt": dup.ScannedAt}
+	if dup.ID != uuid.Nil {
+		body["id"], body["createdAt"] = dup.ID, dup.CreatedAt
 	}
-	return false, nil
+	if dup.Kind == ticket.KindEntry {
+		body["name"] = dup.Name
+	}
+	return true, c.Status(fiber.StatusOK).JSON(body)
 }
 
 func skypassError(c fiber.Ctx, err error) error {
@@ -239,7 +241,7 @@ func (h *SkyPassHandler) CheckInSession(c fiber.Ctx) error {
 	if h.tickets == nil {
 		return problem(c, fiber.StatusInternalServerError, "Internal Server Error")
 	}
-	ctx, scannedAt, ok, answered := scanContext(c, body)
+	ctx, ok, answered := scanContext(c, body)
 	if !ok {
 		return answered
 	}
@@ -253,7 +255,7 @@ func (h *SkyPassHandler) CheckInSession(c fiber.Ctx) error {
 	// as before: its QR (sp-e1), a Google Wallet code or a card UID.
 	if body.Token != "" && ticketqr.IsTicketQR(body.Token) {
 		ci, err := h.tickets.CheckInTicketQR(ctx, p, sessionID, body.Token)
-		if handled, answer := offlineDuplicate(c, scannedAt, err); handled {
+		if handled, answer := offlineDuplicate(c, err); handled {
 			return answer
 		}
 		if err != nil {
@@ -266,7 +268,7 @@ func (h *SkyPassHandler) CheckInSession(c fiber.Ctx) error {
 		return skypassError(c, err)
 	}
 	ci, err := h.tickets.CheckInUser(ctx, p, sessionID, got.ID)
-	if handled, answer := offlineDuplicate(c, scannedAt, err); handled {
+	if handled, answer := offlineDuplicate(c, err); handled {
 		return answer
 	}
 	if err != nil {
@@ -294,7 +296,7 @@ func (h *SkyPassHandler) EnterEvent(c fiber.Ctx) error {
 	if h.tickets == nil {
 		return problem(c, fiber.StatusInternalServerError, "Internal Server Error")
 	}
-	ctx, scannedAt, ok, answered := scanContext(c, body)
+	ctx, ok, answered := scanContext(c, body)
 	if !ok {
 		return answered
 	}
@@ -303,7 +305,7 @@ func (h *SkyPassHandler) EnterEvent(c fiber.Ctx) error {
 	}
 	if body.Token != "" && ticketqr.IsTicketQR(body.Token) {
 		entry, err := h.tickets.EnterTicketQR(ctx, p, eventID, body.Token)
-		if handled, answer := offlineDuplicate(c, scannedAt, err); handled {
+		if handled, answer := offlineDuplicate(c, err); handled {
 			return answer
 		}
 		if err != nil {
@@ -316,7 +318,7 @@ func (h *SkyPassHandler) EnterEvent(c fiber.Ctx) error {
 		return skypassError(c, err)
 	}
 	entry, err := h.tickets.EnterUser(ctx, p, eventID, got.ID)
-	if handled, answer := offlineDuplicate(c, scannedAt, err); handled {
+	if handled, answer := offlineDuplicate(c, err); handled {
 		return answer
 	}
 	if err != nil {

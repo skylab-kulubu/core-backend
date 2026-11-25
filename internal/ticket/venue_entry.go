@@ -232,7 +232,10 @@ func (s *service) enterAtSession(ctx context.Context, t Ticket, sessionID uuid.U
 	}
 	entry, err := s.tickets.AddVenueEntry(ctx, *want)
 	if err != nil {
-		return CheckIn{}, err
+		return CheckIn{}, s.duplicate(ctx, err, t.ID, want.EntryDate, sessionID)
+	}
+	if entry.ScannedAt != nil {
+		s.scans.recordOffline(nil)
 	}
 	s.scans.recordEntry(entry.Source)
 	return CheckIn{

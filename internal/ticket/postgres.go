@@ -663,6 +663,19 @@ func (s *PostgresStore) RemoveCheckInByID(ctx context.Context, id uuid.UUID) (bo
 	return s.removeCheckIn(ctx, `id = $1`, id)
 }
 
+// CheckInOf is the Ticket's Check-in at the Session (ScanRecords).
+func (s *PostgresStore) CheckInOf(ctx context.Context, ticketID, sessionID uuid.UUID) (CheckIn, error) {
+	c := CheckIn{}
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, ticket_id, event_day_id, session_id, created_at, scanned_at
+		FROM ticket_checkins WHERE ticket_id = $1 AND session_id = $2`, ticketID, sessionID).
+		Scan(&c.ID, &c.TicketID, &c.EventDayID, &c.SessionID, &c.CreatedAt, &c.ScannedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CheckIn{}, ErrNotFound
+	}
+	return c, err
+}
+
 func (s *PostgresStore) HasCheckIn(ctx context.Context, ticketID, sessionID uuid.UUID) (bool, error) {
 	var n int
 	err := s.pool.QueryRow(ctx, `

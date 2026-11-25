@@ -167,6 +167,29 @@ var scanOutcomes = []string{"checked_in", "already", "not_found", "invalid", "ex
 type DoorScanMetrics struct {
 	counts  [9]atomic.Uint64
 	entries [3]atomic.Uint64
+	// offline counts the scans sent later (docs/offline-door.md) by
+	// outcome: written, resent (the same scan again), other_door (another
+	// door's scan, or one core took as it came, holds the record).
+	offline [3]atomic.Uint64
+}
+
+// offlineOutcomes are skylab_door_offline_scans_total's outcomes.
+var offlineOutcomes = []string{"written", "resent", "other_door"}
+
+// recordOffline counts a scan sent later: written (dup nil), or the
+// duplicate it was.
+func (m *DoorScanMetrics) recordOffline(dup *DuplicateScanError) {
+	if m == nil {
+		return
+	}
+	switch {
+	case dup == nil:
+		m.offline[0].Add(1)
+	case dup.Resent:
+		m.offline[1].Add(1)
+	default:
+		m.offline[2].Add(1)
+	}
 }
 
 // recordEntry counts a Venue entry written.
@@ -215,6 +238,11 @@ func (m *DoorScanMetrics) Prometheus() string {
 	for i, outcome := range scanOutcomes {
 		out.WriteString(`skylab_door_scans_total{credential="ticket_qr",outcome="` + outcome + `"} ` +
 			strconv.FormatUint(m.counts[i].Load(), 10) + "\n")
+	}
+	out.WriteString("# TYPE skylab_door_offline_scans_total counter\n")
+	for i, outcome := range offlineOutcomes {
+		out.WriteString(`skylab_door_offline_scans_total{outcome="` + outcome + `"} ` +
+			strconv.FormatUint(m.offline[i].Load(), 10) + "\n")
 	}
 	out.WriteString("# TYPE skylab_venue_entries_total counter\n")
 	for i, source := range entrySources {

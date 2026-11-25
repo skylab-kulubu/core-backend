@@ -48,23 +48,31 @@ came. The answer carries `scannedAt` beside `createdAt`.
 | more than 5 minutes ahead of core's clock (`ticket.ScanFutureSkew`) | `422 scanned_at_in_future`: the device's clock is wrong; it fixes it and sends again |
 | more than 72 hours ago (`ticket.ScanMaxAge`) | `422 scanned_at_too_old`: core takes no scan that old; the door app drops it and says so |
 
-72 hours: a weekend's Event offline from Friday to Sunday still syncs; the
-door's own mails drop after the same 72 hours.
+72 hours: a weekend's Event offline from Friday to Sunday still syncs. The
+door's mails have their own, shorter limit: a scan an hour or more old
+sends none ([Mails](#mails)).
 
 ## Sent twice: one record
 
 A queue can go twice (an answer lost, the app killed mid-sync) and two
 doors can each have let the same Ticket in offline. With `scannedAt`, a scan
 whose Ticket is already in answers **`200`** with
-`{"duplicate": true, "kind": "entry" | "check_in", "name"?, "scannedAt"}`
-instead of `409`:
+`{"duplicate": true, "kind": "entry" | "check_in", "id", "scannedAt", "createdAt", "name"?}`
+instead of `409`, describing **the record that is there**:
 
 - `kind` `entry`: the Ticket has that venue day's entry (the Event's door,
   or a Session's door in the `venue` mode); `name` is who is in;
-- `kind` `check_in`: the Ticket is checked in at that Session.
+- `kind` `check_in`: the Ticket is checked in at that Session;
+- `id`, `createdAt`: that record's; `scannedAt`: the moment its scan was
+  taken, `null` when core took it as it came (not the moment of the scan
+  just sent).
 
-Nothing is written; the first record (its `scannedAt` and `created_at`)
-stays. The door app marks the queued scan done on `201` or on `200`
+Nothing is written; the first record stays. Core counts each scan sent
+later in `skylab_door_offline_scans_total{outcome}`: `written`, `resent`
+(the record's `scannedAt` is this scan's: the same scan sent again) and
+`other_door` (the record is another scan's: another door's, a second
+reading, or one core took as it came). Many `other_door` at one Event mean
+two doors let the same people in while offline. The door app marks the queued scan done on `201` or on `200`
 `duplicate`. Any other answer is the scan's own refusal: the app shows it
 in its sync list and drops the scan (no retry), except `5xx`, `429` and a
 network error, which it retries later. Without `scannedAt` a second scan is

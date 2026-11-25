@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // The offline door (docs/offline-door.md): a door app that lost the
@@ -54,9 +56,77 @@ func CheckScannedAt(at, now time.Time) error {
 type scannedAtKey struct{}
 
 // WithScannedAt is ctx carrying the moment the door took the scan, for the
-// scan routes' service calls. Checked with CheckScannedAt first.
+// scan routes' service calls. Checked with CheckScannedAt first. It is kept
+// to the microsecond, as the database keeps it, so the same scan sent again
+// carries the same moment as its record.
 func WithScannedAt(ctx context.Context, at time.Time) context.Context {
-	return context.WithValue(ctx, scannedAtKey{}, at.UTC())
+	return context.WithValue(ctx, scannedAtKey{}, at.UTC().Truncate(time.Microsecond))
+}
+
+// DuplicateScanError is a scan sent later whose Ticket is already in: that
+// venue day's entry (Kind entry) or that Session's Check-in (Kind
+// check_in). It carries the record that is there (its ScannedAt nil for a
+// scan core took as it came) and whether this is the same scan sent again
+// (Resent: the record's scannedAt is this one's) or another door's.
+// Nothing was written. It is the conflict it came from (ErrConflict, and
+// an *EntryConflictError or ErrAlreadyCheckedIn).
+type DuplicateScanError struct {
+	Kind      string
+	ID        uuid.UUID
+	Name      string
+	ScannedAt *time.Time
+	CreatedAt time.Time
+	Resent    bool
+	err       error
+}
+
+func (e *DuplicateScanError) Error() string { return "ticket: duplicate scan: " + e.err.Error() }
+
+// Unwrap is the conflict it came from.
+func (e *DuplicateScanError) Unwrap() error { return e.err }
+
+// ScanRecords read the record a duplicate scan met (MemoryStore,
+// PostgresStore). A store without them answers duplicates without it.
+type ScanRecords interface {
+	// VenueEntryOn is the Ticket's Venue entry of the venue day date.
+	VenueEntryOn(ctx context.Context, ticketID uuid.UUID, date string) (VenueEntry, error)
+	// CheckInOf is the Ticket's Check-in at the Session.
+	CheckInOf(ctx context.Context, ticketID, sessionID uuid.UUID) (CheckIn, error)
+}
+
+// duplicate turns err, a conflict of a scan sent later (ctx carries its
+// scannedAt) with the record already there, into a *DuplicateScanError
+// with that record, counting it; any other err, or a scan core took as it
+// came, is err.
+func (s *service) duplicate(ctx context.Context, err error, ticketID uuid.UUID, date string, sessionID uuid.UUID) error {
+	at, offline := ScannedAtFrom(ctx)
+	if !offline || err == nil {
+		return err
+	}
+	var entered *EntryConflictError
+	dup := &DuplicateScanError{err: err}
+	reads, _ := s.tickets.(ScanRecords)
+	switch {
+	case errors.As(err, &entered):
+		dup.Kind, dup.Name = KindEntry, entered.Name
+		if reads != nil {
+			if e, rerr := reads.VenueEntryOn(ctx, ticketID, date); rerr == nil {
+				dup.ID, dup.ScannedAt, dup.CreatedAt = e.ID, e.ScannedAt, e.CreatedAt
+			}
+		}
+	case errors.Is(err, ErrAlreadyCheckedIn):
+		dup.Kind = KindCheckIn
+		if reads != nil {
+			if c, rerr := reads.CheckInOf(ctx, ticketID, sessionID); rerr == nil {
+				dup.ID, dup.ScannedAt, dup.CreatedAt = c.ID, c.ScannedAt, c.CreatedAt
+			}
+		}
+	default:
+		return err
+	}
+	dup.Resent = dup.ScannedAt != nil && dup.ScannedAt.Equal(at)
+	s.scans.recordOffline(dup)
+	return dup
 }
 
 // ScannedAtFrom is the moment ctx says the scan was taken.
