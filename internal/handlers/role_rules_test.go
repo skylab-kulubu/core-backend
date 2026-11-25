@@ -175,8 +175,8 @@ func TestRolePlacementHTTP(t *testing.T) {
 	// nothing of the write is kept, the app role beside it included.
 	for _, body := range []string{
 		`[{"clientId":"frontend-main","role":"cms:access"}]`,
-		`[{"clientId":"skymail","role":"skymail:mails:write"}]`,
-		`[{"clientId":"forms","role":"skyforms:access"},{"clientId":"skymail","role":"skymail:mails:write"}]`,
+		`[{"clientId":"skynotify","role":"skynotify:mails:write"}]`,
+		`[{"clientId":"forms","role":"skyforms:access"},{"clientId":"skynotify","role":"skynotify:mails:write"}]`,
 	} {
 		got := e.send(fiber.MethodPut, "/v1/groups/g-weblab/client-roles", body)
 		if got.status != fiber.StatusConflict || got.body["code"] != identity.CodeRolePlacement || got.body["reason"] != authz.PlacementTopTeamAdminRole || got.body["detail"] == "" {
@@ -186,12 +186,12 @@ func TestRolePlacementHTTP(t *testing.T) {
 	if roles := e.roles("g-weblab"); len(roles) != 1 || roles[0].Role != "skyforms:access" {
 		t.Errorf("top Team roles after refused writes = %v, want the seat alone", roles)
 	}
-	if got := e.send(fiber.MethodPut, "/v1/groups/g-weblab/client-roles", `[{"clientId":"forms","role":"skyforms:access"},{"clientId":"skymail","role":"skymail:access"},{"clientId":"skymail","role":"skymail:templates:read"}]`); got.status != fiber.StatusNoContent || len(e.roles("g-weblab")) != 3 {
+	if got := e.send(fiber.MethodPut, "/v1/groups/g-weblab/client-roles", `[{"clientId":"forms","role":"skyforms:access"},{"clientId":"skynotify","role":"skynotify:access"},{"clientId":"skynotify","role":"skynotify:templates:read"}]`); got.status != fiber.StatusNoContent || len(e.roles("g-weblab")) != 3 {
 		t.Errorf("top Team app roles: %d %v", got.status, got.body)
 	}
 	// A role group with a Group under it takes no role.
 	e.dir.PutGroup(identity.Group{ID: "g-forms-sub", Name: "ALT", Path: "/ROLLER/FORMS-ACCESS/ALT"})
-	e.dir.PutGroup(identity.Group{ID: "g-mail", Name: "SKYMAIL-ACCESS", Path: "/ROLLER/SKYMAIL-ACCESS"})
+	e.dir.PutGroup(identity.Group{ID: "g-mail", Name: "SKYNOTIFY-ACCESS", Path: "/ROLLER/SKYNOTIFY-ACCESS"})
 	if got := e.send(fiber.MethodPut, "/v1/groups/g-forms-access/client-roles", `[{"clientId":"forms","role":"skyforms:access"},{"clientId":"forms","role":"skyforms:*"}]`); got.status != fiber.StatusConflict || got.body["reason"] != authz.PlacementRolesGroupNotLeaf {
 		t.Errorf("role group with subgroups: %d %v", got.status, got.body)
 	}
@@ -201,20 +201,20 @@ func TestRolePlacementHTTP(t *testing.T) {
 
 	// A mapping made before the rule (on a Sub-team, which takes none):
 	// kept as it is, taken off, never added to.
-	old := []identity.ClientRole{{ClientID: "forms", Role: "skyforms:access"}, {ClientID: "skymail", Role: "skymail:access"}}
+	old := []identity.ClientRole{{ClientID: "forms", Role: "skyforms:access"}, {ClientID: "skynotify", Role: "skynotify:access"}}
 	if err := e.dir.SetGroupClientRoles(context.Background(), "g-front", old); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.send(fiber.MethodPut, "/v1/groups/g-front/client-roles", `[{"clientId":"skymail","role":"skymail:access"},{"clientId":"forms","role":"skyforms:access"}]`); got.status != fiber.StatusNoContent {
+	if got := e.send(fiber.MethodPut, "/v1/groups/g-front/client-roles", `[{"clientId":"skynotify","role":"skynotify:access"},{"clientId":"forms","role":"skyforms:access"}]`); got.status != fiber.StatusNoContent {
 		t.Errorf("same mappings: %d %v", got.status, got.body)
 	}
-	if got := e.send(fiber.MethodPut, "/v1/groups/g-front/client-roles", `[{"clientId":"skymail","role":"skymail:access"},{"clientId":"core","role":"url:access"}]`); got.status != fiber.StatusConflict {
+	if got := e.send(fiber.MethodPut, "/v1/groups/g-front/client-roles", `[{"clientId":"skynotify","role":"skynotify:access"},{"clientId":"core","role":"url:access"}]`); got.status != fiber.StatusConflict {
 		t.Errorf("swap in a new role: %d %v", got.status, got.body)
 	}
-	if got := e.send(fiber.MethodPut, "/v1/groups/g-front/client-roles", `[{"clientId":"skymail","role":"skymail:access"}]`); got.status != fiber.StatusNoContent {
+	if got := e.send(fiber.MethodPut, "/v1/groups/g-front/client-roles", `[{"clientId":"skynotify","role":"skynotify:access"}]`); got.status != fiber.StatusNoContent {
 		t.Errorf("take one off: %d %v", got.status, got.body)
 	}
-	if got := e.roles("g-front"); !slices.Equal(got, []identity.ClientRole{{ClientID: "skymail", Role: "skymail:access"}}) {
+	if got := e.roles("g-front"); !slices.Equal(got, []identity.ClientRole{{ClientID: "skynotify", Role: "skynotify:access"}}) {
 		t.Errorf("after taking one off: %v", got)
 	}
 	if got := e.send(fiber.MethodPut, "/v1/groups/g-front/client-roles", `[]`); got.status != fiber.StatusNoContent || len(e.roles("g-front")) != 0 {
@@ -253,8 +253,8 @@ func TestNoMembershipChangeInAKeycloakAdminGroup(t *testing.T) {
 
 	// Through a composite: an app role of another client that holds
 	// realm-management's role.
-	e.dir.PutCompositeRole(identity.ClientRole{ClientID: "skymail", Role: "skymail:access"}, identity.ClientRole{ClientID: identity.KeycloakAdminClient, Role: "view-users"})
-	if err := e.dir.SetGroupClientRoles(ctx, "g-forms-access", []identity.ClientRole{{ClientID: "skymail", Role: "skymail:access"}}); err != nil {
+	e.dir.PutCompositeRole(identity.ClientRole{ClientID: "skynotify", Role: "skynotify:access"}, identity.ClientRole{ClientID: identity.KeycloakAdminClient, Role: "view-users"})
+	if err := e.dir.SetGroupClientRoles(ctx, "g-forms-access", []identity.ClientRole{{ClientID: "skynotify", Role: "skynotify:access"}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := e.send(fiber.MethodPost, "/v1/groups/g-forms-access/members", add); got.status != fiber.StatusForbidden || got.body["code"] != identity.CodeKeycloakAdminGroup {
@@ -276,7 +276,7 @@ func TestKeycloakAdminRoleIsNeverMapped(t *testing.T) {
 	e := newRoleRulesEnv(t, identity.Options{})
 	ctx := context.Background()
 	manage := identity.ClientRole{ClientID: identity.KeycloakAdminClient, Role: "manage-users"}
-	deep := identity.ClientRole{ClientID: "skymail", Role: "skymail:access"}
+	deep := identity.ClientRole{ClientID: "skynotify", Role: "skynotify:access"}
 	middle := identity.ClientRole{ClientID: "forms", Role: "skyforms:access"}
 	e.dir.PutCompositeRole(deep, middle)
 	e.dir.PutCompositeRole(middle, manage)
@@ -287,7 +287,7 @@ func TestKeycloakAdminRoleIsNeverMapped(t *testing.T) {
 
 	for _, body := range []string{
 		`[{"clientId":"realm-management","role":"manage-users"}]`,
-		`[{"clientId":"skymail","role":"skymail:access"}]`,
+		`[{"clientId":"skynotify","role":"skynotify:access"}]`,
 		`[{"clientId":"forms","role":"skyforms:access"}]`,
 		`[{"clientId":"core","role":"url:access"}]`,
 	} {
@@ -326,7 +326,7 @@ func TestRolePlacementCreateAndRename(t *testing.T) {
 	if got.status != fiber.StatusConflict || got.body["code"] != identity.CodeRolePlacement || got.body["reason"] != authz.PlacementRolesGroupNotLeaf {
 		t.Errorf("create under a role group: %d %v", got.status, got.body)
 	}
-	if got := e.send(fiber.MethodPost, "/v1/groups", `{"name":"SKYMAIL-ACCESS","parentId":"g-roller"}`); got.status != fiber.StatusCreated {
+	if got := e.send(fiber.MethodPost, "/v1/groups", `{"name":"SKYNOTIFY-ACCESS","parentId":"g-roller"}`); got.status != fiber.StatusCreated {
 		t.Errorf("a new role group: %d %v", got.status, got.body)
 	}
 

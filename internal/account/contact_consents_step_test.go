@@ -65,7 +65,7 @@ func TestErasureSagaErasesContactConsentsWithThePersonsAddressesBeforeAnyService
 	if consents < 0 || consents < slices.Index(events, "logout_sessions") {
 		t.Fatalf("saga order = %v", events)
 	}
-	for _, later := range []string{"erase_skymail", "erase_cms", "erase_forms", "anonymize_core"} {
+	for _, later := range []string{"erase_skynotify", "erase_cms", "erase_forms", "anonymize_core"} {
 		if at := slices.Index(events, later); at < 0 || at < consents {
 			t.Fatalf("%s before erase_contact_consents: %v", later, events)
 		}
@@ -90,7 +90,7 @@ func TestErasureSagaStopsWhenContactConsentsCannotBeErased(t *testing.T) {
 	if !worked || err == nil || !strings.Contains(err.Error(), "erase_contact_consents_failed") {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}
-	for _, later := range []string{"erase_skymail", "erase_cms", "erase_forms", "anonymize_core"} {
+	for _, later := range []string{"erase_skynotify", "erase_cms", "erase_forms", "anonymize_core"} {
 		if f.events.count(later) != 0 {
 			t.Fatalf("the saga went on to %s past a failed consent erasure: %v", later, f.events.list())
 		}

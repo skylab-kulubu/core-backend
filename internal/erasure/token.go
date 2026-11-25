@@ -23,7 +23,7 @@ type SecretSource func() (string, error)
 
 // ClientCredentials fetches the `core-erasure` client's token for one
 // service's erase scope (or, with no Scope, another client's token: core's
-// own for the tracking withdrawal, commpref.SkyMailWithdrawals) and keeps it until 30 seconds before it expires. It
+// own for the tracking withdrawal, commpref.SkyNotifyWithdrawals) and keeps it until 30 seconds before it expires. It
 // keeps nothing beyond that: a token whose lifetime is 30 seconds or less is
 // not cached, a failure caches nothing, and Invalidate forgets the token when a
 // service rejects it.

@@ -48,7 +48,7 @@ type App struct {
 	// Client (ClassifyRole).
 	Roles []string `json:"roles"`
 	// SuggestedRoles are the roles the panel's add drawer selects at
-	// first (SkyMail's "send for approval" pair); a part of Roles.
+	// first (SkyNotify's "send for approval" pair); a part of Roles.
 	SuggestedRoles []string `json:"suggestedRoles"`
 }
 

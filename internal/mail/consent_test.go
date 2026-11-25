@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestSkyMailConsentConfirmationPostsByKey(t *testing.T) {
+func TestSkyNotifyConsentConfirmationPostsByKey(t *testing.T) {
 	t.Parallel()
 	var gotPath string
 	var payload map[string]any
@@ -17,7 +17,7 @@ func TestSkyMailConsentConfirmationPostsByKey(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 	}))
 	t.Cleanup(srv.Close)
-	mailer := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}
+	mailer := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}
 	mailer.ConsentConfirmation(t.Context(), "core.contact-consent-confirm", "ada@example.com", map[string]string{
 		"confirmUrl": "https://api.example.test/v1/consents/confirm?token=x",
 	})
@@ -37,12 +37,12 @@ func TestSkyMailConsentConfirmationPostsByKey(t *testing.T) {
 	}
 }
 
-func TestSkyMailConsentConfirmationNoopsWithoutKey(t *testing.T) {
+func TestSkyNotifyConsentConfirmationNoopsWithoutKey(t *testing.T) {
 	t.Parallel()
 	called := false
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
 	t.Cleanup(srv.Close)
-	mailer := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}
+	mailer := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}
 	mailer.ConsentConfirmation(t.Context(), " ", "ada@example.com", nil)
 	if called {
 		t.Fatal("posted without a template key")

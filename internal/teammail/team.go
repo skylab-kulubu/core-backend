@@ -3,7 +3,7 @@
 // team's change gets club.team-membership, a Privileged Group's (YK, DK,
 // ADMIN) club.role-membership and any other Group's club.group-membership
 // (KindOf). The change is queued in the database with the membership write
-// and sent by a worker, so a SkyMail that is down delays the mail and never
+// and sent by a worker, so a SkyNotify that is down delays the mail and never
 // the write. See docs/team-membership-mail.md.
 package teammail
 

@@ -38,7 +38,7 @@ wizards and their markers read.
   `migrate.Apply` has returned, so a task that answers at all has its schema.
 - **Shutting down.** From the stop signal on, `/v1/ready` answers `503`.
 - **Not asked:** Keycloak, RabbitMQ ([integration-events.md](integration-events.md)),
-  SkyMail, Gotenberg, ClamAV, the frame service, R2, OpenBao, Cloudflare. Their
+  SkyNotify, Gotenberg, ClamAV, the frame service, R2, OpenBao, Cloudflare. Their
   outage fails only the requests that need them, the same on every task;
   failing readiness for them would take every task out (or get them
   restarted) and turn a partial outage into a whole one.
@@ -132,7 +132,7 @@ and only stopped.
 
 A contact consent's confirmation mail goes after the request that recorded it
 was answered, while its row already says it was sent; shutdown waits for it.
-A mail cut off all the same (SkyMail slower than the deadline) leaves the grant
+A mail cut off all the same (SkyNotify slower than the deadline) leaves the grant
 pending, and the person's next request mails it again after
 `ConfirmationResend` (docs/contact-consents.md).
 

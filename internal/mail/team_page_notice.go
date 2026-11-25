@@ -5,8 +5,8 @@ import (
 	"strings"
 )
 
-// DefaultTeamPageNoticeTemplateKey is the SkyMail template of the team page
-// notice (docs/team-page-consent.md, ekip-yetki-devri 21; skymail-frontend
+// DefaultTeamPageNoticeTemplateKey is the SkyNotify template of the team page
+// notice (docs/team-page-consent.md, ekip-yetki-devri 21; skynotify-frontend
 // core-team-page-consent-notice): the one mail a listed member who has not
 // decided gets when the transition starts. Variables FirstName (may be
 // empty), Teams, HideAt, SettingsURL and Board ("true" or empty).
@@ -16,17 +16,17 @@ const kindTeamPageNotice = "team_page_notice"
 
 // TeamPageNoticeConfigured reports whether the notice has a template key;
 // an empty key turns it off.
-func (s *SkyMail) TeamPageNoticeConfigured() bool {
+func (s *SkyNotify) TeamPageNoticeConfigured() bool {
 	return s != nil && strings.TrimSpace(s.TeamPageNoticeTemplateKey) != ""
 }
 
 // TeamPageNotice posts the notice by template key. A service's /single is
-// always SkyMail's islem stream: no preference, no unsubscribe header. It
-// reports what SkyMail answered: nil when it took the mail, ErrMaybeDelivered
-// when the request went out and no answer came (SkyMail may have taken it;
+// always SkyNotify's islem stream: no preference, no unsubscribe header. It
+// reports what SkyNotify answered: nil when it took the mail, ErrMaybeDelivered
+// when the request went out and no answer came (SkyNotify may have taken it;
 // /single reads no idempotency key, so the caller must not try again), a
 // *SendError when it surely took nothing.
-func (s *SkyMail) TeamPageNotice(ctx context.Context, recipient, fullName string, vars map[string]string) error {
+func (s *SkyNotify) TeamPageNotice(ctx context.Context, recipient, fullName string, vars map[string]string) error {
 	if !s.TeamPageNoticeConfigured() || s.noBaseURL() {
 		return ErrTemplateUnconfigured
 	}

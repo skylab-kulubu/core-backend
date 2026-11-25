@@ -87,7 +87,7 @@ func TestKeycloakAppRoleWritesTouchOneRole(t *testing.T) {
 		t.Errorf("reads %v", reads)
 	}
 	// A realm without the client maps the role to nobody.
-	groups, people, err = dir.ClientRoleMappings(ctx, "skymail", "skymail:access")
+	groups, people, err = dir.ClientRoleMappings(ctx, "skynotify", "skynotify:access")
 	if err != nil || len(groups)+len(people) != 0 {
 		t.Errorf("no client: %v %v %v", groups, people, err)
 	}
@@ -104,22 +104,22 @@ func TestKeycloakRoleProtection(t *testing.T) {
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/protocol/openid-connect/token"):
 			_, _ = w.Write([]byte(`{"access_token":"tok","expires_in":300,"token_type":"Bearer"}`))
-		case r.URL.Path == base+"/clients" && r.URL.Query().Get("clientId") == "skymail":
-			_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": "mail-uuid", "clientId": "skymail"}})
+		case r.URL.Path == base+"/clients" && r.URL.Query().Get("clientId") == "skynotify":
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": "mail-uuid", "clientId": "skynotify"}})
 		case r.URL.Path == base+"/clients/mail-uuid/roles":
 			_ = json.NewEncoder(w).Encode([]any{
-				map[string]any{"id": "acc", "name": "skymail:access", "composite": true, "clientRole": true, "containerId": "mail-uuid"},
-				map[string]any{"id": "tr", "name": "skymail:templates:read", "composite": true, "clientRole": true, "containerId": "mail-uuid"},
-				map[string]any{"id": "plain", "name": "skymail:plain", "clientRole": true, "containerId": "mail-uuid"},
+				map[string]any{"id": "acc", "name": "skynotify:access", "composite": true, "clientRole": true, "containerId": "mail-uuid"},
+				map[string]any{"id": "tr", "name": "skynotify:templates:read", "composite": true, "clientRole": true, "containerId": "mail-uuid"},
+				map[string]any{"id": "plain", "name": "skynotify:plain", "clientRole": true, "containerId": "mail-uuid"},
 			})
 		case r.URL.Path == base+"/roles-by-id/acc/composites":
-			_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": "inner", "name": "skymail:templates:read", "clientRole": true, "containerId": "mail-uuid", "composite": true}})
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": "inner", "name": "skynotify:templates:read", "clientRole": true, "containerId": "mail-uuid", "composite": true}})
 		case r.URL.Path == base+"/roles-by-id/inner/composites":
 			_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": "gm", "name": "groups:manage", "clientRole": true, "containerId": "core-uuid"}})
 		case r.URL.Path == base+"/roles-by-id/tr/composites":
 			_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": "ci", "name": "certificate:issue", "clientRole": true, "containerId": "core-uuid"}})
 		case r.URL.Path == base+"/clients/mail-uuid":
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "mail-uuid", "clientId": "skymail"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "mail-uuid", "clientId": "skynotify"})
 		case r.URL.Path == base+"/clients/core-uuid":
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "core-uuid", "clientId": "core"})
 		default:
@@ -130,12 +130,12 @@ func TestKeycloakRoleProtection(t *testing.T) {
 	t.Cleanup(srv.Close)
 	dir := identity.NewKeycloak(identity.KeycloakConfig{URL: srv.URL, Realm: "e-skylab", ClientID: "core", ClientSecret: "secret"})
 	ctx := context.Background()
-	got, err := dir.RoleProtection(ctx, identity.ClientRole{ClientID: "skymail", Role: "skymail:access"})
+	got, err := dir.RoleProtection(ctx, identity.ClientRole{ClientID: "skynotify", Role: "skynotify:access"})
 	if err != nil || !got.Protected || !strings.Contains(got.Reason, "groups:manage") {
-		t.Errorf("skymail:access: %+v %v", got, err)
+		t.Errorf("skynotify:access: %+v %v", got, err)
 	}
-	got, err = dir.RoleProtection(ctx, identity.ClientRole{ClientID: "skymail", Role: "skymail:templates:read"})
+	got, err = dir.RoleProtection(ctx, identity.ClientRole{ClientID: "skynotify", Role: "skynotify:templates:read"})
 	if err != nil || got.Protected {
-		t.Errorf("skymail:templates:read: %+v %v", got, err)
+		t.Errorf("skynotify:templates:read: %+v %v", got, err)
 	}
 }

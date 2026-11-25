@@ -828,21 +828,21 @@ func TestTeamDelegationRealmAndCompositeRolesProtect(t *testing.T) {
 		{name: "a realm role on the area", on: "/UYELER/ARGE",
 			roles: []identity.ClientRole{{Role: "some-realm-role"}}, target: "/UYELER/ARGE/WEBLAB", refused: true},
 		{name: "a composite holding realm-management on the area", on: "/UYELER/ARGE",
-			roles: []identity.ClientRole{{ClientID: "skymail", Role: "staff"}},
+			roles: []identity.ClientRole{{ClientID: "skynotify", Role: "staff"}},
 			setup: func(m *identity.Memory) {
-				m.PutCompositeRole(identity.ClientRole{ClientID: "skymail", Role: "staff"},
+				m.PutCompositeRole(identity.ClientRole{ClientID: "skynotify", Role: "staff"},
 					identity.ClientRole{ClientID: "realm-management", Role: "manage-users"}, identity.ClientRole{ClientID: "core", Role: authz.RoleGroupsManage})
 			}, target: "/UYELER/ARGE/WEBLAB", refused: true},
 		{name: "a composite two deep holding groups:manage", on: "/UYELER/ARGE/WEBLAB",
-			roles: []identity.ClientRole{{ClientID: "skymail", Role: "outer"}},
+			roles: []identity.ClientRole{{ClientID: "skynotify", Role: "outer"}},
 			setup: func(m *identity.Memory) {
-				m.PutCompositeRole(identity.ClientRole{ClientID: "skymail", Role: "outer"}, identity.ClientRole{ClientID: "forms", Role: "inner"})
+				m.PutCompositeRole(identity.ClientRole{ClientID: "skynotify", Role: "outer"}, identity.ClientRole{ClientID: "forms", Role: "inner"})
 				m.PutCompositeRole(identity.ClientRole{ClientID: "forms", Role: "inner"}, identity.ClientRole{ClientID: "core", Role: authz.RoleGroupsManage})
 			}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
 		{name: "a composite holding a realm role", on: "/UYELER/ARGE/WEBLAB",
-			roles: []identity.ClientRole{{ClientID: "skymail", Role: "outer"}},
+			roles: []identity.ClientRole{{ClientID: "skynotify", Role: "outer"}},
 			setup: func(m *identity.Memory) {
-				m.PutCompositeRole(identity.ClientRole{ClientID: "skymail", Role: "outer"}, identity.ClientRole{Role: "admin"})
+				m.PutCompositeRole(identity.ClientRole{ClientID: "skynotify", Role: "outer"}, identity.ClientRole{Role: "admin"})
 			}, target: "/UYELER/ARGE/WEBLAB", refused: true},
 		{name: "cms:access and its content roles", on: "/UYELER/ARGE/WEBLAB",
 			roles: []identity.ClientRole{{ClientID: "frontend-main", Role: "cms:access"}},
@@ -864,14 +864,14 @@ func TestTeamDelegationRealmAndCompositeRolesProtect(t *testing.T) {
 		{name: "an unclassified role above", on: "/UYELER/ARGE/WEBLAB",
 			roles: []identity.ClientRole{{ClientID: "place", Role: "place:new"}}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
 		{name: "an admin role of another product", on: "/UYELER/ARGE/WEBLAB/FRONT",
-			roles: []identity.ClientRole{{ClientID: "skymail", Role: "skymail:system-mails:read"}}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
+			roles: []identity.ClientRole{{ClientID: "skynotify", Role: "skynotify:system-mails:read"}}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
 		{name: "a composite app role holding an unclassified role", on: "/UYELER/ARGE/WEBLAB",
 			roles: []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}},
 			setup: func(m *identity.Memory) {
 				m.PutCompositeRole(identity.ClientRole{ClientID: "core", Role: "certificate:issue"}, identity.ClientRole{ClientID: "forms", Role: "viewer"})
 			}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
 		{name: "app roles on the Team and above", on: "/UYELER/ARGE",
-			roles:  []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}, {ClientID: "forms", Role: "skyforms:access"}, {ClientID: "skymail", Role: "skymail:access"}, {ClientID: "core", Role: "url:create"}},
+			roles:  []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}, {ClientID: "forms", Role: "skyforms:access"}, {ClientID: "skynotify", Role: "skynotify:access"}, {ClientID: "core", Role: "url:create"}},
 			target: "/UYELER/ARGE/WEBLAB/FRONT", refused: false},
 	} {
 		e := newDelegationEnv(t, delegationSetup{on: true})

@@ -60,7 +60,7 @@ func newAudienceEnv(t *testing.T, enabled bool) audienceEnv {
 func (e audienceEnv) service(t *testing.T, roles ...string) string {
 	t.Helper()
 	return e.keys.Token(t, jwt.MapClaims{
-		"sub": uuid.NewString(), "azp": "skymail", "client_id": "skymail",
+		"sub": uuid.NewString(), "azp": "skynotify", "client_id": "skynotify",
 		"resource_access": map[string]any{"core": map[string]any{"roles": roles}},
 	})
 }
@@ -114,7 +114,7 @@ func TestAudienceRouteAuthorization(t *testing.T) {
 
 	got := audienceCall(t, env.app, env.service(t, commpref.AudienceRole), fiber.MethodPost, "/v1/audiences/resolve", weblabDuyuru)
 	if got.status != fiber.StatusOK || got.header.Get(fiber.HeaderCacheControl) != "no-store" {
-		t.Fatalf("skymail: %d %s", got.status, got.raw)
+		t.Fatalf("skynotify: %d %s", got.status, got.raw)
 	}
 	var answer struct {
 		Items   []commpref.Recipient     `json:"items"`
@@ -141,7 +141,7 @@ func TestAudienceRouteAuthorization(t *testing.T) {
 
 func TestAudienceRouteRefusals(t *testing.T) {
 	env := newAudienceEnv(t, true)
-	skymail := env.service(t, commpref.AudienceRole)
+	skynotify := env.service(t, commpref.AudienceRole)
 	for _, c := range []struct {
 		path, body, code string
 		status           int
@@ -154,7 +154,7 @@ func TestAudienceRouteRefusals(t *testing.T) {
 		{"/v1/audiences/resolve?after=nope", weblabDuyuru, "audience_invalid", fiber.StatusBadRequest},
 		{"/v1/audiences/resolve?countOnly=yes", weblabDuyuru, "audience_invalid", fiber.StatusBadRequest},
 	} {
-		got := audienceCall(t, env.app, skymail, fiber.MethodPost, c.path, c.body)
+		got := audienceCall(t, env.app, skynotify, fiber.MethodPost, c.path, c.body)
 		if got.status != c.status || !strings.Contains(string(got.raw), c.code) {
 			t.Fatalf("%s %s: %d %s", c.path, c.body, got.status, got.raw)
 		}

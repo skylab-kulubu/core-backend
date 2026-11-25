@@ -26,7 +26,7 @@ type Accounts interface {
 	Ensure(ctx context.Context, id uuid.UUID, profile user.Profile) (user.User, bool, error)
 }
 
-// Mailer sends the Welcome mail and says what became of it (mail.SkyMail).
+// Mailer sends the Welcome mail and says what became of it (mail.SkyNotify).
 type Mailer interface {
 	Welcome(ctx context.Context, u user.User) mail.WelcomeOutcome
 }
@@ -75,7 +75,7 @@ const (
 	// wakeGap is the least time between two passes a wake asks for.
 	wakeGap = 30 * time.Second
 	// sendTimeout bounds one Welcome post (its token request and its post
-	// each have core's SkyMail client timeout as well).
+	// each have core's SkyNotify client timeout as well).
 	sendTimeout = 20 * time.Second
 )
 
@@ -367,7 +367,7 @@ func (w *Worker) owed(p identity.Person, st State) bool {
 // between the two loses a mail rather than sending it twice. It is taken back
 // only when no mail task can exist and a later try may succeed (deferred,
 // not_sent), or when the pass is stopped between the mark and the post. A
-// mail SkyMail refused for good keeps its mark: it was tried, and warned
+// mail SkyNotify refused for good keeps its mark: it was tried, and warned
 // about once.
 //
 // The post does not end with the pass: a shutdown would otherwise cut a

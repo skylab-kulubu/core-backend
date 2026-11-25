@@ -36,7 +36,7 @@ func keycloakFromEnv(getenv func(string) string) (identity.KeycloakConfig, []str
 // keycloakRealmFromEnv answers KEYCLOAK_URL without trailing slashes or a
 // /realms/<realm> suffix, and the realm: KEYCLOAK_REALM, or the one
 // KEYCLOAK_URL names. The issuer and the realm token endpoints (core's
-// SkyMail and core-erasure tokens) are built on them; KEYCLOAK_ADMIN_URL
+// SkyNotify and core-erasure tokens) are built on them; KEYCLOAK_ADMIN_URL
 // plays no part.
 func keycloakRealmFromEnv(getenv func(string) string) (base, realm string) {
 	base = strings.TrimRight(getenv("KEYCLOAK_URL"), "/")

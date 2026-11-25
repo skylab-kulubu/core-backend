@@ -239,12 +239,12 @@ type Deps struct {
 	// unserved: 404.
 	AppPreferences *apppref.Service
 
-	// Audience resolves a News send's audience for SkyMail's service account
+	// Audience resolves a News send's audience for SkyNotify's service account
 	// (docs/news-audience.md). Nil or off answers POST /v1/audiences/resolve
 	// 503.
 	Audience *commpref.Audience
 
-	// Recipients answers SkyMail's service account, for the recipients a
+	// Recipients answers SkyNotify's service account, for the recipients a
 	// sender chose, which are a person and whether the mail may go to each
 	// (docs/news-audience.md, "Recipients"). Nil or off answers POST
 	// /internal/v1/audiences/recipients:resolve 503.
@@ -536,15 +536,15 @@ func New(deps Deps) *fiber.App {
 	app.Use(middlewares.InternalRoutePrefix, middlewares.InternalRouteGuard())
 	app.Use(middlewares.Bearer(parseToken))
 	app.Use(middlewares.AccountAccessGate(deps.AccountAccessGate, deps.AccountAccessMetrics))
-	// SkyMail's service account with communication-preferences:read: whom a
+	// SkyNotify's service account with communication-preferences:read: whom a
 	// send may track (docs/communication-preferences.md, "Tracking"). Before
 	// the Group overage step and JIT: a service account has neither.
 	app.Post(handlers.TrackingResolvePath, handlers.NewTrackingResolveHandler(deps.Audience).Resolve)
-	// SkyMail's service account with audience:read: which recipients a
+	// SkyNotify's service account with audience:read: which recipients a
 	// sender chose are a person, and whether the mail may go to each (ADR
 	// 0072 karar 3). Here for the same reason.
 	app.Post(handlers.RecipientsResolvePath, handlers.NewRecipientsResolveHandler(deps.Recipients).Resolve)
-	// SkyMail's service account with audience:read (Team mail, ADR-0067
+	// SkyNotify's service account with audience:read (Team mail, ADR-0067
 	// addendum of 2026-11-08) and Forms' with users:read (owner team,
 	// ADR-0075 addendum of 2026-11-08): which Teams a person is in and
 	// leads, read with TEAM_DELEGATION on or off. Here for the same reason.
@@ -605,14 +605,14 @@ func New(deps Deps) *fiber.App {
 		app.Put(handlers.AppPreferencePath+"/:app/:key", appPreferences.Put)
 		app.Delete(handlers.AppPreferencePath+"/:app/:key", appPreferences.DeleteKey)
 	}
-	// A product's service account with consent:record; SkyMail's with
+	// A product's service account with consent:record; SkyNotify's with
 	// consent:audience:read.
 	app.Post("/v1/consents", consents.Record)
 	app.Post("/v1/consents/withdrawals", consents.WithdrawForAddress)
 	app.Post("/v1/consents/lookup", consents.Lookup)
 	app.Get("/v1/consents/audience", consents.Audience)
 	app.Post("/v1/consents/renewal-requests", consents.RequestRenewal)
-	// SkyMail's service account with audience:read: who a News send goes to.
+	// SkyNotify's service account with audience:read: who a News send goes to.
 	app.Post("/v1/audiences/resolve", handlers.NewAudienceHandler(deps.Audience).Resolve)
 
 	app.Get("/v1/users/me", me.GetMe)
