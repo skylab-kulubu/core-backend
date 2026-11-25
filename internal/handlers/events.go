@@ -98,6 +98,8 @@ func eventError(c fiber.Ctx, err error) error {
 		return problemWithFields(c, fiber.StatusConflict, "Conflict", "Conflict", "form_in_use", formInUseFields(inUse))
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
+	case errors.Is(err, event.ErrCoOrganizerPersonDates):
+		return problemCode(c, fiber.StatusForbidden, "Forbidden", "co_organizer_person_dates")
 	case errors.Is(err, event.ErrForbidden):
 		return problem(c, fiber.StatusForbidden, "Forbidden")
 	case errors.Is(err, event.ErrNotFound):

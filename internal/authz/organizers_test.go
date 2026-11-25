@@ -185,3 +185,45 @@ func TestOrganizers_EventVia(t *testing.T) {
 		}
 	}
 }
+
+// An Owner team whose rule opens editing to its members (GECEKODU): its
+// member edits and reads Tickets, as before, and nothing more.
+func TestOrganizers_OwnerMemberOfAMembersTeam(t *testing.T) {
+	t.Parallel()
+	auth := inheritingAuthorizer(realmTree())
+	member := Principal{ID: "gm", Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU"}}
+	event := Resource{OwnerTeam: "GECEKODU", CoOwnerTeams: []CoTeam{{Code: "GAMELAB"}}}
+	for _, c := range []struct {
+		typ  Type
+		a    Action
+		want bool
+	}{
+		{TypeEvent, Update, true}, {TypeEvent, ReadFull, true}, {TypeEvent, Delete, false},
+		{TypeEvent, ManageOrganizers, false}, {TypeEvent, Assign, false}, {TypeEventDay, Delete, false},
+		{TypeTicket, Read, true}, {TypeTicket, Assign, false}, {TypeTicket, Validate, false},
+		{TypeCertificate, Issue, false}, {TypeCertificate, Revoke, false}, {TypeCertificateTemplate, Assign, false},
+	} {
+		r := event
+		r.Type = c.typ
+		if got := auth.Allow(member, r, c.a); got != c.want {
+			t.Errorf("%s %s = %v, want %v", c.typ, c.a, got, c.want)
+		}
+	}
+}
+
+// A Leader of a Team above the Owner team is its Leader (ADR-0065 decision
+// 2): they assign its door staff and manage its Co-organizer list.
+func TestOrganizers_LeaderAboveTheOwnerTeam(t *testing.T) {
+	t.Parallel()
+	auth := inheritingAuthorizer(realmTree())
+	above := Principal{ID: "wl", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	r := Resource{Type: TypeEvent, OwnerTeam: "MOBIL"}
+	for _, a := range []Action{Assign, ManageOrganizers, Delete} {
+		if !auth.Allow(above, r, a) {
+			t.Errorf("%s: no", a)
+		}
+	}
+	if via := auth.EventVia(above, r); via != ViaOwner {
+		t.Errorf("via %s", via)
+	}
+}

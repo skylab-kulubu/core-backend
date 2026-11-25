@@ -14,7 +14,6 @@ import (
 )
 
 type Service interface {
-	CanAssign(p authz.Principal, ownerTeam string) bool
 	ProjectFor(p *authz.Principal, in Event) Event
 	ProjectAllFor(p *authz.Principal, in []Event) []Event
 	// VisibleTo reports whether p (nil when signed out) may see e: a draft
@@ -168,10 +167,6 @@ func (s *service) clock() time.Time {
 func (s *service) readsAttendeeNote(p authz.Principal, e Event) bool {
 	return s.authz.Allow(p, s.eventResource(e, authz.TypeEvent), authz.Update) ||
 		s.authz.Allow(p, s.eventResource(e, authz.TypeTicket), authz.Read)
-}
-
-func (s *service) CanAssign(p authz.Principal, ownerTeam string) bool {
-	return s.authz.Allow(p, resource(ownerTeam), authz.Assign)
 }
 
 // ProjectFor answers the Event as p may see it: its door staff only to who
@@ -414,6 +409,9 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 	if in.OwnerTeam != existing.OwnerTeam &&
 		(!s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) || !s.authz.Allow(p, resource(in.OwnerTeam), authz.Update)) {
 		return Event{}, ErrForbidden
+	}
+	if err := s.checkCoOrganizerPersonDates(p, existing, in); err != nil {
+		return Event{}, err
 	}
 	if in.Name == "" || in.Location == "" {
 		return Event{}, ErrInvalid
