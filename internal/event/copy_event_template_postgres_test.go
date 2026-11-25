@@ -17,23 +17,26 @@ import (
 func sourceEventTemplate(t *testing.T, d copyDatabase) {
 	t.Helper()
 	ctx := context.Background()
-	for _, q := range []string{
-		`UPDATE certificate_templates SET event_id = $2, owner_team = 'WEBLAB', source_kind = 'figma',
-			source_ref = 'ref-1', source_edit_url = 'https://figma.example/design', draft_layout = '{"width": 1123, "label": "draft"}'
-		 WHERE id = $1`,
-		`INSERT INTO certificate_template_versions (id, template_id, version, layout, asset_manifest, checksum, asset_serving_policy_applied)
-		 VALUES (gen_random_uuid(), $1, 1, '{"label": "v1"}', '{}', 'sum-1', false)`,
-		`INSERT INTO certificate_template_versions (id, template_id, version, layout, asset_manifest, checksum, asset_serving_policy_applied)
-		 VALUES (gen_random_uuid(), $1, 2, '{"label": "v2"}', '{"k": {"key": "certificate-template-assets/v2/k", "contentType": "image/png"}}', 'sum-2', true)`,
-	} {
-		args := []any{d.template}
-		if strings.Contains(q, "$2") {
-			args = append(args, d.source.ID)
-		}
+	// Version 2's asset copy is of a current Media, as publish leaves it.
+	asset, err := media.NewPostgresStore(d.pool).Create(ctx, media.Media{Name: "logo.png", Type: "image/png", Kind: media.KindImage, Key: "images/logo", UploadedBy: uuid.MustParse(d.yk.ID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := func(q string, args ...any) {
+		t.Helper()
 		if _, err := d.pool.Exec(ctx, q, args...); err != nil {
 			t.Fatal(err)
 		}
 	}
+	exec(`UPDATE certificate_templates SET event_id = $2, owner_team = 'WEBLAB', source_kind = 'figma',
+			source_ref = 'ref-1', source_edit_url = 'https://figma.example/design', draft_layout = '{"width": 1123, "label": "draft"}'
+		 WHERE id = $1`, d.template, d.source.ID)
+	exec(`INSERT INTO certificate_template_versions (id, template_id, version, layout, asset_manifest, checksum, asset_serving_policy_applied)
+		 VALUES (gen_random_uuid(), $1, 1, '{"label": "v1"}', '{}', 'sum-1', false)`, d.template)
+	exec(`INSERT INTO certificate_template_versions (id, template_id, version, layout, asset_manifest, checksum, asset_serving_policy_applied)
+		 VALUES (gen_random_uuid(), $1, 2, '{"label": "v2"}',
+			jsonb_build_object($2::text, jsonb_build_object('key', 'certificate-template-assets/v2/' || $2::text, 'contentType', 'image/png')),
+			'sum-2', true)`, d.template, asset.ID)
 }
 
 // copiedTemplate is the copy's current Event template: its id, name, Owner
@@ -85,7 +88,7 @@ func TestPostgresCopyEventTemplate(t *testing.T) {
 		FROM certificate_template_versions WHERE template_id = $1`, c.id).Scan(&version, &checksum, &manifest, &policy, &publishedBy); err != nil {
 		t.Fatal(err)
 	}
-	if version != 1 || checksum != "sum-2" || !strings.Contains(manifest, "certificate-template-assets/v2/k") || !policy ||
+	if version != 1 || checksum != "sum-2" || !strings.Contains(manifest, "certificate-template-assets/v2/") || !policy ||
 		publishedBy == nil || publishedBy.String() != d.yk.ID {
 		t.Fatalf("version %d %s %s %v %v", version, checksum, manifest, policy, publishedBy)
 	}
