@@ -127,6 +127,36 @@ func TestParseImportShapes(t *testing.T) {
 			want: []importLine{{line: 1, firstName: "Ali", lastName: "Veli", email: "ali@gmail.com"}},
 		},
 		{
+			name:      "no header, a name holding mail",
+			text:      "İsmail Yılmaz,ismail@example.com\nAli Veli,ali@example.com\n",
+			delimiter: "comma", header: false,
+			want: []importLine{
+				{line: 1, firstName: "İsmail Yılmaz", email: "ismail@example.com"},
+				{line: 2, firstName: "Ali Veli", email: "ali@example.com"},
+			},
+		},
+		{
+			name:      "no header, a last name holding mail",
+			text:      "Ali,İsmailoğlu,ali@example.com\n",
+			delimiter: "comma", header: false,
+			want: []importLine{{line: 1, firstName: "Ali", lastName: "İsmailoğlu", email: "ali@example.com"}},
+		},
+		{
+			name:      "a question header with an @ in it",
+			text:      "Ad Soyad,Okul mailin (@std.yildiz.edu.tr)\nAda Lovelace,ada@std.yildiz.edu.tr\n",
+			delimiter: "comma", header: true,
+			want: []importLine{{line: 2, firstName: "Ada", lastName: "Lovelace", email: "ada@std.yildiz.edu.tr"}},
+		},
+		{
+			name:      "the address asked twice: the first column",
+			text:      "Ad Soyad,E-posta,E-posta (tekrar)\nAda Lovelace,ada@example.com,ADA@example.com\nAli Veli,ali@example.com,ali@example.com\n",
+			delimiter: "comma", header: true,
+			want: []importLine{
+				{line: 2, firstName: "Ada", lastName: "Lovelace", email: "ada@example.com"},
+				{line: 3, firstName: "Ali", lastName: "Veli", email: "ali@example.com"},
+			},
+		},
+		{
 			name:      "quoted cells and extra blanks",
 			text:      "first name,last name,email\n\"  Ada  \",\"Love lace\",\" ada@example.com \"\n",
 			delimiter: "comma", header: true,
@@ -209,7 +239,7 @@ func TestClassifyHeader(t *testing.T) {
 		"Okul e-postası": colEmail, "E-posta adresiniz?": colEmail,
 		"Ad-Soyad:": colFull, "Adınız Soyadınız": colFull, "İsim Soyisim": colFull, "Adın Soyadın*": colFull, "Adınız Soyadı": colFull, "İsminiz Soyisminiz": colFull,
 		"Adınız": colFirst, "Ad": colFirst, "Soyadınız": colLast, "Oturumun": colSession,
-		"Telefon Numaran:": colNone, "Öğrenim Durumun": colNone, "Adresin": colNone, "ali@gmail.com": colNone, "": colNone,
+		"Telefon Numaran:": colNone, "Öğrenim Durumun": colNone, "Adresin": colNone, "Okul mailin (@std.yildiz.edu.tr)": colEmail, "": colNone,
 	} {
 		if got := classifyHeader(cell); got != want {
 			t.Errorf("%q: %v, want %v", cell, got, want)

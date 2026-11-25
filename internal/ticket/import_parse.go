@@ -160,12 +160,9 @@ var stemAliases = map[string]string{
 // classifyHeader is what a header cell names. The e-mail is any header
 // that says so ("E-mail adresin:", "Okul e-postası", "Your email"): its
 // words hold "mail" or "eposta". The others are read word by word, the
-// possessive endings off ("Adınız Soyadınız" is "Ad Soyad"). A cell holding
-// an address is a row, never a header.
+// possessive endings off ("Adınız Soyadınız" is "Ad Soyad"). A line with
+// a cell that is an address is a row, never a header (parseImport).
 func classifyHeader(cell string) columnKind {
-	if strings.Contains(cell, "@") {
-		return colNone
-	}
 	folded := foldHeader(cell)
 	if folded == "" {
 		return colNone
@@ -291,9 +288,13 @@ func parseImport(text string) ([]importLine, ImportColumns, error) {
 	idx := map[columnKind]int{colFirst: -1, colLast: -1, colFull: -1, colEmail: -1, colSession: -1}
 	header := records[0]
 	candidates := map[columnKind][]int{}
-	for i, cell := range header {
-		if kind := classifyHeader(cell); kind != colNone {
-			candidates[kind] = append(candidates[kind], i)
+	// A first line with an address in it is a row: "İsmail" holds "mail",
+	// but "İsmail Yılmaz,ismail@example.com" is no header.
+	if !slices.ContainsFunc(header, isAddressCell) {
+		for i, cell := range header {
+			if kind := classifyHeader(cell); kind != colNone {
+				candidates[kind] = append(candidates[kind], i)
+			}
 		}
 	}
 	// A Microsoft Forms export begins with five columns of its own: the
@@ -349,6 +350,11 @@ func parseImport(text string) ([]importLine, ImportColumns, error) {
 		// e-postası") are refused: core names them and does not guess.
 		if emails := candidates[colEmail]; len(emails) > 1 {
 			holding := slices.DeleteFunc(slices.Clone(emails), func(at int) bool { return !holdsAddresses(data, at) })
+			// "E-posta" and "E-posta (tekrar)" hold the same address on
+			// every row: the first is read.
+			if len(holding) > 1 && sameAddresses(data, holding) {
+				holding = holding[:1]
+			}
 			if len(holding) != 1 {
 				if len(holding) == 0 {
 					holding = emails
@@ -449,6 +455,31 @@ func holdsAddresses(data [][]string, at int) bool {
 		}
 	}
 	return false
+}
+
+// isAddressCell reports whether a cell is an address: an "@" and no blank
+// ("Okul mailin (@std.yildiz.edu.tr)" is a question, not an address).
+func isAddressCell(cell string) bool {
+	return strings.Contains(cell, "@") && !strings.ContainsFunc(cell, unicode.IsSpace)
+}
+
+// sameAddresses reports whether columns hold the same address on every
+// row, case ignored: a form that asks for the address twice.
+func sameAddresses(data [][]string, columns []int) bool {
+	at := func(rec []string, i int) string {
+		if i < len(rec) {
+			return strings.ToLower(rec[i])
+		}
+		return ""
+	}
+	for _, rec := range data {
+		for _, i := range columns[1:] {
+			if at(rec, i) != at(rec, columns[0]) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // msFormsColumns is how many columns a Microsoft Forms export starts with
