@@ -1989,6 +1989,100 @@ A window already started ends early only by an attachment: a core record or
 a product linking the Media clears its expiry. There is no command that
 clears it otherwise yet; review the report before `-apply`.
 
+### Legacy Answer files
+
+Skyforms Answer files uploaded before Media purpose (before 9 October 2026)
+are legacy Media: public at their CDN address, unencrypted, never scanned,
+and held by no Media attachment (Skyforms links only the Answer files it
+uploads with a purpose). Skyforms keeps each answer's Media id in its own
+database, so core cannot tell them from other legacy Media by itself.
+`core-backend media-legacy-answers` moves them into private storage (A5,
+Yusuf, 2026-11-25). Skyforms' code does not change: it already asks core
+for a read link when an Answer file is private, and shows a rejected one as
+having failed its security scan.
+
+Standard input is a read-only export of Skyforms' database, one `<Media
+id>\t<response id>` line per file answer (a header whose first column is
+`media_id`, empty lines and `#` lines are skipped). The hub's wizard
+(`ops/wizards/a5-eski-forms-dosyalari-wizard.sh`) makes it with a read-only
+transaction. Each Media is looked at once with all of its responses, in id
+order:
+
+- **Moved**: a current, public `legacy` Media whose detach expiry is not
+  held and that nothing but Skyforms answers uses (no other Media
+  attachment, none of core's own links): the line account erasure draws for
+  a legacy Media. Each step is safe to repeat:
+  1. `-apply`: its public object is read (at most 100 MiB,
+     `LegacyAnswerMaxBytes`; uploads without a purpose were at most 20 MiB),
+     stored encrypted in the private bucket at `private/<its key>`, as any
+     private upload ([Encryption](#encryption)), and read back and decrypted:
+     a copy whose size or SHA-256 differs is deleted and the Media left alone;
+  2. `-apply`, in one transaction: the Media row is locked and checked again
+     (still at that key) and made an `answer_file`: private, with its
+     encryption and the new key, `scanning`, no expiry, no sizes or cover
+     colours; the move is recorded (`media_legacy_answer_moves`: the Media,
+     its public key, when); one Media attachment is written per response
+     (`forms`, `response`, the response id, `answer`, as Skyforms writes its
+     own). The public object is not touched;
+  3. `-finalize`, once the scan has ended: a Media found clean (and
+     attached) or infected has its public object, and any size of it,
+     deleted through the public bucket, which queues its CDN purge
+     ([CDN cache](#cdn-cache)), and the deletion is recorded. A Media the scan
+     rejected for any other reason (`archive_invalid`, `archive_nested`,
+     `too_large_to_scan`, `integrity`, `scan_timeout`, …) keeps its public
+     object: the scan has deleted its private copy, and the file is not
+     known to be malware. It is counted, for Yusuf to decide.
+- **Left alone**, and counted: a Media that is not a public legacy one
+  (uploaded with a purpose, moved already), unknown to core, archived or
+  being purged, used by core or another product too (or whose detach
+  expiry is held), a video, larger than 100 MiB, or whose public object is
+  gone.
+
+A Media that changed between the read and the transaction (attached by
+core, archived) is left as it was, and the private copy is deleted. A
+failed step names the Media id on standard error and the next run takes it
+up from there. The name, uploader, upload time and size stay. Files outside
+the `answer_file` size or type rule are moved all the same (counted): the
+rule is for new uploads, and the scan below is what protects their readers.
+The hub's wizard also leaves out of the export any Media whose id or key
+appears in the CMS, SkyNotify or core's own tables (other than Media's), so a
+file shown by its address elsewhere is not closed.
+
+The running core's [scan worker](#the-scan-worker) scans each moved Media as
+it scans an Answer file: clean, it becomes `attached` (its responses hold
+it) and Skyforms opens it through a read link for its reviewer; infected or
+otherwise rejected, its private object is deleted and Skyforms says it did
+not pass the security scan. Its week before `scan_timeout` runs from the
+move, not from its upload.
+
+**What changes for readers.** The old CDN address of a finalized file
+answers `404` once the purge has run, links shared or mailed earlier
+included (decision of Yusuf: they are closed, not redirected, since a
+redirect would make the file public again). Answer files of forms closed
+long ago are moved too, not deleted. Legacy Media that no Skyforms answer
+names stay legacy; the [orphan report](#orphan-report) and the
+[expiry switch](#orphan-expiry-switch) decide them, after Yusuf has reviewed
+the list.
+
+Without a flag the command only counts (it reads core's database and asks
+the public bucket whether each object to move is there). `-apply` refuses to
+start unless private Media and the malware scan are configured, `-finalize`
+unless the CDN purge is; each works on at most `-limit` Media (25 by
+default, at most 200) a run and says how many are left: run it again until
+none are. A writing run holds a PostgreSQL advisory lock for its whole
+length; a second one exits 2 and changes nothing (two moves of one Media
+would write its private copy twice, under two data keys). It writes counts
+to standard error only, ending with one `SUMMARY` line of `key=value` counts
+(keys of letters only), and names a Media only by its id when it fails. It
+exits 1 when a Media failed or the run was cut short, 2 on a usage or
+configuration error or a lock another run holds.
+
+```sh
+docker exec -i <core container> ./core-backend media-legacy-answers < answers.tsv                    # counts
+docker exec -i <core container> ./core-backend media-legacy-answers -apply -limit 5 < answers.tsv    # move five
+docker exec -i <core container> ./core-backend media-legacy-answers -finalize < answers.tsv          # after their scan: close the old addresses
+```
+
 ## Private Media
 
 Private purposes (`answer_file`, `answer_file_guest`, `certificate_asset`) are stored encrypted in a
@@ -2357,6 +2451,8 @@ by a Direct upload's completion alike, with its purpose's pending expiry. See
   worker logs it by the Media's id.
 - **Scan timeout**: the Media is still `scanning` a week after its upload
   (`media.ScanDeadline`), attached or not, and whether clamd answers or not.
+  A [legacy Answer file](#legacy-answer-files) moved into private storage
+  counts its week from its move.
   The Media is `rejected` and `scanResult` is `scan_timeout`.
 - **clamd unreachable**: the Media stays `scanning` and is tried again.
 - **clamd answered an error, or the file could not be read** (storage, OpenBao

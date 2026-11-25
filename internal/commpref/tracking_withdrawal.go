@@ -22,31 +22,31 @@ import (
 // main runs no worker. The code and the queue table stay until the old
 // tracking rows are dealt with; see docs/communication-preferences.md.
 //
-// The withdrawal tells SkyMail that a person turned tracking off (hub ticket
-// 16, SkyMail's ticket 14c): SkyMail closes every tracking token of their
+// The withdrawal tells SkyNotify that a person turned tracking off (hub ticket
+// 16, SkyNotify's ticket 14c): SkyNotify closes every tracking token of their
 // mail and deletes their openings and clicks; their old mail's links still
-// redirect. One way, core → SkyMail, through the outbox Apply writes:
+// redirect. One way, core → SkyNotify, through the outbox Apply writes:
 //
 //	PUT {WithdrawalURLEnv}/internal/v1/tracking-withdrawals/{sub}
 //	Authorization: Bearer <core's service account token>
 //
-// with no body. SkyMail wants azp core, aud ∋ skymail and SkyMail's client
+// with no body. SkyNotify wants azp core, aud ∋ skynotify and SkyNotify's client
 // role WithdrawRole; core-erasure's erase roles are not enough.
 
-// WithdrawRole is SkyMail's client role core's service account (client
-// core) needs for the withdrawal. It is SkyMail's: core only names it.
-const WithdrawRole = "skymail:tracking:withdraw"
+// WithdrawRole is SkyNotify's client role core's service account (client
+// core) needs for the withdrawal. It is SkyNotify's: core only names it.
+const WithdrawRole = "skynotify:tracking:withdraw"
 
 const (
-	// WithdrawalURLEnv is SkyMail's address on the internal network (the
-	// public one answers /internal 404). Unset: ACCOUNT_ERASURE_SKYMAIL_URL,
+	// WithdrawalURLEnv is SkyNotify's address on the internal network (the
+	// public one answers /internal 404). Unset: ACCOUNT_ERASURE_SKYNOTIFY_URL,
 	// the same address the Erasure command uses.
 	WithdrawalURLEnv = "COMMUNICATION_TRACKING_WITHDRAWAL_URL"
-	// withdrawalURLFallbackEnv is the Erasure command's SkyMail address.
-	withdrawalURLFallbackEnv = "ACCOUNT_ERASURE_SKYMAIL_URL"
+	// withdrawalURLFallbackEnv is the Erasure command's SkyNotify address.
+	withdrawalURLFallbackEnv = "ACCOUNT_ERASURE_SKYNOTIFY_URL"
 )
 
-// WithdrawalURLFromEnv reads SkyMail's internal address and names the
+// WithdrawalURLFromEnv reads SkyNotify's internal address and names the
 // variable it came from; "" when neither is set. An error names the
 // variable, never its value.
 func WithdrawalURLFromEnv(getenv func(string) string) (base, from string, err error) {
@@ -65,7 +65,7 @@ func WithdrawalURLFromEnv(getenv func(string) string) (base, from string, err er
 	return "", "", nil
 }
 
-// WithdrawalOutcome is how SkyMail answered one withdrawal.
+// WithdrawalOutcome is how SkyNotify answered one withdrawal.
 type WithdrawalOutcome string
 
 const (
@@ -75,13 +75,13 @@ const (
 	// 5xx (503 with Retry-After): tried again.
 	WithdrawalRetry WithdrawalOutcome = "retry"
 	// WithdrawalForbidden: 403, a configuration error (core's service
-	// account lacks WithdrawRole or aud ∋ skymail). Alarmed and tried again
+	// account lacks WithdrawRole or aud ∋ skynotify). Alarmed and tried again
 	// slowly: the realm's fix makes it go.
 	WithdrawalForbidden WithdrawalOutcome = "forbidden"
-	// WithdrawalNotFound: 404, a SkyMail without the route yet (core ships
+	// WithdrawalNotFound: 404, a SkyNotify without the route yet (core ships
 	// first) or a public address. Tried again slowly.
 	WithdrawalNotFound WithdrawalOutcome = "not_found"
-	// WithdrawalRejected: 400, SkyMail refuses the subject for good. The
+	// WithdrawalRejected: 400, SkyNotify refuses the subject for good. The
 	// withdrawal is dropped and alarmed.
 	WithdrawalRejected WithdrawalOutcome = "rejected"
 )
@@ -94,20 +94,20 @@ type WithdrawalResult struct {
 	Outcome WithdrawalOutcome
 	// Status is the HTTP status, 0 without an answer.
 	Status int
-	// RetryAfter is SkyMail's Retry-After, 0 without one.
+	// RetryAfter is SkyNotify's Retry-After, 0 without one.
 	RetryAfter time.Duration
 	// Reason says what failed, never naming the person, the token or the
 	// address.
 	Reason string
 }
 
-// WithdrawalSender tells SkyMail of one withdrawal.
+// WithdrawalSender tells SkyNotify of one withdrawal.
 type WithdrawalSender interface {
 	Withdraw(ctx context.Context, subject uuid.UUID) WithdrawalResult
 }
 
-// TokenSource hands out core's service account token for SkyMail and
-// forgets it when SkyMail refuses it.
+// TokenSource hands out core's service account token for SkyNotify and
+// forgets it when SkyNotify refuses it.
 type TokenSource interface {
 	Token(context.Context) (string, error)
 	Invalidate()
@@ -120,9 +120,9 @@ const (
 	withdrawalMaxBody     = 16 << 10
 )
 
-// SkyMailWithdrawals is the HTTP sender.
-type SkyMailWithdrawals struct {
-	// BaseURL is SkyMail's internal address (WithdrawalURLFromEnv).
+// SkyNotifyWithdrawals is the HTTP sender.
+type SkyNotifyWithdrawals struct {
+	// BaseURL is SkyNotify's internal address (WithdrawalURLFromEnv).
 	BaseURL string
 	Tokens  TokenSource
 	HTTP    *http.Client
@@ -136,7 +136,7 @@ var directTransport = func() http.RoundTripper {
 	return transport
 }()
 
-func (c *SkyMailWithdrawals) httpClient() *http.Client {
+func (c *SkyNotifyWithdrawals) httpClient() *http.Client {
 	client := http.Client{Timeout: withdrawalCallTimeout, Transport: directTransport}
 	if c.HTTP != nil {
 		client = *c.HTTP
@@ -147,7 +147,7 @@ func (c *SkyMailWithdrawals) httpClient() *http.Client {
 }
 
 // Withdraw sends one withdrawal and classifies the answer.
-func (c *SkyMailWithdrawals) Withdraw(ctx context.Context, subject uuid.UUID) WithdrawalResult {
+func (c *SkyNotifyWithdrawals) Withdraw(ctx context.Context, subject uuid.UUID) WithdrawalResult {
 	if subject == uuid.Nil {
 		return WithdrawalResult{Outcome: WithdrawalRejected, Reason: "no subject"}
 	}
@@ -155,7 +155,7 @@ func (c *SkyMailWithdrawals) Withdraw(ctx context.Context, subject uuid.UUID) Wi
 	if err != nil {
 		return WithdrawalResult{Outcome: WithdrawalRetry, Reason: "token unavailable"}
 	}
-	// The subject is a lower-case hyphenated UUID, as SkyMail stores it.
+	// The subject is a lower-case hyphenated UUID, as SkyNotify stores it.
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.BaseURL+"/internal/v1/tracking-withdrawals/"+subject.String(), http.NoBody)
 	if err != nil {
 		return WithdrawalResult{Outcome: WithdrawalRejected, Reason: "request could not be built"}
@@ -231,7 +231,7 @@ const (
 	// with each failure in a row up to withdrawalRetryMax. A Retry-After is
 	// kept between the two. A 403 or 404 waits withdrawalRetryMax. A
 	// withdrawal is never given up on: the person's objection must reach
-	// SkyMail, and the backlog gauge alarms meanwhile.
+	// SkyNotify, and the backlog gauge alarms meanwhile.
 	withdrawalRetryFirst = 30 * time.Second
 	withdrawalRetryMax   = 15 * time.Minute
 	// withdrawalLease is how long a pass holds a claimed withdrawal; it
@@ -274,7 +274,7 @@ func (r WithdrawalReport) any() bool {
 }
 
 // Withdrawals is the worker that sends the queued withdrawals. Without a
-// sender (no SkyMail address or no client credentials) it sends nothing and
+// sender (no SkyNotify address or no client credentials) it sends nothing and
 // only keeps the backlog gauges.
 type Withdrawals struct {
 	queue  WithdrawalQueue
@@ -358,7 +358,7 @@ func (w *Withdrawals) Pass(ctx context.Context) (WithdrawalReport, error) {
 			switch result.Outcome {
 			case WithdrawalForbidden:
 				report.Forbidden++
-				w.logf(`{"event":"tracking_withdrawal_forbidden","status":%d,"attempts":%d,"reason":"core's service account needs %s and aud skymail"}`, result.Status, item.Attempts+1, WithdrawRole)
+				w.logf(`{"event":"tracking_withdrawal_forbidden","status":%d,"attempts":%d,"reason":"core's service account needs %s and aud skynotify"}`, result.Status, item.Attempts+1, WithdrawRole)
 			case WithdrawalNotFound:
 				report.NotFound++
 				w.logf(`{"event":"tracking_withdrawal_not_found","status":%d,"attempts":%d,"reason":%q}`, result.Status, item.Attempts+1, result.Reason)

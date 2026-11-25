@@ -23,7 +23,7 @@ type Store interface {
 	// category's row (or makes one), nil deletes it. Writing a person being
 	// erased or erased is ErrSubjectInactive. A change of Tracking() also
 	// keeps its audit trail (a row when the value changes) and, when it
-	// turns tracking off, queues the withdrawal SkyMail must hear of.
+	// turns tracking off, queues the withdrawal SkyNotify must hear of.
 	Apply(ctx context.Context, person uuid.UUID, changes []Change, source Source, now time.Time) error
 	// EraseSubject deletes every row of person (account erasure): the
 	// choices, a waiting tracking withdrawal and the tracking audit trail.

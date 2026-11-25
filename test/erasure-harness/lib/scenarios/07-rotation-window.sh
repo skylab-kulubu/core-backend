@@ -9,7 +9,7 @@ token_status_with() { # token_status_with SECRET: HTTP status and error of a cor
   local out
   out=$(hcurl --write-out $'\n%{http_code}' --data-urlencode grant_type=client_credentials \
     --data-urlencode client_id=core-erasure --data-urlencode "client_secret=$1" \
-    --data-urlencode 'scope=openid account-erase-skymail' "$REALM_URL/protocol/openid-connect/token")
+    --data-urlencode 'scope=openid account-erase-skynotify' "$REALM_URL/protocol/openid-connect/token")
   printf '%s %s' "${out##*$'\n'}" "$(jq -r '.error // "ok"' <<<"${out%$'\n'*}" 2>/dev/null)"
 }
 
@@ -34,7 +34,7 @@ scenario_7() {
 
   check 'Account Center: login, Sudo mode, prepare, confirmation inside the window' ac_bff_delete "$person"
   check 'the service steps defer on the token endpoint' \
-    wait_until 60 2 request_where "$DEL_REQUEST" "last_error_code IN ('erase_skymail_failed','erase_cms_failed','erase_forms_failed') AND status = 'pending'"
+    wait_until 60 2 request_where "$DEL_REQUEST" "last_error_code IN ('erase_skynotify_failed','erase_cms_failed','erase_forms_failed') AND status = 'pending'"
   log "  request: $(pg super_skylab "SELECT status, attempt_count, last_error_code, next_attempt_at FROM account_deletion_requests WHERE id = '$DEL_REQUEST'" | tr '\t' ' ')"
   check 'no attempt spent' eq "$(request_field "$DEL_REQUEST" attempt_count)" 0
   check 'no service step and nothing after them ran' \

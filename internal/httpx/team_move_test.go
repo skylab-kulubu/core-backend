@@ -143,13 +143,13 @@ func TestTeamMovePreview(t *testing.T) {
 	if err := e.dir.SetGroupClientRoles(ctx, e.ids["/UYELER/ARGE/WEBLAB"], []identity.ClientRole{{ClientID: "forms", Role: "skyforms:access"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.dir.SetGroupClientRoles(ctx, e.ids["/UYELER/ARGE/MOBILAB"], []identity.ClientRole{{ClientID: "skymail", Role: "skymail:access"}}); err != nil {
+	if err := e.dir.SetGroupClientRoles(ctx, e.ids["/UYELER/ARGE/MOBILAB"], []identity.ClientRole{{ClientID: "skynotify", Role: "skynotify:access"}}); err != nil {
 		t.Fatal(err)
 	}
 	got, p := e.preview("yk", "/UYELER/ARGE/WEBLAB/FRONT", "/UYELER/ARGE/MOBILAB")
 	wantStatus(t, "YK", got, fiber.StatusOK, "")
 	if !p.Allowed || p.Refusal != "" || p.OldPath != "/UYELER/ARGE/WEBLAB/FRONT" || p.NewPath != "/UYELER/ARGE/MOBILAB/FRONT" ||
-		p.Members != 2 || p.NewParentLeaders != 1 || len(p.RolesGained) != 1 || p.RolesGained[0] != "skymail:skymail:access" ||
+		p.Members != 2 || p.NewParentLeaders != 1 || len(p.RolesGained) != 1 || p.RolesGained[0] != "skynotify:skynotify:access" ||
 		len(p.RolesLost) != 1 || p.RolesLost[0] != "forms:skyforms:access" {
 		t.Errorf("preview %+v", p)
 	}
@@ -228,7 +228,7 @@ func TestTeamMovePreviewNeedsTheSourceStrictly(t *testing.T) {
 func TestTeamMoveKeepsRolePlacement(t *testing.T) {
 	t.Parallel()
 	e := newDelegationEnv(t, delegationSetup{on: true})
-	if err := e.dir.SetGroupClientRoles(context.Background(), e.ids["/UYELER/ARGE/MOBILAB"], []identity.ClientRole{{ClientID: "skymail", Role: "skymail:access"}}); err != nil {
+	if err := e.dir.SetGroupClientRoles(context.Background(), e.ids["/UYELER/ARGE/MOBILAB"], []identity.ClientRole{{ClientID: "skynotify", Role: "skynotify:access"}}); err != nil {
 		t.Fatal(err)
 	}
 	wantStatus(t, "a top Team with an app role under a Team", e.move("yk", "/UYELER/ARGE/MOBILAB", "/UYELER/ARGE/WEBLAB"), fiber.StatusConflict, identity.CodeRolePlacement)

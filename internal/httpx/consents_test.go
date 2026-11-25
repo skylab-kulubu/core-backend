@@ -229,12 +229,12 @@ func TestGuestApplyConsentIsUntickedByDefaultAndConfirmedByLink(t *testing.T) {
 func TestConsentServiceRoutesNeedTheirRoleAndTheWithdrawLinkIsOneClick(t *testing.T) {
 	env := newConsentEnv(t, true)
 	record := env.serviceToken(t, "place", consent.RoleRecord)
-	skymail := env.serviceToken(t, "skymail", consent.RoleAudienceRead)
+	skynotify := env.serviceToken(t, "skynotify", consent.RoleAudienceRead)
 
 	for name, token := range map[string]string{
 		"person":          groupToken(t, env.keys, memberSub),
 		"service no role": env.serviceToken(t, "place"),
-		"wrong role":      skymail,
+		"wrong role":      skynotify,
 		"unmapped client": env.serviceToken(t, "unknown-app", consent.RoleRecord),
 	} {
 		got := sendJSON(t, env.app, token, fiber.MethodPost, "/v1/consents", `{"purpose":"event_invitations","email":"a@example.com"}`)
@@ -270,7 +270,7 @@ func TestConsentServiceRoutesNeedTheirRoleAndTheWithdrawLinkIsOneClick(t *testin
 	if got := sendJSON(t, env.app, record, fiber.MethodGet, "/v1/consents/audience?purpose=event_invitations", ""); got.status != fiber.StatusForbidden {
 		t.Fatalf("a recording service read the audience: %d", got.status)
 	}
-	audience := sendJSON(t, env.app, skymail, fiber.MethodGet, "/v1/consents/audience?purpose=event_invitations&limit=10", "")
+	audience := sendJSON(t, env.app, skynotify, fiber.MethodGet, "/v1/consents/audience?purpose=event_invitations&limit=10", "")
 	items, _ := audience.body["items"].([]any)
 	if audience.status != fiber.StatusOK || len(items) != 1 || audience.body["next"] != nil {
 		t.Fatalf("audience %d %v", audience.status, audience.body)

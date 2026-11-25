@@ -18,7 +18,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
-// queueMailer is a SkyMail that takes queued certificate mails: answer is
+// queueMailer is a SkyNotify that takes queued certificate mails: answer is
 // what it says to the next send.
 type queueMailer struct {
 	mu     sync.Mutex
@@ -171,9 +171,9 @@ func (f mailFixture) process(t *testing.T) int {
 	return n
 }
 
-// Issuing queues the mail, it is not sent inline. While SkyMail is down the
+// Issuing queues the mail, it is not sent inline. While SkyNotify is down the
 // mail waits and is tried again under the same Idempotency-Key; once
-// SkyMail is back it is sent.
+// SkyNotify is back it is sent.
 func TestCertificateMailQueueRetriesUnderOneKey(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -191,8 +191,8 @@ func TestCertificateMailQueueRetriesUnderOneKey(t *testing.T) {
 		t.Fatalf("claimed %d", n)
 	}
 	for serial, state := range f.states(t) {
-		if state.Status != certificate.MailQueued || state.Attempts != 1 || state.ErrorCode != "skymail_503" {
-			t.Fatalf("%s after SkyMail down: %+v", serial, state)
+		if state.Status != certificate.MailQueued || state.Attempts != 1 || state.ErrorCode != "skynotify_503" {
+			t.Fatalf("%s after SkyNotify down: %+v", serial, state)
 		}
 	}
 	if n := f.process(t); n != 0 {
@@ -219,7 +219,7 @@ func TestCertificateMailQueueRetriesUnderOneKey(t *testing.T) {
 	}
 	for serial, state := range f.states(t) {
 		if state.Status != certificate.MailSent || state.SentAt == nil || state.ErrorCode != "" {
-			t.Fatalf("%s after SkyMail back: %+v", serial, state)
+			t.Fatalf("%s after SkyNotify back: %+v", serial, state)
 		}
 	}
 	if n := f.process(t); n != 0 {
@@ -231,7 +231,7 @@ func TestCertificateMailQueueRetriesUnderOneKey(t *testing.T) {
 	}
 }
 
-// A refused mail fails at once; one SkyMail never answers fails after
+// A refused mail fails at once; one SkyNotify never answers fails after
 // MailRetryWindow. "Yeniden gönder" with scope failed queues those alone,
 // under a new key, and pressing it twice queues once.
 func TestCertificateMailResendFailed(t *testing.T) {
@@ -242,7 +242,7 @@ func TestCertificateMailResendFailed(t *testing.T) {
 	f.process(t)
 	states := f.states(t)
 	for serial, state := range states {
-		if state.Status != certificate.MailFailed || state.ErrorCode != "skymail_400" || state.Attempts != 1 {
+		if state.Status != certificate.MailFailed || state.ErrorCode != "skynotify_400" || state.Attempts != 1 {
 			t.Fatalf("%s refused: %+v", serial, state)
 		}
 	}
@@ -289,7 +289,7 @@ func TestCertificateMailResendFailed(t *testing.T) {
 		t.Fatalf("resend all twice: %v", err)
 	}
 
-	// SkyMail never answers: tried again within the window, given up past it.
+	// SkyNotify never answers: tried again within the window, given up past it.
 	f.mailer.say(&mail.SendError{})
 	f.process(t)
 	f.store.AgeMails(certificate.MailRetryWindow - 3*time.Hour)
@@ -306,7 +306,7 @@ func TestCertificateMailResendFailed(t *testing.T) {
 	f.store.MakeMailsDue()
 	f.process(t)
 	for serial, state := range f.states(t) {
-		if state.Status != certificate.MailFailed || state.Attempts != 4 || state.ErrorCode != "skymail_unreachable" {
+		if state.Status != certificate.MailFailed || state.Attempts != 4 || state.ErrorCode != "skynotify_unreachable" {
 			t.Fatalf("%s given up: %+v", serial, state)
 		}
 	}
@@ -412,7 +412,7 @@ func TestCertificateMailSkipsAMailWhoseLeaseRanOut(t *testing.T) {
 }
 
 // A mail first tried longer ago than MailKeyLimit is not sent again:
-// SkyMail may have forgotten its key.
+// SkyNotify may have forgotten its key.
 func TestCertificateMailExpiresPastTheKeyLimit(t *testing.T) {
 	t.Parallel()
 	f := mailSetup(t)

@@ -89,6 +89,74 @@ func TestParseImportShapes(t *testing.T) {
 			},
 		},
 		{
+			name: "skyforms excel: headers with a colon and a possessive ending",
+			text: "Ad-Soyad:\tTelefon Numaran:\tE-mail adresin:\tÖğrenim Durumun\n" +
+				"Ayşe Nur Yılmaz\t05550000000\tAyse@Example.com\tLisans\n",
+			delimiter: "tab", header: true,
+			want: []importLine{{line: 2, firstName: "Ayşe Nur", lastName: "Yılmaz", email: "ayse@example.com"}},
+		},
+		{
+			name:      "possessive and question headers",
+			text:      "Adın?;Soyadın?;E-posta adresin*\nAli;Veli;ali@example.com\n",
+			delimiter: "semicolon", header: true,
+			want: []importLine{{line: 2, firstName: "Ali", lastName: "Veli", email: "ali@example.com"}},
+		},
+		{
+			name:      "İsminiz Soyisminiz and an e-mail question",
+			text:      "İsminiz Soyisminiz,Your email\nAda Lovelace,ada@example.com\n",
+			delimiter: "comma", header: true,
+			want: []importLine{{line: 2, firstName: "Ada", lastName: "Lovelace", email: "ada@example.com"}},
+		},
+		{
+			name:      "a column that only mentions e-mail is not the e-mail",
+			text:      "İsim Soyisim,E-posta,E-posta ile haber verelim mi?\nAda Lovelace,ada@example.com,Evet\n",
+			delimiter: "comma", header: true,
+			want: []importLine{{line: 2, firstName: "Ada", lastName: "Lovelace", email: "ada@example.com"}},
+		},
+		{
+			name: "microsoft forms export: a question that mentions e-mail leaves the respondent's addresses",
+			text: "Kimlik;Başlangıç saati;Tamamlanma saati;E-posta;Ad;Mail ile duyuru ister misin?\n" +
+				"1;25.11.2026 10:00;25.11.2026 10:02;ayse@std.yildiz.edu.tr;Ayşe Yılmaz;Evet\n",
+			delimiter: "semicolon", header: true,
+			want: []importLine{{line: 2, firstName: "Ayşe", lastName: "Yılmaz", email: "ayse@std.yildiz.edu.tr"}},
+		},
+		{
+			name:      "an address in the first row is not a header",
+			text:      "Ali,Veli,ali@gmail.com\n",
+			delimiter: "comma", header: false,
+			want: []importLine{{line: 1, firstName: "Ali", lastName: "Veli", email: "ali@gmail.com"}},
+		},
+		{
+			name:      "no header, a name holding mail",
+			text:      "İsmail Yılmaz,ismail@example.com\nAli Veli,ali@example.com\n",
+			delimiter: "comma", header: false,
+			want: []importLine{
+				{line: 1, firstName: "İsmail Yılmaz", email: "ismail@example.com"},
+				{line: 2, firstName: "Ali Veli", email: "ali@example.com"},
+			},
+		},
+		{
+			name:      "no header, a last name holding mail",
+			text:      "Ali,İsmailoğlu,ali@example.com\n",
+			delimiter: "comma", header: false,
+			want: []importLine{{line: 1, firstName: "Ali", lastName: "İsmailoğlu", email: "ali@example.com"}},
+		},
+		{
+			name:      "a question header with an @ in it",
+			text:      "Ad Soyad,Okul mailin (@std.yildiz.edu.tr)\nAda Lovelace,ada@std.yildiz.edu.tr\n",
+			delimiter: "comma", header: true,
+			want: []importLine{{line: 2, firstName: "Ada", lastName: "Lovelace", email: "ada@std.yildiz.edu.tr"}},
+		},
+		{
+			name:      "the address asked twice: the first column",
+			text:      "Ad Soyad,E-posta,E-posta (tekrar)\nAda Lovelace,ada@example.com,ADA@example.com\nAli Veli,ali@example.com,ali@example.com\n",
+			delimiter: "comma", header: true,
+			want: []importLine{
+				{line: 2, firstName: "Ada", lastName: "Lovelace", email: "ada@example.com"},
+				{line: 3, firstName: "Ali", lastName: "Veli", email: "ali@example.com"},
+			},
+		},
+		{
 			name:      "quoted cells and extra blanks",
 			text:      "first name,last name,email\n\"  Ada  \",\"Love lace\",\" ada@example.com \"\n",
 			delimiter: "comma", header: true,
@@ -138,6 +206,44 @@ func TestParseImportRefusals(t *testing.T) {
 	// Exactly the limit is taken.
 	if rows, _, err := parseImport("ad,soyad,eposta\n" + strings.Repeat("a,b,c@example.com\n", MaxImportRows)); err != nil || len(rows) != MaxImportRows {
 		t.Fatalf("%d rows, %v", len(rows), err)
+	}
+}
+
+// Two columns holding addresses are refused, naming both: core does not
+// guess which is the e-mail.
+func TestParseImportAmbiguousEmail(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		text string
+		want []string
+	}{
+		"e-posta and okul e-postası": {"Ad Soyad,E-posta,Okul e-postası\nAda Lovelace,ada@example.com,ada@std.yildiz.edu.tr\n", []string{"E-posta", "Okul e-postası"}},
+		"two exact names":            {"Email,E-posta\nx@example.com,a@example.com\n", []string{"Email", "E-posta"}},
+		"microsoft forms, two own questions": {
+			"ID,Start time,Completion time,Email,Name,E-mail,School e-mail\n1,a,b,anonymous,anonymous,a@example.com,a@std.yildiz.edu.tr\n",
+			[]string{"E-mail", "School e-mail"},
+		},
+	} {
+		_, _, err := parseImport(tc.text)
+		var amb *ImportAmbiguousEmailError
+		if !errors.Is(err, ErrImportAmbiguousEmail) || !errors.As(err, &amb) || strings.Join(amb.Columns, "|") != strings.Join(tc.want, "|") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestClassifyHeader(t *testing.T) {
+	t.Parallel()
+	for cell, want := range map[string]columnKind{
+		"E-mail adresin:": colEmail, "Email": colEmail, "e-posta": colEmail, "EPOSTA": colEmail, "Mail": colEmail,
+		"Okul e-postası": colEmail, "E-posta adresiniz?": colEmail,
+		"Ad-Soyad:": colFull, "Adınız Soyadınız": colFull, "İsim Soyisim": colFull, "Adın Soyadın*": colFull, "Adınız Soyadı": colFull, "İsminiz Soyisminiz": colFull,
+		"Adınız": colFirst, "Ad": colFirst, "Soyadınız": colLast, "Oturumun": colSession,
+		"Telefon Numaran:": colNone, "Öğrenim Durumun": colNone, "Adresin": colNone, "Okul mailin (@std.yildiz.edu.tr)": colEmail, "": colNone,
+	} {
+		if got := classifyHeader(cell); got != want {
+			t.Errorf("%q: %v, want %v", cell, got, want)
+		}
 	}
 }
 

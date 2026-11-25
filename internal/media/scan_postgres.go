@@ -143,9 +143,11 @@ func recordRejection(ctx context.Context, tx pgx.Tx, id uuid.UUID, result ScanRe
 
 // RejectOverdueScans rejects, as scan_timeout, every current Media still
 // waiting for its scan deadline after its upload, that no live claim holds,
-// and records each rejection. It needs no scanner, so it runs while clamd
-// is down too. The scan worker then deletes their objects as it does any
-// rejected Media's.
+// and records each rejection. A legacy Answer file moved into private
+// storage waits from its move instead (media_legacy_answer_moves): it was
+// uploaded long before. It needs no scanner, so it runs while clamd is down
+// too. The scan worker then deletes their objects as it does any rejected
+// Media's.
 func (s *PostgresStore) RejectOverdueScans(ctx context.Context, now time.Time, deadline time.Duration) (int, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -158,6 +160,7 @@ func (s *PostgresStore) RejectOverdueScans(ctx context.Context, now time.Time, d
 			blob_purge_started_at = $1, blob_purge_checked_at = $1, updated_at = $1
 		WHERE status = 'scanning' AND `+currentSQL+`
 		  AND created_at <= $2
+		  AND NOT EXISTS (SELECT 1 FROM media_legacy_answer_moves moved WHERE moved.media_id = media.id AND moved.moved_at > $2)
 		  AND (scan_claimed_until IS NULL OR scan_claimed_until <= $1)
 		RETURNING id`, now, now.Add(-deadline))
 	if err != nil {

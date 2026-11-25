@@ -7,7 +7,7 @@
 #   HARNESS_REBUILD=1 test/erasure-harness/build.sh
 #
 # Repositories are read from SKYLAB_REPOS (default: the directory that holds this core-backend
-# checkout's main repository, where e-skylab-keycloak, account-center, skymail-backend and
+# checkout's main repository, where e-skylab-keycloak, account-center, skynotify-backend and
 # cms-backend sit next to it). Each tree comes from `git archive origin/main`, never from a
 # working copy, so a dirty checkout cannot leak into an image. HARNESS_FETCH=0 skips the fetch.
 #
@@ -28,7 +28,7 @@ FETCH=${HARNESS_FETCH:-1}
 REBUILD=${HARNESS_REBUILD:-0}
 PREFIX=skylab-erasure-harness
 
-ALL_TARGETS="core keycloak account-center skymail cms stubs driver"
+ALL_TARGETS="core keycloak account-center skynotify cms stubs driver"
 TARGETS=${*:-$ALL_TARGETS}
 
 mkdir -p "$STATE/build"
@@ -41,7 +41,7 @@ repo_of() {
     core) echo core-backend ;;
     keycloak) echo e-skylab-keycloak ;;
     account-center) echo account-center ;;
-    skymail) echo skymail-backend ;;
+    skynotify) echo skynotify-backend ;;
     cms) echo cms-backend ;;
     *) echo "" ;;
   esac
@@ -116,7 +116,7 @@ build_local_image() {
 
 for target in $TARGETS; do
   case $target in
-    core | keycloak | account-center | skymail | cms) build_repo_image "$target" ;;
+    core | keycloak | account-center | skynotify | cms) build_repo_image "$target" ;;
     stubs) build_local_image stubs "$HERE/stubs" ;;
     driver) build_local_image driver "$HERE/driver" ;;
     *) log "unknown target $target (known: $ALL_TARGETS)"; exit 2 ;;

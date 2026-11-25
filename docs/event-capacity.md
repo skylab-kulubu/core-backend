@@ -99,7 +99,7 @@ go through the "Biletin hazır" queue and worker
 `ticket_notifications.kind` is `created`, `waitlisted` or `promoted`, queued
 in the transaction that writes the status.
 
-| When | Type (SkyMail template, skymail-frontend #179) | Variables | Key |
+| When | Type (SkyNotify template, skynotify-frontend #179) | Variables | Key |
 |---|---|---|---|
 | Put on the waiting list | `event.waitlist-joined` | `EventId`, `EventName`, `EventDate`, `OwnerTeam`, `Venue`, `TicketUrl` (the ticket page, where the holder may leave the list) | `core:event.waitlist-joined:<ticketId>:q<qrVersion>` |
 | Promoted (by itself or "Öne al") | `event.waitlist-promoted` | `event.ticket-created`'s, the PDF too while `TICKET_PDF_ATTACHMENT` is on | `core:event.waitlist-promoted:<ticketId>:q<qrVersion>` |
@@ -113,7 +113,7 @@ in the transaction that writes the status.
   is active.
 - A waitlisted Ticket gets no "Biletin hazır", and its QR and PDF stay `410`
   until it is promoted.
-- Turn it on only once SkyMail has seeded both types: before that SkyMail
+- Turn it on only once SkyNotify has seeded both types: before that SkyNotify
   answers `422 notification.type_unknown` and the rows are dropped as
   refused.
 - `event.registration-full` (a forms answer on a full Event with the list

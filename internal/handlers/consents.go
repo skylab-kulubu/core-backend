@@ -213,7 +213,7 @@ func (h *ConsentHandler) Lookup(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"states": states})
 }
 
-// Audience is GET /v1/consents/audience: SkyMail's list of the addresses a
+// Audience is GET /v1/consents/audience: SkyNotify's list of the addresses a
 // purpose's mail may go to.
 func (h *ConsentHandler) Audience(c fiber.Ctx) error {
 	if !h.enabled() {
@@ -262,7 +262,7 @@ type renewalBody struct {
 	IDs     []uuid.UUID `json:"ids"`
 }
 
-// RequestRenewal is POST /v1/consents/renewal-requests: SkyMail sent the
+// RequestRenewal is POST /v1/consents/renewal-requests: SkyNotify sent the
 // renewal question to these grants.
 func (h *ConsentHandler) RequestRenewal(c fiber.Ctx) error {
 	if !h.enabled() {

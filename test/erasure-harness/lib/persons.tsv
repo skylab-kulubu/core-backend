@@ -1,6 +1,6 @@
 # key	keycloak id	username	first name	last name	school e-mail	personal e-mail	scenario
 p1	1a000001-0000-4000-8000-000000000001	harness-p1	Deryanur	Silinecekoğlu	deryanur.silinecek@std.example.test	deryanur.kisisel@example.test	1 full saga, then 8 OBS re-login
-p2	1a000002-0000-4000-8000-000000000002	harness-p2	Ilgaz	Kesintioğlu	ilgaz.kesinti@std.example.test	ilgaz.kisisel@example.test	4 SkyMail outage
+p2	1a000002-0000-4000-8000-000000000002	harness-p2	Ilgaz	Kesintioğlu	ilgaz.kesinti@std.example.test	ilgaz.kisisel@example.test	4 SkyNotify outage
 p3	1a000003-0000-4000-8000-000000000003	harness-p3	Sanemnur	Kalıcıhataoğlu	sanemnur.kalicihata@std.example.test	sanemnur.kisisel@example.test	5 permanent failure
 p4	1a000004-0000-4000-8000-000000000004	harness-p4	Tolunay	Çökmeoğlu	tolunay.cokme@std.example.test	tolunay.kisisel@example.test	6 crash
 p5	1a000005-0000-4000-8000-000000000005	harness-p5	Berkenaz	Rotasyonoğlu	berkenaz.rotasyon@std.example.test	berkenaz.kisisel@example.test	7 rotation window

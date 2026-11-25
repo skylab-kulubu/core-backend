@@ -55,6 +55,11 @@ const (
 	// membership ended (ended_at; Yusuf, 2026-10-31). An open term, expired
 	// or not, stays: its holder is still in the Group.
 	ManagementTermPeriod = 3 * 365 * day
+	// EventChangeNoticePeriod: a record of an editor's answer to "tell the
+	// Ticket holders?" (event_change_notice_choices,
+	// docs/event-updated-notification.md#the-editors-choice), three years
+	// after it was given, as the Team audit record (Yusuf, 2026-11-25).
+	EventChangeNoticePeriod = 3 * 365 * day
 )
 
 // Schema is what a run reads from the database before it builds the rules.
@@ -79,6 +84,7 @@ func Rules(c Config, s Schema) []Rule {
 	rules = append(rules, trackingRules()...)
 	rules = append(rules, subjectRequestRules()...)
 	rules = append(rules, managementTermRules()...)
+	rules = append(rules, eventChangeNoticeRules()...)
 	return append(rules, auditRules(c)...)
 }
 
@@ -304,6 +310,16 @@ func managementTermRules() []Rule {
 	}}
 }
 
+// eventChangeNoticeRules delete a record of an editor's answer about telling
+// an Event's Ticket holders three years after it was given (decided_at).
+func eventChangeNoticeRules() []Rule {
+	return []Rule{{
+		Name: "event_change_notices_age", Version: 1, Kind: KindSweep, Action: ActionDelete,
+		Table: "event_change_notice_choices", alias: "cn", key: "id", Period: EventChangeNoticePeriod,
+		where: `cn.decided_at < $1`,
+	}}
+}
+
 func feedbackRules() []Rule {
 	return []Rule{{
 		Name: "feedback_invites_age", Version: 1, Kind: KindSweep, Action: ActionDelete,
@@ -344,7 +360,7 @@ func auditRules(c Config) []Rule {
 			where: `o.opened_at < $1`,
 		},
 		{
-			// The snapshot cleanup deletes SkyMail's list, then the row.
+			// The snapshot cleanup deletes SkyNotify's list, then the row.
 			Name: "mail_snapshots_age", Version: 1, Kind: KindAudit, Action: ActionCount,
 			Table: "event_mail_snapshots", alias: "m", Period: overdueGrace, Alarm: true,
 			where: `m.expires_at < $1`,

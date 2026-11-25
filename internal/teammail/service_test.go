@@ -23,7 +23,7 @@ type sent struct {
 type fakeMail struct {
 	sent []sent
 	err  error
-	// during runs inside the send, as SkyMail is answering.
+	// during runs inside the send, as SkyNotify is answering.
 	during func()
 	// off are the kinds without a template key.
 	off map[Kind]bool
@@ -324,7 +324,7 @@ func TestServiceRetriesWithBackoffAndDropsPermanentRefusals(t *testing.T) {
 	f := newFixture(t)
 	f.change(t, "/UYELER/ARGE/WEBLAB", true, "")
 
-	// SkyMail down: the row waits for its backoff, nothing is lost.
+	// SkyNotify down: the row waits for its backoff, nothing is lost.
 	f.mail.err = &mail.SendError{Status: 503}
 	report, err := f.svc.Pass(context.Background())
 	if err != nil || report.Failed != 1 {
@@ -347,7 +347,7 @@ func TestServiceRetriesWithBackoffAndDropsPermanentRefusals(t *testing.T) {
 	if q := f.queue.Snapshot(); len(q) != 1 || q[0].Attempts != 2 || !q[0].NextAttemptAt.Equal(f.clock.now.Add(2*RetryFirst)) {
 		t.Fatalf("queued %+v", q)
 	}
-	// A body SkyMail refuses as such is dropped.
+	// A body SkyNotify refuses as such is dropped.
 	f.people.err = nil
 	f.clock.now = f.clock.now.Add(2 * RetryFirst)
 	f.mail.err = &mail.SendError{Status: 400}
@@ -515,7 +515,7 @@ func TestServiceShutdownDuringASendIsNotAFailure(t *testing.T) {
 	}
 }
 
-// A mail SkyMail took is done with, even when core is stopping as it
+// A mail SkyNotify took is done with, even when core is stopping as it
 // answers: the row is deleted so it is not sent twice.
 func TestServiceCompletesASentMailDuringShutdown(t *testing.T) {
 	t.Parallel()
@@ -637,7 +637,7 @@ func TestMemoryQueueCancelsOnlyUnclaimedOppositeChanges(t *testing.T) {
 	if got, _ := q.Enqueue(ctx, change(ActionAdded)); got != EnqueuedDuplicate {
 		t.Fatalf("add again: %v", got)
 	}
-	// The add failed once and SkyMail may have taken it: a removal does not
+	// The add failed once and SkyNotify may have taken it: a removal does not
 	// cancel it but is queued, and the next claim drops the add for it.
 	removal := change(ActionRemoved)
 	removal.OccurredAt = now.Add(time.Second)

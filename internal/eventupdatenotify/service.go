@@ -1,7 +1,7 @@
 // Package eventupdatenotify tells an Event's Ticket holders that its time or
 // place changed (iletişim-servisi 06, ADR 0070;
 // docs/event-updated-notification.md): core says what happened and to whom,
-// SkyMail picks the channels (inbox and e-mail) and the text. The Event's
+// SkyNotify picks the channels (inbox and e-mail) and the text. The Event's
 // update queues the change in its own transaction
 // (event_update_notifications) and gathers the changes of
 // event.UpdateNotificationWindow in one row; this worker reads the Event and
@@ -60,6 +60,10 @@ type Queued struct {
 	// the changes the editor said to tell changed; only those are
 	// announced. Nil is a row an older release queued: all three.
 	ToldFields []string
+	// BeforeDetails are the digests (event.DetailDigests) of the detail
+	// fields told, before the first change of each; empty for a row of
+	// time and place alone.
+	BeforeDetails map[string]string
 	// CreatedAt is the first change's time.
 	CreatedAt time.Time
 	Attempts  int
@@ -88,9 +92,10 @@ type Queue interface {
 	Retry(ctx context.Context, claimed Queued, at time.Time) error
 }
 
-// Mailer posts the Notification (mail.SkyMail).
+// Mailer posts the Notification (mail.SkyNotify).
 type Mailer interface {
 	EventUpdated(ctx context.Context, idempotencyKey string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time) error
+	EventChanged(ctx context.Context, idempotencyKey string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time) error
 }
 
 // Tickets, Events and Users are what the worker reads when it sends.
@@ -116,6 +121,10 @@ type Config struct {
 	// Page is the ticket page's settings (docs/ticket-page.md): while its
 	// URL is set, each holder's mail carries their Ticket's page and code.
 	Page ticket.PageConfig
+	// Changed sends a row whose told time and place did not change but
+	// whose told details did as event.changed (EVENT_CHANGED_NOTIFICATION);
+	// off, such a row tells nobody.
+	Changed bool
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 	// Logger hears counts and failures, never a person; nil is log.Default.
@@ -155,7 +164,7 @@ func NewService(config Config) (*Service, error) {
 // time and place are back to what they were). Expired: tried for
 // GiveUpAfter. Retried: tried again later. The rest are holders: Sent,
 // Skipped (no one to write to: an erased or disabled account, a guest
-// without an address), Rejected (SkyMail refused the request itself) and
+// without an address), Rejected (SkyNotify refused the request itself) and
 // Uncertain (a guest's mail went out and no answer came; it is not tried
 // again, so the guest is not mailed twice).
 type Report struct {
@@ -170,7 +179,16 @@ func (r Report) any() bool {
 // IdempotencyKey is the key of one holder's Notification of a queued change:
 // the type, the row and the person, the same on every try.
 func IdempotencyKey(id, sub uuid.UUID) string {
-	return "core:" + mail.EventUpdatedType + ":" + id.String() + ":" + sub.String() + ":" + keyVersion
+	return idempotencyKey(mail.EventUpdatedType, id, sub)
+}
+
+// ChangedIdempotencyKey is IdempotencyKey of an event.changed Notification.
+func ChangedIdempotencyKey(id, sub uuid.UUID) string {
+	return idempotencyKey(mail.EventChangedType, id, sub)
+}
+
+func idempotencyKey(typ string, id, sub uuid.UUID) string {
+	return "core:" + typ + ":" + id.String() + ":" + sub.String() + ":" + keyVersion
 }
 
 // Pass sends the due Notifications until none is due (or maxRows).
@@ -225,7 +243,12 @@ func (s *Service) deliver(ctx context.Context, claimed Queued, report *Report) e
 	if err != nil {
 		return err
 	}
-	vars := s.vars(ev, claimed)
+	// Time or place told: event.updated, as before; details alone:
+	// event.changed. One Notification a row.
+	vars, send, key := s.vars(ev, claimed), s.config.Mail.EventUpdated, IdempotencyKey
+	if timeChanged, placeChanged := changed(ev, claimed); !timeChanged && !placeChanged {
+		vars, send, key = s.changedVars(ev, claimed), s.config.Mail.EventChanged, ChangedIdempotencyKey
+	}
 	source := mail.NotificationSource{Kind: "event", Ref: ev.ID.String()}
 	expires := ev.EndsAt()
 	sends := 0
@@ -253,13 +276,13 @@ func (s *Service) deliver(ctx context.Context, claimed Queued, report *Report) e
 			}
 		}
 		sends++
-		err := s.config.Mail.EventUpdated(ctx, IdempotencyKey(claimed.ID, r.holder.Sub), r.holder, s.withTicket(vars, r), source, expires)
+		err := send(ctx, key(claimed.ID, r.holder.Sub), r.holder, s.withTicket(vars, r), source, expires)
 		var refused *mail.SendError
 		switch {
 		case errors.Is(err, mail.ErrMaybeDelivered):
 			report.Uncertain++
 		case errors.As(err, &refused) && refused.Permanent():
-			// SkyMail refuses this body itself (400, 422): the same body
+			// SkyNotify refuses this body itself (400, 422): the same body
 			// would be refused again.
 			report.Rejected++
 			continue
@@ -292,7 +315,8 @@ func (s *Service) event(ctx context.Context, claimed Queued) (event.Event, bool,
 		return ev, false, nil
 	}
 	timeChanged, placeChanged := changed(ev, claimed)
-	return ev, timeChanged || placeChanged, nil
+	details := s.config.Changed && len(changedDetails(ev, claimed)) > 0
+	return ev, timeChanged || placeChanged || details, nil
 }
 
 // changed says whether the Event's time (start or end) and its place are not
@@ -307,6 +331,53 @@ func changed(ev event.Event, claimed Queued) (timeChanged, placeChanged bool) {
 		(told(event.FieldEnd) && !sameTime(ev.EndDate, claimed.BeforeEnd))
 	placeChanged = told(event.FieldLocation) && strings.TrimSpace(ev.Location) != strings.TrimSpace(claimed.BeforeLocation)
 	return timeChanged, placeChanged
+}
+
+// changedDetails are the told detail fields whose value is not what it was
+// before the first change of it, in event.DetailFields' order.
+func changedDetails(ev event.Event, claimed Queued) []string {
+	now := event.DetailDigests(ev)
+	var out []string
+	for _, field := range event.DetailFields {
+		if !slices.Contains(claimed.ToldFields, field) {
+			continue
+		}
+		if before, ok := claimed.BeforeDetails[field]; !ok || before != now[field] {
+			out = append(out, field)
+		}
+	}
+	return out
+}
+
+// detailNames are the detail fields as an event.changed mail names them.
+var detailNames = map[string]string{
+	event.FieldName:         "adı",
+	event.FieldDescription:  "açıklaması",
+	event.FieldAttendeeNote: "katılımcı notu",
+	event.FieldCapacity:     "kontenjanı",
+	event.FieldLinks:        "bağlantıları",
+}
+
+// changedVars are event.changed's variables (SkyNotify emails/event-changed.tsx),
+// the same for every holder: the Event as it is now and which details
+// changed, never their text. Every key is always there.
+func (s *Service) changedVars(ev event.Event, claimed Queued) map[string]string {
+	var names []string
+	for _, field := range changedDetails(ev, claimed) {
+		names = append(names, detailNames[field])
+	}
+	list := strings.Join(names, ", ")
+	if n := len(names); n > 1 {
+		list = strings.Join(names[:n-1], ", ") + " ve " + names[n-1]
+	}
+	return map[string]string{
+		"EventId":       ev.ID.String(),
+		"EventName":     ev.Name,
+		"ChangedFields": list,
+		"ChangeSummary": "Etkinliğin " + list + " değişti.",
+		"StartsAt":      s.format(ev.StartDate),
+		"Venue":         strings.TrimSpace(ev.Location),
+	}
 }
 
 func sameTime(a, b *time.Time) bool {
@@ -422,10 +493,10 @@ func (s *Service) member(ctx context.Context, t ticket.Ticket) (uuid.UUID, strin
 	return *t.OwnerID, strings.ToLower(strings.TrimSpace(u.Email)), true, nil
 }
 
-// vars are the type's variables (SkyMail emails/event-updated.tsx), the same
+// vars are the type's variables (SkyNotify emails/event-updated.tsx), the same
 // for every holder: the Event as it is now, and what changed. EventId fills
 // the inbox item's link. Every key is always there, a time empty without
-// it: SkyMail renders the inbox text with missingkey=error.
+// it: SkyNotify renders the inbox text with missingkey=error.
 func (s *Service) vars(ev event.Event, claimed Queued) map[string]string {
 	timeChanged, placeChanged := changed(ev, claimed)
 	summary := "Etkinliğin saati ve yeri değişti."
@@ -499,7 +570,7 @@ func (s *Service) Run(ctx context.Context, logf func(string, ...any)) <-chan str
 			case err != nil && ctx.Err() == nil:
 				logf("event updated notification: queue: %v", err)
 			case report.any():
-				logf("event updated notification: %d changes done (%d dropped, %d given up), %d tried again later; %d sent, %d skipped, %d refused by SkyMail, %d guest mails unanswered and not tried again",
+				logf("event updated notification: %d changes done (%d dropped, %d given up), %d tried again later; %d sent, %d skipped, %d refused by SkyNotify, %d guest mails unanswered and not tried again",
 					report.Changes, report.Dropped, report.Expired, report.Retried, report.Sent, report.Skipped, report.Rejected, report.Uncertain)
 			}
 			select {

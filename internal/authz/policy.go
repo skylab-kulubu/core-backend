@@ -1,5 +1,7 @@
 package authz
 
+import "slices"
+
 type Action string
 
 const (
@@ -92,7 +94,16 @@ type Resource struct {
 	OwnerTeam    string
 	OwnerID      string
 	DoorStaffIDs []string
+	// TeamDoorScan is the Owner team's Team door scan.
 	TeamDoorScan bool
+	// CoOwnerTeams and CoOrganizerIDs are the Event's Co-organizer teams
+	// and the Co-organizer people whose rights have not ended
+	// (docs/co-organizers.md; event.AuthzResource fills them, leaving out
+	// the ended). TeamDoorScanTeams are the organizer teams whose Team
+	// door scan is on, the Owner team's read with TeamDoorScan too.
+	CoOwnerTeams      []CoTeam
+	CoOrganizerIDs    []string
+	TeamDoorScanTeams []string
 	// MediaUploader is the upload rule of a Media purpose, for Upload on
 	// TypeMedia. Empty is MediaUploaderAuthenticated.
 	MediaUploader MediaUploader
@@ -155,6 +166,28 @@ func DefaultPolicy() Policy {
 	}
 }
 
+// RequiredLevels are the levels in the Owner team that action on its Event
+// takes: the Owner team's row of EventPermissions, or the _default row when
+// it has none or the row does not name the action.
+func (p Policy) RequiredLevels(ownerTeam string, action Action) []Level {
+	table, ok := p.EventPermissions[ownerTeam]
+	if !ok {
+		table = p.EventPermissions["_default"]
+	}
+	levels, ok := table[action]
+	if !ok {
+		return p.EventPermissions["_default"][action]
+	}
+	return levels
+}
+
+// MembersUpdate reports whether a member of ownerTeam who is no Leader may
+// edit its Events (Update takes LevelMember: GECEKODU). A Co-organizer
+// team's management defaults to it (docs/co-organizers.md).
+func (p Policy) MembersUpdate(ownerTeam string) bool {
+	return slices.Contains(p.RequiredLevels(ownerTeam, Update), LevelMember)
+}
+
 // MediaUploader is who may upload Media of a Media purpose. The Media purpose
 // catalogue names one for every purpose; every rule needs a signed-in caller.
 type MediaUploader string
@@ -167,8 +200,8 @@ const (
 	// included. Which Event the Media ends up on is checked when it is linked.
 	MediaUploaderEventEditor MediaUploader = "event_editor"
 	// MediaUploaderCertificateTemplateEditor is a person who may create a
-	// certificate template for at least one Owner team: the certificate
-	// template create decision.
+	// certificate template, or edit an Event (its Event template), for at
+	// least one Owner team.
 	MediaUploaderCertificateTemplateEditor MediaUploader = "certificate_template_editor"
 	// MediaUploaderServiceOnly is no person: only the owning product's service
 	// account, with the media:attach role, may start such an upload (Skyforms

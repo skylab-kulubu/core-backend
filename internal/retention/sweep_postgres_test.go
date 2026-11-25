@@ -322,16 +322,18 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 		want[name] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
 	}
 	// team_audit_age, feedback_invites_age, feedback_mails_age,
-	// tracking_changes_age, subject_requests_age and management_terms_age
-	// have their own tests (team_audit_postgres_test.go,
+	// tracking_changes_age, subject_requests_age, management_terms_age and
+	// event_change_notices_age have their own tests (team_audit_postgres_test.go,
 	// feedback_invites_postgres_test.go, tracking_changes_postgres_test.go,
-	// subject_requests_postgres_test.go, management_terms_postgres_test.go).
+	// subject_requests_postgres_test.go, management_terms_postgres_test.go,
+	// event_change_notices_postgres_test.go).
 	want["team_audit_age"] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
 	want["feedback_invites_age"] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
 	want["feedback_mails_age"] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
 	want["tracking_changes_age"] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
 	want["subject_requests_age"] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
 	want["management_terms_age"] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
+	want["event_change_notices_age"] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
 	check(t, "dry run", dry, want)
 
 	apply, err := s.Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerSchedule})
@@ -357,6 +359,7 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 	applied["tracking_changes_age"] = counts{0, 0, 0, 0, 0, retention.RuleOK}
 	applied["subject_requests_age"] = counts{0, 0, 0, 0, 0, retention.RuleOK}
 	applied["management_terms_age"] = counts{0, 0, 0, 0, 0, retention.RuleOK}
+	applied["event_change_notices_age"] = counts{0, 0, 0, 0, 0, retention.RuleOK}
 	check(t, "apply", apply, applied)
 	for name, r := range results(dry) {
 		if r.Rule.Kind == retention.KindSweep && results(apply)[name].Changed != r.Matched {
@@ -449,7 +452,7 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 			t.Errorf("row id %s reached a record or a log line", id)
 		}
 	}
-	if got := scalar[int](t, pool, `SELECT count(*) FROM retention_run_rules`); got != 60 {
+	if got := scalar[int](t, pool, `SELECT count(*) FROM retention_run_rules`); got != 63 {
 		t.Fatalf("rule records %d", got)
 	}
 	if got := scalar[string](t, pool, `SELECT string_agg(mode || ':' || status || ':' || triggered_by, ',' ORDER BY started_at, mode DESC) FROM retention_runs`); got != "dry-run:ok:schedule,apply:ok:schedule,apply:ok:schedule" {
@@ -1278,7 +1281,7 @@ func TestRenewalAnsweredByAttendanceIsAskedAgainAndThenExpires(t *testing.T) {
 		return entries[0]
 	}
 
-	// March 2022: three years without attendance; SkyMail asks.
+	// March 2022: three years without attendance; SkyNotify asks.
 	clock = time.Date(2022, 3, 1, 12, 0, 0, 0, time.UTC)
 	if entry := audience(); !entry.RenewalDue || entry.RenewalRequestedAt != nil {
 		t.Fatalf("2022: %+v", entry)

@@ -163,11 +163,54 @@ func (h *CertificateHandler) ListTemplates(c fiber.Ctx) error {
 	if err != nil {
 		return certError(c, err)
 	}
-	result, err := h.svc.ListTemplates(c.Context(), p)
+	// ?eventId= lists that Event's Event template alone; without it the
+	// team and club templates (docs/certificate-event-templates.md).
+	var filter certificate.TemplateFilter
+	if raw := c.Query("eventId"); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return certError(c, certificate.ErrInvalid)
+		}
+		filter.EventID = &id
+	}
+	result, err := h.svc.ListTemplates(c.Context(), p, filter)
 	if err != nil {
 		return certError(c, err)
 	}
 	return c.JSON(result)
+}
+
+// EventTemplate is the Event's template state: what its certificates use
+// now, its Event template and the templates it may be bound to
+// (docs/certificate-event-templates.md).
+func (h *CertificateHandler) EventTemplate(c fiber.Ctx) error {
+	p, eventID, err := certificateEventCaller(c)
+	if err != nil {
+		return certError(c, err)
+	}
+	result, err := h.svc.EventTemplate(c.Context(), p, eventID)
+	if err != nil {
+		return certError(c, err)
+	}
+	return c.JSON(result)
+}
+
+// CreateEventTemplate creates the Event's Event template: 201 with it, 409
+// template_event_exists with the current one's templateId.
+func (h *CertificateHandler) CreateEventTemplate(c fiber.Ctx) error {
+	p, eventID, err := certificateEventCaller(c)
+	if err != nil {
+		return certError(c, err)
+	}
+	var input certificate.EventTemplateInput
+	if err := c.Bind().Body(&input); err != nil {
+		return certError(c, certificate.ErrInvalid)
+	}
+	result, err := h.svc.CreateEventTemplate(c.Context(), p, eventID, input)
+	if err != nil {
+		return certError(c, err)
+	}
+	return c.Status(fiber.StatusCreated).JSON(result)
 }
 
 func (h *CertificateHandler) GetTemplate(c fiber.Ctx) error {

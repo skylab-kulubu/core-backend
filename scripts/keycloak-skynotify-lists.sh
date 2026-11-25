@@ -186,9 +186,9 @@ finish() {
 
 TOTAL_STAGES=4
 
-SKYMAIL_CLIENT_ID="${SKYMAIL_CLIENT_ID:-skymail}"
+SKYNOTIFY_CLIENT_ID="${SKYNOTIFY_CLIENT_ID:-skynotify}"
 CORE_CLIENT_ID="${CORE_CLIENT_ID:-${KEYCLOAK_CLIENT_ID:-core}}"
-SKYMAIL_LIST_ROLES="skymail:access skymail:lists:read skymail:lists:write"
+SKYNOTIFY_LIST_ROLES="skynotify:access skynotify:lists:read skynotify:lists:write"
 KEYCLOAK_ADMIN_URL_DEFAULT="https://e.yildizskylab.com"
 KEYCLOAK_REALM_DEFAULT="e-skylab"
 GRANT_OK=0
@@ -201,7 +201,7 @@ _load_kc_env() {
     [[ -f "$f" ]] || continue
     while IFS= read -r line || [[ -n "$line" ]]; do
       case "$line" in
-        KEYCLOAK_URL=*|KEYCLOAK_REALM=*|KEYCLOAK_CLIENT_ID=*|KEYCLOAK_CLIENT_SECRET=*|SKYMAIL_URL=*)
+        KEYCLOAK_URL=*|KEYCLOAK_REALM=*|KEYCLOAK_CLIENT_ID=*|KEYCLOAK_CLIENT_SECRET=*|SKYNOTIFY_URL=*)
           key=${line%%=*}
           val=${line#*=}
           val=${val%$'\r'}
@@ -215,10 +215,10 @@ _load_kc_env() {
 }
 
 grant_via_admin() {
-  python3 - "$SKYMAIL_CLIENT_ID" "$CORE_CLIENT_ID" $SKYMAIL_LIST_ROLES <<'PY'
+  python3 - "$SKYNOTIFY_CLIENT_ID" "$CORE_CLIENT_ID" $SKYNOTIFY_LIST_ROLES <<'PY'
 import json, os, sys, urllib.error, urllib.parse, urllib.request
 
-skymail_client, core_client, *want_roles = sys.argv[1:]
+skynotify_client, core_client, *want_roles = sys.argv[1:]
 base = os.environ.get("KEYCLOAK_URL", "").strip().rstrip("/")
 realm = os.environ.get("KEYCLOAK_REALM", "").strip()
 if "/realms/" in base:
@@ -288,7 +288,7 @@ def client_uuid(client_id):
         sys.exit(1)
     return rows[0]["id"]
 
-sky_uuid = client_uuid(skymail_client)
+sky_uuid = client_uuid(skynotify_client)
 core_uuid = client_uuid(core_client)
 _, sa = call(
     "GET",
@@ -341,7 +341,7 @@ _, mappers = call(
 have_aud = False
 for m in mappers or []:
     cfg = m.get("config") or {}
-    if m.get("protocolMapper") == "oidc-audience-mapper" and cfg.get("included.client.audience") == skymail_client:
+    if m.get("protocolMapper") == "oidc-audience-mapper" and cfg.get("included.client.audience") == skynotify_client:
         have_aud = True
         break
 if not have_aud:
@@ -350,11 +350,11 @@ if not have_aud:
         f"{base}/admin/realms/{realm}/clients/{core_uuid}/protocol-mappers/models",
         token=token,
         data={
-            "name": "aud-skymail",
+            "name": "aud-skynotify",
             "protocol": "openid-connect",
             "protocolMapper": "oidc-audience-mapper",
             "config": {
-                "included.client.audience": skymail_client,
+                "included.client.audience": skynotify_client,
                 "id.token.claim": "false",
                 "access.token.claim": "true",
             },
@@ -379,10 +379,10 @@ pad = "=" * (-len(parts[1]) % 4)
 import base64
 claims = json.loads(base64.urlsafe_b64decode(parts[1] + pad))
 aud = claims.get("aud")
-sky_roles = ((claims.get("resource_access") or {}).get(skymail_client) or {}).get("roles") or []
+sky_roles = ((claims.get("resource_access") or {}).get(skynotify_client) or {}).get("roles") or []
 missing = [r for r in want_roles if r not in sky_roles]
 print("aud=" + json.dumps(aud, ensure_ascii=False))
-print("skymail_roles=" + json.dumps(sorted(sky_roles), ensure_ascii=False))
+print("skynotify_roles=" + json.dumps(sorted(sky_roles), ensure_ascii=False))
 if missing:
     print("missing_roles=" + json.dumps(missing, ensure_ascii=False))
     sys.exit(1)
@@ -394,8 +394,8 @@ elif isinstance(aud, list):
     auds = aud
 else:
     auds = []
-if skymail_client not in auds:
-    print("missing_aud=" + skymail_client)
+if skynotify_client not in auds:
+    print("missing_aud=" + skynotify_client)
     sys.exit(3)
 print("GRANT_OK")
 PY
@@ -406,12 +406,12 @@ KEYCLOAK_URL="${KEYCLOAK_URL:-$KEYCLOAK_ADMIN_URL_DEFAULT}"
 KEYCLOAK_REALM="${KEYCLOAK_REALM:-$KEYCLOAK_REALM_DEFAULT}"
 CORE_CLIENT_ID="${CORE_CLIENT_ID:-${KEYCLOAK_CLIENT_ID:-core}}"
 
-banner "Core → Skymail lists"
+banner "Core → SkyNotify lists"
 
 stage "Grant via Keycloak admin API"
-say "Skymail hardcodes client id skymail. POST /v1/mailing_lists needs skymail:access plus skymail:lists:write; GET recipients needs skymail:lists:read."
-say "Core S2S token is client-credentials for the core confidential client. resource_access.skymail must carry those roles; aud must include skymail, not only core."
-say "Default Skymail API origin is https://api.yildizskylab.com/api/skymail + /v1/mailing_lists. Internal SKYMAIL_URL may be http://skymail-app:3000. Do not point SKYMAIL_URL at core."
+say "SkyNotify hardcodes client id skynotify. POST /v1/mailing_lists needs skynotify:access plus skynotify:lists:write; GET recipients needs skynotify:lists:read."
+say "Core S2S token is client-credentials for the core confidential client. resource_access.skynotify must carry those roles; aud must include skynotify, not only core."
+say "Default SkyNotify API origin is https://api.yildizskylab.com/api/skynotify + /v1/mailing_lists. Internal SKYNOTIFY_URL may be http://skynotify-app:3000. Do not point SKYNOTIFY_URL at core."
 if [[ -n "${KEYCLOAK_CLIENT_SECRET:-}" ]]; then
   note "KEYCLOAK_CLIENT_ID=${CORE_CLIENT_ID} realm=${KEYCLOAK_REALM} — trying admin API (secrets not printed)."
   if grant_out=$(grant_via_admin); then
@@ -419,7 +419,7 @@ if [[ -n "${KEYCLOAK_CLIENT_SECRET:-}" ]]; then
     ROLES_OK=1
     AUD_OK=1
     say "$grant_out"
-    note "Core SA now has skymail list roles and an aud-skymail mapper. Restart core so it fetches a new token."
+    note "Core SA now has skynotify list roles and an aud-skynotify mapper. Restart core so it fetches a new token."
   else
     status=$?
     warn "admin API grant failed (exit ${status}). Continue with the console clicks."
@@ -429,39 +429,39 @@ else
 fi
 pause "Continue?"
 
-stage "skymail list roles exist"
+stage "skynotify list roles exist"
 open_url "${KEYCLOAK_URL%/}/admin/master/console/#/${KEYCLOAK_REALM}/clients"
-step "Realm is ${KEYCLOAK_REALM}. Open Clients → skymail (client id skymail) → Roles."
+step "Realm is ${KEYCLOAK_REALM}. Open Clients → skynotify (client id skynotify) → Roles."
 step "Confirm these client roles exist (create only if missing; they are not realm roles):"
-step "  skymail:access"
-step "  skymail:lists:read"
-step "  skymail:lists:write"
-step "Keep skymail:mails:write if welcome or certificate mail already works. Do not create a second IdP or a new confidential client."
+step "  skynotify:access"
+step "  skynotify:lists:read"
+step "  skynotify:lists:write"
+step "Keep skynotify:mails:write if welcome or certificate mail already works. Do not create a second IdP or a new confidential client."
 if [[ "$ROLES_OK" -eq 1 ]]; then
-  note "Admin API already saw these roles on skymail."
+  note "Admin API already saw these roles on skynotify."
 fi
-pause "List roles are on skymail?"
+pause "List roles are on skynotify?"
 
 stage "Core service account mapping"
 open_url "${KEYCLOAK_URL%/}/admin/master/console/#/${KEYCLOAK_REALM}/clients"
 step "Open the ${CORE_CLIENT_ID} client → Service accounts roles (or Users → service-account-${CORE_CLIENT_ID})."
-step "Assign client roles: Filter by client = skymail."
-step "Roles: skymail:access, skymail:lists:read, skymail:lists:write."
-step "If Full scope allowed is OFF on ${CORE_CLIENT_ID}, also add the skymail client to its optional/default client scopes so resource_access.skymail appears on the token."
+step "Assign client roles: Filter by client = skynotify."
+step "Roles: skynotify:access, skynotify:lists:read, skynotify:lists:write."
+step "If Full scope allowed is OFF on ${CORE_CLIENT_ID}, also add the skynotify client to its optional/default client scopes so resource_access.skynotify appears on the token."
 if [[ "$GRANT_OK" -eq 1 ]]; then
   note "Admin API already posted those role mappings onto the ${CORE_CLIENT_ID} service account."
 fi
 pause "lists:read and lists:write assigned to core?"
 
-stage "Audience mapper for skymail"
+stage "Audience mapper for skynotify"
 open_url "${KEYCLOAK_URL%/}/admin/master/console/#/${KEYCLOAK_REALM}/clients"
 step "Open ${CORE_CLIENT_ID} → Client scopes → ${CORE_CLIENT_ID}-dedicated → Add mapper → By configuration → Audience."
-step "Name: aud-skymail. Included Client Audience = skymail. Add to access token = ON. Add to ID token = OFF. Save."
-step "Without this, the S2S token often has aud=core (or account) only; Skymail may still 403 even after roles exist."
+step "Name: aud-skynotify. Included Client Audience = skynotify. Add to access token = ON. Add to ID token = OFF. Save."
+step "Without this, the S2S token often has aud=core (or account) only; SkyNotify may still 403 even after roles exist."
 if [[ "$AUD_OK" -eq 1 ]]; then
-  note "Admin API already added the oidc-audience-mapper included.client.audience=skymail."
+  note "Admin API already added the oidc-audience-mapper included.client.audience=skynotify."
 fi
-step "Restart core (it caches the client-credentials token). Then POST /v1/events/{id}/mail-list should be 200, not 500 wrapping a Skymail 403."
+step "Restart core (it caches the client-credentials token). Then POST /v1/events/{id}/mail-list should be 200, not 500 wrapping a SkyNotify 403."
 pause "Mapper saved and core restarted?"
 
 finish

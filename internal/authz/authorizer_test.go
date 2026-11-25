@@ -397,9 +397,18 @@ func allowCases() []allowCase {
 			want: true,
 		},
 		{
-			name: "leader cannot assign door staff",
+			// The Owner team's Leader assigns door staff (Yusuf S3,
+			// 2026-11-25; docs/co-organizers.md); a member does not.
+			name: "leader assigns door staff",
 			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}},
 			r:    Resource{Type: TypeEvent, OwnerTeam: "WEBLAB"},
+			a:    Assign,
+			want: true,
+		},
+		{
+			name: "member cannot assign door staff",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU"}},
+			r:    Resource{Type: TypeEvent, OwnerTeam: "GECEKODU"},
 			a:    Assign,
 			want: false,
 		},

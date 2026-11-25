@@ -7,7 +7,7 @@ and counts the rows core's hourly cleanups should already have removed. Every
 run writes a record without personal data that is kept at least three years.
 Code: `internal/retention`; command: `core-backend retention-sweep`.
 
-Other services (SkyMail, Forms, Place, Guessr) destroy their own data with
+Other services (SkyNotify, Forms, Place, Guessr) destroy their own data with
 their own runs (ADR-0062: each service its own data); core never writes
 another service's database.
 
@@ -45,7 +45,7 @@ click list and a form's channel statistics keep looking 90 days back
 clicks turn 90 days old. Until apply it is the clicks of the last 90 days;
 from apply on it only grows, counting every click since then.
 
-## Rules (rule set v9)
+## Rules (rule set v10)
 
 "Event end" is the Event's `end_date`, else its last day's `end_date`, else
 its `start_date` (ADR-0062). For `guest_identity`, an Event with none of them
@@ -150,6 +150,12 @@ The management membership terms ([`management-membership-terms.md`](management-m
 | Rule | Selects | Period | Action |
 |---|---|---|---|
 | `management_terms_age` | a `management_membership_terms` row whose membership ended (`ended_at` set: removed through core, handed over, or found gone from Keycloak) | `ManagementTermPeriod`, 3 years after `ended_at` | row deleted; an open term, expired or not (its holder is still in the Group), is never selected. The Team audit rows of the term go by `team_audit_age` |
+
+The record of the editors' answers about telling an Event's Ticket holders ([`event-updated-notification.md`](event-updated-notification.md#the-editors-choice); rule set v10, Yusuf 2026-11-25):
+
+| Rule | Selects | Period | Action |
+|---|---|---|---|
+| `event_change_notices_age` | an `event_change_notice_choices` row | `EventChangeNoticePeriod`, 3 years after `decided_at` (as the Team audit record) | row deleted |
 
 ## Schedule, lock and periods
 

@@ -23,7 +23,7 @@ with the variables of the moment (its page, QR and code), and while
 
 - **`202`** `{"resend": n, "replayed": false, "queued": true}`: the n-th
   resend of the Ticket. Its Notification's key is
-  `core:event.ticket-created:<ticketId>:r<n>`, its own, so SkyMail sends it
+  `core:event.ticket-created:<ticketId>:r<n>`, its own, so SkyNotify sends it
   instead of answering the first mail's replay (the first mail's key stays
   `…:v1`). A row still waiting (the first mail, an earlier resend) is taken
   over and sends this one.
@@ -88,7 +88,7 @@ stays.
 ## Rollback
 
 The down migration drops `ticket_resends` and the queue's `resend` column.
-A resend still queued then goes under the first mail's key, which SkyMail
+A resend still queued then goes under the first mail's key, which SkyNotify
 answers as a replay: nothing is sent. The release before reads neither.
 
 ## Industry practice
