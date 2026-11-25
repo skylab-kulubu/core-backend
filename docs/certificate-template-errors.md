@@ -38,6 +38,14 @@ A layout needs the recipient's name (`recipientName`) and at least one of the ve
 | `template_event_scoped` | An Event template bound to a team, the club or another Event (`PUT /v1/certificate-template-bindings`); it serves its own Event only ([certificate-event-templates.md](certificate-event-templates.md)). |
 | `template_event_exists` | `409`: the Event has an Event template already (`POST /v1/events/{eventId}/certificate-template`). The answer's `templateId` is the current one, which the panel opens instead. |
 
+## Fonts
+
+An element's `fontFamily` is one of the renderer's fonts (Arial, Helvetica, Carlito, Noto Sans, Noto Sans Display, DejaVu Sans, DejaVu Sans Condensed, Liberation Sans, Georgia, Times New Roman, Caladea, Noto Serif, Noto Serif Display, DejaVu Serif, DejaVu Serif Condensed, Liberation Serif, Courier New, DejaVu Sans Mono, Liberation Mono) or one of core's catalog: Montserrat, Poppins, Open Sans, Roboto, Inter, Raleway, Playfair Display, Merriweather, Great Vibes, Dancing Script. Any other name prints in Liberation Sans. Names match in any case.
+
+A catalog font used by the layout's text is embedded in the page it prints (`@font-face`, WOFF2 data URIs, Google Fonts' latin and latin-ext subsets, which hold every Turkish letter); a font the layout does not use is not. Each has 400 and 700 and an italic 400; Great Vibes and Dancing Script have 400 alone. The files and each family's `OFL.txt` are in `internal/certificate/fonts/`.
+
+A page with an embedded font fits its text (shrink-to-fit, the Owner team's short code) once the fonts are in (`document.fonts.ready`) and then sets `window.__certFitDone`; core asks Gotenberg to print it once `window.__certFitDone === true` (`waitForExpression`). Gotenberg checks every 100 ms until the request times out, which answers `503 renderer_unavailable` (tried again); the flag is set even when fitting fails. A page without embedded fonts is posted as before, with no wait.
+
 ## PDF backgrounds
 
 A one-page PDF background is kept as a vector: Gotenberg renders the layers as HTML and lays the PDF under them as a watermark (`watermarkSource=pdf`). Gotenberg reads `watermarkOptions` as a map of strings, so every value is quoted (`{"scale":"1","opacity":"1","rotation":"0"}`); a number in it is a `400` from Gotenberg, which publish answered until 2026-11-25 as a bare `400`. `rotation` 0 keeps pdfcpu from drawing the watermark on the diagonal.

@@ -111,6 +111,14 @@ func (g *Gotenberg) PDFWithBackground(ctx context.Context, html string, backgrou
 	return g.convertHTML(ctx, html, background, "")
 }
 
+// waitsForFit is a certificate page whose script sets fitDoneFlag (it
+// embeds fonts). Only the script counts: an element's text is escaped
+// and cannot open a <script>.
+func waitsForFit(html string) bool {
+	at := strings.LastIndex(html, "<script>")
+	return at >= 0 && strings.Contains(html[at:], fitDoneFlag)
+}
+
 func (g *Gotenberg) convertHTML(ctx context.Context, html string, background []byte, header string, flags ...string) ([]byte, error) {
 	if g == nil || strings.TrimSpace(g.BaseURL) == "" {
 		return nil, rendererUnavailable(nil)
@@ -143,6 +151,14 @@ func (g *Gotenberg) convertHTML(ctx context.Context, html string, background []b
 	}
 	for _, flag := range flags {
 		if err := w.WriteField(flag, "true"); err != nil {
+			return nil, err
+		}
+	}
+	if waitsForFit(html) {
+		// Gotenberg checks the expression every 100 ms until it is true
+		// or the request times out (a 5xx, renderer_unavailable, tried
+		// again); with JavaScript off it does not wait.
+		if err := w.WriteField("waitForExpression", fitDoneExpression); err != nil {
 			return nil, err
 		}
 	}
