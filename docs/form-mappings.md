@@ -42,7 +42,7 @@ its Co-organizers included); a product's service account never is.
 core's service account, forms-backend #43), so it works whether or not the
 organizer collaborates on the form in Forms. `inputType` and `identity` are
 left out when Forms has none. `suggestion` is what the form's identity
-fields give (hub SPEC §11 K5, the proposal, pending Yusuf): a field one
+fields give (hub SPEC §11 K5, Yusuf 2026-11-25): a field one
 question claims is filled, else `null`. The panel guesses the rest from
 `inputType` and the question's text (SPEC §5.2); the organizer saves.
 
