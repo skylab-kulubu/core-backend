@@ -31,6 +31,10 @@ var (
 	// ErrFormGone is a form Forms does not have (404 form_not_found):
 	// deleted, or a Forms without the route yet.
 	ErrFormGone = errors.New("formsfeed: Forms has no such form")
+	// ErrFormsAccessDenied is a caller who is neither the form's owner nor
+	// an editor of it in Forms (a viewer is not), or a Forms that does not
+	// say who is (403 forms_access_denied).
+	ErrFormsAccessDenied = errors.New("formsfeed: not the form's owner or collaborator in Forms")
 )
 
 // FormReader reads a form's questions from Forms (Client).
@@ -41,16 +45,18 @@ type FormReader interface {
 // Mappings serves an Event's form mappings (docs/form-mappings.md): the
 // form's questions for the panel, and the mapping itself. Every call is a
 // person's who may edit the Event (authz Update on the Event, its
-// Co-organizers included); a product's service account never is.
+// Co-organizers included), and who is the form's owner or an editor in
+// Forms (read from Forms each time; Form.Edits); a product's service
+// account never is.
 type Mappings struct {
 	Events BackfillEvents
 	Authz  authz.Authorizer
 	Store  MappingStore
 	// Forms nil is a core without Forms' internal address or its service
-	// account: questions and a save are ErrFormsUnavailable.
+	// account: every call is ErrFormsUnavailable.
 	Forms FormReader
-	// On is EVENTS_FORMS_ENABLED: off, the questions are ErrFormsPullOff. A
-	// mapping is still saved, read and deleted (ready when it opens).
+	// On is EVENTS_FORMS_ENABLED: off, every call is ErrFormsPullOff (each
+	// reads Forms).
 	On bool
 	// Collects queues the form's gathering when its mapping is first
 	// saved, so the answers that named nobody before are kept with the
@@ -92,8 +98,12 @@ func (m *Mappings) editable(ctx context.Context, p authz.Principal, eventID, for
 	return ev, nil
 }
 
-// readForm reads the form from Forms, its errors as the routes answer them.
-func (m *Mappings) readForm(ctx context.Context, formID uuid.UUID) (Form, error) {
+// readForm reads the form from Forms, its errors as the routes answer them,
+// and checks the caller is its owner or a collaborator there.
+func (m *Mappings) readForm(ctx context.Context, p authz.Principal, formID uuid.UUID) (Form, error) {
+	if !m.On {
+		return Form{}, ErrFormsPullOff
+	}
 	if m.Forms == nil {
 		return Form{}, ErrFormsUnavailable
 	}
@@ -105,6 +115,9 @@ func (m *Mappings) readForm(ctx context.Context, formID uuid.UUID) (Form, error)
 		// The cause (403, 5xx, a broken answer) is the log's, not the
 		// panel's; it never carries an answer.
 		return Form{}, errors.Join(ErrFormsUnavailable, err)
+	}
+	if !form.Edits(p.ID) {
+		return Form{}, ErrFormsAccessDenied
 	}
 	return form, nil
 }
@@ -121,10 +134,7 @@ func (m *Mappings) Questions(ctx context.Context, p authz.Principal, eventID, fo
 	if _, err := m.editable(ctx, p, eventID, formID); err != nil {
 		return FormQuestions{}, err
 	}
-	if !m.On {
-		return FormQuestions{}, ErrFormsPullOff
-	}
-	form, err := m.readForm(ctx, formID)
+	form, err := m.readForm(ctx, p, formID)
 	if err != nil {
 		return FormQuestions{}, err
 	}
@@ -136,12 +146,15 @@ func (m *Mappings) Get(ctx context.Context, p authz.Principal, eventID, formID u
 	if _, err := m.editable(ctx, p, eventID, formID); err != nil {
 		return Mapping{}, err
 	}
+	if _, err := m.readForm(ctx, p, formID); err != nil {
+		return Mapping{}, err
+	}
 	return m.Store.Get(ctx, eventID, formID)
 }
 
 // Put checks and saves the mapping: ErrMappingInvalid for one that breaks
 // the rule, a *MappingQuestionMissingError for ids the form does not have
-// (read from Forms now). created is true when there was none (the first
+// (read from Forms now), ErrFormsPullOff with the switch off. created is true when there was none (the first
 // save, which bilet 04 may hang the backfill on).
 func (m *Mappings) Put(ctx context.Context, p authz.Principal, in Mapping) (saved Mapping, created bool, err error) {
 	ev, err := m.editable(ctx, p, in.EventID, in.FormID)
@@ -157,7 +170,7 @@ func (m *Mappings) Put(ctx context.Context, p authz.Principal, in Mapping) (save
 	if err := in.Validate(); err != nil {
 		return Mapping{}, false, err
 	}
-	form, err := m.readForm(ctx, in.FormID)
+	form, err := m.readForm(ctx, p, in.FormID)
 	if err != nil {
 		return Mapping{}, false, err
 	}
@@ -173,8 +186,12 @@ func (m *Mappings) Put(ctx context.Context, p authz.Principal, in Mapping) (save
 }
 
 // Delete removes the saved mapping; ErrMappingNotFound when there was none.
+// A form Forms no longer has (ErrFormGone) may lose its mapping too.
 func (m *Mappings) Delete(ctx context.Context, p authz.Principal, eventID, formID uuid.UUID) error {
 	if _, err := m.editable(ctx, p, eventID, formID); err != nil {
+		return err
+	}
+	if _, err := m.readForm(ctx, p, formID); err != nil && !errors.Is(err, ErrFormGone) {
 		return err
 	}
 	deleted, err := m.Store.Delete(ctx, eventID, formID)

@@ -70,7 +70,8 @@ func TestClientReadsAFormsQuestions(t *testing.T) {
 		w.Write([]byte(`{"formId":"` + applicationForm.String() + `","title":"Başvuru","questions":[
 			{"id":"q1","type":"short_text","question":"Adınız","inputType":"name","identity":null},
 			{"id":"q2","type":"short_text","question":"E-posta","inputType":"email","identity":"email"},
-			{"id":"","type":"heading","question":"Başlık","inputType":null,"identity":null}]}`))
+			{"id":"","type":"heading","question":"Başlık","inputType":null,"identity":null}],
+			"collaborators":[{"userId":"` + personID.String() + `","role":"Owner"},{"userId":"` + responseID.String() + `","role":"viewer"}]}`))
 	}))
 	defer srv.Close()
 	got, err := (&Client{BaseURL: srv.URL, Tokens: &fakeTokens{}}).Form(context.Background(), applicationForm)
@@ -81,8 +82,21 @@ func TestClientReadsAFormsQuestions(t *testing.T) {
 		got.Questions[0] != (Question{ID: "q1", Type: "short_text", Question: "Adınız", InputType: "name"}) || got.Questions[1].Identity != "email" {
 		t.Fatalf("%s %+v", path, got)
 	}
+	// The owner edits; a viewer does not; nobody else does.
+	if !got.AccessListed || !got.Edits(personID.String()) || got.Edits(responseID.String()) || got.Edits(uuid.NewString()) || got.Edits("not-a-uuid") {
+		t.Fatalf("team %+v", got.Collaborators)
+	}
 	if _, err := (&Client{BaseURL: srv.URL, Tokens: &fakeTokens{}}).Form(context.Background(), uuid.New()); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("another form: %v", err)
+	}
+	// A Forms before the team field lets nobody in.
+	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"formId":"` + applicationForm.String() + `","title":"Eski","questions":[]}`))
+	}))
+	defer old.Close()
+	got, err = (&Client{BaseURL: old.URL, Tokens: &fakeTokens{}}).Form(context.Background(), applicationForm)
+	if err != nil || got.AccessListed || got.Edits(personID.String()) {
+		t.Fatalf("no team field: %+v %v", got, err)
 	}
 }
 
@@ -201,7 +215,13 @@ func TestMappingRoutesRules(t *testing.T) {
 	editor := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/YK"}}
 	member := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/GAMELAB"}}
 	service := authz.Principal{ID: uuid.NewString(), ServiceAccount: true, Groups: []string{"/UYELER/YK"}}
-	questions := Form{FormID: form, Title: "Başvuru", Questions: []Question{{ID: "q1", Identity: "email"}, {ID: "q2"}, {ID: "q3"}}}
+	team := func(role string) []Collaborator {
+		return []Collaborator{{UserID: uuid.MustParse(editor.ID), Role: role}, {UserID: uuid.New(), Role: RoleOwner}}
+	}
+	withTeam := func(collaborators []Collaborator, listed bool) Form {
+		return Form{FormID: form, Title: "Başvuru", Questions: []Question{{ID: "q1", Identity: "email"}, {ID: "q2"}, {ID: "q3"}}, Collaborators: collaborators, AccessListed: listed}
+	}
+	questions := withTeam(team(RoleEditor), true)
 	valid := Mapping{EventID: open.ID, FormID: form, FirstName: "q2", LastName: "q3", Email: "q1"}
 	build := func(on bool, forms FormReader) (*Mappings, *memMappings) {
 		store := &memMappings{}
@@ -257,6 +277,10 @@ func TestMappingRoutesRules(t *testing.T) {
 		{name: "no Forms client", p: editor, ev: open.ID, form: form, on: true, want: ErrFormsUnavailable},
 		{name: "Forms down", p: editor, ev: open.ID, form: form, on: true, forms: stubForm{err: errors.New("formsfeed: Forms answered 503")}, want: ErrFormsUnavailable},
 		{name: "the form gone", p: editor, ev: open.ID, form: form, on: true, forms: stubForm{err: ErrNotFound}, want: ErrFormGone},
+		{name: "a viewer in Forms", p: editor, ev: open.ID, form: form, on: true, forms: stubForm{form: withTeam(team(RoleViewer), true)}, want: ErrFormsAccessDenied},
+		{name: "not on the form's team", p: editor, ev: open.ID, form: form, on: true, forms: stubForm{form: withTeam([]Collaborator{{UserID: uuid.New(), Role: RoleOwner}}, true)}, want: ErrFormsAccessDenied},
+		{name: "a Forms without the team", p: editor, ev: open.ID, form: form, on: true, forms: stubForm{form: withTeam(nil, false)}, want: ErrFormsAccessDenied},
+		{name: "off", p: editor, ev: open.ID, form: form, on: false, forms: stubForm{form: questions}, want: ErrFormsPullOff},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -281,15 +305,37 @@ func TestMappingRoutesRules(t *testing.T) {
 		})
 	}
 
-	// Off: the questions are not read, a mapping is still saved.
-	m, _ = build(false, stubForm{form: questions})
+	// Off: every route says so, after the Event's own checks.
+	m, store = build(false, stubForm{form: questions})
+	store.rows = map[[2]uuid.UUID]Mapping{{open.ID, form}: valid}
 	if _, err := m.Questions(ctx, editor, open.ID, form); !errors.Is(err, ErrFormsPullOff) {
 		t.Fatalf("questions off: %v", err)
 	}
 	if _, err := m.Questions(ctx, member, open.ID, form); !errors.Is(err, ErrMappingForbidden) {
 		t.Fatalf("questions off, member: %v", err)
 	}
-	if _, _, err := m.Put(ctx, editor, valid); err != nil {
-		t.Fatalf("put off: %v", err)
+	if _, err := m.Get(ctx, editor, open.ID, form); !errors.Is(err, ErrFormsPullOff) {
+		t.Fatalf("get off: %v", err)
+	}
+	if err := m.Delete(ctx, editor, open.ID, form); !errors.Is(err, ErrFormsPullOff) || len(store.rows) != 1 {
+		t.Fatalf("delete off: %v", err)
+	}
+	// A viewer reads neither the questions nor the mapping, nor deletes it.
+	m, store = build(true, stubForm{form: withTeam(team(RoleViewer), true)})
+	store.rows = map[[2]uuid.UUID]Mapping{{open.ID, form}: valid}
+	if _, err := m.Questions(ctx, editor, open.ID, form); !errors.Is(err, ErrFormsAccessDenied) {
+		t.Fatalf("questions, viewer: %v", err)
+	}
+	if _, err := m.Get(ctx, editor, open.ID, form); !errors.Is(err, ErrFormsAccessDenied) {
+		t.Fatalf("get, viewer: %v", err)
+	}
+	if err := m.Delete(ctx, editor, open.ID, form); !errors.Is(err, ErrFormsAccessDenied) || len(store.rows) != 1 {
+		t.Fatalf("delete, viewer: %v", err)
+	}
+	// A form Forms no longer has may lose its mapping.
+	m, store = build(true, stubForm{err: ErrNotFound})
+	store.rows = map[[2]uuid.UUID]Mapping{{open.ID, form}: valid}
+	if err := m.Delete(ctx, editor, open.ID, form); err != nil || len(store.rows) != 0 {
+		t.Fatalf("delete, form gone: %v", err)
 	}
 }
