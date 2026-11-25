@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -80,12 +81,23 @@ type Client struct {
 // Response reads one answer, a guest's name and e-mail with it
 // (ADR-0071 karar 11, claim check):
 //
-//	GET {base}/internal/v1/forms/{formId}/responses/{responseId}
+//	GET {base}/internal/v1/forms/{formId}/responses/{responseId}?fields=…
 //
 // The answer is forms.response.created's data with guest {firstName,
-// lastName, email} (null for a signed-in person's answer).
-func (c *Client) Response(ctx context.Context, formID, responseID uuid.UUID) (Response, error) {
-	body, err := c.get(ctx, "/internal/v1/forms/"+formID.String()+"/responses/"+responseID.String())
+// lastName, email} (null for a signed-in person's answer, and for a guest
+// Forms has no name of). fields are the questions whose answers core asks
+// for (an Event's form mapping, docs/form-mappings.md): Forms answers only
+// those, in answers; without fields it sends none.
+func (c *Client) Response(ctx context.Context, formID, responseID uuid.UUID, fields ...string) (Response, error) {
+	path := "/internal/v1/forms/" + formID.String() + "/responses/" + responseID.String()
+	if len(fields) > 0 {
+		param, err := fieldsParam(fields)
+		if err != nil {
+			return Response{}, err
+		}
+		path += "?" + url.Values{"fields": {param}}.Encode()
+	}
+	body, err := c.get(ctx, path)
 	if err != nil {
 		return Response{}, err
 	}
@@ -159,6 +171,9 @@ const PageLimit = 100
 type ListQuery struct {
 	ChangedSince *time.Time
 	After        string
+	// Fields are the questions whose answers core asks for with each item
+	// (an Event's form mapping); none asks for no answer.
+	Fields []string
 }
 
 // Page is a page of the list. Items are the answers that read; Skipped
@@ -195,6 +210,13 @@ func (c *Client) List(ctx context.Context, formID uuid.UUID, q ListQuery) (Page,
 		query.Set("after", q.After)
 	}
 	query.Set("limit", strconv.Itoa(PageLimit))
+	if len(q.Fields) > 0 {
+		param, err := fieldsParam(q.Fields)
+		if err != nil {
+			return Page{}, err
+		}
+		query.Set("fields", param)
+	}
 	body, err := c.get(ctx, "/internal/v1/forms/"+formID.String()+"/responses?"+query.Encode())
 	if err != nil {
 		return Page{}, err
@@ -229,3 +251,101 @@ func (c *Client) List(ctx context.Context, formID uuid.UUID, q ListQuery) (Page,
 
 // maxCursor bounds a cursor core keeps between pages (form_pulls.cursor).
 const maxCursor = 2048
+
+// Bounds of fields, Forms' (InternalEndpoints: at most 20 question ids, each
+// at most 100 characters).
+const (
+	MaxFields      = 20
+	MaxFieldLength = 100
+)
+
+// fieldsParam is the fields query value: the question ids, each once,
+// sorted, joined by commas. An id that is empty, too long or carries a
+// comma, or more than MaxFields, is core's own error (a mapping is checked
+// when it is saved): ErrInvalid, before anything is sent.
+func fieldsParam(fields []string) (string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range fields {
+		f = strings.TrimSpace(f)
+		if f == "" || len(f) > MaxFieldLength || strings.ContainsAny(f, ",") {
+			return "", invalid("a question id of fields is empty, longer than %d or carries a comma", MaxFieldLength)
+		}
+		if !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	if len(out) > MaxFields {
+		return "", invalid("fields names more than %d questions", MaxFields)
+	}
+	sort.Strings(out)
+	return strings.Join(out, ","), nil
+}
+
+// Question is one item of a form, as Forms' form read names it: its id
+// (what a mapping keeps), its type, its text, the input type of a text
+// question (email, name, …) and the identity field it fills (firstName,
+// lastName, email), when it is one.
+type Question struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Question  string `json:"question"`
+	InputType string `json:"inputType,omitempty"`
+	Identity  string `json:"identity,omitempty"`
+}
+
+// Form is a form's title and questions (Forms' form read).
+type Form struct {
+	FormID    uuid.UUID  `json:"formId"`
+	Title     string     `json:"title"`
+	Questions []Question `json:"questions"`
+}
+
+type formJSON struct {
+	FormID    uuid.UUID `json:"formId"`
+	Title     string    `json:"title"`
+	Questions []struct {
+		ID        string  `json:"id"`
+		Type      string  `json:"type"`
+		Question  string  `json:"question"`
+		InputType *string `json:"inputType"`
+		Identity  *string `json:"identity"`
+	} `json:"questions"`
+}
+
+// Form reads a form's questions (forms-backend #43):
+//
+//	GET {base}/internal/v1/forms/{formId}
+//
+// answering {formId, title, questions: [{id, type, question, inputType,
+// identity}]}. 404 is ErrNotFound: the form is deleted, or Forms has no such
+// route yet. An item without an id is left out: nothing can map to it.
+func (c *Client) Form(ctx context.Context, formID uuid.UUID) (Form, error) {
+	body, err := c.get(ctx, "/internal/v1/forms/"+formID.String())
+	if err != nil {
+		return Form{}, err
+	}
+	var in formJSON
+	if err := json.Unmarshal(body, &in); err != nil {
+		return Form{}, invalid("Forms' form is not the expected JSON object")
+	}
+	if in.FormID != formID {
+		return Form{}, invalid("Forms answered another form")
+	}
+	out := Form{FormID: in.FormID, Title: in.Title, Questions: []Question{}}
+	for _, q := range in.Questions {
+		if strings.TrimSpace(q.ID) == "" || len(q.ID) > MaxFieldLength {
+			continue
+		}
+		item := Question{ID: q.ID, Type: q.Type, Question: q.Question}
+		if q.InputType != nil {
+			item.InputType = *q.InputType
+		}
+		if q.Identity != nil {
+			item.Identity = *q.Identity
+		}
+		out.Questions = append(out.Questions, item)
+	}
+	return out, nil
+}

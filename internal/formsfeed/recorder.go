@@ -47,7 +47,7 @@ type EventLister interface {
 
 // Reader reads one answer from Forms (Client).
 type Reader interface {
-	Response(ctx context.Context, formID, responseID uuid.UUID) (Response, error)
+	Response(ctx context.Context, formID, responseID uuid.UUID, fields ...string) (Response, error)
 }
 
 // RecordFunc is the Ticket rule (ticket.Service.RecordFormResponse with the

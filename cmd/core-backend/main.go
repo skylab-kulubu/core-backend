@@ -1172,6 +1172,13 @@ func main() {
 		worker("form pulls", formPuller.Run(workers))
 	}
 	formBackfills := &formsfeed.Backfills{Events: events, Authz: az, Queue: formPulls, On: formPuller != nil}
+	// The form mappings (docs/form-mappings.md): saved whatever the switch
+	// says; the questions are read with it on.
+	formMappingStore := formsfeed.NewPostgresMappings(pool)
+	formMappings := &formsfeed.Mappings{Events: events, Authz: az, Store: formMappingStore, On: formsEvents != nil}
+	if formsClient != nil {
+		formMappings.Forms = formsClient
+	}
 	formsCounters := formsMetrics{puller: formPuller}
 	if formsEvents != nil {
 		formsCounters.recorder = formsRecorder
@@ -1309,6 +1316,7 @@ func main() {
 		FeedbackSender:         feedbackInvites,
 		FeedbackReminders:      feedbackInvites,
 		FormBackfills:          formBackfills,
+		FormMappings:           formMappings,
 		Certificates:           certSvc,
 		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),
 		SkyPassWalletMetrics:   wallet,

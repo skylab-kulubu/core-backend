@@ -55,7 +55,7 @@ type fakeReader struct {
 	calls int
 }
 
-func (f *fakeReader) Response(_ context.Context, formID, responseID uuid.UUID) (Response, error) {
+func (f *fakeReader) Response(_ context.Context, formID, responseID uuid.UUID, _ ...string) (Response, error) {
 	f.calls++
 	if f.err != nil {
 		return Response{}, f.err

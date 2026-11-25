@@ -16,7 +16,9 @@ things ask for it (hub SPEC §10 eki, R13 eki; rabbitmq-olaylar 18):
   report) missed (ADR-0071 karar 6).
 
 Code: `internal/formsfeed` (`Puller`, `Backfills`, `PostgresPulls`), wired
-in `cmd/core-backend`.
+in `cmd/core-backend`. An Event's form mapping
+([form-mappings.md](form-mappings.md)) names the questions whose answers
+the reads ask for (`fields`).
 
 ## Backfill
 

@@ -2090,6 +2090,21 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM pg_constraint
 			WHERE conrelid = to_regclass('public.media_legacy_answer_moves') AND conname = 'media_legacy_answer_moves_order_check'
 		)`,
+	// Form mappings (docs/form-mappings.md): the table with its two checks
+	// and the form index.
+	20261127100000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'event_form_mappings'
+			  AND column_name IN ('event_id', 'form_id', 'first_name_question', 'last_name_question', 'full_name_question', 'email_question', 'updated_by', 'updated_at')
+		) = 8
+		AND (
+			SELECT count(*) FROM pg_constraint
+			WHERE conrelid = to_regclass('public.event_form_mappings')
+			  AND conname IN ('event_form_mappings_names_check', 'event_form_mappings_ids_check')
+		) = 2
+		AND to_regclass('public.event_form_mappings_form_idx') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
