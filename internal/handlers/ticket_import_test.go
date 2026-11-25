@@ -90,6 +90,7 @@ func TestAttendeeImportHTTP(t *testing.T) {
 	}{
 		{map[string]any{"text": ""}, "import_empty", fiber.StatusBadRequest},
 		{map[string]any{"text": "Ad,Soyad\nA,B\n"}, "import_no_email_column", fiber.StatusBadRequest},
+		{map[string]any{"text": "Ad Soyad,E-posta,Okul e-postası\nA B,a@example.com,b@example.com\n"}, `"columns":["E-posta","Okul e-postası"]`, fiber.StatusBadRequest},
 		{map[string]any{"text": "ad,soyad,eposta\n" + strings.Repeat("a,b,c@example.com\n", ticket.MaxImportRows+1)}, "import_too_many_rows", fiber.StatusRequestEntityTooLarge},
 		{map[string]any{"text": strings.Repeat("x", ticket.MaxImportBytes+1)}, "import_too_large", fiber.StatusRequestEntityTooLarge},
 		{`{"text":`, "", fiber.StatusBadRequest},

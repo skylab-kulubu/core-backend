@@ -1259,6 +1259,14 @@ func main() {
 		Logf: log.Printf,
 	})
 
+	// The Co-organizer writes (EVENT_CO_ORGANIZERS_WRITE,
+	// docs/co-organizers.md): off until the decisions, the audit record and
+	// the mails ship with them.
+	coOrganizersWrite, err := coOrganizersWriteOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("event co-organizers: writes %s (EVENT_CO_ORGANIZERS_WRITE)", map[bool]string{false: "off", true: "on"}[coOrganizersWrite])
 	app := httpx.New(httpx.Deps{
 		Users:        user.NewService(users, dir),
 		Identity:     identityService,
@@ -1268,6 +1276,10 @@ func main() {
 			ImageAddressMode: imageAddressMode,
 			FormLinks:        eventFormLinks{urls: urlSvc},
 			Media:            media.NewLinker(mediaStore),
+			Policy:           authzPolicy,
+			Teams:            teamTree,
+
+			CoOrganizersWrite: coOrganizersWrite,
 		}),
 		Seasons:         season.NewService(seasons, az),
 		SubjectRequests: subjectrequest.NewService(subjectrequest.NewPostgresStore(pool), az, nil),

@@ -143,11 +143,24 @@ type Event struct {
 	Images                 []GalleryImage `json:"images"`
 	ImageURLs              []string       `json:"imageUrls"`
 	DoorStaffIDs           []uuid.UUID    `json:"doorStaffIds,omitempty"`
-	MailListID             *uuid.UUID     `json:"mailListId,omitempty"`
-	ArchivedAt             *time.Time     `json:"archivedAt,omitempty"`
-	ArchivedBy             *uuid.UUID     `json:"archivedBy,omitempty"`
-	CreatedAt              time.Time      `json:"createdAt"`
-	UpdatedAt              time.Time      `json:"updatedAt"`
+	// CoOrganizers are the Event's Co-organizer teams and CoOrganizerIDs
+	// its Co-organizer people (docs/co-organizers.md), as the store read
+	// them; nil for none. Only SetOrganizers writes them: a Create, an
+	// Update or a Patch never does. Neither is in a JSON answer by itself:
+	// ProjectFor copies them to CoOrganizersView and CoOrganizerIDsView for
+	// who may edit the Event, so a public answer cannot carry them by
+	// mistake. CoOrganizerTeams are the team codes anyone may see
+	// (PublicCoOrganizerTeams): never a helper team, never a person.
+	CoOrganizers       []CoOrganizerTeam `json:"-"`
+	CoOrganizerIDs     []uuid.UUID       `json:"-"`
+	CoOrganizersView   []CoOrganizerTeam `json:"coOrganizers,omitempty"`
+	CoOrganizerIDsView []uuid.UUID       `json:"coOrganizerIds,omitempty"`
+	CoOrganizerTeams   []string          `json:"coOrganizerTeams,omitempty"`
+	MailListID         *uuid.UUID        `json:"mailListId,omitempty"`
+	ArchivedAt         *time.Time        `json:"archivedAt,omitempty"`
+	ArchivedBy         *uuid.UUID        `json:"archivedBy,omitempty"`
+	CreatedAt          time.Time         `json:"createdAt"`
+	UpdatedAt          time.Time         `json:"updatedAt"`
 
 	// Files and Videos are the Event's files and videos, in their
 	// organizers' order (media redesign ticket 22). Only an Event's detail

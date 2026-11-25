@@ -26,7 +26,11 @@ func certError(c fiber.Ctx, err error) error {
 	// (docs/certificate-template-errors.md).
 	var refused *certificate.InvalidError
 	var unavailable *certificate.UnavailableError
+	var eventTemplateExists *certificate.EventTemplateExistsError
 	switch {
+	case errors.As(err, &eventTemplateExists):
+		return problemWithFields(c, fiber.StatusConflict, "Conflict", "Conflict", certificate.CodeTemplateEventExists,
+			fiber.Map{"templateId": eventTemplateExists.TemplateID})
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
 	case errors.Is(err, certificate.ErrForbidden):

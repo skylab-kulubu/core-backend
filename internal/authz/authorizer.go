@@ -350,9 +350,13 @@ var mediaUploaders = map[MediaUploader]func(a *authorizer, p Principal, r Resour
 			return a.allowEvent(p, Resource{Type: TypeEvent, OwnerTeam: team}, Create)
 		})
 	},
+	// Who may create a certificate template, or edit an Event: an Event's
+	// editor makes its Event template (docs/certificate-event-templates.md).
+	// Which template the asset ends up on is checked when it is linked.
 	MediaUploaderCertificateTemplateEditor: func(a *authorizer, p Principal, _ Resource) bool {
 		return a.forSomeOwnerTeam(p, func(team string) bool {
-			return a.allowCertificateTemplate(p, Resource{Type: TypeCertificateTemplate, OwnerTeam: team}, Create)
+			return a.allowCertificateTemplate(p, Resource{Type: TypeCertificateTemplate, OwnerTeam: team}, Create) ||
+				a.allowEvent(p, Resource{Type: TypeEvent, OwnerTeam: team}, Update)
 		})
 	},
 	// No person, whatever roles they hold: the service account of the
@@ -759,13 +763,5 @@ func (a *authorizer) ownerLevels(p Principal, owner string) []Level {
 }
 
 func (a *authorizer) requiredLevels(ownerTeam string, action Action) []Level {
-	table, ok := a.policy.EventPermissions[ownerTeam]
-	if !ok {
-		table = a.policy.EventPermissions["_default"]
-	}
-	levels, ok := table[action]
-	if !ok {
-		return a.policy.EventPermissions["_default"][action]
-	}
-	return levels
+	return a.policy.RequiredLevels(ownerTeam, action)
 }
