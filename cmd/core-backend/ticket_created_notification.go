@@ -32,6 +32,14 @@ func certificatePDFAttachmentOn(getenv func(string) string) (bool, error) {
 	return onOff(getenv, "CERTIFICATE_PDF_ATTACHMENT")
 }
 
+// coOrganizersWriteOn reads EVENT_CO_ORGANIZERS_WRITE
+// (docs/co-organizers.md): on, PUT /v1/events/{id}/organizers writes;
+// unset or off, it is refused (co_organizers_disabled) and the lists stay
+// as they are.
+func coOrganizersWriteOn(getenv func(string) string) (bool, error) {
+	return onOff(getenv, "EVENT_CO_ORGANIZERS_WRITE")
+}
+
 // ticketStatusMailOn reads TICKET_STATUS_MAIL (docs/event-capacity.md,
 // docs/ticket-status-mail.md): on, the waiting list's mails go ("Bekleme
 // listesindesin", "Yer açıldı") and the cancellation's ("Biletin iptal
