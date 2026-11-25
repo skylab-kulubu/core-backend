@@ -54,6 +54,17 @@ Turkish) or a comma. With a header, the columns are found by name, Turkish
 or English, case and Turkish letters ignored: `Ad`/`First name`,
 `Soyad`/`Last name`, `Ad Soyad`/`Name` (split at its last blank),
 `E-posta`/`Email`, `Oturum`/`Session`; other columns are ignored.
+Punctuation (`Ad-Soyad:`, `E-posta adresin*`) and Turkish possessive
+endings (`Adınız Soyadınız`, `Adın`, `İsminiz Soyisminiz`) do not matter,
+and any header whose words hold `mail` or `eposta` (`E-mail adresin:`,
+`Okul e-postası`, `Your email`) may be the e-mail, as Eventbrite's and
+Luma's importers read it. Of several such columns, the one holding
+addresses is read (`E-posta ile haber verelim mi?` holds none); two holding
+addresses are `400 import_ambiguous_email_column` with the columns named
+in `columns`: core does not guess, unless they hold the same address on
+every row (`E-posta (tekrar)`), when the first is read. A first line with
+a cell that is an address (an `@`, no blank) is a row, not a header:
+`İsmail Yılmaz,ismail@…` has no header.
 A Microsoft Forms export is told by its first columns (Microsoft's "Check
 and share your form results": the first five are the response's id, its
 start and completion times, and the respondent's name and e-mail; in

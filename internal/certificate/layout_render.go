@@ -29,6 +29,9 @@ func (s *service) renderLayoutPDF(ctx context.Context, layout Layout, data Previ
 			}
 			backgroundPDF = asset.Data
 			prepared.BackgroundMediaID = nil
+			// A PDF background is printed as before for now, also when the
+			// layout places it: the placed copy comes with pdf-tools.
+			prepared.BackgroundPlacement = nil
 			prepared.BackgroundColor = "transparent"
 		}
 	}

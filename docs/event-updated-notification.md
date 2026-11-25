@@ -63,11 +63,19 @@ Each answer is recorded in `event_change_notice_choices`, in the update's
 transaction: the Event, who saved (`decided_by`, a `users` row; a principal
 without one, such as a service account, is recorded as nobody), which fields
 changed, the answer (`NULL` when the body did not say) and whether a notice
-was queued (`false` for a no, and for every answer while
-`EVENT_UPDATED_NOTIFICATION` is off). Only changes of time or place of a
-published Event that is not over are recorded. Ids and field names only: an
+was queued. Only changes of a published Event that is not over are
+recorded: of its time or place always, of its other details only while
+`EVENT_CHANGED_NOTIFICATION` is on ([Other details](#other-details)). One
+save is one row with all its changed fields. `queued` is true when any of
+them joined a notice: its time or place told (not a no, while
+`EVENT_UPDATED_NOTIFICATION` is on) or its details told (a yes, while
+`EVENT_CHANGED_NOTIFICATION` is on); false for a no, and for an answer
+whose switch is off. Ids and field names only: an
 account deleted outright empties `decided_by`; an Event deleted takes its
-rows. There is no route that reads it yet:
+rows. A row is kept three years after `decided_at`, as the Team audit
+record, then deleted by the retention sweep's `event_change_notices_age`
+rule ([retention-sweep.md](retention-sweep.md)). There is no route that
+reads it yet:
 
 ```sql
 SELECT decided_at, decided_by, fields, notify, queued
