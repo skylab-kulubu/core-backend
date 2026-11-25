@@ -181,12 +181,24 @@ func LayoutHTML(ctx context.Context, layout Layout, data PreviewData, verifyURL 
 	if bg == "" {
 		bg = "#ffffff"
 	}
+	faces, err := fontFaces(layout, assets)
+	if err != nil {
+		return "", err
+	}
+	fitText := `document.querySelectorAll('.fit').forEach(fit)
+document.querySelectorAll('[data-short]').forEach(function(el){if(over(el)){el.style.fontSize=el.dataset.font+'px';el.textContent=el.dataset.short;if(el.classList.contains('fit'))fit(el)}})`
+	if faces != "" {
+		// Measure the text once the embedded fonts are in, not in the
+		// fallback the page starts with.
+		fitText = `document.fonts.ready.then(function(){
+` + fitText + `
+})`
+	}
 	return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><style>
-@page{size:` + number(layout.Width) + `px ` + number(layout.Height) + `px;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif}.page{position:relative;width:` + number(layout.Width) + `px;height:` + number(layout.Height) + `px;overflow:hidden;background:` + html.EscapeString(bg) + `;` + background + `}.fit{display:flex;align-items:center;white-space:nowrap;overflow:hidden}
+` + faces + `@page{size:` + number(layout.Width) + `px ` + number(layout.Height) + `px;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif}.page{position:relative;width:` + number(layout.Width) + `px;height:` + number(layout.Height) + `px;overflow:hidden;background:` + html.EscapeString(bg) + `;` + background + `}.fit{display:flex;align-items:center;white-space:nowrap;overflow:hidden}
 </style></head><body><main class="page">` + body.String() + `</main><script>
 function over(el){return el.scrollWidth>el.clientWidth||el.scrollHeight>el.clientHeight}function fit(el){var size=parseFloat(getComputedStyle(el).fontSize);var min=parseFloat(el.dataset.minFont||'8');while(over(el)&&size>min){size-=1;el.style.fontSize=size+'px'}}
-document.querySelectorAll('.fit').forEach(fit)
-document.querySelectorAll('[data-short]').forEach(function(el){if(over(el)){el.style.fontSize=el.dataset.font+'px';el.textContent=el.dataset.short;if(el.classList.contains('fit'))fit(el)}})
+` + fitText + `
 </script></body></html>`, nil
 }
 
@@ -302,6 +314,9 @@ func (el Element) opacity() float64 {
 }
 
 func safeFont(font string) string {
+	if catalog, ok := catalogFontNamed(font); ok {
+		return catalog.Stack
+	}
 	switch strings.ToLower(strings.TrimSpace(font)) {
 	case "arial":
 		return `'Liberation Sans',Arial,sans-serif`
