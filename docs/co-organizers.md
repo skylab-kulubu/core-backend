@@ -158,10 +158,21 @@ Before turning it on: SkyNotify seeds both types with their templates and inbox 
 | Field | Who sees it |
 |---|---|
 | `coOrganizerTeams: ["WEBLAB"]` | anyone: the `co_organizer` teams alone, never a `helper` team or a person; left out when none |
+| `coOrganizerNames: "WEBLAB · Web Geliştirme, ARTLAB"` | anyone: those teams named as the site shows a team (`organizer.CoNames`, in the list's order); left out when none |
 | `coOrganizers: [{code, management, visibility}]` | who may edit the Event; left out when none |
 | `coOrganizerIds: ["<user id>"]` | who may edit the Event; left out when none |
 
 The stored lists are never in the JSON by themselves: `ProjectFor` copies them for who may edit, as the attendee note.
+
+## Outside the panel
+
+Only the `co_organizer` teams are ever named outside the panel (`event.PublicCoOrganizerTeams`); a `helper` team and a person never are (Yusuf S4). An Event without them answers and renders exactly as before: every field below is left out, no line is drawn.
+
+- **Event JSON** and the Event summary the Tickets, competitors and the door answer (`Resource`): `coOrganizerTeams`, `coOrganizerNames`.
+- **Ticket page** JSON: `coOrganizerTeams`, `coOrganizerNames`. Its **PDF**: an "Ortak düzenleyen" line under "Düzenleyen".
+- **Mails**: the Ticket's mail (`event.ticket-created`), the reminder, the attendance mails, the certificate mail and the attendance auto-finalization mail send `CoOrganizers` (the names, empty for none) beside `OwnerTeam`. No template uses it yet; one may ("WEBLAB ve ARTLAB iş birliğiyle").
+- **Certificate**: a certificate issued keeps the `co_organizer` teams of that moment (`certificates.co_organizer_teams`, migration `20261127120000`; an empty list is "none", NULL a certificate issued before); the public verification answers `coOrganizerNames` from it (left out for none and for an older one). A later change of the list or of a team's visibility leaves it as it was. Its PDF names the Owner team alone, as before.
+- **Certificate templates**: the order a template is found in stays (the Event's binding, the Owner team's binding, the club's). An Event's binding may also take a template of one of its Co-organizer teams (a `helper` too), for who may read that team's templates (`403` otherwise); another team's template stays `400`, as before.
 
 ## Data
 

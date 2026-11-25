@@ -11,6 +11,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/organizer"
 	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 )
 
@@ -204,6 +205,7 @@ func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
 	// edit the Event; anyone sees the teams shown as Co-organizer.
 	in.CoOrganizersView, in.CoOrganizerIDsView = nil, nil
 	in.CoOrganizerTeams = PublicCoOrganizerTeams(in)
+	in.CoOrganizerNames = organizer.CoNames(in.CoOrganizerTeams)
 	if p != nil && len(in.CoOrganizers)+len(in.CoOrganizerIDs) > 0 && s.authz.Allow(*p, s.eventResource(in, authz.TypeEvent), authz.Update) {
 		in.CoOrganizersView = slices.Clone(in.CoOrganizers)
 		in.CoOrganizerIDsView = slices.Clone(in.CoOrganizerIDs)

@@ -38,6 +38,11 @@ type Certificate struct {
 	JobID             *uuid.UUID `json:"jobId,omitempty"`
 	RevokedAt         *time.Time `json:"revokedAt,omitempty"`
 	IssuedAt          time.Time  `json:"issuedAt"`
+	// CoOrganizerTeams are the Event's Co-organizer teams shown outside the
+	// panel when it was issued (docs/co-organizers.md): its snapshot, as
+	// OwnerTeam, never changed after. Nil for a certificate issued before
+	// core kept it, empty for none. Only the public verification names them.
+	CoOrganizerTeams []string `json:"-"`
 	// Attendance is the attendance it was issued on; nil for a certificate
 	// issued before core kept it. Only the public verification shows it.
 	Attendance *AttendanceSnapshot `json:"-"`

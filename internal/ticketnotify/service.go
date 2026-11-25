@@ -474,6 +474,9 @@ func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]string {
 		// The template's "Düzenleyen" row: the organizer as the club shows
 		// it (organizer.Name), the club's name for YK, DK, ADMIN or none.
 		"OwnerTeam": organizer.Name(ev.OwnerTeam),
+		// The Co-organizer teams shown outside the panel, for a template
+		// that names them (docs/co-organizers.md); empty for none.
+		"CoOrganizers": organizer.CoNames(event.PublicCoOrganizerTeams(ev)),
 	}
 	if ev.StartDate != nil {
 		vars["EventDate"] = ev.StartDate.In(s.location).Format(dateLayout)

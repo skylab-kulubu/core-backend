@@ -95,10 +95,12 @@ func (s *Service) vars(kind string, ev event.Event, firstName string, rows []Mai
 		}
 	}
 	vars := map[string]any{
-		"FirstName":       firstName,
-		"EventName":       ev.Name,
-		"EventId":         ev.ID.String(),
-		"OwnerTeam":       organizer.Name(ev.OwnerTeam),
+		"FirstName": firstName,
+		"EventName": ev.Name,
+		"EventId":   ev.ID.String(),
+		"OwnerTeam": organizer.Name(ev.OwnerTeam),
+		// The Co-organizer teams shown outside the panel (docs/co-organizers.md).
+		"CoOrganizers":    organizer.CoNames(event.PublicCoOrganizerTeams(ev)),
 		"Attended":        c.attended,
 		"CountedTotal":    c.counted,
 		"MinRequired":     c.min,

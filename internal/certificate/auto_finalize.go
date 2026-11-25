@@ -188,6 +188,7 @@ func (s *service) mailAutoFinalized(ctx context.Context, ev event.Event, queued 
 	mailer.CertificateAutoFinalized(ctx, u.Email, strings.TrimSpace(u.FirstName+" "+u.LastName), map[string]string{
 		"FirstName": u.FirstName, "EventName": ev.Name, "EventId": ev.ID.String(),
 		"CertificateCount": strconv.Itoa(queued), "OwnerTeam": organizer.Name(ev.OwnerTeam),
+		"CoOrganizers": organizer.CoNames(event.PublicCoOrganizerTeams(ev)),
 	})
 }
 

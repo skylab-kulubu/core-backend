@@ -203,7 +203,7 @@ func TestMemberGetsOneNotificationBySubject(t *testing.T) {
 	if c.source != (mail.NotificationSource{Kind: "ticket", Ref: tk.ID.String()}) {
 		t.Fatalf("source %+v", c.source)
 	}
-	want := map[string]string{"EventId": e.ev.ID.String(), "EventName": "Kodlama Gecesi", "Venue": "D-Blok", "OwnerTeam": "WEBLAB", "EventDate": "10.11.2026 18:30"}
+	want := map[string]string{"EventId": e.ev.ID.String(), "EventName": "Kodlama Gecesi", "Venue": "D-Blok", "OwnerTeam": "WEBLAB", "EventDate": "10.11.2026 18:30", "CoOrganizers": ""}
 	for k, v := range want {
 		if c.vars[k] != v {
 			t.Fatalf("vars[%s] = %q, want %q (%v)", k, c.vars[k], v, c.vars)

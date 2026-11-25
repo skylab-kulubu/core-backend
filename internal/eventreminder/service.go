@@ -401,15 +401,17 @@ func (s *Service) recipientOf(ctx context.Context, m Mail) (recipient, bool, err
 // ticket page's directions link.
 func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]string {
 	vars := map[string]string{
-		"EventId":     ev.ID.String(),
-		"EventName":   ev.Name,
-		"StartsAt":    "",
-		"Venue":       strings.TrimSpace(ev.Location),
-		"OwnerTeam":   organizer.Name(ev.OwnerTeam),
-		"TicketUrl":   "",
-		"TicketQrUrl": "",
-		"TicketCode":  "",
-		"MapUrl":      ticketpage.DirectionsURL(ev.Location, ev.LocationAddress, ev.LocationLat, ev.LocationLng),
+		"EventId":   ev.ID.String(),
+		"EventName": ev.Name,
+		"StartsAt":  "",
+		"Venue":     strings.TrimSpace(ev.Location),
+		"OwnerTeam": organizer.Name(ev.OwnerTeam),
+		// The Co-organizer teams shown outside the panel (docs/co-organizers.md).
+		"CoOrganizers": organizer.CoNames(event.PublicCoOrganizerTeams(ev)),
+		"TicketUrl":    "",
+		"TicketQrUrl":  "",
+		"TicketCode":   "",
+		"MapUrl":       ticketpage.DirectionsURL(ev.Location, ev.LocationAddress, ev.LocationLat, ev.LocationLng),
 	}
 	if ev.StartDate != nil {
 		vars["StartsAt"] = ev.StartDate.In(s.location).Format(dateLayout)

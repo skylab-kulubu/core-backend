@@ -444,6 +444,7 @@ func (s *service) materializeVersion(ctx context.Context, ev event.Event, item t
 		RecipientName: name, RecipientEmail: email, EventName: ev.Name, OwnerTeam: ev.OwnerTeam,
 		VerifyURL: verifyURL, TemplateVersionID: &version.ID, TemplateSource: batch.TemplateSource,
 		PDFSHA256: hex.EncodeToString(sum[:]), BatchID: &batch.ID, JobID: &job.ID, Attendance: attendance,
+		CoOrganizerTeams: coOrganizerSnapshot(ev),
 	}
 	legacyPDF := pdf
 	if s.artifacts != nil {
