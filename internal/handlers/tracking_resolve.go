@@ -13,14 +13,14 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/commpref"
 )
 
-// TrackingResolvePath is where SkyMail asks whom a send may track (hub
-// ticket 16, skymail-backend README "core sözleşmesi"). The colon is
+// TrackingResolvePath is where SkyNotify asks whom a send may track (hub
+// ticket 16, skynotify-backend README "core sözleşmesi"). The colon is
 // literal; Fiber reads an unescaped one as a parameter.
 const TrackingResolvePath = "/internal/v1/communication-preferences/tracking\\:resolve"
 
 // TrackingResolveHandler serves POST
 // /internal/v1/communication-preferences/tracking:resolve. Only a service
-// account holding commpref.TrackingResolveRole (SkyMail's) may call it; the
+// account holding commpref.TrackingResolveRole (SkyNotify's) may call it; the
 // route is internal (middlewares.InternalRouteGuard) and needs no
 // COMMUNICATION_PREFERENCE_KEY.
 type TrackingResolveHandler struct {

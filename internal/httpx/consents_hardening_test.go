@@ -94,13 +94,13 @@ func TestGuestApplyConsentsAreBoundedAndCountedOnce(t *testing.T) {
 func TestRecruitmentPoolIsRefusedAsNotEnabled(t *testing.T) {
 	env := newConsentEnv(t, true)
 	forms := env.serviceToken(t, "forms", consent.RoleRecord)
-	skymail := env.serviceToken(t, "skymail", consent.RoleAudienceRead)
+	skynotify := env.serviceToken(t, "skynotify", consent.RoleAudienceRead)
 	for name, got := range map[string]jsonResponse{
 		"record": sendJSON(t, env.app, forms, fiber.MethodPost, "/v1/consents",
 			`{"purpose":"recruitment_pool","textVersion":"alim-havuzu-v1","email":"r@example.com"}`),
 		"withdrawal": sendJSON(t, env.app, forms, fiber.MethodPost, "/v1/consents/withdrawals", `{"purpose":"recruitment_pool","email":"r@example.com"}`),
 		"lookup":     sendJSON(t, env.app, forms, fiber.MethodPost, "/v1/consents/lookup", `{"purpose":"recruitment_pool","emails":["r@example.com"]}`),
-		"audience":   sendJSON(t, env.app, skymail, fiber.MethodGet, "/v1/consents/audience?purpose=recruitment_pool", ""),
+		"audience":   sendJSON(t, env.app, skynotify, fiber.MethodGet, "/v1/consents/audience?purpose=recruitment_pool", ""),
 		"guest apply": sendJSON(t, env.app, "", fiber.MethodPost, "/v1/events/"+env.eventID+"/applications/guest",
 			`{"firstName":"A","lastName":"B","email":"r@example.com","consents":["recruitment_pool"]}`),
 		"mine": sendJSON(t, env.app, groupToken(t, env.keys, memberSub), fiber.MethodPost, "/v1/users/me/consents", `{"purpose":"recruitment_pool"}`),
@@ -121,7 +121,7 @@ func (e consentEnv) withdrawURL(t *testing.T, email string) string {
 		`{"purpose":"event_invitations","email":"`+email+`","emailVerified":true}`); got.status != fiber.StatusCreated {
 		t.Fatalf("record %d %v", got.status, got.body)
 	}
-	audience := sendJSON(t, e.app, e.serviceToken(t, "skymail", consent.RoleAudienceRead), fiber.MethodGet, "/v1/consents/audience?purpose=event_invitations", "")
+	audience := sendJSON(t, e.app, e.serviceToken(t, "skynotify", consent.RoleAudienceRead), fiber.MethodGet, "/v1/consents/audience?purpose=event_invitations", "")
 	items, _ := audience.body["items"].([]any)
 	for _, item := range items {
 		if entry := item.(map[string]any); entry["email"] == email {

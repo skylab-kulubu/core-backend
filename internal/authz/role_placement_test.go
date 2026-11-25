@@ -55,10 +55,10 @@ func TestRolePlacementOf(t *testing.T) {
 		want               string
 	}{
 		{"/UYELER/ARGE/WEBLAB", "forms", "skyforms:access", ""},
-		{"/UYELER/ARGE/WEBLAB", "skymail", "skymail:access", ""},
-		{"/UYELER/ARGE/WEBLAB", "skymail", "skymail:templates:read", ""},
+		{"/UYELER/ARGE/WEBLAB", "skynotify", "skynotify:access", ""},
+		{"/UYELER/ARGE/WEBLAB", "skynotify", "skynotify:templates:read", ""},
 		{"/UYELER/ARGE/WEBLAB", "frontend-main", "cms:access", PlacementTopTeamAdminRole},
-		{"/UYELER/ARGE/WEBLAB", "skymail", "skymail:mails:write", PlacementTopTeamAdminRole},
+		{"/UYELER/ARGE/WEBLAB", "skynotify", "skynotify:mails:write", PlacementTopTeamAdminRole},
 		{"/UYELER/ARGE/WEBLAB", "forms", "skyforms:*", PlacementTopTeamAdminRole},
 		{"/UYELER/ARGE/WEBLAB", "core", "users:read", PlacementTopTeamAdminRole},
 		{"/UYELER/ARGE/WEBLAB", "forms", "skyforms:never-classified", PlacementTopTeamAdminRole},
@@ -67,7 +67,7 @@ func TestRolePlacementOf(t *testing.T) {
 		{"/UYELER/ARGE/WEBLAB/LIDERLER", "frontend-main", "cms:access", ""},
 		{"/UYELER/ARGE", "forms", "skyforms:access", PlacementArea},
 		{"/UYELER", "forms", "skyforms:access", PlacementMembersRoot},
-		{"/UYELER/YK", "skymail", "skymail:mails:approve", ""},
+		{"/UYELER/YK", "skynotify", "skynotify:mails:approve", ""},
 		{"/UYELER/YK/ARGE_LIDERI", "forms", "skyforms:access", PlacementPrivilegedSubgroup},
 		{"/ROLLER/FORMS-ACCESS", "forms", "skyforms:access", ""},
 		{"/UYELER/ARGE/YK", "frontend-main", "cms:access", PlacementTopTeamAdminRole}, // a Team named YK, no root

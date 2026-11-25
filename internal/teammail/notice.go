@@ -89,7 +89,7 @@ type NoticeQueue interface {
 	Backlog(ctx context.Context, now time.Time) (int, time.Duration, error)
 }
 
-// NoticeMailer sends the privilege notice (mail.SkyMail).
+// NoticeMailer sends the privilege notice (mail.SkyNotify).
 type NoticeMailer interface {
 	// PrivilegeNoticeConfigured reports whether the notice has a template;
 	// without one it is off.

@@ -237,7 +237,7 @@ func TestEventMailListForbiddenForMember(t *testing.T) {
 	}
 }
 
-func TestEventMailListSkymailForbiddenIs403(t *testing.T) {
+func TestEventMailListSkyNotifyForbiddenIs403(t *testing.T) {
 	t.Parallel()
 	sky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/mailing_lists" || r.Method != http.MethodPost {
@@ -252,7 +252,7 @@ func TestEventMailListSkymailForbiddenIs403(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lists := &mail.SkyMail{BaseURL: sky.URL, Tokens: mail.StaticToken("tok"), HTTP: sky.Client()}
+	lists := &mail.SkyNotify{BaseURL: sky.URL, Tokens: mail.StaticToken("tok"), HTTP: sky.Client()}
 	app := mailApp(t, weblabLeader(), events, ticket.NewMemoryStore(), user.NewMemoryStore(), lists)
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/v1/events/"+ev.ID.String()+"/mail-list", nil))
 	if err != nil {
@@ -273,12 +273,12 @@ func TestEventMailListSkymailForbiddenIs403(t *testing.T) {
 		t.Fatalf("problem %+v", problem)
 	}
 	detail, _ := problem["detail"].(string)
-	if !strings.Contains(detail, "skymail:lists:write") {
+	if !strings.Contains(detail, "skynotify:lists:write") {
 		t.Fatalf("detail %q", detail)
 	}
 }
 
-func TestEventMailListSkymailOtherStatusIs502(t *testing.T) {
+func TestEventMailListSkyNotifyOtherStatusIs502(t *testing.T) {
 	t.Parallel()
 	sky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -290,7 +290,7 @@ func TestEventMailListSkymailOtherStatusIs502(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lists := &mail.SkyMail{BaseURL: sky.URL, Tokens: mail.StaticToken("tok"), HTTP: sky.Client()}
+	lists := &mail.SkyNotify{BaseURL: sky.URL, Tokens: mail.StaticToken("tok"), HTTP: sky.Client()}
 	app := mailApp(t, weblabLeader(), events, ticket.NewMemoryStore(), user.NewMemoryStore(), lists)
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/v1/events/"+ev.ID.String()+"/mail-list", nil))
 	if err != nil {

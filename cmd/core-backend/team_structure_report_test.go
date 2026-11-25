@@ -105,8 +105,8 @@ func teamStructureRealm(t *testing.T) *identity.Memory {
 	mustRole(t, dir.AddGroupClientRole(ctx, sosyal.ID, identity.ClientRole{Role: "offline_access"}))
 	// (j): an app role, and an app role holding an admin role.
 	mustRole(t, dir.AddGroupClientRole(ctx, weblab, identity.ClientRole{ClientID: "forms", Role: "skyforms:access"}))
-	dir.PutCompositeRole(identity.ClientRole{ClientID: "skymail", Role: "skymail:access"}, identity.ClientRole{ClientID: "skymail", Role: "skymail:mails:send"})
-	mustRole(t, dir.AddGroupClientRole(ctx, gezi.ID, identity.ClientRole{ClientID: "skymail", Role: "skymail:access"}))
+	dir.PutCompositeRole(identity.ClientRole{ClientID: "skynotify", Role: "skynotify:access"}, identity.ClientRole{ClientID: "skynotify", Role: "skynotify:mails:send"})
+	mustRole(t, dir.AddGroupClientRole(ctx, gezi.ID, identity.ClientRole{ClientID: "skynotify", Role: "skynotify:access"}))
 	mustRole(t, dir.AddGroupClientRole(ctx, agcLeaders.ID, identity.ClientRole{ClientID: "core", Role: "users:read"}))
 	// The report starts from here: whatever it calls is recorded anew.
 	dir.Ops = nil
@@ -168,14 +168,14 @@ func TestTeamStructureReport(t *testing.T) {
 		{"(b')", []string{": 1\n", "/UYELER/ARGE/WEBLAB/LIDERLER-ESKI  id=", `name "LIDERLER-ESKI"`}, nil},
 		{"(c)", []string{": 1\n", "AGC: 2 Groups", "/UYELER/ARGE/WEBLAB/AGC  id=", "/UYELER/SOSYAL/agc  id="}, []string{"LIDERLER:", "ADMIN:"}},
 		{"(d)", []string{"/UYELER/SOSYAL/agc  id=", "/UYELER/YK/BASKAN  id="}, []string{"WEBLAB  id"}},
-		{"(e)", []string{": 3\n", "/UYELER/SOSYAL/GEZI  id=", "composite skymail:skymail:access holds admin role skymail:skymail:mails:send  Teams at or below: 1", "/UYELER/ARGE/AILAB  id=", "admin role frontend-main:cms:access  Teams at or below: 1", "/UYELER/SOSYAL  id=", "realm role offline_access  Teams at or below: 2"}, nil},
+		{"(e)", []string{": 3\n", "/UYELER/SOSYAL/GEZI  id=", "composite skynotify:skynotify:access holds admin role skynotify:skynotify:mails:send  Teams at or below: 1", "/UYELER/ARGE/AILAB  id=", "admin role frontend-main:cms:access  Teams at or below: 1", "/UYELER/SOSYAL  id=", "realm role offline_access  Teams at or below: 2"}, nil},
 		{"(f)", []string{": 1\n", "/UYELER/ARGE/WEBLAB/AGC/DEEP/DEEPER  id=", "3 levels below its top Team"}, nil},
 		{"(g)", []string{": 1\n", "/UYELER/ARGE/AILAB  id="}, []string{"WEBLAB"}},
 		{"(i)", []string{": 1\n", "/UYELER/YK/BASKAN  id=", "reads as under the Privileged root /UYELER/YK"}, nil},
 		{"(j)", []string{
 			"  /UYELER/ARGE/WEBLAB  id=", "top team  forms:skyforms:access  app  direct",
 			"! /UYELER/ARGE/AILAB  id=", "frontend-main:cms:access  admin  direct",
-			"! /UYELER/SOSYAL/GEZI  id=", "skymail:skymail:access  app  direct, composite skymail:skymail:access holds admin role skymail:skymail:mails:send",
+			"! /UYELER/SOSYAL/GEZI  id=", "skynotify:skynotify:access  app  direct, composite skynotify:skynotify:access holds admin role skynotify:skynotify:mails:send",
 			"! /UYELER/ARGE/WEBLAB/AGC/KOORDINATORLER  id=", "sub-team leader group  core:users:read  admin",
 		}, []string{"offline_access"}},
 		{"(h)", []string{

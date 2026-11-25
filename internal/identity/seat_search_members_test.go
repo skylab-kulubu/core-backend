@@ -217,7 +217,7 @@ func TestMemberSeatSearchRefusesWhoIsNoMember(t *testing.T) {
 	for _, seat := range [][]identity.ClientRole{
 		{{ClientID: "forms", Role: "skyforms:*"}},
 		{{ClientID: "forms", Role: "skyforms:read-all"}},
-		{{ClientID: "skymail", Role: "skyforms:access"}},
+		{{ClientID: "skynotify", Role: "skyforms:access"}},
 		nil,
 	} {
 		if got, err := r.svc.ListUsers(context.Background(), aMember(), "ada", seat...); !errors.Is(err, identity.ErrForbidden) {

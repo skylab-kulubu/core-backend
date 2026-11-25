@@ -46,7 +46,7 @@ func renderTeamRows(rows []personTeamRow) string {
 	return strings.Join(parts, " ")
 }
 
-// SkyMail (audience:read) and Forms (users:read) ask for a person's Teams
+// SkyNotify (audience:read) and Forms (users:read) ask for a person's Teams
 // with TEAM_DELEGATION off, as in production, and on, and get the same
 // answer: a Leader's or a coordinator's Team with every Sub-team (a
 // protected one too: the answer writes nothing), a Sub-team Leader's own
@@ -57,7 +57,7 @@ func TestPersonTeamsRoute(t *testing.T) {
 	for _, on := range []bool{false, true} {
 		env := newDelegationEnv(t, delegationSetup{on: on})
 		web := "WEBLAB=leader WEBLAB/FRONT=leader WEBLAB/SECURE=leader"
-		for _, token := range []string{env.serviceToken(t, "skymail", commpref.AudienceRole), env.serviceToken(t, "forms", "users:read", "ticket:forms")} {
+		for _, token := range []string{env.serviceToken(t, "skynotify", commpref.AudienceRole), env.serviceToken(t, "forms", "users:read", "ticket:forms")} {
 			for name, want := range map[string]string{
 				"webLeader":   web,
 				"webCoord":    web,
@@ -88,7 +88,7 @@ func TestPersonTeamsRoute(t *testing.T) {
 				}
 			}
 		}
-		got := audienceCall(t, env.app, env.serviceToken(t, "skymail", commpref.AudienceRole), fiber.MethodGet, personTeamsPath(env.people["webLeader"].String()), "")
+		got := audienceCall(t, env.app, env.serviceToken(t, "skynotify", commpref.AudienceRole), fiber.MethodGet, personTeamsPath(env.people["webLeader"].String()), "")
 		var answer struct {
 			Teams []personTeamRow `json:"teams"`
 		}
@@ -98,7 +98,7 @@ func TestPersonTeamsRoute(t *testing.T) {
 		if team := answer.Teams[0]; team.ID != env.ids["/UYELER/ARGE/WEBLAB"] || team.Code != "WEBLAB" || team.DisplayName["tr"] != "WEBLAB" || team.Path != "/UYELER/ARGE/WEBLAB" {
 			t.Fatalf("on=%v: %+v", on, team)
 		}
-		unknown := audienceCall(t, env.app, env.serviceToken(t, "skymail", commpref.AudienceRole), fiber.MethodGet, personTeamsPath(uuid.NewString()), "")
+		unknown := audienceCall(t, env.app, env.serviceToken(t, "skynotify", commpref.AudienceRole), fiber.MethodGet, personTeamsPath(uuid.NewString()), "")
 		if unknown.status != fiber.StatusOK || string(unknown.raw) != `{"teams":[]}` {
 			t.Fatalf("on=%v unknown: %d %s", on, unknown.status, unknown.raw)
 		}
@@ -120,12 +120,12 @@ func TestPersonTeamsAuthorization(t *testing.T) {
 			"sub": leader, "azp": "admin", "groups": []string{"/UYELER/ARGE/WEBLAB/LIDERLER"},
 			"resource_access": map[string]any{"core": map[string]any{"roles": []string{commpref.AudienceRole, "users:read"}}},
 		}), "person_teams_service_only"},
-		"service tracking": {env.serviceToken(t, "skymail", commpref.TrackingResolveRole), "person_teams_role_missing"},
+		"service tracking": {env.serviceToken(t, "skynotify", commpref.TrackingResolveRole), "person_teams_role_missing"},
 		"service other":    {env.serviceToken(t, "forms", "ticket:forms", "url:forms"), "person_teams_role_missing"},
 		// users:read is shared: only Forms' service account may use it here.
 		"CMS with users:read":     {env.serviceToken(t, "cms-service", "users:read"), "person_teams_role_missing"},
 		"another with users:read": {env.serviceToken(t, "profile-sync", "users:read"), "person_teams_role_missing"},
-		"service no role":         {env.serviceToken(t, "skymail"), "person_teams_role_missing"},
+		"service no role":         {env.serviceToken(t, "skynotify"), "person_teams_role_missing"},
 	} {
 		got := audienceCall(t, env.app, c.token, fiber.MethodGet, personTeamsPath(leader), "")
 		if got.status != fiber.StatusForbidden || !strings.Contains(string(got.raw), c.code) || strings.Contains(string(got.raw), "WEBLAB") {
@@ -135,12 +135,12 @@ func TestPersonTeamsAuthorization(t *testing.T) {
 	if got := audienceCall(t, env.app, "", fiber.MethodGet, personTeamsPath(leader), ""); got.status != fiber.StatusUnauthorized {
 		t.Fatalf("anonymous: %d %s", got.status, got.raw)
 	}
-	token := env.serviceToken(t, "skymail", commpref.AudienceRole)
+	token := env.serviceToken(t, "skynotify", commpref.AudienceRole)
 	if got := audienceCall(t, env.app, token, fiber.MethodGet, personTeamsPath("not-an-id"), ""); got.status != fiber.StatusBadRequest || !strings.Contains(string(got.raw), "person_teams_sub_invalid") {
 		t.Fatalf("bad sub: %d %s", got.status, got.raw)
 	}
 	none := newDelegationEnv(t, delegationSetup{none: true})
-	if got := audienceCall(t, none.app, none.serviceToken(t, "skymail", commpref.AudienceRole), fiber.MethodGet, personTeamsPath(leader), ""); got.status != fiber.StatusServiceUnavailable || !strings.Contains(string(got.raw), "person_teams_unavailable") {
+	if got := audienceCall(t, none.app, none.serviceToken(t, "skynotify", commpref.AudienceRole), fiber.MethodGet, personTeamsPath(leader), ""); got.status != fiber.StatusServiceUnavailable || !strings.Contains(string(got.raw), "person_teams_unavailable") {
 		t.Fatalf("no Team reads: %d %s", got.status, got.raw)
 	}
 }
@@ -151,7 +151,7 @@ func TestPersonTeamsIsNotOnTheEdge(t *testing.T) {
 	env := newDelegationEnv(t, delegationSetup{})
 	path := personTeamsPath(env.people["webLeader"].String())
 	for _, header := range []string{"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Forwarded", "X-Real-Ip"} {
-		for _, token := range []string{env.serviceToken(t, "skymail", commpref.AudienceRole), ""} {
+		for _, token := range []string{env.serviceToken(t, "skynotify", commpref.AudienceRole), ""} {
 			req := httptest.NewRequest(fiber.MethodGet, path, nil)
 			if token != "" {
 				req.Header.Set("Authorization", "Bearer "+token)
@@ -202,7 +202,7 @@ func TestPersonTeamsDirectoryDown(t *testing.T) {
 	deps.ManagedTeams = identity.NewTeamDelegation(authz.DefaultPolicy(), down, down, identity.TeamDelegationOptions{})
 	app := httpx.New(deps)
 	token := keys.Token(t, jwt.MapClaims{
-		"sub": uuid.NewString(), "azp": "skymail", "client_id": "skymail",
+		"sub": uuid.NewString(), "azp": "skynotify", "client_id": "skynotify",
 		"resource_access": map[string]any{"core": map[string]any{"roles": []string{commpref.AudienceRole}}},
 	})
 	got := audienceCall(t, app, token, fiber.MethodGet, personTeamsPath(leader.String()), "")
