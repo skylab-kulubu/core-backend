@@ -2,7 +2,9 @@ package certificate
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
@@ -116,6 +118,13 @@ func (s *service) AssetPreview(ctx context.Context, p authz.Principal, id uuid.U
 	if err := checkBackgroundPDF(asset.Data); err != nil {
 		return AssetPreview{}, err
 	}
+	// The editor asks for the same page again and again; pdf-tools has two
+	// workers, so a drawn page is kept (by the PDF's hash and the size).
+	sum := sha256.Sum256(asset.Data)
+	key := fmt.Sprintf("%x|%d", sum, maxPx)
+	if png, ok := s.pdfCache.rendered.get(key); ok {
+		return AssetPreview{ContentType: "image/png", Data: png}, nil
+	}
 	png, err := s.pdfTools.Render(ctx, asset.Data, maxPx)
 	if err != nil {
 		s.countPDFToolsError(pdfOpRender, err)
@@ -125,12 +134,15 @@ func (s *service) AssetPreview(ctx context.Context, p authz.Principal, id uuid.U
 		s.pdfToolsErrors.add(pdfOpRender)
 		return AssetPreview{}, pdfToolsUnavailable(errors.New("pdf-tools: render answered no PNG"))
 	}
+	s.pdfCache.rendered.put(key, png)
 	return AssetPreview{ContentType: "image/png", Data: png}, nil
 }
 
 // allowedAsset reads a certificate asset (or a legacy Media, which the
 // editor also takes) for p: who uploaded it, or who may edit a template
-// that links it. Another purpose's Media is not found.
+// that links it. Another purpose's Media, and one p may not read, is not
+// found: as a Media link refuses one that is not the caller's, it does not
+// say the Media exists.
 func (s *service) allowedAsset(ctx context.Context, p authz.Principal, id uuid.UUID) (Asset, error) {
 	origins, ok := s.assets.(assetOrigins)
 	if !ok {
@@ -148,7 +160,7 @@ func (s *service) allowedAsset(ctx context.Context, p authz.Principal, id uuid.U
 		return Asset{}, err
 	}
 	if !allowed {
-		return Asset{}, ErrForbidden
+		return Asset{}, ErrNotFound
 	}
 	asset, err := s.decrypted(s.assets).ReadAsset(ctx, id)
 	if errors.Is(err, media.ErrNotFound) {

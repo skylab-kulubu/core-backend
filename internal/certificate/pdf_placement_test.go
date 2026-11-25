@@ -221,6 +221,14 @@ func TestPlacePDFRefusesAndCounts(t *testing.T) {
 	if _, err := s.placePDF(t.Context(), layout, []byte("%PDF-1.7")); err == nil {
 		t.Fatal("no error")
 	}
+	// A request its caller cancelled is not pdf-tools' failure.
+	cancelled := &service{pdfTools: &recordingPDFTools{err: pdfToolsUnavailable(fmt.Errorf("post: %w", context.Canceled))}, pdfCache: newPDFCaches()}
+	if _, err := cancelled.placePDF(t.Context(), layout, []byte("%PDF-1.7")); err == nil {
+		t.Fatal("no error")
+	}
+	if got := cancelled.pdfToolsErrors.prometheus(); !strings.Contains(got, `core_certificate_pdf_tools_errors_total{op="inspect"} 0`) {
+		t.Fatalf("a cancelled call was counted:\n%s", got)
+	}
 	if got := s.pdfToolsErrors.prometheus(); !strings.Contains(got, `core_certificate_pdf_tools_errors_total{op="inspect"} 1`) ||
 		!strings.Contains(got, `core_certificate_pdf_tools_errors_total{op="place"} 0`) {
 		t.Fatalf("metrics:\n%s", got)

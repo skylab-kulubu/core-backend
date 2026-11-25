@@ -64,7 +64,7 @@ A layout with a `backgroundPlacement` and a PDF background is placed by pdf-tool
 - **Issuing** a certificate, the Event preview and every other print of a published version read the version's placed copy and never call pdf-tools; a copy that does not match its SHA-256 is not printed. A version published before placed copies (2026-11-25) prints its PDF as it was published, by Gotenberg's scale above, its placement not applied: a published version does not change how it looks.
 - **The draft preview** places the PDF on the fly; core keeps the placed PDFs in memory (at most 64 and 200 MiB, by the PDF's SHA-256, the page and the box).
 
-`core_certificate_pdf_tools_errors_total{op}` (`/v1/metrics`) counts the calls that failed on pdf-tools' side, by operation (`inspect`, `place`, `render`); a PDF it refuses is not counted.
+`core_certificate_pdf_tools_errors_total{op}` (`/v1/metrics`) counts the calls that failed on pdf-tools' side, by operation (`inspect`, `place`, `render`); a PDF it refuses, and a request its caller cancelled, is not counted.
 
 ## Background placement
 
@@ -94,7 +94,7 @@ An image background with a placement is drawn as an `<img>` in that box, under e
 
 ## Certificate assets
 
-The template editor reads a background's size and draws it from core. Both routes take a certificate asset (`certificate_asset`) or a Media uploaded without a purpose (`legacy`); another purpose's Media is `404`. They answer the Media's uploader, and whoever may edit a template (its draft or a published version) that links the Media; anyone else is `403`.
+The template editor reads a background's size and draws it from core. Both routes take a certificate asset (`certificate_asset`) or a Media uploaded without a purpose (`legacy`); another purpose's Media is `404`. They answer the Media's uploader, and whoever may edit a template (its draft or a published version) that links the Media; anyone else gets `404` too, as a Media link that is not the caller's does not say the Media exists.
 
 `GET /v1/certificate-assets/{id}/info` answers the asset's size in layout px:
 
@@ -104,6 +104,6 @@ The template editor reads a background's size and draws it from core. Both route
 
 A PDF's is its first page's visible box (CropBox, turned by `/Rotate`) in pt × 96/72, with its page count and the texts pdf-tools found (`/v1/inspect`); an image's is its natural size (`pages` 1, `textCount` 0). An encrypted PDF is `400 background_pdf_encrypted`; without pdf-tools a PDF is `503 pdf_tools_unavailable`.
 
-`GET /v1/certificate-assets/{id}/preview?max=2000` answers a PDF's page as a PNG whose long side is `max` px (16–4000, default 2000; otherwise `400`), drawn by pdf-tools (`/v1/render`), and an image as itself, with its own type. Every answer has `X-Content-Type-Options: nosniff`; an SVG also `Content-Security-Policy: sandbox`.
+`GET /v1/certificate-assets/{id}/preview?max=2000` answers a PDF's page as a PNG whose long side is `max` px (16–4000, default 2000; otherwise `400`), drawn by pdf-tools (`/v1/render`; core keeps the drawn pages in memory, at most 32 and 64 MiB, by the PDF's SHA-256 and `max`), and an image as itself, with its own type. Every answer has `X-Content-Type-Options: nosniff`; an SVG also `Content-Security-Policy: sandbox`.
 
 Both answer `Cache-Control: private, max-age=300`: an asset does not change, and only the editor's own browser keeps it.

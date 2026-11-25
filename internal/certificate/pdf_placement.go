@@ -19,6 +19,9 @@ const (
 	placedCacheEntries = 64
 	placedCacheBytes   = 200 << 20
 	infoCacheEntries   = 256
+	// The PNGs of PDF assets the editor draws (asset preview).
+	renderedCacheEntries = 32
+	renderedCacheBytes   = 64 << 20
 	// maxBackgroundPDFBytes is the largest PDF background: the catalog's
 	// and pdf-tools' bound.
 	maxBackgroundPDFBytes = 20 << 20
@@ -119,14 +122,16 @@ func (c *lru[V]) len() int {
 
 // pdfCaches are a service's caches of pdf-tools' answers.
 type pdfCaches struct {
-	info   *lru[PDFInfo]
-	placed *lru[[]byte]
+	info     *lru[PDFInfo]
+	placed   *lru[[]byte]
+	rendered *lru[[]byte]
 }
 
 func newPDFCaches() pdfCaches {
 	return pdfCaches{
-		info:   newLRU(infoCacheEntries, infoCacheEntries, func(PDFInfo) int { return 1 }),
-		placed: newLRU(placedCacheEntries, placedCacheBytes, func(b []byte) int { return len(b) }),
+		info:     newLRU(infoCacheEntries, infoCacheEntries, func(PDFInfo) int { return 1 }),
+		placed:   newLRU(placedCacheEntries, placedCacheBytes, func(b []byte) int { return len(b) }),
+		rendered: newLRU(renderedCacheEntries, renderedCacheBytes, func(b []byte) int { return len(b) }),
 	}
 }
 
@@ -146,10 +151,11 @@ func checkBackgroundPDF(data []byte) error {
 	return nil
 }
 
-// countPDFToolsError counts err when pdf-tools failed on its side.
+// countPDFToolsError counts err when pdf-tools failed on its side. A call
+// its caller gave up on (the request was cancelled) is not pdf-tools'.
 func (s *service) countPDFToolsError(op string, err error) {
 	var unavailable *UnavailableError
-	if errors.As(err, &unavailable) && unavailable.Code == CodePDFToolsUnavailable {
+	if errors.As(err, &unavailable) && unavailable.Code == CodePDFToolsUnavailable && !errors.Is(err, context.Canceled) {
 		s.pdfToolsErrors.add(op)
 	}
 }

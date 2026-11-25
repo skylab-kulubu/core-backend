@@ -305,14 +305,21 @@ func TestCertificateAssetInfoAndPreview(t *testing.T) {
 	if err != nil || preview.ContentType != "image/png" || !bytes.HasPrefix(preview.Data, []byte("\x89PNG")) || tools.renderParams[0]["maxPx"] != 1200.0 {
 		t.Fatalf("preview %v %q %v", err, preview.ContentType, tools.renderParams)
 	}
+	// The same page at the same size is drawn once; another size again.
+	if _, err := c.service.AssetPreview(ctx, uploader, pdfID, 1200); err != nil || tools.rendered.Load() != 1 {
+		t.Fatalf("second preview: %v, renders %d", err, tools.rendered.Load())
+	}
+	if _, err := c.service.AssetPreview(ctx, uploader, pdfID, 600); err != nil || tools.rendered.Load() != 2 {
+		t.Fatalf("another size: %v, renders %d", err, tools.rendered.Load())
+	}
 	if _, err := c.service.AssetPreview(ctx, uploader, pdfID, 5000); !errors.Is(err, certificate.ErrInvalid) {
 		t.Fatalf("max over 4000: %v", err)
 	}
 
-	// Another member may not read it, until a template they may edit links
-	// it; another product's Media is not found.
+	// Another member does not find it, until a template they may edit
+	// links it; another product's Media is not found either.
 	stranger := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
-	if _, err := c.service.AssetInfo(ctx, stranger, pdfID); !errors.Is(err, certificate.ErrForbidden) {
+	if _, err := c.service.AssetInfo(ctx, stranger, pdfID); !errors.Is(err, certificate.ErrNotFound) {
 		t.Fatalf("stranger: %v", err)
 	}
 	c.template(t, pdfID) // a WEBLAB template
@@ -320,7 +327,7 @@ func TestCertificateAssetInfoAndPreview(t *testing.T) {
 		t.Fatalf("a WEBLAB leader who may edit the template: %v", err)
 	}
 	other := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/ARTLAB/LIDERLER"}}
-	if _, err := c.service.AssetInfo(ctx, other, pdfID); !errors.Is(err, certificate.ErrForbidden) {
+	if _, err := c.service.AssetInfo(ctx, other, pdfID); !errors.Is(err, certificate.ErrNotFound) {
 		t.Fatalf("another team: %v", err)
 	}
 	answer, err := c.mediaStore.Create(ctx, media.Media{Name: "a.pdf", Type: "application/pdf", Kind: media.KindFile, Key: "files/a", UploadedBy: uuid.New(), Purpose: media.PurposeAnswerFile})

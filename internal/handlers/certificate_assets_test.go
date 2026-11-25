@@ -21,7 +21,7 @@ import (
 // GET /v1/certificate-assets/{id}/info and …/preview: an SVG is answered
 // as itself, sandboxed and not sniffed, kept five minutes by the caller's
 // browser only; a PDF without pdf-tools is a 503 problem with
-// pdf_tools_unavailable; a bad max is 400; someone else's asset is 403.
+// pdf_tools_unavailable; a bad max is 400; someone else's asset is 404.
 func TestCertificateAssetsHTTP(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -84,7 +84,7 @@ func TestCertificateAssetsHTTP(t *testing.T) {
 	if status, _, _, _ := call(owner, "/v1/certificate-assets/"+svg.String()+"/preview?max=abc"); status != fiber.StatusBadRequest {
 		t.Fatalf("bad max: %d", status)
 	}
-	if status, _, _, _ := call(authn.Identity{ID: uuid.New()}, "/v1/certificate-assets/"+svg.String()+"/info"); status != fiber.StatusForbidden {
+	if status, _, _, _ := call(authn.Identity{ID: uuid.New()}, "/v1/certificate-assets/"+svg.String()+"/info"); status != fiber.StatusNotFound {
 		t.Fatalf("someone else: %d", status)
 	}
 }
