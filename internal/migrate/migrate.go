@@ -1959,6 +1959,24 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		AND to_regclass('public.attendance_mails_recorded_key') IS NOT NULL
 		AND to_regclass('public.attendance_mails_due_idx') IS NOT NULL
 		AND to_regclass('public.attendance_mails_done_idx') IS NOT NULL`,
+	// The management term job's removal (docs/management-membership-terms.md):
+	// the system basis takes member.remove, and the runs' two columns with
+	// the removal's check.
+	20261126101700: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%membership.term.expired%member.remove%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.management_term_runs') AND conname = 'management_term_runs_removal_check' AND convalidated
+		)
+		AND (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'management_term_runs' AND column_name IN ('removal', 'removed')
+		) = 2`,
 	// The offline door's scan moment (docs/offline-door.md): the column on
 	// both door tables.
 	20261126102700: `
