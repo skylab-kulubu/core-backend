@@ -183,6 +183,13 @@ type Event struct {
 	// it does only while the Event is cancelled: an update body that sends
 	// cancelReason (Patch) sets it.
 	cancelReasonSent bool
+	// notifyHolders is the editor's answer to "tell the Ticket holders?"
+	// for this update (Patch.NotifyTicketHolders); nil when the body did
+	// not say, which tells them, as before the question
+	// (docs/event-updated-notification.md#the-editors-choice).
+	notifyHolders *bool
+	// changedBy is who saves the update, for the record of that answer.
+	changedBy *uuid.UUID
 }
 
 type GalleryImage struct {

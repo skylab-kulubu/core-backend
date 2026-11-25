@@ -50,26 +50,85 @@ func readUpdateBefore(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*updateBefo
 	return &b, nil
 }
 
-// queueUpdateNotification queues the Event's change for its Ticket holders
-// when its start, end or location is not what before read. The row gathers
-// the changes until the worker first takes it: while one waits, a later
-// change adds no row (it keeps the first change's before), and the worker
-// reads the Event as it is when it sends. A later change still writes the
-// waiting row (DO UPDATE, a no-op), so the row stays locked until the change
-// commits: a worker claiming it in between (FOR UPDATE SKIP LOCKED) skips it
-// instead of reading the Event before the change and losing it.
-func queueUpdateNotification(ctx context.Context, tx pgx.Tx, id uuid.UUID, before *updateBefore) error {
+// Fields of a time or place change, as told_fields and the record of the
+// editor's answer name them.
+const (
+	FieldStart    = "start"
+	FieldEnd      = "end"
+	FieldLocation = "location"
+)
+
+// changedTimeOrPlace reads which of the Event's start, end and location the
+// update in tx changed from before; none when the Event was not news to
+// its holders (a draft, cancelled or over).
+func changedTimeOrPlace(ctx context.Context, tx pgx.Tx, id uuid.UUID, before *updateBefore) ([]string, error) {
 	if before == nil || !before.told {
-		return nil
+		return nil, nil
 	}
+	var start, end, place bool
+	err := tx.QueryRow(ctx, `
+		SELECT start_date IS DISTINCT FROM $2::timestamptz, end_date IS DISTINCT FROM $3::timestamptz,
+			btrim(location) <> btrim($4::text)
+		FROM events WHERE id = $1`, id, before.start, before.end, before.location).Scan(&start, &end, &place)
+	if err != nil {
+		return nil, err
+	}
+	var fields []string
+	for _, f := range []struct {
+		changed bool
+		name    string
+	}{{start, FieldStart}, {end, FieldEnd}, {place, FieldLocation}} {
+		if f.changed {
+			fields = append(fields, f.name)
+		}
+	}
+	return fields, nil
+}
+
+// noticeChanges queues the update's change of time or place for the
+// Event's Ticket holders when the editor did not say no and the
+// Notification is on, and records the editor's answer
+// (event_change_notice_choices): who saved which change, what they said,
+// whether a notice was queued. A change that is no news (a draft's, an
+// ended Event's, or one that left time and place as they were) records
+// nothing.
+func (s *PostgresStore) noticeChanges(ctx context.Context, tx pgx.Tx, e Event, before *updateBefore) error {
+	fields, err := changedTimeOrPlace(ctx, tx, e.ID, before)
+	if err != nil || len(fields) == 0 {
+		return err
+	}
+	queued := s.notifyUpdated.Load() && (e.notifyHolders == nil || *e.notifyHolders)
+	if queued {
+		if err := queueUpdateNotification(ctx, tx, e.ID, before, fields); err != nil {
+			return err
+		}
+	}
+	// decided_by names a users row or nobody: a principal without one (a
+	// service account) is recorded as nobody rather than refusing the save.
+	_, err = tx.Exec(ctx, `
+		INSERT INTO event_change_notice_choices (id, event_id, decided_by, fields, notify, queued)
+		VALUES ($1, $2, (SELECT u.id FROM users u WHERE u.id = $3::uuid), $4, $5, $6)`,
+		uuid.New(), e.ID, e.changedBy, fields, e.notifyHolders, queued)
+	return err
+}
+
+// queueUpdateNotification queues the Event's change for its Ticket holders.
+// The row gathers the changes until the worker first takes it: while one
+// waits, a later change adds no row (it keeps the first change's before)
+// and adds the fields it changed to the row's told_fields, and the worker
+// reads the Event as it is when it sends. The later change's write of the
+// waiting row also keeps it locked until the change commits: a worker
+// claiming it in between (FOR UPDATE SKIP LOCKED) skips it instead of
+// reading the Event before the change and losing it.
+func queueUpdateNotification(ctx context.Context, tx pgx.Tx, id uuid.UUID, before *updateBefore, fields []string) error {
 	_, err := tx.Exec(ctx, `
-		INSERT INTO event_update_notifications (id, event_id, before_start_date, before_end_date, before_location, next_attempt_at)
-		SELECT $1, e.id, $3::timestamptz, $4::timestamptz, $5::text, now() + make_interval(secs => $6)
+		INSERT INTO event_update_notifications (id, event_id, before_start_date, before_end_date, before_location, told_fields, next_attempt_at)
+		SELECT $1, e.id, $3::timestamptz, $4::timestamptz, $5::text, $6::text[], now() + make_interval(secs => $7)
 		FROM events e
 		WHERE e.id = $2 AND e.status = 'published'
-		  AND (e.start_date IS DISTINCT FROM $3::timestamptz OR e.end_date IS DISTINCT FROM $4::timestamptz
-			OR btrim(e.location) <> btrim($5::text))
-		ON CONFLICT (event_id) WHERE started_at IS NULL DO UPDATE SET event_id = EXCLUDED.event_id`,
-		uuid.New(), id, before.start, before.end, before.location, UpdateNotificationWindow.Seconds())
+		ON CONFLICT (event_id) WHERE started_at IS NULL DO UPDATE SET told_fields = ARRAY(
+			SELECT DISTINCT f FROM unnest(COALESCE(event_update_notifications.told_fields, $8::text[]) || EXCLUDED.told_fields) f ORDER BY f)`,
+		uuid.New(), id, before.start, before.end, before.location, fields, UpdateNotificationWindow.Seconds(),
+		[]string{FieldStart, FieldEnd, FieldLocation})
 	return err
 }

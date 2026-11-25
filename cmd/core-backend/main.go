@@ -1075,6 +1075,7 @@ func main() {
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
+		PublicPageOrigin: certificatePageOrigin(os.Getenv),
 		Templates:        certs,
 		Jobs:             certs,
 		Artifacts:        blobs,
