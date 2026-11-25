@@ -139,4 +139,13 @@ type Store interface {
 	// Session is not a current Session of the Event on a current day.
 	// autoFinalize nil keeps the automatic finalization switch.
 	SetCertificateRule(ctx context.Context, eventID uuid.UUID, rule string, minCount *int, autoFinalize *bool, flags []SessionCertificateFlags) error
+	// SetCoOrganizers replaces the Event's Co-organizer teams and people
+	// with w's in one transaction, under the Event's row lock, and answers
+	// the Event (docs/co-organizers.md): ErrNotFound when it is not
+	// current, ErrConflict when its Owner team is no longer w.OwnerTeam, an
+	// *InactivePersonError for a person who is no active account.
+	SetCoOrganizers(ctx context.Context, w CoOrganizersWrite) (Event, error)
+	// CoOrganizerPeople reads the Event's Co-organizer people with their
+	// names and e-mails, by name.
+	CoOrganizerPeople(ctx context.Context, eventID uuid.UUID) ([]OrganizerPerson, error)
 }
