@@ -47,6 +47,14 @@ type Options struct {
 	// only with a Mailer that is a CertificateMailer; any other is sent to
 	// directly, as before.
 	Mails MailQueue
+	// PublicPageOrigin is the certificate page's address on the club's site
+	// (CERTIFICATE_PUBLIC_PAGE_ORIGIN, read through PublicPageOrigin), e.g.
+	// https://yildizskylab.com/sertifika. With it a certificate's pdfUrl is
+	// {PublicPageOrigin}/{serial}.pdf, which the site streams from core
+	// (docs/certificate-pdf-address.md); empty keeps core's own
+	// {PublicAPIOrigin}/v1/certificates/verify/{serial}/pdf. Core's route keeps
+	// answering either way, for the links already sent.
+	PublicPageOrigin string
 }
 
 type service struct {
@@ -70,6 +78,7 @@ type service struct {
 	autoFinalize     AutoFinalizeStore
 	autoMetrics      autoFinalizeMetrics
 	mails            MailQueue
+	pageOrigin       string
 }
 
 // NewService preserves the original synchronous contract for existing embedders.
@@ -121,6 +130,7 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 		templates: opts.Templates, jobs: opts.Jobs, artifacts: opts.Artifacts,
 		assets: opts.Assets, legacyImmediate: opts.LegacyImmediate, media: opts.Media, privateArtifacts: opts.PrivateArtifacts,
 		attendance: opts.Attendance, autoFinalize: opts.AutoFinalize, mails: opts.Mails,
+		pageOrigin: strings.TrimRight(strings.TrimSpace(opts.PublicPageOrigin), "/"),
 	}
 }
 
@@ -197,7 +207,12 @@ func (s *service) verifyURL(serial string) string {
 	return s.verifyOrigin + "/" + serial
 }
 
+// pdfURL is where a certificate's PDF opens: on the club's site when the
+// page origin is set, else on core (Options.PublicPageOrigin).
 func (s *service) pdfURL(serial string) string {
+	if s.pageOrigin != "" {
+		return s.pageOrigin + "/" + serial + ".pdf"
+	}
 	return s.apiOrigin + "/v1/certificates/verify/" + serial + "/pdf"
 }
 

@@ -1061,9 +1061,16 @@ func main() {
 	if mapWorker := startEventMaps(workers, worker, render, publicBlobs, mediaStore, mediaPurposes, decodeBudget, mapRegions); mapWorker != nil {
 		eventMapMetrics = mapWorker
 	}
+	// The certificate page on the club's site: with it, pdfUrl opens the PDF
+	// there (docs/certificate-pdf-address.md).
+	certPageOrigin, pageErr := certificate.PublicPageOrigin(os.Getenv("CERTIFICATE_PUBLIC_PAGE_ORIGIN"))
+	if pageErr != nil {
+		log.Fatal(pageErr)
+	}
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
+		PublicPageOrigin: certPageOrigin,
 		Templates:        certs,
 		Jobs:             certs,
 		Artifacts:        blobs,
