@@ -13,7 +13,7 @@ backup_databases() {
   local dir=$STATE/backups/$1 db
   mkdir -p "$dir"
   : >"$dir/dumped-at.tsv"
-  for db in super_skylab keycloak skymail skylab_cms forms_db; do
+  for db in super_skylab keycloak skynotify skylab_cms forms_db; do
     printf '%s\t%s\n' "$db" "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >>"$dir/dumped-at.tsv"
     PGPASSWORD=$POSTGRES_PASSWORD pg_dump -h postgres -U postgres -d "$db" -Fc -f "$dir/$db.dump"
   done
@@ -62,8 +62,8 @@ scenario_1() {
 
   # Receipts and counts: each service's receipt equals core's checkpoint counts.
   local service db core_counts service_counts
-  for service in skymail cms forms; do
-    case $service in skymail) db=skymail ;; cms) db=skylab_cms ;; forms) db=forms_db ;; esac
+  for service in skynotify cms forms; do
+    case $service in skynotify) db=skynotify ;; cms) db=skylab_cms ;; forms) db=forms_db ;; esac
     core_counts=$(pg super_skylab "SELECT counts::jsonb FROM account_deletion_steps WHERE request_id = '$DEL_REQUEST' AND step = 'erase_$service'")
     service_counts=$(pg "$db" "SELECT counts::jsonb FROM account_erasure_receipts WHERE request_id = '$DEL_REQUEST'")
     log "  $service counts: $service_counts"
@@ -72,8 +72,8 @@ scenario_1() {
     check "$service receipt holds no subject and no address" \
       eq "$(pg "$db" "SELECT count(*) FROM account_erasure_receipts WHERE request_id = '$DEL_REQUEST' AND (counts::text ILIKE '%$subject%' OR counts::text ILIKE '%@%')")" 0
   done
-  check 'SkyMail erased something (counts are not all zero)' \
-    test "$(pg skymail "SELECT sum(value::bigint) FROM account_erasure_receipts, jsonb_each_text(counts) WHERE request_id = '$DEL_REQUEST'")" -gt 0
+  check 'SkyNotify erased something (counts are not all zero)' \
+    test "$(pg skynotify "SELECT sum(value::bigint) FROM account_erasure_receipts, jsonb_each_text(counts) WHERE request_id = '$DEL_REQUEST'")" -gt 0
   check 'CMS erased something' \
     test "$(pg skylab_cms "SELECT sum(value::bigint) FROM account_erasure_receipts, jsonb_each_text(counts) WHERE request_id = '$DEL_REQUEST'")" -gt 0
   check 'Forms erased something' \
@@ -85,8 +85,8 @@ scenario_1() {
   check "core: no row names p1 outside certificates ($(count_lines "$hits") hits: $(sort -u <<<"$hits" | paste -sd, -))" test -z "$hits"
   check 'core: the certificates keep only the name, never an address' \
     eq "$(pg super_skylab "SELECT count(*) FROM certificates WHERE lower(recipient_email) IN ('${P_SCHOOL[$person]}','${P_PERSONAL[$person]}')")" 0
-  hits=$(pii_hits skymail "$person")
-  check "skymail: no row names p1 ($(count_lines "$hits") hits: $(sort -u <<<"$hits" | paste -sd, -))" test -z "$hits"
+  hits=$(pii_hits skynotify "$person")
+  check "skynotify: no row names p1 ($(count_lines "$hits") hits: $(sort -u <<<"$hits" | paste -sd, -))" test -z "$hits"
   # Forms keeps a guest record and its queued report (contract §10): only the verified addresses
   # go, so the name stays there and nowhere else.
   hits=$(address_hits forms_db "$person")
@@ -96,7 +96,7 @@ scenario_1() {
   check 'forms_db: of the responses, only the guest one still names p1' \
     eq "$(pg forms_db "SELECT string_agg(id::text, ',') FROM responses WHERE (data::text || ' ' || coalesce(review_note, '')) ILIKE $(sql_quote "%${P_LAST[$person]}%")")" \
     "$(uuid_of "$person-guest-response")"
-  for db in skymail forms_db; do
+  for db in skynotify forms_db; do
     hits=$(subject_hits "$db" "$subject")
     check "$db: no row carries p1's subject ($(count_lines "$hits") hits)" test -z "$hits"
   done
@@ -114,7 +114,7 @@ scenario_1() {
 
   # The bystander keeps everything.
   local db8
-  for db8 in super_skylab skymail forms_db; do
+  for db8 in super_skylab skynotify forms_db; do
     check "bystander p8 still named in $db8" test -n "$(pii_hits "$db8" p8)"
   done
 
@@ -125,7 +125,7 @@ scenario_1() {
 
 # check_preserved_records PERSON: the records the club keeps are still there, without the
 # person (ADR-0051, decision 3 and 5): Certificate name, serial and PDF; Ticket and Check-in;
-# SkyMail send rows; the CMS News byline.
+# SkyNotify send rows; the CMS News byline.
 check_preserved_records() {
   local p=$1 name tag=${1^^}
   name=$(full_name "$p")
@@ -143,15 +143,15 @@ check_preserved_records() {
   check 'core: the user row is an anonymized tombstone' \
     eq "$(pg super_skylab "SELECT account_state, email, first_name, last_name, school_email, phone FROM users WHERE id = '${P_ID[$p]}'" | tr '\t' '|')" \
     'anonymized|||||'
-  check 'SkyMail: sent and failed rows to the person stay for the counts, pending one is gone' \
-    eq "$(pg skymail "SELECT string_agg(status::text || ':' || recipient_full_name || ':' || recipient_email, ',' ORDER BY status)
+  check 'SkyNotify: sent and failed rows to the person stay for the counts, pending one is gone' \
+    eq "$(pg skynotify "SELECT string_agg(status::text || ':' || recipient_full_name || ':' || recipient_email, ',' ORDER BY status)
           FROM mail_queue WHERE task_id = '$(uuid_of "$p-task-to")'")" 'sent:Silinmiş kullanıcı:,failed:Silinmiş kullanıcı:'
-  check "SkyMail: the person's send to the bystander stays, sender replaced, body naming the person cleared" \
-    eq "$(pg skymail "SELECT t.sent_by, q.recipient_email, q.body = '' AND q.body_html IS NULL
+  check "SkyNotify: the person's send to the bystander stays, sender replaced, body naming the person cleared" \
+    eq "$(pg skynotify "SELECT t.sent_by, q.recipient_email, q.body = '' AND q.body_html IS NULL
           FROM mail_tasks t JOIN mail_queue q ON q.task_id = t.id WHERE t.id = '$(uuid_of "$p-task-by")'" | tr '\t' '|')" \
     "$DELETED_SUBJECT|${P_SCHOOL[p8]}|t"
-  check 'SkyMail: the template version stays, its author replaced' \
-    eq "$(pg skymail "SELECT author_sub, author_name, html_content <> '' FROM template_versions WHERE id = '$(uuid_of "$p-template-v1")'" | tr '\t' '|')" \
+  check 'SkyNotify: the template version stays, its author replaced' \
+    eq "$(pg skynotify "SELECT author_sub, author_name, html_content <> '' FROM template_versions WHERE id = '$(uuid_of "$p-template-v1")'" | tr '\t' '|')" \
     "$DELETED_SUBJECT|Silinmiş kullanıcı|t"
   check 'CMS: the News item keeps its byline; editor and archiver replaced; UpdatedAt and Version unchanged' \
     eq "$(pg skylab_cms "SELECT \"Data\"->>'author', \"UpdatedBy\", \"Version\", \"UpdatedAt\" < now() - interval '1 hour'
@@ -244,7 +244,7 @@ check_saga_order() {
   disable=$(awk -F'\t' -v before="${logout:-99999999999999}" '$1 == "UPDATE" && $2 == "users/'"$subject"'" && $3 <= before { print $3 }' <<<"$events" | sort -n | tail -n1)
   delete=$(awk -F'\t' '$1 == "DELETE" && $2 == "users/'"$subject"'" { print $3 }' <<<"$events" | sort -n | tail -n1)
   first_receipt='' last_receipt=''
-  for db in skymail skylab_cms forms_db; do
+  for db in skynotify skylab_cms forms_db; do
     t=$(pg "$db" "SELECT (extract(epoch FROM completed_at) * 1000)::bigint FROM account_erasure_receipts WHERE request_id = '$request'")
     [[ -z $t ]] && continue
     [[ -z $first_receipt || $t -lt $first_receipt ]] && first_receipt=$t

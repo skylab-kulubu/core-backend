@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-func TestSkyMailTeamMembershipPostsByKey(t *testing.T) {
+func TestSkyNotifyTeamMembershipPostsByKey(t *testing.T) {
 	t.Parallel()
 	var payload map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -27,7 +27,7 @@ func TestSkyMailTeamMembershipPostsByKey(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 	}))
 	t.Cleanup(srv.Close)
-	sky := &SkyMail{BaseURL: srv.URL, TeamMembershipTemplateKey: DefaultTeamMembershipTemplateKey, Tokens: StaticToken("tok"), HTTP: srv.Client()}
+	sky := &SkyNotify{BaseURL: srv.URL, TeamMembershipTemplateKey: DefaultTeamMembershipTemplateKey, Tokens: StaticToken("tok"), HTTP: srv.Client()}
 
 	err := sky.TeamMembership(t.Context(), "ada@example.test", "Ada Lovelace", map[string]string{"TeamName": "WEBLAB", "Action": "added"})
 	if err != nil {
@@ -46,8 +46,8 @@ func TestSkyMailTeamMembershipPostsByKey(t *testing.T) {
 }
 
 // Unlike the fire-and-forget sends, the team membership mail waits in core's
-// queue until SkyMail took it, so the caller hears what SkyMail answered.
-func TestSkyMailTeamMembershipReportsRefusalWithoutPII(t *testing.T) {
+// queue until SkyNotify took it, so the caller hears what SkyNotify answered.
+func TestSkyNotifyTeamMembershipReportsRefusalWithoutPII(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		status    int
@@ -65,7 +65,7 @@ func TestSkyMailTeamMembershipReportsRefusalWithoutPII(t *testing.T) {
 			_, _ = w.Write([]byte(`{"error":"template_not_found"}`))
 		}))
 		var logs bytes.Buffer
-		sky := &SkyMail{
+		sky := &SkyNotify{
 			BaseURL: srv.URL, TeamMembershipTemplateKey: "club.team-membership", Tokens: StaticToken("tok"),
 			HTTP: srv.Client(), Logger: log.New(&logs, "", 0),
 		}
@@ -85,36 +85,36 @@ func TestSkyMailTeamMembershipReportsRefusalWithoutPII(t *testing.T) {
 	}
 }
 
-func TestSkyMailTeamMembershipTransportAndTokenFailuresAreRetryable(t *testing.T) {
+func TestSkyNotifyTeamMembershipTransportAndTokenFailuresAreRetryable(t *testing.T) {
 	t.Parallel()
-	sky := &SkyMail{BaseURL: "http://127.0.0.1:1", TeamMembershipTemplateKey: "club.team-membership", Tokens: StaticToken("tok")}
+	sky := &SkyNotify{BaseURL: "http://127.0.0.1:1", TeamMembershipTemplateKey: "club.team-membership", Tokens: StaticToken("tok")}
 	err := sky.TeamMembership(t.Context(), "ada@example.test", "", nil)
 	var refused *SendError
 	if !errors.As(err, &refused) || refused.Status != 0 || refused.Permanent() {
 		t.Fatalf("transport: %v", err)
 	}
 
-	sky = &SkyMail{BaseURL: "http://127.0.0.1:1", TeamMembershipTemplateKey: "club.team-membership", Tokens: failingToken{}}
+	sky = &SkyNotify{BaseURL: "http://127.0.0.1:1", TeamMembershipTemplateKey: "club.team-membership", Tokens: failingToken{}}
 	if err := sky.TeamMembership(t.Context(), "ada@example.test", "", nil); !errors.As(err, &refused) || refused.Permanent() {
 		t.Fatalf("token: %v", err)
 	}
 }
 
-func TestSkyMailTeamMembershipOffWithoutKey(t *testing.T) {
+func TestSkyNotifyTeamMembershipOffWithoutKey(t *testing.T) {
 	t.Parallel()
 	called := false
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
 	t.Cleanup(srv.Close)
-	sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}
+	sky := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}
 	if sky.TeamMembershipConfigured() {
 		t.Fatal("configured without a key")
 	}
 	if err := sky.TeamMembership(t.Context(), "ada@example.test", "", nil); !errors.Is(err, ErrTemplateUnconfigured) || called {
 		t.Fatalf("err %v called %v", err, called)
 	}
-	var nilSky *SkyMail
+	var nilSky *SkyNotify
 	if nilSky.TeamMembershipConfigured() {
-		t.Fatal("nil SkyMail configured")
+		t.Fatal("nil SkyNotify configured")
 	}
 }
 
@@ -124,7 +124,7 @@ func (failingToken) Token(context.Context) (string, error) { return "", errors.N
 
 // Each kind of membership mail (docs/team-membership-mail.md) posts its own
 // template key and names its own kind in a refusal's log line.
-func TestSkyMailMembershipKindsPostTheirOwnTemplate(t *testing.T) {
+func TestSkyNotifyMembershipKindsPostTheirOwnTemplate(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		kind    MembershipKind
@@ -143,7 +143,7 @@ func TestSkyMailMembershipKindsPostTheirOwnTemplate(t *testing.T) {
 			w.WriteHeader(status)
 		}))
 		var logs bytes.Buffer
-		sky := &SkyMail{
+		sky := &SkyNotify{
 			BaseURL:                    srv.URL,
 			TeamMembershipTemplateKey:  DefaultTeamMembershipTemplateKey,
 			RoleMembershipTemplateKey:  DefaultRoleMembershipTemplateKey,
@@ -173,7 +173,7 @@ func TestSkyMailMembershipKindsPostTheirOwnTemplate(t *testing.T) {
 }
 
 // A kind without a key is off on its own: the others still send.
-func TestSkyMailMembershipKindOffWithoutItsKey(t *testing.T) {
+func TestSkyNotifyMembershipKindOffWithoutItsKey(t *testing.T) {
 	t.Parallel()
 	called := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -181,7 +181,7 @@ func TestSkyMailMembershipKindOffWithoutItsKey(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 	}))
 	t.Cleanup(srv.Close)
-	sky := &SkyMail{BaseURL: srv.URL, TeamMembershipTemplateKey: DefaultTeamMembershipTemplateKey, GroupMembershipTemplateKey: " ", Tokens: StaticToken("tok"), HTTP: srv.Client()}
+	sky := &SkyNotify{BaseURL: srv.URL, TeamMembershipTemplateKey: DefaultTeamMembershipTemplateKey, GroupMembershipTemplateKey: " ", Tokens: StaticToken("tok"), HTTP: srv.Client()}
 	for _, kind := range []MembershipKind{MembershipRole, MembershipGroup, MembershipKind("other")} {
 		if sky.MembershipConfigured(kind) {
 			t.Fatalf("%s configured", kind)
@@ -193,8 +193,8 @@ func TestSkyMailMembershipKindOffWithoutItsKey(t *testing.T) {
 	if !sky.MembershipConfigured(MembershipTeam) {
 		t.Fatal("team off")
 	}
-	var nilSky *SkyMail
+	var nilSky *SkyNotify
 	if nilSky.MembershipConfigured(MembershipTeam) {
-		t.Fatal("nil SkyMail configured")
+		t.Fatal("nil SkyNotify configured")
 	}
 }

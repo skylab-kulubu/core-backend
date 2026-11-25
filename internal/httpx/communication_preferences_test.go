@@ -187,7 +187,7 @@ func TestCommunicationPreferencesScreenAndChanges(t *testing.T) {
 		}
 	}
 
-	service := e.keys.Token(t, jwt.MapClaims{"sub": uuid.NewString(), "azp": "skymail", "client_id": "skymail"})
+	service := e.keys.Token(t, jwt.MapClaims{"sub": uuid.NewString(), "azp": "skynotify", "client_id": "skynotify"})
 	if got := sendJSON(t, e.app, service, fiber.MethodGet, "/v1/users/me/communication-preferences", ""); got.status != fiber.StatusForbidden || got.body["code"] != "communication_preference_person_only" {
 		t.Fatalf("service account %d %v", got.status, got.body)
 	}

@@ -70,7 +70,7 @@ func TestPostgresErasureSaga(t *testing.T) {
 			t.Fatalf("checkpoints = %v", got)
 		}
 		for event, want := range map[string]int{
-			"disable_identity": 1, "logout_sessions": 1, "erase_skymail": 1, "erase_cms": 1, "erase_forms": 2,
+			"disable_identity": 1, "logout_sessions": 1, "erase_skynotify": 1, "erase_cms": 1, "erase_forms": 2,
 			"anonymize_core": 1, "delete_identity": 1,
 		} {
 			if got := f.events.count(event); got != want {
@@ -87,7 +87,7 @@ func TestPostgresErasureSaga(t *testing.T) {
 		f := newSagaFixture(t, store)
 		entered := make(chan struct{})
 		var first sync.Once
-		f.answer(user.DeletionStepEraseSkyMail, func(w http.ResponseWriter, r *http.Request) {
+		f.answer(user.DeletionStepEraseSkyNotify, func(w http.ResponseWriter, r *http.Request) {
 			crashed := false
 			first.Do(func() {
 				crashed = true
@@ -119,7 +119,7 @@ func TestPostgresErasureSaga(t *testing.T) {
 		if state.Status != user.DeletionRequestProcessing || state.LeaseUntil == nil || state.AttemptCount != 1 {
 			t.Fatalf("request after the crash = %+v", state)
 		}
-		if _, ok := f.records()[user.DeletionStepEraseSkyMail]; ok {
+		if _, ok := f.records()[user.DeletionStepEraseSkyNotify]; ok {
 			t.Fatal("the unanswered call was checkpointed")
 		}
 
@@ -135,10 +135,10 @@ func TestPostgresErasureSaga(t *testing.T) {
 			t.Fatalf("request = %+v", state)
 		}
 		// sentEmails checks that both calls carry the same request_id.
-		if got := f.sentEmails(user.DeletionStepEraseSkyMail, 0); !slices.Equal(got, []string{sagaPersonal, sagaSchool}) {
+		if got := f.sentEmails(user.DeletionStepEraseSkyNotify, 0); !slices.Equal(got, []string{sagaPersonal, sagaSchool}) {
 			t.Fatalf("first command addresses = %v", got)
 		}
-		if got := f.sentEmails(user.DeletionStepEraseSkyMail, 1); !slices.Equal(got, []string{sagaPersonal, sagaSchool, added}) {
+		if got := f.sentEmails(user.DeletionStepEraseSkyNotify, 1); !slices.Equal(got, []string{sagaPersonal, sagaSchool, added}) {
 			t.Fatalf("resent command addresses = %v", got)
 		}
 		if f.events.count("read_addresses") != 2 || f.events.count("disable_identity") != 1 || f.events.count("logout_sessions") != 1 {

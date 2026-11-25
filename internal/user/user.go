@@ -97,9 +97,9 @@ const (
 
 	// Service erasure steps: one Erasure command each (ADR-0051). Their
 	// checkpoint rows also keep the service's counts as completion proof.
-	DeletionStepEraseSkyMail DeletionStep = "erase_skymail"
-	DeletionStepEraseCMS     DeletionStep = "erase_cms"
-	DeletionStepEraseForms   DeletionStep = "erase_forms"
+	DeletionStepEraseSkyNotify DeletionStep = "erase_skynotify"
+	DeletionStepEraseCMS       DeletionStep = "erase_cms"
+	DeletionStepEraseForms     DeletionStep = "erase_forms"
 )
 
 // DeletionNotice is one of the two mails a deletion request sends the
@@ -109,7 +109,7 @@ type DeletionNotice string
 
 const (
 	// DeletionNoticeReceived: the request was received and when it will be
-	// done by; sent once SkyMail has erased the person.
+	// done by; sent once SkyNotify has erased the person.
 	DeletionNoticeReceived DeletionNotice = "received"
 	// DeletionNoticeCompleted: the account and its data were deleted; sent
 	// once the request is completed.

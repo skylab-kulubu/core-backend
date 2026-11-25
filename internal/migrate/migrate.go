@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log"
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -409,6 +410,10 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			 AND actual.column_name = expected.column_name
 		) = 5`,
 	20260925100000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'ytu_linked'`,
+	// The service erasure steps. SkyNotify's step is erase_skymail in this
+	// migration's file and erase_skynotify since 20261125210000 renamed it
+	// (ADR 0091): the check finds either, so it holds right after this file
+	// ran and on a schema the rename reached.
 	20260925120000: `
 		SELECT 1
 		WHERE EXISTS (
@@ -423,11 +428,18 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND pg_get_constraintdef(oid) LIKE '%jsonb_typeof(counts)%object%'
 		)
 		AND (
-			SELECT count(*) FROM pg_constraint, unnest(ARRAY['erase_skymail','erase_cms','erase_forms']) AS step(name)
+			SELECT count(*) FROM pg_constraint, unnest(ARRAY['erase_cms','erase_forms']) AS step(name)
 			WHERE conrelid=to_regclass('public.account_deletion_steps')
 			  AND conname='account_deletion_steps_step_check'
 			  AND pg_get_constraintdef(oid) LIKE '%''' || step.name || '''%'
-		) = 3`,
+		) = 2
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid=to_regclass('public.account_deletion_steps')
+			  AND conname='account_deletion_steps_step_check'
+			  AND (pg_get_constraintdef(oid) LIKE '%''erase_skynotify''%'
+			    OR pg_get_constraintdef(oid) LIKE '%''erase_skymail''%')
+		)`,
 	20260925180000: `
 		SELECT 1
 		WHERE (
@@ -1959,6 +1971,18 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		AND to_regclass('public.attendance_mails_recorded_key') IS NOT NULL
 		AND to_regclass('public.attendance_mails_due_idx') IS NOT NULL
 		AND to_regclass('public.attendance_mails_done_idx') IS NOT NULL`,
+	// SkyNotify's names (ADR 0091): the step CHECK takes erase_skynotify and
+	// not erase_skymail. The file renames the rows in the same transaction.
+	// After a rollback (db/tasima/skynotify-geri.sql) the CHECK names
+	// erase_skymail again, so the newer image runs the file once more. Rows
+	// are not looked at: an older replica still running for a moment may
+	// write an old error code, which must not stop the newer one's start.
+	20261125210000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.account_deletion_steps')
+		  AND conname = 'account_deletion_steps_step_check'
+		  AND pg_get_constraintdef(oid) LIKE '%''erase_skynotify''%'
+		  AND pg_get_constraintdef(oid) NOT LIKE '%''erase_skymail''%'`,
 	// The management term job's removal (docs/management-membership-terms.md):
 	// the system basis takes member.remove, and the runs' two columns with
 	// the removal's check.
@@ -2200,6 +2224,13 @@ func lock(ctx context.Context, conn *pgx.Conn) error {
 }
 
 func apply(ctx context.Context, conn *pgx.Conn) error {
+	return applyBefore(ctx, conn, 0)
+}
+
+// applyBefore is apply with the migrations of version before and later left
+// out, as a release that does not have them yet runs it; 0 leaves none out.
+// The tests start an older image with it (the SkyNotify rename's rollback).
+func applyBefore(ctx context.Context, conn *pgx.Conn, before int64) error {
 	if _, err := conn.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version BIGINT PRIMARY KEY,
@@ -2211,6 +2242,9 @@ func apply(ctx context.Context, conn *pgx.Conn) error {
 	files, err := listUp()
 	if err != nil {
 		return err
+	}
+	if before > 0 {
+		files = slices.DeleteFunc(files, func(f file) bool { return f.version >= before })
 	}
 	applied, err := loadApplied(ctx, conn)
 	if err != nil {

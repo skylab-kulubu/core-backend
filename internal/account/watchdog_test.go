@@ -198,9 +198,9 @@ func TestErasurePathsLeaveNoPersonalDataInErrorsLogsOrMetrics(t *testing.T) {
 		_, _ = f.run(worker)
 		f.now = f.state().NextAttemptAt
 	}
-	pass(user.DeletionStepEraseSkyMail, answerStatus(http.StatusServiceUnavailable, "60"))
-	pass(user.DeletionStepEraseSkyMail, answerStatus(http.StatusUnauthorized, ""))
-	pass(user.DeletionStepEraseSkyMail, answerStatus(http.StatusForbidden, ""))
+	pass(user.DeletionStepEraseSkyNotify, answerStatus(http.StatusServiceUnavailable, "60"))
+	pass(user.DeletionStepEraseSkyNotify, answerStatus(http.StatusUnauthorized, ""))
+	pass(user.DeletionStepEraseSkyNotify, answerStatus(http.StatusForbidden, ""))
 	if state := f.state(); state.Status != user.DeletionRequestManualIntervention {
 		t.Fatalf("rejection did not reach manual intervention: %+v", state)
 	}

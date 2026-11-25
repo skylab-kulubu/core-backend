@@ -1,6 +1,6 @@
 // Package doorstaffmail tells a person they were added to an Event's door
 // staff (docs/door-staff-mail.md): core says what happened and to whom,
-// SkyMail picks the channels (inbox and e-mail) and the text. The write that
+// SkyNotify picks the channels (inbox and e-mail) and the text. The write that
 // adds them queues the mail in its own transaction
 // (door_staff_notifications); this worker sends it once the Event is
 // published, if they are still on its door staff, and removes the row.
@@ -63,7 +63,7 @@ type Queue interface {
 	Retry(ctx context.Context, claimed Queued, at time.Time, failed bool) error
 }
 
-// Mailer posts the Notification (mail.SkyMail).
+// Mailer posts the Notification (mail.SkyNotify).
 type Mailer interface {
 	DoorStaffAdded(ctx context.Context, idempotencyKey string, sub uuid.UUID, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time) error
 }
@@ -127,7 +127,7 @@ func NewService(config Config) (*Service, error) {
 // Report counts one pass: Sent; Dropped (no longer to be told: taken off the
 // door staff, the Event gone, cancelled, archived or over, the account not
 // active); Waiting (a draft's, looked at again later); Expired (older than
-// GiveUpAfter); Rejected (SkyMail refused the request itself); Retried.
+// GiveUpAfter); Rejected (SkyNotify refused the request itself); Retried.
 type Report struct {
 	Sent, Dropped, Waiting, Expired, Rejected, Retried int
 }
@@ -235,7 +235,7 @@ func (s *Service) deliver(ctx context.Context, claimed Queued) (outcome, error) 
 	return sent, nil
 }
 
-// vars are the type's variables, every key always there (SkyMail renders the
+// vars are the type's variables, every key always there (SkyNotify renders the
 // inbox text with missingkey=error).
 func (s *Service) vars(ev event.Event, u user.User) map[string]string {
 	door := ""
@@ -297,7 +297,7 @@ func (s *Service) Run(ctx context.Context, logf func(string, ...any)) <-chan str
 			case err != nil && ctx.Err() == nil:
 				logf("door staff mail: queue: %v", err)
 			case report.any():
-				logf("door staff mail: %d sent, %d dropped, %d waiting for publication, %d given up, %d refused by SkyMail, %d tried again later",
+				logf("door staff mail: %d sent, %d dropped, %d waiting for publication, %d given up, %d refused by SkyNotify, %d tried again later",
 					report.Sent, report.Dropped, report.Waiting, report.Expired, report.Rejected, report.Retried)
 			}
 			select {

@@ -587,7 +587,7 @@ func TestAdminRoleHoldersAreADMINsAlone(t *testing.T) {
 		f.accounts.PutAccount(identity.AccountUser{ID: id, Username: id.String()[:8], Email: id.String()[:8] + "@example.com", Enabled: true})
 	}
 	joinGroup(t, f, forms, "/ROLLER/FORMS-ALL", identity.ClientRole{ClientID: "forms", Role: "skyforms:*"})
-	joinGroup(t, f, mail, "/ROLLER/SKYMAIL-MAILS-APPROVE", identity.ClientRole{ClientID: "skymail", Role: "skymail:mails:approve"})
+	joinGroup(t, f, mail, "/ROLLER/SKYNOTIFY-MAILS-APPROVE", identity.ClientRole{ClientID: "skynotify", Role: "skynotify:mails:approve"})
 	joinGroup(t, f, f.member, "/ROLLER/FORMS-ACCESS", identity.ClientRole{ClientID: "forms", Role: "skyforms:access"})
 
 	yk, admin := asYK(f), asAdmin(f)
@@ -756,12 +756,12 @@ func TestHeldRolesDecideWhoIsPrivileged(t *testing.T) {
 
 	// A role on the Group above the person's.
 	above := person()
-	f.people.PutGroup(identity.Group{ID: uuid.NewString(), Name: "SKYMAIL", Path: "/ROLLER/SKYMAIL"})
-	parent, _ := f.people.GetGroup(context.Background(), "/ROLLER/SKYMAIL")
-	if err := f.people.AddGroupClientRole(context.Background(), parent.ID, identity.ClientRole{ClientID: "skymail", Role: "skymail:mails:approve"}); err != nil {
+	f.people.PutGroup(identity.Group{ID: uuid.NewString(), Name: "SKYNOTIFY", Path: "/ROLLER/SKYNOTIFY"})
+	parent, _ := f.people.GetGroup(context.Background(), "/ROLLER/SKYNOTIFY")
+	if err := f.people.AddGroupClientRole(context.Background(), parent.ID, identity.ClientRole{ClientID: "skynotify", Role: "skynotify:mails:approve"}); err != nil {
 		t.Fatal(err)
 	}
-	joinGroup(t, f, above, "/ROLLER/SKYMAIL/ALT")
+	joinGroup(t, f, above, "/ROLLER/SKYNOTIFY/ALT")
 	if !refused(above) {
 		t.Fatal("a role on the Group above was not seen")
 	}

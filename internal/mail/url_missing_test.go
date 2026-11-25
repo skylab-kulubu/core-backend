@@ -10,12 +10,12 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
-// A client built without SKYMAIL_URL sends nothing and says so on every
+// A client built without SKYNOTIFY_URL sends nothing and says so on every
 // attempt, one line each; one left empty for another reason stays quiet.
 func TestMailWithoutURLSaysSoOnEveryAttempt(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	missing := &SkyMail{URLMissing: true, TemplateKey: DefaultWelcomeTemplateKey, Tokens: StaticToken("tok"), Logger: log.New(&out, "", 0)}
+	missing := &SkyNotify{URLMissing: true, TemplateKey: DefaultWelcomeTemplateKey, Tokens: StaticToken("tok"), Logger: log.New(&out, "", 0)}
 	if err := missing.Notify(t.Context(), "ticket", "k", Notification{Type: "t"}); !errors.Is(err, ErrTemplateUnconfigured) {
 		t.Fatalf("notify: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestMailWithoutURLSaysSoOnEveryAttempt(t *testing.T) {
 	}
 
 	var quiet bytes.Buffer
-	empty := &SkyMail{Tokens: StaticToken("tok"), Logger: log.New(&quiet, "", 0)}
+	empty := &SkyNotify{Tokens: StaticToken("tok"), Logger: log.New(&quiet, "", 0)}
 	_ = empty.Notify(t.Context(), "ticket", "k", Notification{Type: "t"})
 	if quiet.Len() != 0 {
 		t.Fatalf("quiet client logged %q", quiet.String())
@@ -45,7 +45,7 @@ func TestURLMissingGauge(t *testing.T) {
 	if !MarkURLMissing() || MarkURLMissing() {
 		t.Fatal("MarkURLMissing is true only the first time")
 	}
-	if got := URLMissingPrometheus(); got != "# TYPE skylab_skymail_url_missing gauge\nskylab_skymail_url_missing 1\n" {
+	if got := URLMissingPrometheus(); got != "# TYPE skylab_skynotify_url_missing gauge\nskylab_skynotify_url_missing 1\n" {
 		t.Fatalf("after %q", got)
 	}
 }

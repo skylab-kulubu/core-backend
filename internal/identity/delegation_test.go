@@ -216,11 +216,11 @@ func TestMemoryGroupProtectionRoleClasses(t *testing.T) {
 		unclassified string
 	}{
 		{name: "an app role", roles: []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}}},
-		{name: "app roles of three clients", roles: []identity.ClientRole{{ClientID: "forms", Role: "skyforms:access"}, {ClientID: "skymail", Role: "skymail:access"}, {ClientID: "frontend-arge", Role: "content:read"}}},
-		{name: "an admin role", roles: []identity.ClientRole{{ClientID: "skymail", Role: "skymail:system-mails:read"}}, want: true},
+		{name: "app roles of three clients", roles: []identity.ClientRole{{ClientID: "forms", Role: "skyforms:access"}, {ClientID: "skynotify", Role: "skynotify:access"}, {ClientID: "frontend-arge", Role: "content:read"}}},
+		{name: "an admin role", roles: []identity.ClientRole{{ClientID: "skynotify", Role: "skynotify:system-mails:read"}}, want: true},
 		{name: "cms:access by its name", roles: []identity.ClientRole{{ClientID: "frontend-main", Role: "cms:access"}}, want: true},
 		{name: "an unclassified role", roles: []identity.ClientRole{{ClientID: "forms", Role: "forms:editor"}}, want: true, unclassified: "forms:forms:editor"},
-		{name: "an app role's name on another client", roles: []identity.ClientRole{{ClientID: "skymail", Role: "certificate:issue"}}, want: true, unclassified: "skymail:certificate:issue"},
+		{name: "an app role's name on another client", roles: []identity.ClientRole{{ClientID: "skynotify", Role: "certificate:issue"}}, want: true, unclassified: "skynotify:certificate:issue"},
 		{name: "a composite app role holding an admin role", roles: []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}},
 			composites: map[identity.ClientRole][]identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}: {{ClientID: "core", Role: "users:read"}}}, want: true},
 		{name: "a composite app role holding an unclassified role", roles: []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}},
@@ -275,7 +275,7 @@ func TestTeamDelegationCountsUnclassifiedRoles(t *testing.T) {
 	}
 
 	known, leader2, weblab2 := delegationRealm(t)
-	if err := known.SetGroupClientRoles(context.Background(), weblab2, []identity.ClientRole{{ClientID: "skymail", Role: "skymail:lists:read"}}); err != nil {
+	if err := known.SetGroupClientRoles(context.Background(), weblab2, []identity.ClientRole{{ClientID: "skynotify", Role: "skynotify:lists:read"}}); err != nil {
 		t.Fatal(err)
 	}
 	d2 := identity.NewTeamDelegation(onPolicy(), known, known, identity.TeamDelegationOptions{})

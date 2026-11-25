@@ -25,7 +25,7 @@ type TicketLink struct {
 
 // TicketLinks are the Tickets' feedback links, by Ticket, in one query: one
 // for each invite whose mail went (a mail of the Ticket's carrying the
-// target that SkyMail took: an invite written for a mail SkyMail refused,
+// target that SkyNotify took: an invite written for a mail SkyNotify refused,
 // or one dropped, gives none) and whose target still takes it as the mail's
 // worker would read it now. Left out: an Event no longer
 // published or archived, a Session cancelled or archived (or its day), a

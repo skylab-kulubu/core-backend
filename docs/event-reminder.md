@@ -1,10 +1,10 @@
 # The reminder the day before an Event (`event.reminder`)
 
 kontenjan-iptal-hatirlatma 08 (SPEC §3.5); ADR 0070 (core says what happened
-and to whom, SkyMail says by which channel and with which text). At 18:00
+and to whom, SkyNotify says by which channel and with which text). At 18:00
 Istanbul time the day before a published Event starts, everyone holding an
 active Ticket of it gets one reminder: by the in-app inbox and by e-mail, as
-SkyMail's Notification type `event.reminder` says. It is off until
+SkyNotify's Notification type `event.reminder` says. It is off until
 `EVENT_REMINDER_NOTIFICATION=on`.
 
 ## When and to whom
@@ -24,7 +24,7 @@ SkyMail's Notification type `event.reminder` says. It is off until
 
 This is a transactional mail about the holder's own Ticket, not an
 announcement: the type is required (no preferences, no consent, no
-unsubscribe link; Yusuf, 2026-11-24) and rides SkyMail's `system` lane, so it
+unsubscribe link; Yusuf, 2026-11-24) and rides SkyNotify's `system` lane, so it
 leaves from the transactional mailbox. Luma lets people turn its reminder
 off; this is a deviation.
 
@@ -36,7 +36,7 @@ same.
 ```text
 pass (every 15 s, every replica)
   ├─ from 18:00: plan  ──(pg_try_advisory_xact_lock)──▶ event_reminders + event_reminder_mails
-  └─ send ──(pg_advisory_xact_lock: count the last minute, claim one row)──▶ SkyMail
+  └─ send ──(pg_advisory_xact_lock: count the last minute, claim one row)──▶ SkyNotify
 ```
 
 - **Planning** takes `pg_try_advisory_xact_lock`: one replica plans, another
@@ -72,14 +72,14 @@ pass (every 15 s, every replica)
   The key names the type `event.reminder` whatever template key is set. The
   type is required, so no `allowed_channels`.
 - A guest gets the template alone, by address: `POST /v1/mail_tasks/single`
-  with `template_key` = `SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY`, the same
+  with `template_key` = `SKYNOTIFY_EVENT_REMINDER_TEMPLATE_KEY`, the same
   variables and the guest's name. No inbox item.
-- **Variables** (skymail-frontend `emails/event-reminder.tsx`, #179): the
+- **Variables** (skynotify-frontend `emails/event-reminder.tsx`, #179): the
   Event as it is when sent. `StartsAt` is `dd.MM.yyyy HH:mm` Istanbul time.
   `TicketUrl`, `TicketQrUrl` and `TicketCode` while `TICKET_PAGE_URL` is set
   (the ticket created mail's rule; `TicketQrUrl` also needs
   `PUBLIC_API_ORIGIN`); `MapUrl` is the ticket page's `directionsUrl`.
-  Every variable is always sent, empty without a value: SkyMail renders with
+  Every variable is always sent, empty without a value: SkyNotify renders with
   `missingkey=error`. `EventId` fills the inbox item's link.
 
 ## Pace
@@ -97,19 +97,19 @@ holds more than ~7,000 active Tickets.
 ## Retries
 
 - A member's key is the same on every try: a retry after a lost answer is
-  SkyMail's `Idempotent-Replayed`.
-- A guest's mail has no key. When it went out and no answer came, SkyMail may
+  SkyNotify's `Idempotent-Replayed`.
+- A guest's mail has no key. When it went out and no answer came, SkyNotify may
   have taken it: counted as uncertain and not tried again.
 - `400` and `422` are permanent (refused), except
   `notification.type_unknown` (the type not seeded yet). That, and anything
-  else (SkyMail down, `401`, `403`, `409`, `404`), keeps the row, tried again
+  else (SkyNotify down, `401`, `403`, `409`, `404`), keeps the row, tried again
   30 seconds later, doubling to 30 minutes, until the Event's day begins;
   then it is given up.
 
 Each pass that did something logs one line of counts, never a person:
 
 ```text
-event reminder: 3 events and 212 tickets planned; 20 sent, 0 dropped, 1 skipped, 0 refused by SkyMail, 0 expired, 0 guest mails unanswered and not tried again, 0 tried again later
+event reminder: 3 events and 212 tickets planned; 20 sent, 0 dropped, 1 skipped, 0 refused by SkyNotify, 0 expired, 0 guest mails unanswered and not tried again, 0 tried again later
 ```
 
 ## Erasure
@@ -119,10 +119,10 @@ with it (`ON DELETE CASCADE`); an Event deleted, its rows and its plan.
 
 ## Before turning it on
 
-1. Keycloak: `core`'s service account holds `skymail:notifications:send`
+1. Keycloak: `core`'s service account holds `skynotify:notifications:send`
    (already, for `event.ticket-created`).
-2. SkyMail: the type `event.reminder` is seeded with its inbox text
-   (skymail-frontend #179: the template and
+2. SkyNotify: the type `event.reminder` is seeded with its inbox text
+   (skynotify-frontend #179: the template and
    `PUT /v1/notification_types/event.reminder`).
 3. `EVENT_REMINDER_NOTIFICATION=on`; the startup line reads
    `event reminder: on (event.reminder, 18:00 Europe/Istanbul, 20/min)`.

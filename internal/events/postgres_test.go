@@ -64,7 +64,7 @@ func TestPostgresConsume(t *testing.T) {
 		t.Fatalf("second: %v %v", dup, err)
 	}
 	// Another consumer, or another source, is another event.
-	for _, key := range [][2]string{{"core.keycloak", "/forms"}, {"core.forms", "/skymail"}} {
+	for _, key := range [][2]string{{"core.keycloak", "/forms"}, {"core.forms", "/skynotify"}} {
 		if dup, err := store.Consume(ctx, key[0], key[1], "e1", effect(key[0], "e1")); err != nil || dup {
 			t.Fatalf("%v: %v %v", key, dup, err)
 		}

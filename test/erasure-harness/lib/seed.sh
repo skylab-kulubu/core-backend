@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Seeds every person's data in every service, the way the product would have written it:
 # core's user row by JIT (the person's own token), then tickets, check-ins and certificates;
-# SkyMail recipients, sends, queue rows, templates and a Mail onayı; CMS items, blocks and
+# SkyNotify recipients, sends, queue rows, templates and a Mail onayı; CMS items, blocks and
 # drafts; Forms forms, responses (a guest one too), queued form-response reports and collaborators. Each row that names the person is one the
 # erasure must change; the bystander p8 gets the same rows and must keep them.
 # Sourced by main.sh.
@@ -84,18 +84,18 @@ seed_core_media() {
   fi
 }
 
-seed_skymail_shared() {
-  pg skymail "
+seed_skynotify_shared() {
+  pg skynotify "
     INSERT INTO mailing_lists (id, name, description) VALUES ('$(uuid_of list)', 'Harness listesi', 'harness') ON CONFLICT DO NOTHING;" >/dev/null
 }
 
-seed_skymail_person() {
+seed_skynotify_person() {
   local p=$1 subject=${P_ID[$1]} name school personal mixed bystander=${P_ID[p8]} bystander_mail=${P_SCHOOL[p8]} tpl ver
   name=$(sql_quote "$(full_name "$p")")
   school=$(sql_quote "${P_SCHOOL[$p]}") personal=$(sql_quote "${P_PERSONAL[$p]}")
   mixed=$(sql_quote "$(tr 'a-z' 'A-Z' <<<"${P_PERSONAL[$p]:0:1}")${P_PERSONAL[$p]:1}")
   tpl=$(uuid_of "$p-template") ver=$(uuid_of "$p-template-v1")
-  pg skymail "
+  pg skynotify "
     INSERT INTO recipients (id, full_name, email) VALUES ('$(uuid_of "$p-recipient")', $name, $mixed);
     INSERT INTO mailing_list_recipients (mail_list_id, recipient_id) VALUES ('$(uuid_of list)', '$(uuid_of "$p-recipient")');
     -- A template the person authored (template_versions.author_sub) and archived.
@@ -177,13 +177,13 @@ seed_all() {
   local p
   log "seeding: core JIT users, then every service's rows for ${PERSONS[*]}"
   seed_core_shared
-  seed_skymail_shared
+  seed_skynotify_shared
   for p in "${PERSONS[@]}"; do
     seed_core_jit "$p"
   done
   for p in "${PERSONS[@]}"; do
     seed_core_person "$p"
-    seed_skymail_person "$p"
+    seed_skynotify_person "$p"
     seed_cms_person "$p"
     seed_forms_person "$p"
   done

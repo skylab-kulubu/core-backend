@@ -20,11 +20,11 @@ import (
 
 // The acceptance tests of grup-yonetimi 05, wired as main wires it: the
 // identity routes' service, the membership mail and the privilege notice on
-// one worker, SkyMail answering 201.
+// one worker, SkyNotify answering 201.
 func TestPrivilegeNoticeThroughTheService(t *testing.T) {
 	var mu sync.Mutex
 	sent := map[string][]string{} // template key → recipients
-	skymail := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	skynotify := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Key       string `json:"template_key"`
 			Recipient string `json:"recipient_email"`
@@ -36,7 +36,7 @@ func TestPrivilegeNoticeThroughTheService(t *testing.T) {
 		mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
 	}))
-	t.Cleanup(skymail.Close)
+	t.Cleanup(skynotify.Close)
 
 	dir := identity.NewMemory()
 	for _, g := range []identity.Group{
@@ -67,7 +67,7 @@ func TestPrivilegeNoticeThroughTheService(t *testing.T) {
 	}
 	ada := person("ada", "g-uyeler")
 
-	sky := &mail.SkyMail{BaseURL: skymail.URL, Tokens: mail.StaticToken("t"), HTTP: skymail.Client()}
+	sky := &mail.SkyNotify{BaseURL: skynotify.URL, Tokens: mail.StaticToken("t"), HTTP: skynotify.Client()}
 	membershipTemplateKeys(sky, func(string) (string, bool) { return "", false })
 	if sky.PrivilegeNoticeTemplateKey != "club.privilege-change" {
 		t.Fatalf("default key %q", sky.PrivilegeNoticeTemplateKey)
@@ -150,7 +150,7 @@ func TestPrivilegeNoticeThroughTheService(t *testing.T) {
 	}
 }
 
-// SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY alone keeps the worker on; set
+// SKYNOTIFY_PRIVILEGE_NOTICE_TEMPLATE_KEY alone keeps the worker on; set
 // empty, the role mapping notifier is off.
 func TestPrivilegeNoticeKeyFromEnv(t *testing.T) {
 	for _, test := range []struct {
@@ -159,12 +159,12 @@ func TestPrivilegeNoticeKeyFromEnv(t *testing.T) {
 		on   bool
 	}{
 		{"notice only", map[string]string{
-			"SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY": "", "SKYMAIL_ROLE_MEMBERSHIP_TEMPLATE_KEY": "", "SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY": "",
+			"SKYNOTIFY_TEAM_MEMBERSHIP_TEMPLATE_KEY": "", "SKYNOTIFY_ROLE_MEMBERSHIP_TEMPLATE_KEY": "", "SKYNOTIFY_GROUP_MEMBERSHIP_TEMPLATE_KEY": "",
 		}, true},
-		{"notice off", map[string]string{"SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY": ""}, false},
+		{"notice off", map[string]string{"SKYNOTIFY_PRIVILEGE_NOTICE_TEMPLATE_KEY": ""}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			sky := &mail.SkyMail{BaseURL: "http://127.0.0.1:1", Tokens: mail.StaticToken("t")}
+			sky := &mail.SkyNotify{BaseURL: "http://127.0.0.1:1", Tokens: mail.StaticToken("t")}
 			membershipTemplateKeys(sky, func(name string) (string, bool) { v, ok := test.env[name]; return v, ok })
 			ctx, cancel := context.WithCancel(context.Background())
 			membership, groupRoles, _, stopped := startTeamMembershipMail(ctx, teammail.NewMemoryQueue(), teammail.NewMemoryNoticeQueue(), sky, identity.NewMemory(), user.NewMemoryStore(), nil, func(string, ...any) {})
