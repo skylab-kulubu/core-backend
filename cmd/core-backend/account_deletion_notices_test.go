@@ -7,13 +7,13 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
-// The notices are off until ACCOUNT_DELETION_NOTICES=on: they need SkyMail's
+// The notices are off until ACCOUNT_DELETION_NOTICES=on: they need SkyNotify's
 // erase_after_send and their templates seeded first. The keys default to
 // the seeded ones, and an empty key turns one notice off.
 func TestAccountDeletionNoticesFromEnv(t *testing.T) {
 	t.Parallel()
 	store := user.NewMemoryStore()
-	sky := &mail.SkyMail{}
+	sky := &mail.SkyNotify{}
 	for _, c := range []struct {
 		name                string
 		env                 map[string]string
@@ -25,9 +25,9 @@ func TestAccountDeletionNoticesFromEnv(t *testing.T) {
 		{name: "off", env: map[string]string{"ACCOUNT_DELETION_NOTICES": "off"}},
 		{name: "on", env: map[string]string{"ACCOUNT_DELETION_NOTICES": "on"}, on: true,
 			received: "account.deletion-requested", completed: "account.deletion-completed"},
-		{name: "on, received off", env: map[string]string{"ACCOUNT_DELETION_NOTICES": "on", "SKYMAIL_ACCOUNT_DELETION_RECEIVED_TEMPLATE_KEY": ""}, on: true,
+		{name: "on, received off", env: map[string]string{"ACCOUNT_DELETION_NOTICES": "on", "SKYNOTIFY_ACCOUNT_DELETION_RECEIVED_TEMPLATE_KEY": ""}, on: true,
 			completed: "account.deletion-completed"},
-		{name: "on, other key", env: map[string]string{"ACCOUNT_DELETION_NOTICES": "on", "SKYMAIL_ACCOUNT_DELETION_COMPLETED_TEMPLATE_KEY": " account.other "}, on: true,
+		{name: "on, other key", env: map[string]string{"ACCOUNT_DELETION_NOTICES": "on", "SKYNOTIFY_ACCOUNT_DELETION_COMPLETED_TEMPLATE_KEY": " account.other "}, on: true,
 			received: "account.deletion-requested", completed: "account.other"},
 		{name: "true is not on", env: map[string]string{"ACCOUNT_DELETION_NOTICES": "true"}, fails: true},
 	} {

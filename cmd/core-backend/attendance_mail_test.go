@@ -21,8 +21,8 @@ func TestAttendanceMailFromEnv(t *testing.T) {
 		"unset is off": {map[string]string{}, attendanceMailConfig{WelcomeType: welcome, RecordedType: recorded, PerMinute: attendancemail.DefaultPerMinute}},
 		"on":           {map[string]string{"ATTENDANCE_MAIL": " on "}, attendanceMailConfig{On: true, WelcomeType: welcome, RecordedType: recorded, PerMinute: 20}},
 		"off spelled":  {map[string]string{"ATTENDANCE_MAIL": "off"}, attendanceMailConfig{WelcomeType: welcome, RecordedType: recorded, PerMinute: 20}},
-		"own key":      {map[string]string{"SKYMAIL_ATTENDANCE_WELCOME_TEMPLATE_KEY": " club.welcome "}, attendanceMailConfig{WelcomeType: "club.welcome", RecordedType: recorded, PerMinute: 20}},
-		"no receipts":  {map[string]string{"SKYMAIL_ATTENDANCE_RECORDED_TEMPLATE_KEY": ""}, attendanceMailConfig{WelcomeType: welcome, PerMinute: 20}},
+		"own key":      {map[string]string{"SKYNOTIFY_ATTENDANCE_WELCOME_TEMPLATE_KEY": " club.welcome "}, attendanceMailConfig{WelcomeType: "club.welcome", RecordedType: recorded, PerMinute: 20}},
+		"no receipts":  {map[string]string{"SKYNOTIFY_ATTENDANCE_RECORDED_TEMPLATE_KEY": ""}, attendanceMailConfig{WelcomeType: welcome, PerMinute: 20}},
 		"own pace":     {map[string]string{"ATTENDANCE_MAIL_PER_MINUTE": "10"}, attendanceMailConfig{WelcomeType: welcome, RecordedType: recorded, PerMinute: 10}},
 		"no bound":     {map[string]string{"ATTENDANCE_MAIL_PER_MINUTE": "0"}, attendanceMailConfig{WelcomeType: welcome, RecordedType: recorded}},
 	} {

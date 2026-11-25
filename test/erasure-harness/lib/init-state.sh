@@ -46,7 +46,7 @@ issue() { # issue NAME CN SAN_LIST USAGE
 issue edge e.yildizskylab.com 'DNS:e.yildizskylab.com,DNS:my.yildizskylab.com,DNS:api.yildizskylab.com' serverAuth
 cat "$PKI/edge.crt" "$PKI/edge.key" >"$PKI/edge.pem"
 
-# mailpit offers STARTTLS: SkyMail's sender insists on it (TLSMandatory).
+# mailpit offers STARTTLS: SkyNotify's sender insists on it (TLSMandatory).
 issue mailpit mailpit 'DNS:mailpit' serverAuth
 
 issue redis-server account-access-redis 'DNS:account-access-redis' serverAuth,clientAuth
@@ -54,7 +54,7 @@ cp "$PKI/redis-server.crt" "$PKI/redis-server/account-access-tls.crt"
 cp "$PKI/redis-server.key" "$PKI/redis-server/account-access-tls.key"
 cp "$PKI/ca.crt" "$PKI/redis-server/account-access-ca.crt"
 
-REDIS_USERS=(core-writer skymail-reader cms-reader forms-reader account-center-reader recovery-operator)
+REDIS_USERS=(core-writer skynotify-reader cms-reader forms-reader account-center-reader recovery-operator)
 declare -A REDIS_PASSWORD
 for user in "${REDIS_USERS[@]}"; do
   issue "clients/$user" "$user" '' clientAuth
@@ -69,7 +69,7 @@ connection='+@connection -@admin -@dangerous'
   printf 'user default off\n'
   printf 'user core-writer on >%s resetkeys ~skylab:account-access:v1:* resetchannels -@all %s +get +mget +set +pttl +wait +ping +hello\n' \
     "${REDIS_PASSWORD[core-writer]}" "$connection"
-  for reader in skymail-reader cms-reader forms-reader account-center-reader; do
+  for reader in skynotify-reader cms-reader forms-reader account-center-reader; do
     printf 'user %s on >%s resetkeys %%R~skylab:account-access:v1:* resetchannels -@all %s +get +mget +ping +hello\n' \
       "$reader" "${REDIS_PASSWORD[$reader]}" "$connection"
   done
@@ -89,14 +89,14 @@ find "$PKI" -type f -exec chmod 0644 {} +
   printf 'POSTGRES_PASSWORD=%s\n' "$(rand_hex 16)"
   printf 'KEYCLOAK_DB_PASSWORD=%s\n' "$(rand_hex 16)"
   printf 'CORE_DB_PASSWORD=%s\n' "$(rand_hex 16)"
-  printf 'SKYMAIL_DB_PASSWORD=%s\n' "$(rand_hex 16)"
+  printf 'SKYNOTIFY_DB_PASSWORD=%s\n' "$(rand_hex 16)"
   printf 'CMS_DB_PASSWORD=%s\n' "$(rand_hex 16)"
   printf 'FORMS_DB_PASSWORD=%s\n' "$(rand_hex 16)"
   printf 'ACCOUNT_CENTER_DB_PASSWORD=%s\n' "$(rand_hex 16)"
   printf 'KC_ADMIN_PASSWORD=%s\n' "$(rand_hex 16)"
   printf 'KC_CONFIG_CLIENT_SECRET=%s\n' "$(rand_hex 24)"
   printf 'CORE_CLIENT_SECRET=%s\n' "$(rand_hex 24)"
-  printf 'SKYMAIL_SERVICE_CLIENT_SECRET=%s\n' "$(rand_hex 24)"
+  printf 'SKYNOTIFY_SERVICE_CLIENT_SECRET=%s\n' "$(rand_hex 24)"
   printf 'OBS_BROKER_CLIENT_SECRET=%s\n' "$(rand_hex 24)"
   printf 'HARNESS_PERSON_PASSWORD=%s\n' "Hx-$(rand_hex 12)"
   printf 'ACCOUNT_DELETION_RECEIPT_KEY=%s\n' "$(rand_b64url 32)"

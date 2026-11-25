@@ -2,7 +2,7 @@
 
 etkinlik-bildirim-secenekleri (c); Yusuf, 2026-11-25: a person added to an
 Event's door staff is always told, nobody is asked. ADR 0070: core says what
-happened and to whom; SkyMail picks the channels (inbox and e-mail) and the
+happened and to whom; SkyNotify picks the channels (inbox and e-mail) and the
 text. Off until `DOOR_STAFF_MAIL=on`.
 
 ## When
@@ -17,16 +17,16 @@ text. Off until `DOOR_STAFF_MAIL=on`.
 | Taken off and added again later | told again (a new row) |
 
 Only a person with a `users` row is queued (door staff are members). It is a
-transactional mail about their own task: a required type, SkyMail's
+transactional mail about their own task: a required type, SkyNotify's
 `system` lane, no preferences, no unsubscribe link.
 
 ## How
 
 ```text
-Event write ──(same transaction)──▶ door_staff_notifications ──(2 min)──▶ worker ──▶ SkyMail
+Event write ──(same transaction)──▶ door_staff_notifications ──(2 min)──▶ worker ──▶ SkyNotify
 ```
 
-- While `DOOR_STAFF_MAIL=on` (and SkyMail is configured), the write that
+- While `DOOR_STAFF_MAIL=on` (and SkyNotify is configured), the write that
   replaces the Event's door staff compares it with what it was and queues a
   row for each person added (`event_id`, `user_id`, due two minutes later).
   One row waits per Event and person. Off, nothing is queued: turning it on
@@ -46,7 +46,7 @@ Event write ──(same transaction)──▶ door_staff_notifications ──(2 
    "expires_at": "<the Event's end>"}
   ```
 
-  Every variable is always sent (SkyMail renders the inbox text with
+  Every variable is always sent (SkyNotify renders the inbox text with
   `missingkey=error`); times are Europe/Istanbul, empty without one.
   `DoorUrl` is the panel's door page under `PANEL_URL`; empty without it,
   and the template leaves the button out.
@@ -55,13 +55,13 @@ Event write ──(same transaction)──▶ door_staff_notifications ──(2 
 
 `400` and `422` are permanent (the row is done with, `refused`), except
 `notification.type_unknown` (the type not seeded yet). That, and anything
-else (SkyMail down, `401`, `403`, `409`), keeps the row, tried again 30
+else (SkyNotify down, `401`, `403`, `409`), keeps the row, tried again 30
 seconds later, doubling to 30 minutes, until 30 days after the person was
 added. Several cores share the queue: a claim skips the row another holds.
 A pass that did something logs one line of counts, never a person:
 
 ```text
-door staff mail: 1 sent, 0 dropped, 2 waiting for publication, 0 given up, 0 refused by SkyMail, 0 tried again later
+door staff mail: 1 sent, 0 dropped, 2 waiting for publication, 0 given up, 0 refused by SkyNotify, 0 tried again later
 ```
 
 ## Erasure
@@ -72,10 +72,10 @@ drops its row when it comes due.
 
 ## Before turning it on
 
-1. Keycloak: `core`'s service account holds `skymail:notifications:send`
+1. Keycloak: `core`'s service account holds `skynotify:notifications:send`
    (already, for `event.ticket-created`).
-2. SkyMail: the type `event.door-staff-added` is seeded with its template
-   and inbox text (skymail-frontend; waits for the SkyNotify move).
+2. SkyNotify: the type `event.door-staff-added` is seeded with its template
+   and inbox text (skynotify-frontend; waits for the SkyNotify move).
 3. `PANEL_URL`, the panel's origin: `https://admin.yildizskylab.com` in
    production (sandbox: the sandbox panel's origin). Optional: unset, the
    mail has no door link. Anything but a bare `https://` origin (`http://`

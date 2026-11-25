@@ -16,7 +16,7 @@ import (
 
 // AudienceHandler serves POST /v1/audiences/resolve: who a News send goes to
 // (docs/news-audience.md). Only a service account holding
-// commpref.AudienceRole (SkyMail's) may call it.
+// commpref.AudienceRole (SkyNotify's) may call it.
 type AudienceHandler struct {
 	svc *commpref.Audience
 }

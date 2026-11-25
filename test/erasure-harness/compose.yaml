@@ -15,7 +15,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
       CORE_DB_PASSWORD: ${CORE_DB_PASSWORD}
-      SKYMAIL_DB_PASSWORD: ${SKYMAIL_DB_PASSWORD}
+      SKYNOTIFY_DB_PASSWORD: ${SKYNOTIFY_DB_PASSWORD}
       CMS_DB_PASSWORD: ${CMS_DB_PASSWORD}
       FORMS_DB_PASSWORD: ${FORMS_DB_PASSWORD}
       ACCOUNT_CENTER_DB_PASSWORD: ${ACCOUNT_CENTER_DB_PASSWORD}
@@ -56,7 +56,7 @@ services:
       MP_SMTP_AUTH_ACCEPT_ANY: "true"
       MP_SMTP_AUTH_ALLOW_INSECURE: "true"
       MP_MAX_MESSAGES: "500"
-      # SkyMail's sender requires STARTTLS; the certificate is signed by the harness CA.
+      # SkyNotify's sender requires STARTTLS; the certificate is signed by the harness CA.
       MP_SMTP_TLS_CERT: /harness/mailpit.crt
       MP_SMTP_TLS_KEY: /harness/mailpit.key
     volumes:
@@ -139,14 +139,14 @@ services:
       KEYCLOAK_URL: https://e.yildizskylab.com
       KEYCLOAK_REALM: e-skylab
       # Empty: Admin REST goes through the edge, as before KEYCLOAK_ADMIN_URL existed.
-      # HARNESS_KEYCLOAK_ADMIN_URL=http://keycloak:8080 sends it (core's and SkyMail's) past the
+      # HARNESS_KEYCLOAK_ADMIN_URL=http://keycloak:8080 sends it (core's and SkyNotify's) past the
       # edge to Keycloak's own port, as production does once the edge refuses /admin.
       KEYCLOAK_ADMIN_URL: ${HARNESS_KEYCLOAK_ADMIN_URL:-}
       KEYCLOAK_CLIENT_ID: core
       KEYCLOAK_CLIENT_SECRET: ${CORE_CLIENT_SECRET}
-      # core's welcome and certificate mails go to SkyMail; the core client holds no SkyMail
-      # send role here, so SkyMail refuses them (a warning in core's log, no row, no mail).
-      SKYMAIL_URL: http://skymail:3000
+      # core's welcome and certificate mails go to SkyNotify; the core client holds no SkyNotify
+      # send role here, so SkyNotify refuses them (a warning in core's log, no row, no mail).
+      SKYNOTIFY_URL: http://skynotify:3000
       ACCOUNT_ACCESS_GATE_MODE: enforce
       ACCOUNT_ACCESS_REDIS_ADDR: account-access-redis:6379
       ACCOUNT_ACCESS_REDIS_USERNAME: core-writer
@@ -162,7 +162,7 @@ services:
       ACCOUNT_ACCESS_REDIS_WAIT_TIMEOUT: 200ms
       ACCOUNT_ERASURE_WORKER_ENABLED: "true"
       ACCOUNT_DELETION_RECEIPT_KEY: ${ACCOUNT_DELETION_RECEIPT_KEY}
-      ACCOUNT_ERASURE_SKYMAIL_URL: ${HARNESS_SKYMAIL_URL:-http://skymail:3000}
+      ACCOUNT_ERASURE_SKYNOTIFY_URL: ${HARNESS_SKYNOTIFY_URL:-http://skynotify:3000}
       ACCOUNT_ERASURE_CMS_URL: ${HARNESS_CMS_URL:-http://cms:5000}
       ACCOUNT_ERASURE_FORMS_URL: ${HARNESS_FORMS_URL:-http://forms:8080}
       ACCOUNT_ERASURE_CLIENT_ID: core-erasure
@@ -187,29 +187,29 @@ services:
     mem_limit: 256m
     logging: *logging
 
-  skymail:
-    image: ${HARNESS_IMAGE_SKYMAIL}
+  skynotify:
+    image: ${HARNESS_IMAGE_SKYNOTIFY}
     environment:
-      DATABASE_URL: postgres://skymail:${SKYMAIL_DB_PASSWORD}@postgres:5432/skymail?sslmode=disable
+      DATABASE_URL: postgres://skynotify:${SKYNOTIFY_DB_PASSWORD}@postgres:5432/skynotify?sslmode=disable
       DATABASE_MIGRATIONS_MODE: apply
       SSL_CERT_FILE: /harness/ca.crt
-      SMTP_FROM: skymail@harness.invalid
+      SMTP_FROM: skynotify@harness.invalid
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
       SMTP_USER: harness
       SMTP_PASS: harness
-      SMTP_FQDN: skymail.harness.invalid
+      SMTP_FQDN: skynotify.harness.invalid
       SMTP_PLAIN: "TRUE"
       KEYCLOAK_REALM_URL: https://e.yildizskylab.com/realms/e-skylab
-      KEYCLOAK_CLIENT_ID: skymail
-      KEYCLOAK_SERVICE_CLIENT_ID: skymail-backend
-      KEYCLOAK_SERVICE_CLIENT_SECRET: ${SKYMAIL_SERVICE_CLIENT_SECRET}
+      KEYCLOAK_CLIENT_ID: skynotify
+      KEYCLOAK_SERVICE_CLIENT_ID: skynotify-backend
+      KEYCLOAK_SERVICE_CLIENT_SECRET: ${SKYNOTIFY_SERVICE_CLIENT_SECRET}
       KEYCLOAK_ADMIN_URL: ${HARNESS_KEYCLOAK_ADMIN_URL:-}
       APP_PORT: "3000"
       ACCOUNT_ACCESS_GATE_MODE: enforce
       ACCOUNT_ACCESS_REDIS_ADDR: account-access-redis:6379
-      ACCOUNT_ACCESS_REDIS_USERNAME: skymail-reader
-      ACCOUNT_ACCESS_REDIS_PASSWORD: ${REDIS_SKYMAIL_READER_PASSWORD}
+      ACCOUNT_ACCESS_REDIS_USERNAME: skynotify-reader
+      ACCOUNT_ACCESS_REDIS_PASSWORD: ${REDIS_SKYNOTIFY_READER_PASSWORD}
       ACCOUNT_ACCESS_REDIS_DB: "0"
       ACCOUNT_ACCESS_REDIS_TLS: "true"
       ACCOUNT_ACCESS_REDIS_TLS_SERVER_NAME: account-access-redis
@@ -218,12 +218,12 @@ services:
       ACCOUNT_ACCESS_REDIS_CA_CERT_FILE: /harness/ca.crt
       ACCOUNT_ACCESS_REDIS_OPERATION_TIMEOUT: 500ms
       # Unset (the sender on) unless the caller's environment sets it: scenario 11 redeploys
-      # SkyMail with MAIL_SENDER=paused for the restore, then without it (docs/data-lifecycle.md).
+      # SkyNotify with MAIL_SENDER=paused for the restore, then without it (docs/data-lifecycle.md).
       MAIL_SENDER:
     volumes:
       - *harness-ca
-      - ${HARNESS_STATE}/pki/clients/skymail-reader.crt:/harness/redis/client.crt:ro
-      - ${HARNESS_STATE}/pki/clients/skymail-reader.key:/harness/redis/client.key:ro
+      - ${HARNESS_STATE}/pki/clients/skynotify-reader.crt:/harness/redis/client.crt:ro
+      - ${HARNESS_STATE}/pki/clients/skynotify-reader.key:/harness/redis/client.key:ro
     depends_on:
       postgres: {condition: service_healthy}
     mem_limit: 192m
@@ -296,7 +296,7 @@ services:
     image: ${HARNESS_IMAGE_STUBS}
     command: ["-mode", "proxy"]
     environment:
-      PROXY_ROUTES: ":9001=http://skymail:3000,:9002=http://cms:5000,:9003=http://forms:8080,:9004=http://core:8080"
+      PROXY_ROUTES: ":9001=http://skynotify:3000,:9002=http://cms:5000,:9003=http://forms:8080,:9004=http://core:8080"
       PROXY_HOLD_PREFIXES: /internal/v1/account-erasures/,/v1/account-deletion-requests/self
     mem_limit: 32m
     logging: *logging

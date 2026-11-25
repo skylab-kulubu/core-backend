@@ -152,7 +152,7 @@ func TestTeamAuditRecordsReaders(t *testing.T) {
 			{"a Leader", e.auditToken("webLeader"), fiber.StatusForbidden},
 			{"a Leader of a Sub-team", e.auditToken("frontLeader"), fiber.StatusForbidden},
 			{"a member", e.auditToken("member"), fiber.StatusForbidden},
-			{"a service account with audit:read", serviceToken(t, e.keys, "skymail", authz.RoleAuditRead), fiber.StatusForbidden},
+			{"a service account with audit:read", serviceToken(t, e.keys, "skynotify", authz.RoleAuditRead), fiber.StatusForbidden},
 		} {
 			name := string(mode) + ", " + tc.name
 			got := e.send(tc.token, fiber.MethodGet, auditRecordsPath, "")

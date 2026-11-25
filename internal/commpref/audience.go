@@ -18,7 +18,7 @@ import (
 )
 
 // AudienceRole is core's client role of the service account that may
-// resolve a News send's audience: SkyMail's (bilet 04). A person's token
+// resolve a News send's audience: SkyNotify's (bilet 04). A person's token
 // never may, whatever roles it carries.
 const AudienceRole = "audience:read"
 
@@ -153,7 +153,7 @@ type Recipient struct {
 	CategoryLabel  string `json:"categoryLabel"`
 	UnsubscribeURL string `json:"unsubscribeUrl"`
 	// AllowedChannels are the channels the person's preferences allow for
-	// the send (iletişim-servisi 06): what SkyMail's POST /v1/notifications
+	// the send (iletişim-servisi 06): what SkyNotify's POST /v1/notifications
 	// takes as allowed_channels. Core keeps preferences for e-mail alone
 	// today, and a person whose e-mail is off is not a recipient, so it is
 	// ["email"]. The in-app inbox does not look at preferences.

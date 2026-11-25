@@ -58,7 +58,7 @@ func (e *env) queueKind(id uuid.UUID, kind string) {
 }
 
 // "Bekleme listesindesin" goes as event.waitlist-joined with its own key
-// and SkyMail's variable set (no QR, no code); "Yer açıldı" as
+// and SkyNotify's variable set (no QR, no code); "Yer açıldı" as
 // event.waitlist-promoted with the ticket's variables. Each goes only while
 // the Ticket is in the state it tells of.
 func TestWaitlistMails(t *testing.T) {
@@ -128,8 +128,8 @@ func TestWaitlistMailsWithoutAStatusMailer(t *testing.T) {
 }
 
 // "Biletin iptal edildi" (kontenjan-iptal-hatirlatma 04) goes as
-// event.ticket-cancelled with its own key and SkyMail's variables
-// (skymail-frontend #179): the Event's, CancelledBy and the operator's
+// event.ticket-cancelled with its own key and SkyNotify's variables
+// (skynotify-frontend #179): the Event's, CancelledBy and the operator's
 // Reason (empty for the holder); no link, QR or code. A row whose Ticket was
 // restored since does not go.
 func TestCancellationMail(t *testing.T) {

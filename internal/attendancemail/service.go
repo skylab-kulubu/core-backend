@@ -3,7 +3,7 @@
 // the venue on a day, and "katılımın alındı" with their certificate count
 // on each Session Check-in, however it was written (the door's scan, the
 // attendance QR, the person's own, the desk). They are transactional mails
-// of the holder's own scan: SkyMail's types are required (the person cannot
+// of the holder's own scan: SkyNotify's types are required (the person cannot
 // turn them off); the organizer can, per Event.
 //
 // The ticket store queues a row in the statement that writes the Venue
@@ -163,7 +163,7 @@ type Queue interface {
 	Purge(ctx context.Context, before time.Time) (int, error)
 }
 
-// Mailer posts the mail (mail.SkyMail).
+// Mailer posts the mail (mail.SkyNotify).
 type Mailer interface {
 	AttendanceMail(ctx context.Context, typ, idempotencyKey string, holder mail.TicketHolder, vars map[string]any, source mail.NotificationSource, expiresAt *time.Time) error
 }
@@ -189,8 +189,8 @@ type Config struct {
 	Users   Users
 	Mail    Mailer
 	// WelcomeType and RecordedType are the template keys
-	// (SKYMAIL_ATTENDANCE_WELCOME_TEMPLATE_KEY,
-	// SKYMAIL_ATTENDANCE_RECORDED_TEMPLATE_KEY): empty drops that kind's
+	// (SKYNOTIFY_ATTENDANCE_WELCOME_TEMPLATE_KEY,
+	// SKYNOTIFY_ATTENDANCE_RECORDED_TEMPLATE_KEY): empty drops that kind's
 	// rows (the store queues none then).
 	WelcomeType, RecordedType string
 	// PerMinute bounds the mails a minute; 0 is no bound.
@@ -234,7 +234,7 @@ func NewService(config Config) (*Service, error) {
 
 // Report counts one pass: mails Sent (Merged the rows that went along in
 // another's mail), rows Dropped, Skipped (no one to write to), Rejected by
-// SkyMail, Expired (tried for GiveUpAfter), Uncertain (a guest's mail went
+// SkyNotify, Expired (tried for GiveUpAfter), Uncertain (a guest's mail went
 // out and no answer came; not tried again) and Retried later; Purged done
 // rows. Limited is true when the per-minute bound stopped the pass.
 type Report struct {
@@ -422,7 +422,7 @@ func (s *Service) deliver(ctx context.Context, claimed Mail, report *Report) (se
 	vars := s.vars(kind, ev, firstName, send, progress)
 	source := mail.NotificationSource{Kind: "event", Ref: ev.ID.String()}
 	// A retry sends under the key of the first try, whatever rows dropped
-	// out since: SkyMail may have taken that try with no answer, and then
+	// out since: SkyNotify may have taken that try with no answer, and then
 	// answers this one from it rather than mailing again. Rows queued since
 	// are not in the group (Siblings), so they go in a mail of their own.
 	key := claimed.MailKey
@@ -439,12 +439,12 @@ func (s *Service) deliver(ctx context.Context, claimed Mail, report *Report) (se
 		report.Uncertain++
 		return send, drop, Uncertain, nil
 	case errors.As(err, &refused) && refused.KeyReused():
-		// A retry under the first try's key with fewer rows: SkyMail took the
+		// A retry under the first try's key with fewer rows: SkyNotify took the
 		// first try, whose answer was lost. The mail went.
 		report.Sent++
 		return send, drop, Sent, nil
 	case errors.As(err, &refused) && refused.Permanent():
-		// SkyMail refuses this body itself (400, 422): the same body would
+		// SkyNotify refuses this body itself (400, 422): the same body would
 		// be refused again.
 		report.Rejected++
 		return send, drop, Rejected, nil
@@ -457,7 +457,7 @@ func (s *Service) deliver(ctx context.Context, claimed Mail, report *Report) (se
 }
 
 // countsInMinute reports whether a row done with outcome made a request to
-// SkyMail: those count in the per-minute bound.
+// SkyNotify: those count in the per-minute bound.
 func countsInMinute(outcome Outcome) bool {
 	return outcome == Sent || outcome == Rejected || outcome == Uncertain
 }
@@ -522,7 +522,7 @@ func (s *Service) Run(ctx context.Context, logf func(string, ...any)) <-chan str
 			case err != nil && ctx.Err() == nil:
 				logf("attendance mail: %v", err)
 			case report.any():
-				logf("attendance mail: %d sent (%d rows merged into them), %d dropped, %d skipped, %d refused by SkyMail, %d expired, %d guest mails unanswered and not tried again, %d tried again later, %d old rows purged",
+				logf("attendance mail: %d sent (%d rows merged into them), %d dropped, %d skipped, %d refused by SkyNotify, %d expired, %d guest mails unanswered and not tried again, %d tried again later, %d old rows purged",
 					report.Sent, report.Merged, report.Dropped, report.Skipped, report.Rejected, report.Expired, report.Uncertain, report.Retried, report.Purged)
 			}
 			select {

@@ -22,13 +22,13 @@ import (
 // The whole saga (spec §4): disable_identity → logout_sessions →
 // erase_contact_consents → erase_skypass_wallet → erase_communication_preferences →
 // erase_app_preferences →
-// erase_skymail, erase_cms, erase_forms →
+// erase_skynotify, erase_cms, erase_forms →
 // anonymize_core → erase_profile_media → erase_staged_uploads →
 // delete_identity.
 var sagaSteps = []user.DeletionStep{
 	user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions,
 	user.DeletionStepEraseContactConsents, user.DeletionStepEraseSkyPassWallet, user.DeletionStepEraseCommunicationPreferences, user.DeletionStepEraseAppPreferences,
-	user.DeletionStepEraseSkyMail, user.DeletionStepEraseCMS, user.DeletionStepEraseForms,
+	user.DeletionStepEraseSkyNotify, user.DeletionStepEraseCMS, user.DeletionStepEraseForms,
 	user.DeletionStepAnonymizeCore, user.DeletionStepEraseProfile, user.DeletionStepEraseUploads,
 	user.DeletionStepDeleteIdentity,
 }
@@ -263,7 +263,7 @@ func TestErasureSagaErasesTheServicesAfterLogoutAndBeforeCoreAndTheIdentity(t *t
 	}
 	want := []string{
 		"disable_identity", "logout_sessions", "read_addresses", "erase_contact_consents", "erase_skypass_wallet",
-		"erase_communication_preferences", "erase_app_preferences", "erase_skymail", "erase_cms", "erase_forms",
+		"erase_communication_preferences", "erase_app_preferences", "erase_skynotify", "erase_cms", "erase_forms",
 		"anonymize_core", "erase_staged_uploads", "delete_identity",
 	}
 	if got := f.events.list(); !slices.Equal(got, want) {
@@ -368,7 +368,7 @@ func testErasureSagaWaitsForEveryService(t *testing.T, store erasureTestStore) {
 	if row := f.core(); row.AccountState != user.AccountDeletionPending || row.Email != sagaPersonal || row.SchoolEmail != sagaSchool {
 		t.Fatalf("core row changed before the services finished: %+v", row)
 	}
-	want := []user.DeletionStep{user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions, user.DeletionStepEraseContactConsents, user.DeletionStepEraseSkyPassWallet, user.DeletionStepEraseCommunicationPreferences, user.DeletionStepEraseAppPreferences, user.DeletionStepEraseSkyMail, user.DeletionStepEraseForms}
+	want := []user.DeletionStep{user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions, user.DeletionStepEraseContactConsents, user.DeletionStepEraseSkyPassWallet, user.DeletionStepEraseCommunicationPreferences, user.DeletionStepEraseAppPreferences, user.DeletionStepEraseSkyNotify, user.DeletionStepEraseForms}
 	if got := f.checkpoints(); !slices.Equal(got, want) {
 		t.Fatalf("checkpoints = %v, want %v", got, want)
 	}
@@ -385,7 +385,7 @@ func testErasureSagaWaitsForEveryService(t *testing.T, store erasureTestStore) {
 		t.Fatalf("checkpoints = %v", got)
 	}
 	for event, want := range map[string]int{
-		"disable_identity": 1, "logout_sessions": 1, "erase_skymail": 1, "erase_forms": 1, "erase_cms": 2,
+		"disable_identity": 1, "logout_sessions": 1, "erase_skynotify": 1, "erase_forms": 1, "erase_cms": 2,
 		"read_addresses": 2, "anonymize_core": 1, "delete_identity": 1,
 	} {
 		if got := f.events.count(event); got != want {
@@ -411,7 +411,7 @@ func TestErasureSagaRefusesToPassAServiceItHasNoSenderFor(t *testing.T) {
 			services.Steps = services.Steps[:2]
 			return services
 		}},
-		{name: "no sender configured", code: "erase_skymail_not_configured", services: func(f *sagaFixture) account.ServiceErasure {
+		{name: "no sender configured", code: "erase_skynotify_not_configured", services: func(f *sagaFixture) account.ServiceErasure {
 			return account.ServiceErasure{Addresses: f.group().Addresses}
 		}},
 	} {
@@ -559,20 +559,20 @@ func TestErasureSagaLogsNoAddressOrSubject(t *testing.T) {
 	pass()
 	f.identity.set([]string{sagaPersonal, sagaSchool}, nil)
 	// A service that writes the addresses back in its problem body.
-	f.answer(user.DeletionStepEraseSkyMail, answerStatus(http.StatusServiceUnavailable, "30"))
+	f.answer(user.DeletionStepEraseSkyNotify, answerStatus(http.StatusServiceUnavailable, "30"))
 	pass()
-	f.answer(user.DeletionStepEraseSkyMail, answerStatus(http.StatusUnauthorized, ""))
+	f.answer(user.DeletionStepEraseSkyNotify, answerStatus(http.StatusUnauthorized, ""))
 	pass()
 	// A rejection: manual intervention and the watchdog's attention line.
-	f.answer(user.DeletionStepEraseSkyMail, answerStatus(http.StatusForbidden, ""))
+	f.answer(user.DeletionStepEraseSkyNotify, answerStatus(http.StatusForbidden, ""))
 	pass()
-	if state := f.state(); state.Status != user.DeletionRequestManualIntervention || state.LastErrorCode != "erase_skymail_rejected_403" {
+	if state := f.state(); state.Status != user.DeletionRequestManualIntervention || state.LastErrorCode != "erase_skynotify_rejected_403" {
 		t.Fatalf("request = %+v", state)
 	}
 	if !strings.Contains(captured.String(), "account_erasure_attention") {
 		t.Fatalf("the watchdog wrote no attention line:\n%s", captured.String())
 	}
-	for _, code := range []string{"erasure_addresses_failed", "erase_skymail_failed", "erase_skymail_rejected_403"} {
+	for _, code := range []string{"erasure_addresses_failed", "erase_skynotify_failed", "erase_skynotify_rejected_403"} {
 		if want := "account erasure worker: account erasure " + code + " request_id=" + f.request.ID.String() + ":"; !strings.Contains(captured.String(), want) {
 			t.Fatalf("no worker line %q:\n%s", want, captured.String())
 		}
