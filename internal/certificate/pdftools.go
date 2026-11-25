@@ -23,6 +23,11 @@ type PDFTools interface {
 	Inspect(ctx context.Context, pdf []byte) (PDFInfo, error)
 	Place(ctx context.Context, pdf []byte, page PDFPage, rect PDFRect) ([]byte, error)
 	Render(ctx context.Context, pdf []byte, maxPx int) ([]byte, error)
+	// Text is what /v1/inspect says of the PDF's text: every span, its
+	// place, font and style, and how pdf-tools groups them.
+	Text(ctx context.Context, pdf []byte) (PDFText, error)
+	// StripText is the PDF without the spans named (/v1/strip-text).
+	StripText(ctx context.Context, pdf []byte, spanIDs []string) ([]byte, error)
 }
 
 // PDFInfo is what /v1/inspect says of a PDF: its page count and its first
@@ -112,6 +117,25 @@ func (c *PDFToolsClient) Inspect(ctx context.Context, pdf []byte) (PDFInfo, erro
 		Pages: answer.Pages, WidthPt: answer.Page.WidthPt, HeightPt: answer.Page.HeightPt, Rotate: answer.Page.Rotate,
 		Encrypted: answer.Encrypted, TextCount: answer.TextCount,
 	}, nil
+}
+
+func (c *PDFToolsClient) Text(ctx context.Context, pdf []byte) (PDFText, error) {
+	body, err := c.call(ctx, "/v1/inspect", pdf, nil, "application/json", maxPDFToolsJSONBytes)
+	if err != nil {
+		return PDFText{}, err
+	}
+	return parsePDFText(body)
+}
+
+func (c *PDFToolsClient) StripText(ctx context.Context, pdf []byte, spanIDs []string) ([]byte, error) {
+	body, err := c.call(ctx, "/v1/strip-text", pdf, map[string][]string{"spanIds": spanIDs}, "application/pdf", maxBackgroundPDFBytes)
+	if err != nil {
+		return nil, stripRefusal(err)
+	}
+	if !bytes.HasPrefix(body, []byte("%PDF-")) {
+		return nil, pdfToolsUnavailable(errors.New("pdf-tools: strip-text answered no PDF"))
+	}
+	return body, nil
 }
 
 func (c *PDFToolsClient) Place(ctx context.Context, pdf []byte, page PDFPage, rect PDFRect) ([]byte, error) {
@@ -208,6 +232,8 @@ func pdfToolsRefusal(body []byte) error {
 	}
 	_ = json.Unmarshal(body, &problem)
 	switch problem.Code {
+	case "strip_incomplete":
+		return invalid(CodeBackgroundTextStripFailed)
 	case "pdf_encrypted":
 		return invalid(CodeBackgroundPDFEncrypted)
 	case "pdf_pages":
@@ -219,6 +245,17 @@ func pdfToolsRefusal(body []byte) error {
 	default:
 		return invalid(CodeRenderFailed)
 	}
+}
+
+// stripRefusal is a request /v1/strip-text refused (400 bad_request:
+// span ids it does not know, or cannot remove) in core's words: the spans
+// chosen cannot be converted.
+func stripRefusal(err error) error {
+	var refused *InvalidError
+	if errors.As(err, &refused) && refused.Code == CodeRenderFailed {
+		return invalid(CodeBackgroundTextSelectionEmpty)
+	}
+	return err
 }
 
 // busyWait is how long to wait before the one more try a busy pdf-tools

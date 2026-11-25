@@ -530,7 +530,7 @@ func (s *MemoryStore) TemplatesUsingMedia(_ context.Context, mediaID uuid.UUID) 
 
 // layoutLinks is whether the layout links the Media.
 func layoutLinks(layout Layout, mediaID uuid.UUID) bool {
-	for _, id := range layoutAssetIDs(layout) {
+	for _, id := range layoutLinkedIDs(layout) {
 		if id == mediaID {
 			return true
 		}

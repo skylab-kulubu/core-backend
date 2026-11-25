@@ -494,3 +494,24 @@ ALL = {
     "certificate": certificate,
     "split_streams": split_streams,
 }
+
+
+def outlined() -> bytes:
+    """A title with its text turned into outlines (Canva's and
+    Illustrator's "outline" export): curves, each glyph a filled path, and
+    no text object."""
+    b = Builder()
+    out = ["0.1 0.15 0.35 rg"]
+    for n in range(24):
+        x = 120 + n * 26
+        out.append(f"{x} 400 m {x + 8} 440 {x + 16} 440 {x + 20} 400 c {x + 10} 410 l h f")
+    b.add(*out)
+    return b.build()
+
+
+def picture() -> bytes:
+    """A page that is one picture: an image drawn over it, no text."""
+    b = Builder()
+    pixels = "".join(f"{v:02X}" for v in (0, 80, 160, 255))
+    b.add("q 842 0 0 595 0 0 cm", "BI /W 2 /H 2 /CS /G /BPC 8 /F /AHx ID", pixels + ">", "EI Q")
+    return b.build()
