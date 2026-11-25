@@ -119,7 +119,7 @@ func (s *service) snapshotVersionAssets(ctx context.Context, versionID uuid.UUID
 		// A placed PDF background takes its placed copy with it, which
 		// counts toward the bound too.
 		var placed []byte
-		if *layout.BackgroundMediaID == id && placesPDFBackground(layout, asset.ContentType) {
+		if placesPDFBackground(layout, asset.ContentType) && *layout.BackgroundMediaID == id {
 			if placed, err = s.placePDF(ctx, layout, asset.Data); err != nil {
 				return nil, err
 			}
