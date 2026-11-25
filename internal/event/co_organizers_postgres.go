@@ -78,36 +78,24 @@ func (s *PostgresStore) CoOrganizerPeople(ctx context.Context, eventID uuid.UUID
 	return out, rows.Err()
 }
 
-// withCoOrganizers reads the Co-organizer teams and people of every Event,
-// in one query whatever the number of Events: teams by code, people by id;
-// nil lists for an Event with none.
-func (s *PostgresStore) withCoOrganizers(ctx context.Context, ids []uuid.UUID, events []Event, byID map[uuid.UUID]int) error {
-	rows, err := s.pool.Query(ctx, `
-		SELECT event_id, team_code, user_id, management, visibility
-		FROM event_co_organizers WHERE event_id = ANY($1)
-		ORDER BY event_id, team_code NULLS LAST, user_id`, ids)
-	if err != nil {
-		return err
+// coOrganizersSQL reads the Co-organizer rows of the Events $1 names, in
+// the columns of withGalleriesAndDoorStaff's people query: the event, true,
+// the team's code, the person, the team's two choices.
+const coOrganizersSQL = `
+		SELECT event_id, true, team_code, user_id, management, visibility
+		FROM event_co_organizers WHERE event_id = ANY($1)`
+
+// addCoOrganizer adds a Co-organizer row as the store read it: a team with
+// both choices, or a person.
+func (e *Event) addCoOrganizer(code *string, userID *uuid.UUID, management, visibility *string) {
+	switch {
+	case code != nil && management != nil && visibility != nil:
+		e.CoOrganizers = append(e.CoOrganizers, CoOrganizerTeam{
+			Code: *code, Management: Management(*management), Visibility: Visibility(*visibility),
+		})
+	case userID != nil:
+		e.CoOrganizerIDs = append(e.CoOrganizerIDs, *userID)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var eventID uuid.UUID
-		var code, management, visibility *string
-		var userID *uuid.UUID
-		if err := rows.Scan(&eventID, &code, &userID, &management, &visibility); err != nil {
-			return err
-		}
-		e := &events[byID[eventID]]
-		switch {
-		case code != nil && management != nil && visibility != nil:
-			e.CoOrganizers = append(e.CoOrganizers, CoOrganizerTeam{
-				Code: *code, Management: Management(*management), Visibility: Visibility(*visibility),
-			})
-		case userID != nil:
-			e.CoOrganizerIDs = append(e.CoOrganizerIDs, *userID)
-		}
-	}
-	return rows.Err()
 }
 
 // dropOwnerCoOrganizer removes the Co-organizer row of the team that is now

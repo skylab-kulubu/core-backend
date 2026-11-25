@@ -718,26 +718,34 @@ func (s *PostgresStore) withGalleriesAndDoorStaff(ctx context.Context, events []
 		return err
 	}
 	rows.Close()
-	staff, err := s.pool.Query(ctx, `
-		SELECT event_id, user_id FROM event_door_staff WHERE event_id = ANY($1) ORDER BY user_id
-	`, ids)
+	// The door staff and the Co-organizers in one query, a list costs no
+	// more queries for them (coOrganizersSQL).
+	people, err := s.pool.Query(ctx, `
+		SELECT event_id, false, NULL::text, user_id, NULL::text, NULL::text
+		FROM event_door_staff WHERE event_id = ANY($1)
+		UNION ALL `+coOrganizersSQL+`
+		ORDER BY 1, 2, 3 NULLS LAST, 4`, ids)
 	if err != nil {
 		return err
 	}
-	defer staff.Close()
-	for staff.Next() {
-		var eventID, userID uuid.UUID
-		if err := staff.Scan(&eventID, &userID); err != nil {
+	defer people.Close()
+	for people.Next() {
+		var eventID uuid.UUID
+		var coOrganizer bool
+		var code, management, visibility *string
+		var userID *uuid.UUID
+		if err := people.Scan(&eventID, &coOrganizer, &code, &userID, &management, &visibility); err != nil {
 			return err
 		}
 		e := &events[byID[eventID]]
-		e.DoorStaffIDs = append(e.DoorStaffIDs, userID)
+		switch {
+		case coOrganizer:
+			e.addCoOrganizer(code, userID, management, visibility)
+		case userID != nil:
+			e.DoorStaffIDs = append(e.DoorStaffIDs, *userID)
+		}
 	}
-	if err := staff.Err(); err != nil {
-		return err
-	}
-	staff.Close()
-	return s.withCoOrganizers(ctx, ids, events, byID)
+	return people.Err()
 }
 
 func (s *PostgresStore) replaceDoorStaff(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, ids []uuid.UUID) error {
