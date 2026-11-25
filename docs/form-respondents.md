@@ -111,11 +111,12 @@ gathering.
 
 ## The routes
 
-The routes take the Event's Ticket rights, as its Ticket routes do (authz
-on the Event's Tickets, its Co-organizers included; #456): the list asks
-`Read` (who may see the Event's Tickets), the preview, the sending and a
-job ask `Assign` (who may add attendees), so a Co-organizer team that only
-lets its members see the Event sends no Ticket. A product's service
+The routes take the Event's rights, its Co-organizers included (#456): the
+list asks `Read` on the Event's Tickets (who may see them); the preview, the
+sending and a job ask what an attendee import asks
+([attendee-import.md](attendee-import.md)): `Update` on the Event or
+`Assign` on its Tickets (who runs the Event), so a Co-organizer team that
+only lets its members see the Event sends no Ticket. A product's service
 account never may. `404` for no such current Event or a draft the caller
 may not see, `403` otherwise. Errors are RFC 9457 problem details with
 `code`.
@@ -201,10 +202,14 @@ at once on a published Event, at publishing on a draft.
 Each request writes a Team audit row ([team-audit.md](team-audit.md)), as
 an attendee import's: action `ticket.import` (the Event, no one Ticket),
 basis privileged, else the Leader, else the Event's editor, with the counts
-(`rows`, `created`, `waitlisted`, `full`, `existing`, `members`, `guests`;
-for `all: true` the rows selected, the job's own counts on the job). With
-the record on and no row, the request is refused before anything is
-written: `503 audit_unavailable`.
+(`rows`, `created`, `waitlisted`, `full`, `existing`, `members`, `guests`)
+and `source: "form_respondents"` (an attendee list's row has none). For
+`all: true` the row stays `pending` while the job runs and takes the job's
+id (`jobId`, the row's own id); when the job ends it holds the job's
+outcome and counts (`rows`, `created`, `waitlisted`, `full`, `skipped`). A
+request that finds a job waiting is closed at once with that job's `jobId`
+and no counts. With the record on and no row, the request is refused before
+anything is written: `503 audit_unavailable`.
 
 `409 event_cancelled`, `409 event_ended`: the Event takes no Ticket now.
 `400 respondents_invalid`: neither 1–200 `ids` nor `all: true`.
@@ -275,3 +280,6 @@ keeps every row and column; it puts back `form_pulls`' checks without
 job (`next_attempt_at = 'infinity'`), because the release before would run it
 as a backfill and write Tickets; up again puts it back. This release never
 moves a parked job (its cursor, retry and finish keep `infinity`).
+While the release before runs, account erasure and a form the Event lets go
+delete none of these rows: back on this release, they may need deleting by
+hand.

@@ -85,6 +85,10 @@ func (a *afterCheckIn) BeginFormRespondentSend(ctx context.Context, p authz.Prin
 	return a.inner.BeginFormRespondentSend(ctx, p, eventID)
 }
 
+func (a *afterCheckIn) FinishFormRespondentJob(ctx context.Context, eventID, jobID uuid.UUID, sum FormRespondentSummary, err error) {
+	a.inner.FinishFormRespondentJob(ctx, eventID, jobID, sum, err)
+}
+
 func (a *afterCheckIn) AdmitFormRespondent(ctx context.Context, eventID uuid.UUID, r FormRespondent) (FormRespondentOutcome, error) {
 	return a.inner.AdmitFormRespondent(ctx, eventID, r)
 }

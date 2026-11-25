@@ -400,7 +400,19 @@ type ImportCounts struct {
 	Duplicates int `json:"duplicates"`
 	// Mail is whether the new Tickets' mail was asked for.
 	Mail bool `json:"mail"`
+	// Source is what was imported: "form_respondents" for a sending of
+	// Unticketed respondents' Tickets (docs/form-respondents.md); empty
+	// for an attendee list (CSV). JobID is the send-all job the row
+	// counts (all: true), whose own counts it holds once the job ended;
+	// Skipped are that job's rows sent no Ticket (pending, or held one).
+	Source  string `json:"source,omitempty"`
+	JobID   string `json:"jobId,omitempty"`
+	Skipped int    `json:"skipped,omitempty"`
 }
+
+// SourceFormRespondents is ImportCounts.Source of a form respondents'
+// sending.
+const SourceFormRespondents = "form_respondents"
 
 // Limits of what a row holds. A longer text is cut, so a long value never
 // stops a write; a path longer than MaxPath is refused (Keycloak paths are

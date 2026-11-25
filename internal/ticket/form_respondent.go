@@ -169,6 +169,9 @@ func (s *service) EnsureFormRespondent(ctx context.Context, userID uuid.UUID) (b
 // respondents' Tickets, for its Team audit row.
 type FormRespondentSummary struct {
 	Rows, Recorded, Waitlisted, Full, Existing, Members, Guests int
+	// Skipped are a send-all job's rows sent no Ticket; JobID the job.
+	Skipped int
+	JobID   *uuid.UUID
 }
 
 // FormRespondentSend is the Team audit row of one sending
@@ -198,11 +201,27 @@ func (s *service) BeginFormRespondentSend(ctx context.Context, p authz.Principal
 	return &FormRespondentSend{s: s, record: record}, nil
 }
 
+// ID is the sending's row id; uuid.Nil when the record is off. A send-all
+// job takes it as its own id, so that the job's end finishes the row
+// (FinishFormRespondentJob).
+func (a *FormRespondentSend) ID() uuid.UUID {
+	if a == nil || a.record == nil {
+		return uuid.Nil
+	}
+	return a.record.id
+}
+
 // Finish writes the sending's outcome and counts to its row.
 func (a *FormRespondentSend) Finish(ctx context.Context, sum FormRespondentSummary, err error) {
 	if a == nil || a.record == nil {
 		return
 	}
+	if ferr := a.finish(ctx, sum, err); ferr != nil {
+		a.s.logger.Printf("tickets: audit record %s stays pending", a.record.id)
+	}
+}
+
+func (a *FormRespondentSend) finish(ctx context.Context, sum FormRespondentSummary, err error) error {
 	outcome, code := teamaudit.OutcomeOK, ""
 	if err != nil {
 		outcome, code = teamaudit.OutcomeFailed, "failed"
@@ -211,8 +230,25 @@ func (a *FormRespondentSend) Finish(ctx context.Context, sum FormRespondentSumma
 	after.Import = &teamaudit.ImportCounts{
 		Rows: sum.Rows, Created: sum.Recorded, Waitlisted: sum.Waitlisted, Members: sum.Members, Guests: sum.Guests,
 		Existing: sum.Existing, Full: sum.Full, Mail: true,
+		Source: teamaudit.SourceFormRespondents, Skipped: sum.Skipped,
 	}
-	if ferr := a.s.audit.Finish(ctx, a.record.id, outcome, code, &after); ferr != nil {
-		a.s.logger.Printf("tickets: audit record %s stays pending", a.record.id)
+	if sum.JobID != nil {
+		after.Import.JobID = sum.JobID.String()
+	}
+	return a.s.audit.Finish(ctx, a.record.id, outcome, code, &after)
+}
+
+// FinishFormRespondentJob writes a send-all job's outcome and its own
+// counts to the row its request opened, which stays pending while the job
+// runs (the row's id is the job's). A job queued with the record off, or
+// one another request had queued, has no pending row: nothing.
+func (s *service) FinishFormRespondentJob(ctx context.Context, eventID, jobID uuid.UUID, sum FormRespondentSummary, err error) {
+	if s.audit == nil {
+		return
+	}
+	sum.JobID = &jobID
+	a := &FormRespondentSend{s: s, record: &auditRecord{id: jobID, after: teamaudit.State{EventID: eventID.String()}}}
+	if ferr := a.finish(ctx, sum, err); ferr != nil && !errors.Is(ferr, teamaudit.ErrNotPending) {
+		s.logger.Printf("tickets: audit record %s stays pending", jobID)
 	}
 }

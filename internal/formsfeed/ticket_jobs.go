@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/events"
+	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
 
 // States of a ticket job.
@@ -52,9 +53,9 @@ type TicketJob struct {
 
 // TicketJobQueue keeps the ticket jobs (PostgresTicketJobs).
 type TicketJobQueue interface {
-	// Enqueue queues a job of the Event (of formID when set) and answers
-	// its id; one waits already: its id.
-	Enqueue(ctx context.Context, eventID uuid.UUID, formID, requestedBy *uuid.UUID, now time.Time) (uuid.UUID, error)
+	// Enqueue queues a job of the Event (of formID when set) as id and
+	// answers id; one waits already: its id.
+	Enqueue(ctx context.Context, id, eventID uuid.UUID, formID, requestedBy *uuid.UUID, now time.Time) (uuid.UUID, error)
 	// Get answers the Event's job, or ErrTicketJobNotFound.
 	Get(ctx context.Context, eventID, id uuid.UUID) (TicketJob, error)
 	// Claim takes the next due job, running, leased.
@@ -87,7 +88,7 @@ func scanTicketJob(row pgx.Row) (TicketJob, error) {
 	return j, err
 }
 
-func (s *PostgresTicketJobs) Enqueue(ctx context.Context, eventID uuid.UUID, formID, requestedBy *uuid.UUID, now time.Time) (uuid.UUID, error) {
+func (s *PostgresTicketJobs) Enqueue(ctx context.Context, newID, eventID uuid.UUID, formID, requestedBy *uuid.UUID, now time.Time) (uuid.UUID, error) {
 	// The waiting job may finish between the insert that found it and the
 	// read: then the insert goes again (a few times at most).
 	for range 3 {
@@ -97,7 +98,7 @@ func (s *PostgresTicketJobs) Enqueue(ctx context.Context, eventID uuid.UUID, for
 			VALUES ($1, $2, $3, $4, $5, $5, $5)
 			ON CONFLICT (event_id, COALESCE(form_id, '00000000-0000-0000-0000-000000000000'::uuid)) WHERE state IN ('queued', 'running')
 			DO NOTHING
-			RETURNING id`, uuid.New(), eventID, formID, requestedBy, now).Scan(&id)
+			RETURNING id`, newID, eventID, formID, requestedBy, now).Scan(&id)
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return id, err
 		}
@@ -226,7 +227,7 @@ func (t *TicketJobs) RunOne(ctx context.Context) (bool, error) {
 		}
 		if len(rows) == 0 {
 			t.log(job, JobDone, nil)
-			return true, t.Queue.Finish(ctx, job, JobDone, t.now())
+			return true, t.finish(ctx, job, JobDone, nil)
 		}
 		res, err := t.Respondents.send(ctx, job.EventID, rows)
 		job.SendResult.add(res.SendResult)
@@ -235,7 +236,7 @@ func (t *TicketJobs) RunOne(ctx context.Context) (bool, error) {
 		}
 		if errors.Is(err, ErrRespondentsEventCancelled) || errors.Is(err, ErrRespondentsEventEnded) || errors.Is(err, ErrMappingEventNotFound) {
 			t.log(job, JobFailed, err)
-			return true, t.Queue.Finish(ctx, job, JobFailed, t.now())
+			return true, t.finish(ctx, job, JobFailed, err)
 		}
 		if err != nil {
 			// The job goes on after the last row it finished (send counts
@@ -255,13 +256,28 @@ func (t *TicketJobs) retry(ctx context.Context, job TicketJob, cause error) erro
 	job.Attempts++
 	if job.Attempts >= ticketJobMaxAttempts {
 		t.log(job, JobFailed, cause)
-		return t.Queue.Finish(ctx, job, JobFailed, t.now())
+		return t.finish(ctx, job, JobFailed, cause)
 	}
 	t.log(job, "retry", cause)
 	if err := t.Queue.Progress(ctx, job, t.now()); err != nil {
 		return err
 	}
 	return t.Queue.Postpone(ctx, job.ID, job.Attempts, t.now().Add(time.Minute<<min(job.Attempts, 6)))
+}
+
+// finish ends the job, then writes its counts to the Team audit row its
+// request opened (pending while it ran).
+func (t *TicketJobs) finish(ctx context.Context, job TicketJob, state string, cause error) error {
+	if err := t.Queue.Finish(ctx, job, state, t.now()); err != nil {
+		return err
+	}
+	if t.Respondents.Tickets != nil {
+		t.Respondents.Tickets.FinishFormRespondentJob(ctx, job.EventID, job.ID, ticket.FormRespondentSummary{
+			Rows:     job.Recorded + job.Waitlisted + job.Full + job.Skipped,
+			Recorded: job.Recorded, Waitlisted: job.Waitlisted, Full: job.Full, Skipped: job.Skipped,
+		}, cause)
+	}
+	return nil
 }
 
 // log writes the job's line: ids and counts, never who.

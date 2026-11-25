@@ -309,7 +309,7 @@ func TestAccountErasureDeletesTheRespondentRows(t *testing.T) {
 		VALUES ($1, $2, $3, $4, $5, 'pending', 'collect')`, uuid.New(), w.ev.ID, w.formID, uuid.New(), uuid.New()); err == nil {
 		t.Fatal("a row named an account core does not have")
 	}
-	jobID, err := w.rs.Jobs.Enqueue(ctx, w.ev.ID, nil, &person, time.Now())
+	jobID, err := w.rs.Jobs.Enqueue(ctx, uuid.New(), w.ev.ID, nil, &person, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

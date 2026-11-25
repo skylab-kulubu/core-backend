@@ -33,6 +33,7 @@ type RespondentTicketer interface {
 	KeepFormRespondent(ctx context.Context, eventID uuid.UUID, r ticket.FormRespondent) error
 	EnsureFormRespondent(ctx context.Context, userID uuid.UUID) (bool, error)
 	BeginFormRespondentSend(ctx context.Context, p authz.Principal, eventID uuid.UUID) (*ticket.FormRespondentSend, error)
+	FinishFormRespondentJob(ctx context.Context, eventID, jobID uuid.UUID, sum ticket.FormRespondentSummary, err error)
 }
 
 // CapacityFunc reads an Event's capacity now (event.ReadCapacity).
@@ -311,12 +312,14 @@ func (sel Selection) valid() bool {
 	return len(sel.IDs) > 0 && len(sel.IDs) <= MaxRespondentIDs
 }
 
-// operable reads the Event and checks the caller may do action on its
-// Tickets (authz TypeTicket on the Event, its Co-organizers included, as
-// the Event's Ticket routes; #456): Read for the list, Assign for the
-// preview, the sending and its job. A Co-organizer team that only lets its
-// members see the Event sends no Ticket. Never a product's service account.
-// A draft the caller may not see is ErrMappingEventNotFound.
+// operable reads the Event and checks the caller may do action on it
+// (authz on the Event, its Co-organizers included, as the Event's Ticket
+// routes; #456): for the list Read on its Tickets; for the preview, the
+// sending and its job (action Assign) the attendee import's rule
+// (ticket operatorOf): Update on the Event or Assign on its Tickets. A
+// Co-organizer team that only lets its members see the Event sends no
+// Ticket. Never a product's service account. A draft the caller may not
+// see is ErrMappingEventNotFound.
 func (s *Respondents) operable(ctx context.Context, p authz.Principal, eventID uuid.UUID, action authz.Action) (event.Event, error) {
 	ev, err := s.Events.Get(ctx, eventID)
 	if errors.Is(err, event.ErrNotFound) {
@@ -328,13 +331,26 @@ func (s *Respondents) operable(ctx context.Context, p authz.Principal, eventID u
 	if ev.ArchivedAt != nil {
 		return event.Event{}, ErrMappingEventNotFound
 	}
-	if p.ServiceAccount || s.Authz == nil || !s.Authz.Allow(p, event.AuthzResource(ev, authz.TypeTicket, s.now()), action) {
+	if !s.allowed(p, ev, action) {
 		if s.Authz == nil || !event.VisibleTo(s.Authz, &p, ev) {
 			return event.Event{}, ErrMappingEventNotFound
 		}
 		return event.Event{}, ErrMappingForbidden
 	}
 	return ev, nil
+}
+
+func (s *Respondents) allowed(p authz.Principal, ev event.Event, action authz.Action) bool {
+	if p.ServiceAccount || s.Authz == nil {
+		return false
+	}
+	now := s.now()
+	if action != authz.Assign {
+		return s.Authz.Allow(p, event.AuthzResource(ev, authz.TypeTicket, now), action)
+	}
+	return p.Product == "" && p.ID != "" &&
+		(s.Authz.Allow(p, event.AuthzResource(ev, authz.TypeEvent, now), authz.Update) ||
+			s.Authz.Allow(p, event.AuthzResource(ev, authz.TypeTicket, now), authz.Assign))
 }
 
 // ticketable refuses an Event that takes no Ticket now.
@@ -575,17 +591,21 @@ func (s *Respondents) Send(ctx context.Context, p authz.Principal, eventID uuid.
 		if id, err := uuid.Parse(p.ID); err == nil {
 			by = &id
 		}
-		// The row says what was asked: the accepted rows to send now; the
-		// job's counts are its own (GET …/ticket-jobs/{jobId}).
-		candidates, ticketed, pending, err := s.Store.Counts(ctx, eventID, nil, true, sel.FormID)
+		// The job takes the row's id: the row stays pending while it runs,
+		// and its end writes the job's own counts there
+		// (FinishFormRespondentJob). The same request while a job waits
+		// finds that job: its row is closed now, naming it.
+		jobID := audit.ID()
+		if jobID == uuid.Nil {
+			jobID = uuid.New()
+		}
+		id, err := s.Jobs.Enqueue(ctx, jobID, eventID, sel.FormID, by, s.now().UTC())
 		if err != nil {
 			audit.Finish(ctx, ticket.FormRespondentSummary{}, err)
 			return SendResult{}, nil, err
 		}
-		id, err := s.Jobs.Enqueue(ctx, eventID, sel.FormID, by, s.now().UTC())
-		audit.Finish(ctx, ticket.FormRespondentSummary{Rows: candidates + ticketed + pending}, err)
-		if err != nil {
-			return SendResult{}, nil, err
+		if id != jobID {
+			audit.Finish(ctx, ticket.FormRespondentSummary{JobID: &id}, nil)
 		}
 		formID := uuid.Nil
 		if sel.FormID != nil {
