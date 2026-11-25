@@ -67,7 +67,10 @@ was queued (`false` for a no, and for every answer while
 `EVENT_UPDATED_NOTIFICATION` is off). Only changes of time or place of a
 published Event that is not over are recorded. Ids and field names only: an
 account deleted outright empties `decided_by`; an Event deleted takes its
-rows. There is no route that reads it yet:
+rows. A row is kept three years after `decided_at`, as the Team audit
+record, then deleted by the retention sweep's `event_change_notices_age`
+rule ([retention-sweep.md](retention-sweep.md)). There is no route that
+reads it yet:
 
 ```sql
 SELECT decided_at, decided_by, fields, notify, queued
