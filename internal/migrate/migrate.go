@@ -2096,6 +2096,15 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 	20261127131500: `
 		SELECT 1 FROM pg_proc
 		WHERE proname = 'certificate_layout_media_ids' AND prosrc LIKE '%backgroundOriginalMediaId%'`,
+	// Certificate fonts (docs/certificate-fonts.md): the table with its
+	// unique face index, a layout's Media ids that count fontMediaId, and
+	// the font's role in the role table.
+	20261127183000: `
+		SELECT 1
+		WHERE to_regclass('public.certificate_fonts') IS NOT NULL
+		  AND to_regclass('public.certificate_fonts_unique_face') IS NOT NULL
+		  AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'certificate_layout_media_ids' AND prosrc LIKE '%fontMediaId%')
+		  AND EXISTS (SELECT 1 FROM media_role_purposes() WHERE role = 'certificate_font')`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

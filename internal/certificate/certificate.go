@@ -131,6 +131,14 @@ type Service interface {
 	// AssetText lists a PDF asset's text and ConvertAssetText turns the
 	// chosen pieces into layout elements over a new PDF without them
 	// (docs/certificate-template-errors.md, "Background text conversion").
-	AssetText(ctx context.Context, p authz.Principal, id uuid.UUID) (AssetText, error)
+	// templateID (optional) matches the text against the fonts of that
+	// template's team and the club's.
+	AssetText(ctx context.Context, p authz.Principal, id uuid.UUID, templateID *uuid.UUID) (AssetText, error)
 	ConvertAssetText(ctx context.Context, p authz.Principal, id uuid.UUID, req TextConversionRequest) (TextConversion, error)
+	// ListFonts, CreateFont, FontFile and ArchiveFont are the teams' and
+	// the club's certificate fonts (docs/certificate-fonts.md).
+	ListFonts(ctx context.Context, p authz.Principal, team string) ([]Font, error)
+	CreateFont(ctx context.Context, p authz.Principal, in FontInput) (Font, error)
+	FontFile(ctx context.Context, p authz.Principal, id uuid.UUID) (FontFile, error)
+	ArchiveFont(ctx context.Context, p authz.Principal, id uuid.UUID) error
 }

@@ -47,6 +47,9 @@ type AssetTextSpan struct {
 	FontWeight      int    `json:"fontWeight"`
 	FontStyle       string `json:"fontStyle,omitempty"`
 	FontSubstituted bool   `json:"fontSubstituted"`
+	// FontMediaID is the certificate font Font names, when it is one the
+	// template's team or the club uploaded (docs/certificate-fonts.md).
+	FontMediaID *uuid.UUID `json:"fontMediaId,omitempty"`
 	// FontSizePt is the size the PDF draws it at, pt; the element's px
 	// size follows the background's placement.
 	FontSizePt  float64 `json:"fontSizePt"`
@@ -74,6 +77,10 @@ type TextConversionRequest struct {
 	// ExistingElements is how many elements the draft keeps beside the new
 	// ones; together they stay within 100.
 	ExistingElements int `json:"existingElements"`
+	// TemplateID is the template the draft is of (optional): its team's
+	// certificate fonts, and the club's, are matched first
+	// (docs/certificate-fonts.md). Without it, the club's alone.
+	TemplateID *uuid.UUID `json:"templateId,omitempty"`
 }
 
 // TextConversion is a conversion's answer, which the editor applies to its
@@ -122,8 +129,12 @@ const (
 	textReasonCut     = "truncated"
 )
 
-func (s *service) AssetText(ctx context.Context, p authz.Principal, id uuid.UUID) (AssetText, error) {
+func (s *service) AssetText(ctx context.Context, p authz.Principal, id uuid.UUID, templateID *uuid.UUID) (AssetText, error) {
 	_, text, err := s.assetPDFText(ctx, p, id)
+	if err != nil {
+		return AssetText{}, err
+	}
+	fonts, err := s.usableFonts(ctx, p, templateID)
 	if err != nil {
 		return AssetText{}, err
 	}
@@ -135,11 +146,11 @@ func (s *service) AssetText(ctx context.Context, p authz.Principal, id uuid.UUID
 	convertible := 0
 	for _, run := range text.Runs {
 		first := spans[run.ID()]
-		font := mapFont(first.Font, nil)
+		font := mapFont(first.Font, fonts)
 		piece := AssetTextSpan{
 			ID: run.ID(), Text: strings.TrimSpace(run.Text), SourceFont: stripSubset(first.Font.Name),
 			Font: font.Family, FontWeight: font.Weight, FontStyle: font.Style, FontSubstituted: font.Substituted,
-			FontSizePt: round2(first.Size), Convertible: true,
+			FontMediaID: font.MediaID, FontSizePt: round2(first.Size), Convertible: true,
 		}
 		if reason := runReason(run, spans); reason != "" {
 			piece.Convertible, piece.Reason = false, reason
@@ -169,6 +180,10 @@ func (s *service) ConvertAssetText(ctx context.Context, p authz.Principal, id uu
 		return TextConversion{}, invalid(CodeAssetStorageUnavailable)
 	}
 	pdf, text, err := s.assetPDFText(ctx, p, id)
+	if err != nil {
+		return TextConversion{}, err
+	}
+	fonts, err := s.usableFonts(ctx, p, req.TemplateID)
 	if err != nil {
 		return TextConversion{}, err
 	}
@@ -204,7 +219,7 @@ func (s *service) ConvertAssetText(ctx context.Context, p authz.Principal, id uu
 		placement = *req.Placement
 	}
 	box := PlaceBackground(req.Page.Width, req.Page.Height, text.Info.WidthPt*pxPerPt, text.Info.HeightPt*pxPerPt, placement)
-	elements, warnings := textElements(text, req.SpanIDs, req.Kinds, req.Page.Width, req.Page.Height, box, nil, func() string {
+	elements, warnings := textElements(text, req.SpanIDs, req.Kinds, req.Page.Width, req.Page.Height, box, fonts, func() string {
 		return "bgtext-" + uuid.NewString()
 	})
 	if len(elements) == 0 {

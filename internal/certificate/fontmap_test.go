@@ -1,6 +1,10 @@
 package certificate
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/google/uuid"
+)
 
 // The PDF font → layout font table (SPEC §5.3): the subset prefix goes,
 // the weight and italic come from the name or the font's description,
@@ -72,11 +76,38 @@ func TestMapFont(t *testing.T) {
 }
 
 // An uploaded family (ticket 18) is taken before the catalog and the
-// class fallback.
+// class fallback: the face of the PDF's style nearest its weight, with its
+// file.
 func TestMapFontPrefersUploaded(t *testing.T) {
 	t.Parallel()
-	got := mapFont(PDFFont{Name: "BrandonGrotesque-Bold"}, []string{"Brandon Grotesque"})
-	if got.Family != "Brandon Grotesque" || got.Substituted || got.Weight != 700 {
+	regular, bold, italic, other := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	uploaded := []Font{
+		{Family: "Brandon Grotesque", Weight: 400, Style: FontStyleNormal, MediaID: regular},
+		{Family: "brandon grotesque", Weight: 700, Style: FontStyleNormal, MediaID: bold},
+		{Family: "Brandon Grotesque", Weight: 400, Style: FontStyleItalic, MediaID: italic},
+		{Family: "Montserrat", Weight: 700, Style: FontStyleNormal, MediaID: other},
+	}
+	for _, tc := range []struct {
+		font   PDFFont
+		family string
+		weight int
+		style  string
+		media  uuid.UUID
+	}{
+		{PDFFont{Name: "BrandonGrotesque-Bold"}, "brandon grotesque", 700, "", bold},
+		{PDFFont{Name: "ABCDEF+BrandonGrotesque-Black"}, "brandon grotesque", 700, "", bold},
+		{PDFFont{Name: "BrandonGrotesque-Regular"}, "Brandon Grotesque", 400, "", regular},
+		{PDFFont{Name: "BrandonGrotesque-Light"}, "Brandon Grotesque", 400, "", regular},
+		{PDFFont{Name: "BrandonGrotesque-BoldItalic"}, "Brandon Grotesque", 400, FontStyleItalic, italic},
+		{PDFFont{Name: "Montserrat-Regular"}, "Montserrat", 700, "", other},
+	} {
+		got := mapFont(tc.font, uploaded)
+		if got.Family != tc.family || got.Substituted || got.Weight != tc.weight || got.Style != tc.style || got.MediaID == nil || *got.MediaID != tc.media {
+			t.Errorf("%s: %+v", tc.font.Name, got)
+		}
+	}
+	// Without an uploaded family of its name, the catalog as before.
+	if got := mapFont(PDFFont{Name: "Poppins-Bold"}, uploaded); got.Family != "Poppins" || got.MediaID != nil {
 		t.Fatalf("%+v", got)
 	}
 }

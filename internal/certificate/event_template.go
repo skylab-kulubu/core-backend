@@ -216,7 +216,7 @@ func (s *service) CreateEventTemplate(ctx context.Context, p authz.Principal, ev
 	}
 	// The copy links the source's Media as they are: a Media may have
 	// several links.
-	if err := s.checkLayoutMedia(ctx, start.DraftLayout, Layout{}); err != nil {
+	if err := s.checkLayoutMedia(ctx, start.DraftLayout, Layout{}, ev.OwnerTeam); err != nil {
 		return Template{}, err
 	}
 	created, err := s.templates.CreateTemplate(ctx, Template{

@@ -102,6 +102,11 @@ func ValidateLayout(layout Layout) error {
 			!utf8.ValidString(el.SourceFont) || utf8.RuneCountInString(el.SourceFont) > maxSourceFontRunes {
 			return invalid(CodeLayoutElementStyle)
 		}
+		// A certificate font sets text: an element that draws none names
+		// none.
+		if el.FontMediaID != nil && (*el.FontMediaID == uuid.Nil || !drawsText(el.Kind)) {
+			return invalid(CodeLayoutElementStyle)
+		}
 	}
 	if !hasRecipient {
 		return invalid(CodeLayoutRecipientMissing)
@@ -192,7 +197,7 @@ func LayoutHTML(ctx context.Context, layout Layout, data PreviewData, verifyURL 
 	if bg == "" {
 		bg = "#ffffff"
 	}
-	faces, err := fontFaces(layout, assets)
+	faces, err := fontFaces(ctx, layout, assets)
 	if err != nil {
 		return "", err
 	}
@@ -303,6 +308,11 @@ func elementStyle(el Element) string {
 		color = "#111111"
 	}
 	font := safeFont(el.FontFamily)
+	if el.FontMediaID != nil {
+		// The certificate font first (fontFaces embeds it), then the
+		// family's stack: a letter the font lacks falls back to it.
+		font = `'` + uploadedFontFamily(*el.FontMediaID) + `',` + font
+	}
 	lineHeight := el.LineHeight
 	if lineHeight == 0 {
 		lineHeight = 1.15
@@ -322,6 +332,15 @@ func elementStyle(el Element) string {
 		style += "font-style:italic;"
 	}
 	return style
+}
+
+// drawsText reports whether an element of the kind is text.
+func drawsText(kind string) bool {
+	switch kind {
+	case "image", "shape", "verificationQr":
+		return false
+	}
+	return true
 }
 
 // opacity is the element's opacity; a layout that leaves it out means 1.

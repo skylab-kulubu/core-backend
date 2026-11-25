@@ -369,6 +369,14 @@ var mediaUploaders = map[MediaUploader]func(a *authorizer, p Principal, r Resour
 				a.allowEvent(p, Resource{Type: TypeEvent, OwnerTeam: team}, Update)
 		})
 	},
+	// Who may create a certificate template for some Owner team (a Leader,
+	// certificate:template:manage) or a club-wide one (Privileged): the
+	// template rule alone, without the Event editors above.
+	MediaUploaderCertificateFontEditor: func(a *authorizer, p Principal, _ Resource) bool {
+		return a.forSomeOwnerTeam(p, func(team string) bool {
+			return a.allowCertificateTemplate(p, Resource{Type: TypeCertificateTemplate, OwnerTeam: team}, Create)
+		})
+	},
 	// No person, whatever roles they hold: the service account of the
 	// product that owns the purpose, with the role that manages its Media
 	// attachments. Core owns no service account here (ServiceProducts).

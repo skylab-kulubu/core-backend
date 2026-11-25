@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -67,7 +68,7 @@ func (s *service) CreateTemplate(ctx context.Context, p authz.Principal, in Temp
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: in.OwnerTeam}, authz.Create) {
 		return Template{}, ErrForbidden
 	}
-	if err := s.checkLayoutMedia(ctx, in.Layout, Layout{}); err != nil {
+	if err := s.checkLayoutMedia(ctx, in.Layout, Layout{}, in.OwnerTeam); err != nil {
 		return Template{}, err
 	}
 	item := Template{
@@ -99,7 +100,7 @@ func (s *service) UpdateTemplate(ctx context.Context, p authz.Principal, id uuid
 		}
 		existing.OwnerTeam = normalizeTeam(in.OwnerTeam)
 	}
-	if err := s.checkLayoutMedia(ctx, in.Layout, existing.DraftLayout); err != nil {
+	if err := s.checkLayoutMedia(ctx, in.Layout, existing.DraftLayout, existing.OwnerTeam); err != nil {
 		return Template{}, err
 	}
 	existing.Name = strings.TrimSpace(in.Name)
@@ -111,8 +112,12 @@ func (s *service) UpdateTemplate(ctx context.Context, p authz.Principal, id uuid
 }
 
 // checkLayoutMedia checks each Media the layout links that the previous
-// draft did not: a certificate asset, or a legacy Media.
-func (s *service) checkLayoutMedia(ctx context.Context, layout, previous Layout) error {
+// draft did not: a certificate asset, or a legacy Media; an element's font
+// a certificate font of ownerTeam or the club (checkLayoutFonts).
+func (s *service) checkLayoutMedia(ctx context.Context, layout, previous Layout, ownerTeam string) error {
+	if err := s.checkLayoutFonts(ctx, layout, previous, ownerTeam); err != nil {
+		return err
+	}
 	if s.media == nil {
 		return nil
 	}
@@ -120,11 +125,16 @@ func (s *service) checkLayoutMedia(ctx context.Context, layout, previous Layout)
 	for _, id := range layoutLinkedIDs(previous) {
 		linked[id] = true
 	}
+	fonts := layoutFontIDs(layout)
 	for _, id := range layoutLinkedIDs(layout) {
 		if linked[id] {
 			continue
 		}
-		if err := s.media.CheckLink(ctx, id, media.RoleCertificateAsset); err != nil {
+		role := media.RoleCertificateAsset
+		if slices.Contains(fonts, id) {
+			role = media.RoleCertificateFont
+		}
+		if err := s.media.CheckLink(ctx, id, role); err != nil {
 			return err
 		}
 	}

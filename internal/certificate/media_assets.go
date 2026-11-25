@@ -9,8 +9,8 @@ import (
 
 // MediaAssets reads a layout's assets from their Media: a public one from
 // the public bucket, a private one as its sealed object, which the service
-// decrypts (decryptingAssets). Only core's own private purpose is read: a
-// certificate asset.
+// decrypts (decryptingAssets). Only core's own private purposes are read: a
+// certificate asset and a certificate font.
 type MediaAssets struct {
 	Media media.Store
 	Blobs media.BlobStore
@@ -27,7 +27,7 @@ func (m MediaAssets) ReadAsset(ctx context.Context, id uuid.UUID) (Asset, error)
 	if sealed, private := metadata.Sealed(); private {
 		// A second line behind the link rule: another product's private
 		// Media (an Answer file) is never decrypted into a certificate.
-		if metadata.Purpose != media.PurposeCertificateAsset {
+		if metadata.Purpose != media.PurposeCertificateAsset && metadata.Purpose != media.PurposeCertificateFont {
 			return Asset{}, ErrNotFound
 		}
 		return Asset{ContentType: metadata.Type, Sealed: &sealed}, nil

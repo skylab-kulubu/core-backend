@@ -547,8 +547,9 @@ func purposeFile(purpose Purpose, data []byte) (storedFile, error) {
 	if detected == "" || !purpose.accepts(detected) {
 		return storedFile{}, purpose.typeRefusal()
 	}
-	if detected == pdfType || detected == docxType {
-		// PDF and DOCX are kept as they came.
+	if detected == pdfType || detected == docxType || isFontType(detected) {
+		// PDF, DOCX and a font are kept as they came (a font is checked by
+		// pdf-tools before core uses it: docs/certificate-fonts.md).
 		return storedFile{body: data, ctype: detected, kind: KindFile, keyPrefix: "files/"}, nil
 	}
 	var img reencodedImage

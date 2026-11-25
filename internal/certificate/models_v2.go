@@ -72,6 +72,11 @@ type Element struct {
 	// font name, which FontFamily stands in for.
 	Origin     string `json:"origin,omitempty"`
 	SourceFont string `json:"sourceFont,omitempty"`
+	// FontMediaID names the checked file of a team's or the club's
+	// certificate font (docs/certificate-fonts.md) a text element is set
+	// in; FontFamily stays its name as the editor shows it. The page embeds
+	// the file and falls back to FontFamily's stack.
+	FontMediaID *uuid.UUID `json:"fontMediaId,omitempty"`
 }
 
 // OriginBackgroundText is an element converted from its background PDF's

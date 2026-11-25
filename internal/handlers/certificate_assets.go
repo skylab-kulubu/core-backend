@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 )
 
@@ -60,14 +61,24 @@ func (h *CertificateHandler) AssetPreview(c fiber.Ctx) error {
 	return c.Send(preview.Data)
 }
 
-// AssetText answers GET /v1/certificate-assets/{id}/text: a PDF asset's
-// text, piece by piece, with the font each would be set in (pdf-tools).
+// AssetText answers GET /v1/certificate-assets/{id}/text?template={id}: a
+// PDF asset's text, piece by piece, with the font each would be set in
+// (pdf-tools); with template, its team's and the club's certificate fonts
+// first.
 func (h *CertificateHandler) AssetText(c fiber.Ctx) error {
 	p, id, err := certificateTemplateCaller(c)
 	if err != nil {
 		return certError(c, err)
 	}
-	text, err := h.svc.AssetText(c.Context(), p, id)
+	var templateID *uuid.UUID
+	if raw := strings.TrimSpace(c.Query("template")); raw != "" {
+		parsed, err := uuid.Parse(raw)
+		if err != nil {
+			return certError(c, certificate.ErrInvalid)
+		}
+		templateID = &parsed
+	}
+	text, err := h.svc.AssetText(c.Context(), p, id, templateID)
 	if err != nil {
 		return certError(c, err)
 	}

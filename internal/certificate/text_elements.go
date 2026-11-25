@@ -66,7 +66,7 @@ type textPiece struct {
 // paragraph, one element. Every element keeps the PDF font's name
 // (SourceFont) and says it came from the background (Origin). It answers a
 // warning for each font it stood in for and each size it bounded.
-func textElements(text PDFText, chosen []string, kinds map[string]string, pageW, pageH float64, box Rect, uploaded []string, newID func() string) ([]Element, []TextWarning) {
+func textElements(text PDFText, chosen []string, kinds map[string]string, pageW, pageH float64, box Rect, uploaded []Font, newID func() string) ([]Element, []TextWarning) {
 	spans := make(map[string]PDFSpan, len(text.Spans))
 	for _, span := range text.Spans {
 		spans[span.ID] = span
@@ -274,7 +274,7 @@ type textFrame struct {
 
 // element is a group's element; false (with a warning) when it falls
 // outside the page.
-func (f textFrame) element(group []*textPiece, uploaded []string, newID func() string) (Element, []TextWarning, bool) {
+func (f textFrame) element(group []*textPiece, uploaded []Font, newID func() string) (Element, []TextWarning, bool) {
 	first := group[0]
 	font := mapFont(first.first.Font, uploaded)
 	vx, vy := -first.uy, first.ux
@@ -357,6 +357,7 @@ func (f textFrame) element(group []*textPiece, uploaded []string, newID func() s
 		FontFamily: font.Family, FontSize: round2(math.Max(size, 1)), FontWeight: font.Weight, FontStyle: font.Style,
 		LineHeight: round2(math.Min(math.Max(lineHeight, 0.5), 5)), Color: strings.ToLower(color), Align: align,
 		Rotation: round2(rotation), Origin: OriginBackgroundText, SourceFont: truncateRunes(stripSubset(first.first.Font.Name), maxSourceFontRunes),
+		FontMediaID: font.MediaID,
 	}
 	if opacity := first.first.Opacity; opacity < 1 && opacity >= 0 {
 		o := math.Round(opacity*1000) / 1000

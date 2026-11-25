@@ -66,9 +66,13 @@ type Options struct {
 	// layout without a placement prints as before without it.
 	PDFTools PDFTools
 	// Uploads stores the PDF a background text conversion leaves as a new
-	// certificate asset (media.Service). Nil refuses a conversion
-	// (asset_storage_unavailable).
+	// certificate asset (media.Service), and a certificate font's checked
+	// file. Nil refuses a conversion and a font (asset_storage_unavailable).
 	Uploads AssetUploader
+	// Fonts keeps the teams' and the club's certificate fonts
+	// (docs/certificate-fonts.md). Nil takes the store's (PostgresStore,
+	// MemoryStore).
+	Fonts FontStore
 }
 
 type service struct {
@@ -99,6 +103,7 @@ type service struct {
 	pdfCache         pdfCaches
 	pdfToolsErrors   pdfToolsMetrics
 	uploads          AssetUploader
+	fonts            FontStore
 }
 
 // NewService preserves the original synchronous contract for existing embedders.
@@ -142,6 +147,9 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 	if opts.Mails == nil {
 		opts.Mails, _ = store.(MailQueue)
 	}
+	if opts.Fonts == nil {
+		opts.Fonts, _ = store.(FontStore)
+	}
 	if opts.Attendance == nil {
 		opts.Attendance = memoryAttendance{events: events, tickets: tickets, certs: store, jobs: opts.Jobs, users: users}
 	}
@@ -152,7 +160,7 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 		assets: opts.Assets, legacyImmediate: opts.LegacyImmediate, media: opts.Media, privateArtifacts: opts.PrivateArtifacts,
 		attendance: opts.Attendance, autoFinalize: opts.AutoFinalize, mails: opts.Mails,
 		mailPDFOn: opts.MailPDF, pdfTools: opts.PDFTools, pdfCache: newPDFCaches(),
-		uploads: opts.Uploads,
+		uploads: opts.Uploads, fonts: opts.Fonts,
 	}
 }
 
