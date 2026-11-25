@@ -2070,6 +2070,19 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND indexname = 'certificate_templates_one_per_event'
 			  AND indexdef LIKE 'CREATE UNIQUE INDEX%(event_id)%archived_at IS NULL%'
 		)`,
+	// The record of legacy Answer files moved into private storage
+	// (docs/media-lifecycle.md, "Legacy Answer files").
+	20261126180000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'media_legacy_answer_moves'
+			  AND column_name IN ('media_id', 'public_key', 'moved_at', 'public_deleted_at')
+		) = 4
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.media_legacy_answer_moves') AND conname = 'media_legacy_answer_moves_order_check'
+		)`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

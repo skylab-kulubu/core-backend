@@ -91,6 +91,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == mediaLegacyReleaseHoldCommandName {
 		os.Exit(runMediaLegacyReleaseHold(os.Args[2:], os.Getenv, os.Stderr))
 	}
+	if len(os.Args) > 1 && os.Args[1] == mediaLegacyAnswersCommandName {
+		os.Exit(runMediaLegacyAnswers(os.Args[2:], os.Getenv, os.Stdin, os.Stderr))
+	}
 	if len(os.Args) > 1 && os.Args[1] == mediaLookupCommandName {
 		os.Exit(runMediaLookup(os.Args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
 	}
