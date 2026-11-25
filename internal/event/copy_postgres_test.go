@@ -214,17 +214,18 @@ func TestPostgresCopySkips(t *testing.T) {
 	if n := d.count(t, `SELECT count(*) FROM certificate_template_bindings WHERE scope_key = $1`, got.Event.ID.String()); n != 0 {
 		t.Fatalf("binding written: %d", n)
 	}
-	// The source's own Event template serves the source only: a club
-	// template would fit, but it belongs to the source Event.
-	if _, err := d.pool.Exec(ctx, `UPDATE certificate_templates SET owner_team = '', event_id = $2 WHERE id = $1`, d.template, d.source.ID); err != nil {
+	// Asked to leave the certificate template out: named, not written.
+	in3 := copyIn("Kopya 3", "2027-03-13T19:00:00+03:00")
+	in3.SkipCertificateTemplate = true
+	if _, err := d.pool.Exec(ctx, `UPDATE certificate_templates SET owner_team = 'WEBLAB' WHERE id = $1`, d.template); err != nil {
 		t.Fatal(err)
 	}
-	got, _, err = d.svc.Copy(ctx, d.yk, d.source.ID, copyIn("Kopya 3", "2027-03-13T19:00:00+03:00"))
+	got, _, err = d.svc.Copy(ctx, d.yk, d.source.ID, in3)
 	if err != nil || !slices.Equal(got.Skipped, []string{event.SkippedCertificateTemplate}) {
-		t.Fatalf("event template: %v %v", got.Skipped, err)
+		t.Fatalf("left out: %v %v", got.Skipped, err)
 	}
 	if n := d.count(t, `SELECT count(*) FROM certificate_template_bindings WHERE scope_key = $1`, got.Event.ID.String()); n != 0 {
-		t.Fatalf("event template binding written: %d", n)
+		t.Fatalf("binding written when left out: %d", n)
 	}
 	// Not asked for, Competitions are not copied and not named.
 	if n := d.count(t, `SELECT count(*) FROM competitions WHERE event_id = $1`, got.Event.ID); n != 0 {

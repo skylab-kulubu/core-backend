@@ -3,10 +3,13 @@ package event
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
@@ -270,39 +273,144 @@ func copySchedule(ctx context.Context, tx pgx.Tx, plan CopyPlan) error {
 	return nil
 }
 
-// copyTemplateBinding binds the copy to the source's Event template, when
-// the copier may bind and the template may serve the copy's Owner team (a
-// current template of no team or of that team, as the binding rule says).
-// A template that belongs to the source Event (an Event template,
-// docs/certificate-event-templates.md) serves that Event only: the copy
-// skips it.
+// copyTemplateBinding brings the source's certificate template along
+// (docs/certificate-event-templates.md#copy-and-team-change):
+//
+//   - Its Event template, when it has one, becomes the copy's own: a new
+//     template of the copy with the same draft and, when it was published,
+//     its latest version as version 1 (the same layout, asset copies and
+//     checksum; nothing is rendered again). The copy is bound to it when
+//     the source was bound to its Event template.
+//   - A binding to a team or club template is copied when the copier may
+//     bind and the template may serve the copy's Owner team (a current
+//     template of no team or of that team, as the binding rule says).
+//
+// What is left out is named skipped: the copier asked not to, may not bind,
+// the team template does not fit, or the database refused the Event
+// template's Media (one deleted since it was published).
 func copyTemplateBinding(ctx context.Context, tx pgx.Tx, plan CopyPlan, skippedParts map[string]bool) error {
-	var templateID uuid.UUID
-	var fits bool
+	var boundID *uuid.UUID
+	var boundOwn, fits bool
 	err := tx.QueryRow(ctx, `
-		SELECT b.template_id,
+		SELECT b.template_id, t.event_id IS NOT DISTINCT FROM $1::uuid,
 			t.archived_at IS NULL AND t.event_id IS NULL AND upper(btrim(t.owner_team)) IN ('', upper(btrim($2)))
 		FROM certificate_template_bindings b
 		JOIN certificate_templates t ON t.id = b.template_id
-		WHERE b.scope = 'event' AND b.scope_key = $1`, plan.Source.String(), plan.Event.OwnerTeam).Scan(&templateID, &fits)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		WHERE b.scope = 'event' AND b.scope_key = $1::uuid::text`, plan.Source, plan.Event.OwnerTeam).Scan(&boundID, &boundOwn, &fits)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
 	}
+	ownCopy, err := copyEventTemplate(ctx, tx, plan, skippedParts)
 	if err != nil {
 		return err
 	}
-	if plan.CertificateTemplate != CopyWrite || !fits {
+	switch {
+	case boundID == nil:
+		return nil
+	case boundOwn:
+		if ownCopy == nil {
+			return nil
+		}
+		boundID = ownCopy
+	case plan.CertificateTemplate != CopyWrite || !fits:
 		skippedParts[SkippedCertificateTemplate] = true
 		return nil
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO certificate_template_bindings (id, scope, scope_key, template_id, updated_by)
 		VALUES ($1, 'event', $2, $3, (SELECT id FROM users WHERE id = $4))`,
-		uuid.New(), plan.Event.ID.String(), templateID, plan.By)
+		uuid.New(), plan.Event.ID.String(), *boundID, plan.By)
 	if subjectlock.IsInactiveAccountReference(err) {
 		return ErrForbidden
 	}
 	return err
+}
+
+// copyEventTemplate copies the source's current Event template into a new
+// one of the copy, in a savepoint, and answers its id when the copy has a
+// published version to be bound to; nil when the source has none, it was a
+// draft only, or it was left out (named skipped).
+func copyEventTemplate(ctx context.Context, tx pgx.Tx, plan CopyPlan, skippedParts map[string]bool) (*uuid.UUID, error) {
+	var sourceID uuid.UUID
+	err := tx.QueryRow(ctx, `SELECT id FROM certificate_templates WHERE event_id = $1 AND archived_at IS NULL`, plan.Source).Scan(&sourceID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if plan.EventTemplate != CopyWrite {
+		skippedParts[SkippedCertificateTemplate] = true
+		return nil, nil
+	}
+	savepoint, err := tx.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	id := uuid.New()
+	// The design's reference and edit address go along only for who may
+	// read the source template (EventTemplateSourceLinks).
+	_, err = savepoint.Exec(ctx, `
+		INSERT INTO certificate_templates (id, name, owner_team, event_id, source_kind, source_ref, source_edit_url, draft_layout, created_by)
+		SELECT $1, $2, upper(btrim($3)), $4, source_kind,
+			CASE WHEN $6::boolean THEN source_ref ELSE '' END,
+			CASE WHEN $6::boolean THEN source_edit_url ELSE '' END,
+			draft_layout, (SELECT id FROM users WHERE id = $7)
+		FROM certificate_templates WHERE id = $5`,
+		id, copyTemplateName(plan.Event.Name), plan.Event.OwnerTeam, plan.Event.ID, sourceID, plan.EventTemplateSourceLinks, plan.By)
+	if err == nil {
+		var tag pgconn.CommandTag
+		tag, err = savepoint.Exec(ctx, `
+			INSERT INTO certificate_template_versions (id, template_id, version, layout, asset_manifest, checksum, published_by, asset_serving_policy_applied)
+			SELECT $1, $2, 1, layout, asset_manifest, checksum, (SELECT id FROM users WHERE id = $4), asset_serving_policy_applied
+			FROM certificate_template_versions WHERE template_id = $3
+			ORDER BY version DESC LIMIT 1`, uuid.New(), id, sourceID, plan.By)
+		if err == nil && tag.RowsAffected() == 0 {
+			// A draft only: copied, bound to nothing.
+			return nil, savepoint.Commit(ctx)
+		}
+	}
+	if templateMediaRefused(err) {
+		skippedParts[SkippedCertificateTemplate] = true
+		return nil, savepoint.Rollback(ctx)
+	}
+	if subjectlock.IsInactiveAccountReference(err) {
+		return nil, ErrForbidden
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &id, savepoint.Commit(ctx)
+}
+
+// templateMediaRefused reports whether the database refused a template's
+// Media: one no longer current (require_current_certificate_layout_media)
+// or one the Media attachment does not take.
+func templateMediaRefused(err error) bool {
+	if _, refused := media.DatabaseLinkRefusal(err); refused {
+		return true
+	}
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "23503" && strings.HasSuffix(pg.Message, "is not current")
+}
+
+// copyTemplateName is the copy's Event template's name, "<Event name>
+// sertifikası", within the 160 bytes a template name takes (as the
+// certificate package names a new Event template).
+func copyTemplateName(eventName string) string {
+	const suffix = " sertifikası"
+	name := strings.TrimSpace(eventName)
+	if name == "" {
+		return "Etkinlik sertifikası"
+	}
+	if limit := 160 - len(suffix); len(name) > limit {
+		cut := limit
+		for cut > 0 && !utf8.RuneStart(name[cut]) {
+			cut--
+		}
+		name = strings.TrimSpace(name[:cut])
+	}
+	return name + suffix
 }
 
 func (s *PostgresStore) copyCompetitionsOf(ctx context.Context, tx pgx.Tx, plan CopyPlan, skippedParts map[string]bool) error {

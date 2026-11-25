@@ -12,7 +12,7 @@ An Event template is a certificate template that belongs to one Event (`certific
 - Which template a certificate takes is unchanged (ADR-0038): the Event binding, the Owner team binding, the club default. A draft is never used; a batch keeps the version it resolved; an issued certificate never changes.
 - The template list (`GET /v1/certificate-templates`) leaves Event templates out; `?eventId=` lists that Event's alone.
 - An archived or cancelled Event keeps its template untouched.
-- Copying an Event leaves the source's Event template behind for now and names it in `skipped` (`certificateTemplate`); a team or club template binding is copied as before.
+- Copying an Event copies its Event template as the copy's own, and changing an Event's Owner team moves its template along (below).
 
 ## Who may do what
 
@@ -60,3 +60,20 @@ The copy links the same Media as its source (a Media may have several links). It
 `GET/PUT /v1/certificate-templates/{id}`, `POST …/preview`, `POST …/publish` and `PUT /v1/certificate-template-bindings` work on Event templates with the rules above.
 
 The mobile contract does not change (`docs/mobile-certificates-v2.md`).
+
+## Copy and team change
+
+**Copy** (`POST /v1/events/{id}/copy`, in the copy's transaction):
+
+- The source's current Event template becomes a new, independent Event template of the copy: a new id, the copy's Owner team, the name "<copy's name> sertifikası" and the same draft. When it was published, its latest version is written as the copy's version 1 with the same layout, asset manifest (the same asset copies), checksum and serving flag; nothing is rendered again. Published by the copier.
+- The copy is bound to its own template when the source was bound to its Event template. A draft-only template is copied and binds nothing.
+- The design's reference and edit address (a Canva or Figma link) go along only for who may read the source template (the template rule of the source's Owner team), as when an Event template is made from a team template.
+- A source bound to a team or club template: as before, the copy is bound to it when the copier may assign in the copy's Owner team and the template fits that team.
+- Who creates the copy may make its Event template, so no further permission is asked for the Event template itself.
+- Left out and named in `skipped` (`certificateTemplate`): the copier asked to (`includeCertificateTemplate: false`; the default copies), may not bind the team template, the team template does not fit, or the database refuses the Event template's Media (one deleted since it was published). The Event copy goes on.
+- Uploaded fonts (later) live in the version's asset copies and come along with them.
+
+Version asset copies (`certificate-template-assets/<version>/<media>`) are never deleted, except a failed publish's own; two versions may share them after a copy. No code deletes a template version either; `TestVersionsAndTheirAssetCopiesAreNeverDeleted` fails when one starts to, which would then need reference counting.
+
+**Team change:** when an Event's Owner team changes (`PUT /v1/events/{id}`), its Event templates take the new Owner team in the same transaction.
+
