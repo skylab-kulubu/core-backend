@@ -763,13 +763,5 @@ func (a *authorizer) ownerLevels(p Principal, owner string) []Level {
 }
 
 func (a *authorizer) requiredLevels(ownerTeam string, action Action) []Level {
-	table, ok := a.policy.EventPermissions[ownerTeam]
-	if !ok {
-		table = a.policy.EventPermissions["_default"]
-	}
-	levels, ok := table[action]
-	if !ok {
-		return a.policy.EventPermissions["_default"][action]
-	}
-	return levels
+	return a.policy.RequiredLevels(ownerTeam, action)
 }

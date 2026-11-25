@@ -301,7 +301,8 @@ func TestEventGalleryImagesCarryTheirSizesHTTP(t *testing.T) {
 // The Event list answers each Event's cover and gallery sizes, and the
 // counts of its files and videos, in three queries, for four Events as for
 // one: the Events with their covers and counts, every listed Event's gallery
-// with its Media, and every listed Event's door staff. Never one query per
+// with its Media, and every listed Event's door staff and Co-organizers
+// (docs/co-organizers.md). Never one query per
 // Event or per Media, and none for the videos' posters, which a list does
 // not carry.
 func TestEventListCarriesEveryEventsSizesWithoutAQueryPerEventHTTP(t *testing.T) {
@@ -337,6 +338,16 @@ func TestEventListCarriesEveryEventsSizesWithoutAQueryPerEventHTTP(t *testing.T)
 					t.Fatal(err)
 				}
 			}
+		}
+		// Co-organizer teams, which the door staff's query reads too.
+		if _, err := f.events.SetCoOrganizers(context.Background(), event.CoOrganizersWrite{
+			EventID: created.ID, OwnerTeam: created.OwnerTeam,
+			Teams: []event.CoOrganizerTeam{
+				{Code: "ARTLAB", Management: event.ManagementLeaders, Visibility: event.VisibilityCoOrganizer},
+				{Code: "GECEKODU", Management: event.ManagementMembers, Visibility: event.VisibilityHelper},
+			},
+		}); err != nil {
+			t.Fatal(err)
 		}
 		return created, seeded{cover: cover, gallery: gallery}
 	}
