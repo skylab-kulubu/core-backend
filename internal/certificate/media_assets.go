@@ -60,3 +60,25 @@ func (d decryptingAssets) ReadAsset(ctx context.Context, id uuid.UUID) (Asset, e
 	}
 	return asset, nil
 }
+
+// ReadPlaced reads a version's placed copy through reader, decrypting a
+// private one; errNotAVersion when reader is not a version's (a draft's
+// Media, which has no placed copies).
+func (d decryptingAssets) ReadPlaced(ctx context.Context, id uuid.UUID) (placedAsset, bool, error) {
+	versions, ok := d.reader.(placedAssetReader)
+	if !ok {
+		return placedAsset{}, false, errNotAVersion
+	}
+	placed, ok, err := versions.ReadPlaced(ctx, id)
+	if err != nil || !ok || placed.Sealed == nil {
+		return placed, ok, err
+	}
+	if d.private == nil {
+		return placedAsset{}, false, media.ErrPrivateMediaDisabled
+	}
+	placed.Data, err = d.private.Read(ctx, *placed.Sealed)
+	if err != nil {
+		return placedAsset{}, false, err
+	}
+	return placed, true, nil
+}

@@ -1,9 +1,11 @@
 package certificate
 
 import (
-	"bytes"
 	"context"
-	"strings"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
 )
 
 func (s *service) renderLayoutPDF(ctx context.Context, layout Layout, data PreviewData, verifyURL string, assets AssetReader) ([]byte, error) {
@@ -20,17 +22,17 @@ func (s *service) renderLayoutPDF(ctx context.Context, layout Layout, data Previ
 		if err != nil {
 			return nil, err
 		}
-		if strings.EqualFold(strings.TrimSpace(asset.ContentType), "application/pdf") {
-			switch {
-			case len(asset.Data) > 20<<20:
-				return nil, invalid(CodeBackgroundPDFTooLarge)
-			case !bytes.Contains(asset.Data[:min(len(asset.Data), 1024)], []byte("%PDF-")):
-				return nil, invalid(CodeBackgroundPDFUnreadable)
+		if isPDF(asset.ContentType) {
+			if err := checkBackgroundPDF(asset.Data); err != nil {
+				return nil, err
 			}
 			backgroundPDF = asset.Data
+			if layout.BackgroundPlacement != nil {
+				if backgroundPDF, err = s.placedBackground(ctx, layout, asset.Data, assets); err != nil {
+					return nil, err
+				}
+			}
 			prepared.BackgroundMediaID = nil
-			// A PDF background is printed as before for now, also when the
-			// layout places it: the placed copy comes with pdf-tools.
 			prepared.BackgroundPlacement = nil
 			prepared.BackgroundColor = "transparent"
 		}
@@ -47,4 +49,30 @@ func (s *service) renderLayoutPDF(ctx context.Context, layout Layout, data Previ
 		return nil, rendererUnavailable(nil)
 	}
 	return renderer.PDFWithBackground(ctx, html, backgroundPDF)
+}
+
+// placedBackground is the PDF background of a layout with a placement as
+// it is laid under the page: a published version's placed copy, read with
+// its assets (issuance never calls pdf-tools); for a draft, placed now by
+// pdf-tools (placePDF, cached). A version published before placed copies
+// prints its PDF as it was published: as before, by Gotenberg's scale
+// (LegacyPDFPlacement), its placement not applied.
+func (s *service) placedBackground(ctx context.Context, layout Layout, pdf []byte, assets AssetReader) ([]byte, error) {
+	if versions, ok := assets.(placedAssetReader); ok {
+		placed, found, err := versions.ReadPlaced(ctx, *layout.BackgroundMediaID)
+		switch {
+		case errors.Is(err, errNotAVersion):
+		case err != nil:
+			return nil, err
+		case !found:
+			return pdf, nil
+		default:
+			sum := sha256.Sum256(placed.Data)
+			if hex.EncodeToString(sum[:]) != placed.checksum {
+				return nil, fmt.Errorf("certificate: the placed copy of %s does not match its checksum", layout.BackgroundMediaID)
+			}
+			return placed.Data, nil
+		}
+	}
+	return s.placePDF(ctx, layout, pdf)
 }

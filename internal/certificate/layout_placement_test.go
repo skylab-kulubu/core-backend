@@ -337,22 +337,77 @@ func TestBackgroundSize(t *testing.T) {
 	}
 }
 
-// A PDF background is printed as before until pdf-tools places it, also
-// when the layout has a placement.
-func TestPlacedPDFBackgroundIsPrintedAsBefore(t *testing.T) {
+// A draft's PDF background with a placement is placed by pdf-tools and
+// the placed PDF is laid under the page; without pdf-tools it is 503
+// pdf_tools_unavailable, never the old print passed off as placed.
+func TestPlacedPDFBackgroundGoesThroughPDFTools(t *testing.T) {
 	t.Parallel()
 	id := uuid.New()
 	background := []byte("%PDF-1.7 vector certificate")
 	assets := renderAssetReader{assets: map[uuid.UUID]Asset{id: {ContentType: "application/pdf", Data: background}}}
-	renderer := &backgroundRecorder{}
 	layout, _ := legacyFixture(t)
 	layout.BackgroundMediaID = &id
 	layout.BackgroundPlacement = &BackgroundPlacement{Fit: FitContain, X: 0, Y: 0, Scale: 1}
-	pdf, err := (&service{render: renderer}).renderLayoutPDF(t.Context(), layout, legacyPreview, "https://skyl.app/c/X", assets)
+
+	renderer := &backgroundRecorder{}
+	_, err := (&service{render: renderer, pdfCache: newPDFCaches()}).renderLayoutPDF(t.Context(), layout, legacyPreview, "https://skyl.app/c/X", assets)
+	var unavailable *UnavailableError
+	if !errors.As(err, &unavailable) || unavailable.Code != CodePDFToolsUnavailable || renderer.background != nil {
+		t.Fatalf("without pdf-tools: %v, background %q", err, renderer.background)
+	}
+
+	tools := &recordingPDFTools{info: PDFInfo{Pages: 1, WidthPt: 595, HeightPt: 842}, placed: []byte("%PDF-1.7 placed")}
+	pdf, err := (&service{render: renderer, pdfTools: tools, pdfCache: newPDFCaches()}).renderLayoutPDF(t.Context(), layout, legacyPreview, "https://skyl.app/c/X", assets)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(pdf) != "%PDF-composed" || !bytes.Equal(renderer.background, background) || strings.Contains(renderer.html, `aria-hidden="true" style="position:absolute;left:`) {
+	if string(pdf) != "%PDF-composed" || !bytes.Equal(renderer.background, tools.placed) || strings.Contains(renderer.html, `aria-hidden="true" style="position:absolute;left:`) {
 		t.Fatalf("pdf=%q background=%q html=%s", pdf, renderer.background, renderer.html)
+	}
+	if len(tools.places) != 1 || tools.places[0].page != (PDFPage{WidthPt: 1123 * 0.75, HeightPt: 794 * 0.75}) {
+		t.Fatalf("places %+v", tools.places)
+	}
+}
+
+// A version published before placed copies prints its PDF as it was
+// published (the old print), without pdf-tools: a published version does
+// not change how it looks.
+func TestVersionWithoutPlacedCopyPrintsAsPublished(t *testing.T) {
+	t.Parallel()
+	id := uuid.New()
+	background := []byte("%PDF-1.7 vector certificate")
+	blobs := mapArtifacts{"certificate-template-assets/v/" + id.String(): background}
+	layout, _ := legacyFixture(t)
+	layout.BackgroundMediaID = &id
+	layout.BackgroundPlacement = &BackgroundPlacement{Fit: FitContain, X: 0, Y: 0, Scale: 1}
+	tools := &recordingPDFTools{info: PDFInfo{Pages: 1, WidthPt: 595, HeightPt: 842}, placed: []byte("%PDF-1.7 placed")}
+	renderer := &backgroundRecorder{}
+	s := &service{render: renderer, pdfTools: tools, pdfCache: newPDFCaches(), artifacts: blobs}
+	version := TemplateVersion{Layout: layout, AssetManifest: map[string]VersionAssetRef{
+		id.String(): {Key: "certificate-template-assets/v/" + id.String(), ContentType: "application/pdf"},
+	}}
+	if _, err := s.renderLayoutPDF(t.Context(), layout, legacyPreview, "https://skyl.app/c/X", s.assetsForVersion(version)); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(renderer.background, background) || tools.calls() != 0 {
+		t.Fatalf("background %q, pdf-tools calls %d", renderer.background, tools.calls())
+	}
+
+	// With its placed copy it prints that copy, still without pdf-tools;
+	// a copy that does not match its checksum is not printed.
+	placed := []byte("%PDF-1.7 placed at publish")
+	blobs["certificate-template-assets/v/"+id.String()+".placed.pdf"] = placed
+	ref := version.AssetManifest[id.String()]
+	ref.Placed = &PlacedAssetRef{Key: "certificate-template-assets/v/" + id.String() + ".placed.pdf", Checksum: sha256Hex(placed)}
+	version.AssetManifest[id.String()] = ref
+	if _, err := s.renderLayoutPDF(t.Context(), layout, legacyPreview, "https://skyl.app/c/X", s.assetsForVersion(version)); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(renderer.background, placed) || tools.calls() != 0 {
+		t.Fatalf("background %q, pdf-tools calls %d", renderer.background, tools.calls())
+	}
+	ref.Placed.Checksum = sha256Hex([]byte("another"))
+	if _, err := s.renderLayoutPDF(t.Context(), layout, legacyPreview, "https://skyl.app/c/X", s.assetsForVersion(version)); err == nil || errors.Is(err, ErrInvalid) {
+		t.Fatalf("a placed copy that does not match its checksum: %v", err)
 	}
 }

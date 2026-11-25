@@ -124,4 +124,8 @@ type Service interface {
 	// (docs/certificate-event-templates.md).
 	EventTemplate(ctx context.Context, p authz.Principal, eventID uuid.UUID) (EventTemplateState, error)
 	CreateEventTemplate(ctx context.Context, p authz.Principal, eventID uuid.UUID, in EventTemplateInput) (Template, error)
+	// AssetInfo and AssetPreview are a certificate asset's size and the
+	// picture the template editor draws it with (pdf-tools for a PDF).
+	AssetInfo(ctx context.Context, p authz.Principal, id uuid.UUID) (AssetInfo, error)
+	AssetPreview(ctx context.Context, p authz.Principal, id uuid.UUID, maxPx int) (AssetPreview, error)
 }

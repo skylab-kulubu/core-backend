@@ -501,3 +501,39 @@ func jobRank(status string) int {
 		return 0
 	}
 }
+
+// TemplatesUsingMedia lists the current templates whose draft or a
+// published version links the Media.
+func (s *MemoryStore) TemplatesUsingMedia(_ context.Context, mediaID uuid.UUID) ([]Template, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	using := map[uuid.UUID]bool{}
+	for _, item := range s.templates {
+		if item.ArchivedAt == nil && layoutLinks(item.DraftLayout, mediaID) {
+			using[item.ID] = true
+		}
+	}
+	for _, version := range s.versions {
+		if _, ok := version.AssetManifest[mediaID.String()]; ok || layoutLinks(version.Layout, mediaID) {
+			if item, found := s.templates[version.TemplateID]; found && item.ArchivedAt == nil {
+				using[item.ID] = true
+			}
+		}
+	}
+	out := make([]Template, 0, len(using))
+	for id := range using {
+		out = append(out, s.templates[id])
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID.String() < out[j].ID.String() })
+	return out, nil
+}
+
+// layoutLinks is whether the layout links the Media.
+func layoutLinks(layout Layout, mediaID uuid.UUID) bool {
+	for _, id := range layoutAssetIDs(layout) {
+		if id == mediaID {
+			return true
+		}
+	}
+	return false
+}

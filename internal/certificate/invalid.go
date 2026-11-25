@@ -59,8 +59,12 @@ const (
 	CodeBackgroundPDFUnreadable = "background_pdf_unreadable"
 	CodeBackgroundPDFTooLarge   = "background_pdf_too_large"
 	CodeBackgroundPDFPages      = "background_pdf_pages"
+	CodeBackgroundPDFEncrypted  = "background_pdf_encrypted"
 	CodeRendererUnavailable     = "renderer_unavailable"
-	CodeRenderFailed            = "render_failed"
+	// CodePDFToolsUnavailable is pdf-tools not set up (PDF_TOOLS_URL),
+	// unreachable or failing on its side (503, UnavailableError).
+	CodePDFToolsUnavailable = "pdf_tools_unavailable"
+	CodeRenderFailed        = "render_failed"
 	// CodeTemplateEventScoped is an Event template bound to another scope
 	// or another Event (400); CodeTemplateEventExists a second Event
 	// template for an Event (409, EventTemplateExistsError).
