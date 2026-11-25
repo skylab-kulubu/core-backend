@@ -212,6 +212,12 @@ type Ticket struct {
 	CancelledAt     *time.Time  `json:"cancelledAt,omitempty"`
 	CancelledBy     CancelledBy `json:"cancelledBy,omitempty"`
 	CancelReason    string      `json:"cancelReason,omitempty"`
+	// FormsRejectedAt is when Forms declined the answer that wrote the
+	// Ticket (Yusuf, K6 2026-11-25): core no longer cancels such a Ticket
+	// by itself; the panel shows "Forms'ta reddedildi" and offers to cancel
+	// it. A later acceptance of the answer, or of the holder's next answer,
+	// clears it (docs/form-response-tickets.md).
+	FormsRejectedAt *time.Time `json:"formsRejectedAt,omitempty"`
 	// OverCapacity is set on the answer of an operator's write that made
 	// the Ticket active past its Event's capacity (docs/event-capacity.md),
 	// for the panel's warning. Never stored.

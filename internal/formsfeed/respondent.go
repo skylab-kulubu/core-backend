@@ -190,6 +190,7 @@ func RecordRespondents(ctx context.Context, record RecordFunc, report ticket.For
 		}
 		total.TicketsWritten += result.TicketsWritten
 		total.TicketsCancelled += result.TicketsCancelled
+		total.TicketsMarked += result.TicketsMarked
 		total.ListingEvents = max(total.ListingEvents, result.ListingEvents)
 		outcomes = append(outcomes, result.Outcome)
 	}

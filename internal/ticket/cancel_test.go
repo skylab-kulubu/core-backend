@@ -459,19 +459,17 @@ func TestRegisteringAgainReopensACancelledTicket(t *testing.T) {
 		if got, _ := e.store.Get(ctx, before.ID); got.StatusOf() != ticket.StatusCancelled {
 			t.Fatalf("an operator's cancellation was undone: %+v", got)
 		}
-		// Forms' own decline of another answer, then its acceptance:
-		// reopened.
+		// A Ticket Forms' own decline cancelled before K6 (2026-11-25; a
+		// decline marks since), then its answer's acceptance: reopened.
 		answer := acceptedGuest(formID, "Grace", "Hopper", "grace@example.com")
 		if _, err := e.svc.RecordFormResponse(ctx, formsService, answer); err != nil {
 			t.Fatal(err)
 		}
 		other := storedGuest(t, e.svc, ev, "grace@example.com")
 		otherBefore, _ := e.store.Get(ctx, other.ID)
-		answer.Status = ticket.FormResponseDeclined
-		if result, err := e.svc.RecordFormResponse(ctx, formsService, answer); err != nil || result.Outcome != ticket.FormResponseCancelled {
-			t.Fatalf("decline %+v %v", result, err)
+		if _, _, err := e.store.Cancel(ctx, other.ID, ticket.CancelledByForm, ""); err != nil {
+			t.Fatal(err)
 		}
-		answer.Status = ticket.FormResponseAccepted
 		result, err = e.svc.RecordFormResponse(ctx, formsService, answer)
 		if err != nil || result.TicketsWritten != 1 {
 			t.Fatalf("report after Forms' decline %+v %v", result, err)

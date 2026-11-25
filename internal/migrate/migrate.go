@@ -2105,6 +2105,11 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND conname IN ('event_form_mappings_names_check', 'event_form_mappings_ids_check')
 		) = 2
 		AND to_regclass('public.event_form_mappings_form_idx') IS NOT NULL`,
+	// Forms' decline of a Ticket's answer kept as a mark (K6,
+	// docs/form-response-tickets.md).
+	20261127110000: `
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'tickets' AND column_name = 'forms_rejected_at'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

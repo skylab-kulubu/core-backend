@@ -760,3 +760,34 @@ func (s *MemoryStore) promoteLocked(ctx context.Context, eventID uuid.UUID) erro
 }
 
 var _ CapacityStore = (*MemoryStore)(nil)
+
+// MarkFormsRejected is the database's.
+func (s *MemoryStore) MarkFormsRejected(_ context.Context, id uuid.UUID, at time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.byID[id]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if t.StatusOf() == StatusCancelled || t.FormsRejectedAt != nil {
+		return false, nil
+	}
+	at = at.UTC()
+	t.FormsRejectedAt = &at
+	s.byID[id] = t
+	return true, nil
+}
+
+// KeepFormResponse is the database's.
+func (s *MemoryStore) KeepFormResponse(_ context.Context, id, responseID uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.byID[id]
+	if _, kept := s.formResponses[id]; !ok || !kept || t.StatusOf() == StatusCancelled || responseID == uuid.Nil {
+		return nil
+	}
+	s.formResponses[id] = responseID
+	t.FormsRejectedAt = nil
+	s.byID[id] = t
+	return nil
+}

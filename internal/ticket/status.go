@@ -54,6 +54,20 @@ type FormResponseStore interface {
 	FormResponseTickets(ctx context.Context, responseID uuid.UUID) ([]Ticket, error)
 }
 
+// FormsRejectionStore keeps Forms' decline of a Ticket's answer as a mark
+// instead of a cancellation (Yusuf, K6 2026-11-25; PostgresStore,
+// MemoryStore).
+type FormsRejectionStore interface {
+	// MarkFormsRejected marks the Ticket declined in Forms at at; false
+	// when it is cancelled or marked already.
+	MarkFormsRejected(ctx context.Context, id uuid.UUID, at time.Time) (bool, error)
+	// KeepFormResponse makes responseID the forms answer of a Ticket an
+	// answer wrote or reopened (form_response_id set), not cancelled, and
+	// clears its mark: the holder's newest accepted answer is the one whose
+	// decline counts. A Ticket written another way is left.
+	KeepFormResponse(ctx context.Context, id, responseID uuid.UUID) error
+}
+
 // CancelBlockStore reads which of the Tickets ids no cancellation may
 // touch (PostgresStore, MemoryStore): one with a check-in, or of a
 // Competition's current Entrant, as Cancel refuses them

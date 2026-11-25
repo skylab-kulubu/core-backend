@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -138,6 +139,28 @@ func (s *PostgresStore) FormResponseTickets(ctx context.Context, responseID uuid
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// MarkFormsRejected marks a Ticket that is not cancelled declined in
+// Forms (FormsRejectionStore); false when it is cancelled or marked.
+func (s *PostgresStore) MarkFormsRejected(ctx context.Context, id uuid.UUID, at time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE tickets SET forms_rejected_at = $2, updated_at = now()
+		WHERE id = $1 AND status <> 'cancelled' AND forms_rejected_at IS NULL`, id, at.UTC())
+	return tag.RowsAffected() > 0, err
+}
+
+// KeepFormResponse binds a Ticket an answer wrote to the holder's newest
+// accepted answer and clears its mark (FormsRejectionStore).
+func (s *PostgresStore) KeepFormResponse(ctx context.Context, id, responseID uuid.UUID) error {
+	if responseID == uuid.Nil {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE tickets SET form_response_id = $2, forms_rejected_at = NULL, updated_at = now()
+		WHERE id = $1 AND form_response_id IS NOT NULL AND status <> 'cancelled'
+		  AND (form_response_id <> $2 OR forms_rejected_at IS NOT NULL)`, id, responseID)
+	return err
 }
 
 // Reopen makes a cancelled Ticket active again, for an operator taking the

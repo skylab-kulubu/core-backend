@@ -19,7 +19,9 @@ Columns (migration `20261124100000`, which gives up after a 5s
 `lock_timeout` rather than queue Ticket reads behind a long one): `status` (default `active`; every
 Ticket before the migration is active, and the release before writes active
 Tickets on the new schema), `status_changed_at`, `waitlisted_at`,
-`cancelled_at`, `cancelled_by` (`holder`, `operator`, `form`),
+`cancelled_at`, `cancelled_by` (`holder`, `operator`, `form`: Forms'
+decline before K6, 2026-11-25; a decline marks the Ticket since,
+`formsRejectedAt`, [form-response-tickets.md](form-response-tickets.md)),
 `cancel_reason` (at most 500 characters). A cancelled Ticket always has
 `cancelled_at` and `cancelled_by`; any other has none of the three. Index
 `(event_id, status)`.

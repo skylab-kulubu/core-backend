@@ -39,7 +39,7 @@ func (a answersReader) Response(_ context.Context, formID, responseID uuid.UUID,
 
 // The HTTP report of an anonymous answer, through the mapping, by the one
 // Ticket rule: a guest Ticket; the same e-mail again writes no second one;
-// a declined answer cancels the Ticket it wrote; a second Event listing the
+// a declined answer marks the Ticket it wrote (K6); a second Event listing the
 // form without a mapping gets no guest.
 func TestTheHTTPReportOfAnAnonymousAnswerThroughTheMapping(t *testing.T) {
 	ctx := context.Background()
@@ -99,10 +99,16 @@ func TestTheHTTPReportOfAnAnonymousAnswerThroughTheMapping(t *testing.T) {
 	if got := report(third, ticket.FormResponseAccepted); got.Outcome != ticket.FormResponseMappingIncomplete {
 		t.Fatalf("one word: %+v", got)
 	}
-	if got := report(first, ticket.FormResponseDeclined); got.Outcome != ticket.FormResponseCancelled {
+	// K6 (#460): the second accepted answer took the Ticket over, so the
+	// first one's decline no longer reaches it; the second's marks it and
+	// cancels nothing.
+	if got := report(first, ticket.FormResponseDeclined); got.Outcome != ticket.FormResponseNotAccepted {
+		t.Fatalf("the first answer declined: %+v", got)
+	}
+	if got := report(second, ticket.FormResponseDeclined); got.Outcome != ticket.FormResponseFormsRejected || got.TicketsMarked != 1 {
 		t.Fatalf("declined: %+v", got)
 	}
-	if held = tickets(w.ev.ID); len(held) != 1 || held[0].StatusOf() != ticket.StatusCancelled {
+	if held = tickets(w.ev.ID); len(held) != 1 || held[0].StatusOf() == ticket.StatusCancelled || held[0].FormsRejectedAt == nil {
 		t.Fatalf("after the decline %+v", held)
 	}
 
