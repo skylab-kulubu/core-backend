@@ -446,13 +446,12 @@ func (h *EventHandler) Copy(c fiber.Ctx) error {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
 	copied, fresh, err := h.svc.Copy(c.Context(), p, id, event.CopyInput{
-		ID:                  *body.ID,
-		Name:                body.Name,
-		StartDate:           body.StartDate,
-		IncludeDoorStaff:    body.IncludeDoorStaff,
-		IncludeCompetitions: body.IncludeCompetitions,
-		OwnerTeam:           body.OwnerTeam,
-
+		ID:                          *body.ID,
+		Name:                        body.Name,
+		StartDate:                   body.StartDate,
+		IncludeDoorStaff:            body.IncludeDoorStaff,
+		IncludeCompetitions:         body.IncludeCompetitions,
+		OwnerTeam:                   body.OwnerTeam,
 		SkipCertificateTemplate:     body.IncludeCertificateTemplate != nil && !*body.IncludeCertificateTemplate,
 		IncludeExternalRegistration: body.IncludeExternalRegistration,
 		IncludeAttendeeNote:         body.IncludeAttendeeNote,

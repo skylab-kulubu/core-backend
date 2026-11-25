@@ -14,7 +14,8 @@ import (
 
 // sourceEventTemplate makes d.template the source's published Event
 // template, bound to it, with a Figma link: its draft and versions 1 and 2.
-func sourceEventTemplate(t *testing.T, d copyDatabase) {
+// It answers the Media version 2's asset copy is of.
+func sourceEventTemplate(t *testing.T, d copyDatabase) uuid.UUID {
 	t.Helper()
 	ctx := context.Background()
 	// Version 2's asset copy is of a current Media, as publish leaves it.
@@ -37,6 +38,7 @@ func sourceEventTemplate(t *testing.T, d copyDatabase) {
 		 VALUES (gen_random_uuid(), $1, 2, '{"label": "v2"}',
 			jsonb_build_object($2::text, jsonb_build_object('key', 'certificate-template-assets/v2/' || $2::text, 'contentType', 'image/png')),
 			'sum-2', true)`, d.template, asset.ID)
+	return asset.ID
 }
 
 // copiedTemplate is the copy's current Event template: its id, name, Owner
@@ -209,5 +211,31 @@ func TestPostgresEventTemplateFollowsOwnerTeam(t *testing.T) {
 	}
 	if n := d.count(t, `SELECT count(*) FROM certificate_templates WHERE id = $1 AND owner_team = 'ARTLAB'`, d.template); n != 1 {
 		t.Fatal("template's Owner team not changed")
+	}
+}
+
+// The draft is fine but the published version's Media was deleted since:
+// the database refuses the version, the whole Event template is left out
+// and named (no draft without its version, no binding), and the Event copy
+// goes on.
+func TestPostgresCopyEventTemplateRefusedVersion(t *testing.T) {
+	d := newCopyDatabase(t)
+	ctx := context.Background()
+	asset := sourceEventTemplate(t, d)
+	if _, err := d.pool.Exec(ctx, `UPDATE media SET deleted_at = now() WHERE id = $1`, asset); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := d.svc.Copy(ctx, d.yk, d.source.ID, copyIn("Sürümü silinmiş", "2027-03-13T19:00:00+03:00"))
+	if err != nil || !slices.Equal(got.Skipped, []string{event.SkippedCertificateTemplate}) {
+		t.Fatalf("refused version: %v %v", got.Skipped, err)
+	}
+	if _, ok := copyTemplateOf(t, d, got.Event.ID); ok {
+		t.Fatal("template written without its version")
+	}
+	if n := d.count(t, `SELECT count(*) FROM certificate_template_bindings WHERE scope_key = $1`, got.Event.ID.String()); n != 0 {
+		t.Fatalf("binding written: %d", n)
+	}
+	if n := d.count(t, `SELECT count(*) FROM events WHERE id = $1`, got.Event.ID); n != 1 {
+		t.Fatal("the Event copy was not made")
 	}
 }
