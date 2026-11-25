@@ -64,8 +64,10 @@ type Source interface {
 	AdminEvents(ctx context.Context, fromMillis int64, max int, resourceTypes []string) ([]identity.AdminEvent, error)
 	// ServiceAccountSubject is core's own subject: its events are skipped.
 	ServiceAccountSubject(ctx context.Context) (uuid.UUID, error)
-	// ClientIDOf names a client by its Keycloak UUID.
+	// ClientIDOf names a client by its Keycloak UUID; ClientUUIDOf is the
+	// other way.
 	ClientIDOf(ctx context.Context, clientUUID string) (string, error)
+	ClientUUIDOf(ctx context.Context, clientID string) (string, error)
 	// GetGroup reads a Group by id, for its path.
 	GetGroup(ctx context.Context, idOrPath string) (identity.Group, error)
 }
@@ -113,10 +115,12 @@ type Config struct {
 	Membership identity.MembershipNotifier
 	Terms      identity.MembershipNotifier
 	Roles      identity.GroupRolesNotifier
-	// AutomationClients are the clients (their internal ids, in the
-	// author's realm) the realm's reconcilers sign in with: kcadm's
-	// admin-cli of the master realm. Their changes are recorded as
-	// keycloak:reconcile and send no mail (Yusuf, 2026-11-25).
+	// AutomationClients are the confidential clients of the club's realm
+	// whose service accounts reconcile it (account-center-config), by
+	// client id (resolved to Keycloak's internal id with view-clients) or
+	// by that internal id. Their changes are recorded as keycloak:reconcile
+	// and send no mail (Yusuf, 2026-11-25). Never a public client such as
+	// admin-cli: people sign in through it too.
 	AutomationClients []string
 	Interval          time.Duration
 	Now               func() time.Time
@@ -127,6 +131,10 @@ type Config struct {
 type Service struct {
 	cfg  Config
 	self uuid.UUID
+
+	// automation are AutomationClients' internal ids, resolved on the
+	// first pass that reads events.
+	automation []string
 
 	// recent are the events this process handled lately, by id, with their
 	// time: the overlap reads them again each pass, and they are skipped
@@ -211,6 +219,14 @@ func (s *Service) pass(ctx context.Context) error {
 		}
 		s.self = self
 	}
+	if s.automation == nil {
+		ids, err := s.automationIDs(ctx)
+		if err != nil {
+			// Read nothing rather than mail a reconciler's changes.
+			return err
+		}
+		s.automation = ids
+	}
 	if age := now.Sub(time.UnixMilli(cursor.Time)); age > RetentionWarn {
 		s.count(func() { s.gaps++ })
 		s.cfg.Logf("keycloak console audit: WARN the last event read is %d days old; Keycloak keeps %d days, so changes may have been missed", int(age.Hours()/24), int(Retention.Hours()/24))
@@ -292,7 +308,7 @@ func (s *Service) handle(ctx context.Context, e identity.AdminEvent) error {
 		s.countEvent(outcomeUnsupported)
 		return nil
 	}
-	automation := e.AuthClientID != "" && slices.Contains(s.cfg.AutomationClients, e.AuthClientID)
+	automation := e.AuthClientID != "" && slices.Contains(s.automation, e.AuthClientID)
 	c.record.Actor = teamaudit.Actor{ID: actor, Basis: teamaudit.BasisConsole, Client: clientConsoleRealm}
 	switch {
 	case automation:
@@ -314,6 +330,25 @@ func (s *Service) handle(ctx context.Context, e identity.AdminEvent) error {
 	s.countEvent(outcomeRecorded)
 	s.notify(ctx, c, actor.String(), at, automation)
 	return nil
+}
+
+// automationIDs are AutomationClients as Keycloak's internal ids: a UUID
+// as it is, a client id looked up in the club's realm. A client Keycloak
+// does not know is an error: the pass reads nothing until it is fixed.
+func (s *Service) automationIDs(ctx context.Context) ([]string, error) {
+	out := []string{}
+	for _, client := range s.cfg.AutomationClients {
+		if id, err := uuid.Parse(client); err == nil {
+			out = append(out, id.String())
+			continue
+		}
+		id, err := s.cfg.Source.ClientUUIDOf(ctx, client)
+		if err != nil {
+			return nil, fmt.Errorf("consoleaudit: the automation client %q: %w", client, err)
+		}
+		out = append(out, id)
+	}
+	return out, nil
 }
 
 // change is an event made a row, with what its notice needs.

@@ -18,8 +18,8 @@ func TestConsoleAuditFromEnv(t *testing.T) {
 		"on":       {map[string]string{"KEYCLOAK_CONSOLE_AUDIT": " on "}, consoleAuditConfig{On: true, Interval: time.Minute}},
 		"interval": {map[string]string{"KEYCLOAK_CONSOLE_AUDIT": "on", "KEYCLOAK_CONSOLE_AUDIT_INTERVAL": "30s"}, consoleAuditConfig{On: true, Interval: 30 * time.Second}},
 		"off":      {map[string]string{"KEYCLOAK_CONSOLE_AUDIT": "off"}, consoleAuditConfig{Interval: time.Minute}},
-		"automation": {map[string]string{"KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS": " 5B0E3C1A-1111-4222-8333-944455556666 ,,"},
-			consoleAuditConfig{Interval: time.Minute, AutomationClients: []string{"5b0e3c1a-1111-4222-8333-944455556666"}}},
+		"automation": {map[string]string{"KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS": " account-center-config, 5B0E3C1A-1111-4222-8333-944455556666 ,,"},
+			consoleAuditConfig{Interval: time.Minute, AutomationClients: []string{"account-center-config", "5b0e3c1a-1111-4222-8333-944455556666"}}},
 	} {
 		got, err := consoleAuditFromEnv(env(tc.vars))
 		if err != nil || !reflect.DeepEqual(got, tc.want) {
@@ -32,6 +32,8 @@ func TestConsoleAuditFromEnv(t *testing.T) {
 		{"KEYCLOAK_CONSOLE_AUDIT_INTERVAL": "1h"},
 		{"KEYCLOAK_CONSOLE_AUDIT_INTERVAL": "soon"},
 		{"KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS": "admin-cli"},
+		{"KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS": "account-center-config,security-admin-console"},
+		{"KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS": "bad client"},
 	} {
 		if _, err := consoleAuditFromEnv(env(bad)); err == nil {
 			t.Fatalf("%v must be refused", bad)

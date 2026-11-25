@@ -3,7 +3,7 @@
 -- again, so those rows cannot stay). The action check stays wide, as the
 -- earlier migrations' downs leave it: no row of the new actions outlives
 -- the console rows, which are the only ones that write them. The basis check
-goes back to 20261126101700's (the term job's member.remove stays).
+-- goes back to 20261126101700's (the term job's member.remove stays).
 SET LOCAL lock_timeout = '5s';
 
 ALTER TABLE privilege_notice_mails DROP CONSTRAINT IF EXISTS privilege_notice_mails_via_check;

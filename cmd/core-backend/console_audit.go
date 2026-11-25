@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -21,10 +23,18 @@ type consoleAuditConfig struct {
 	// consoleaudit.DefaultInterval.
 	Interval time.Duration
 	// AutomationClients is KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS: the
-	// internal ids of the clients the realm's reconcilers sign in with
-	// (the master realm's admin-cli), comma separated.
+	// club realm's confidential clients whose service accounts reconcile
+	// it (account-center-config), by client id or internal id, comma
+	// separated. admin-cli is refused: people sign in through it.
 	AutomationClients []string
 }
+
+// publicAdminClients are Keycloak's public admin clients: people sign in
+// through them, so a change made through them is never silenced.
+var publicAdminClients = []string{"admin-cli", "security-admin-console"}
+
+// automationClientPattern is a Keycloak client id as the setting takes it.
+var automationClientPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,255}$`)
 
 // consoleAuditFromEnv reads the console audit's settings. A value that does
 // not parse stops core.
@@ -47,11 +57,14 @@ func consoleAuditFromEnv(getenv func(string) string) (consoleAuditConfig, error)
 		if raw == "" {
 			continue
 		}
-		id, err := uuid.Parse(raw)
-		if err != nil {
-			return consoleAuditConfig{}, fmt.Errorf("KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS must be client ids (UUIDs), comma separated, not %q", raw)
+		if id, err := uuid.Parse(raw); err == nil {
+			cfg.AutomationClients = append(cfg.AutomationClients, id.String())
+			continue
 		}
-		cfg.AutomationClients = append(cfg.AutomationClients, id.String())
+		if !automationClientPattern.MatchString(raw) || slices.Contains(publicAdminClients, raw) {
+			return consoleAuditConfig{}, fmt.Errorf("KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS takes confidential reconciler clients (account-center-config), comma separated, not %q", raw)
+		}
+		cfg.AutomationClients = append(cfg.AutomationClients, raw)
 	}
 	return cfg, nil
 }

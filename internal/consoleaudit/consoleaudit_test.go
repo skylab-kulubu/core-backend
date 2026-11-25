@@ -69,6 +69,13 @@ func (s *source) ClientIDOf(_ context.Context, id string) (string, error) {
 	return "", identity.ErrNotFound
 }
 
+func (s *source) ClientUUIDOf(_ context.Context, clientID string) (string, error) {
+	if clientID == "account-center-config" {
+		return configClient, nil
+	}
+	return "", identity.ErrNotFound
+}
+
 func (s *source) GetGroup(_ context.Context, id string) (identity.Group, error) {
 	if g, ok := s.groups[id]; ok {
 		return g, nil
@@ -109,13 +116,16 @@ type fixture struct {
 	audit *teamaudit.Memory
 	note  *notifier
 	terms *notifier
-	svc   *consoleaudit.Service
-	now   time.Time
-	logs  []string
+	// automation is the setting the service is made with.
+	automation []string
+	svc        *consoleaudit.Service
+	now        time.Time
+	logs       []string
 }
 
-// kcadmClient is the master realm's admin-cli, the reconcilers' client.
-const kcadmClient = "5b0e3c1a-1111-4222-8333-944455556666"
+// configClient is account-center-config's internal id: the confidential
+// client whose service account reconciles the realm.
+const configClient = "5b0e3c1a-1111-4222-8333-944455556666"
 
 // restart is a new process over the same store and record: it remembers
 // no event.
@@ -123,7 +133,7 @@ func (f *fixture) restart(t *testing.T) {
 	t.Helper()
 	svc, err := consoleaudit.NewService(consoleaudit.Config{
 		Source: f.src, Store: f.store, Audit: f.audit, Membership: f.note, Terms: f.terms, Roles: f.note,
-		AutomationClients: []string{kcadmClient},
+		AutomationClients: f.automation,
 		Now:               func() time.Time { return f.now },
 		Logf:              func(format string, args ...any) { f.logs = append(f.logs, fmt.Sprintf(format, args...)) },
 	})
@@ -140,11 +150,12 @@ func newFixture(t *testing.T) *fixture {
 			ykID:   {ID: ykID, Name: "YK", Path: "/UYELER/YK"},
 			weblab: {ID: weblab, Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"},
 		}},
-		store: &consoleaudit.MemoryStore{},
-		audit: teamaudit.NewMemory(),
-		note:  &notifier{},
-		terms: &notifier{},
-		now:   start,
+		store:      &consoleaudit.MemoryStore{},
+		audit:      teamaudit.NewMemory(),
+		note:       &notifier{},
+		terms:      &notifier{},
+		automation: []string{"account-center-config"},
+		now:        start,
 	}
 	f.restart(t)
 	// The first pass only sets the cursor.
@@ -430,16 +441,17 @@ func TestAnEventCommittedLateIsRead(t *testing.T) {
 	}
 }
 
-// The realm's reconcilers (kcadm's admin-cli) are recorded apart and send
-// no mail; the management terms still hear of a membership.
+// The realm's reconciler (account-center-config's service account) is
+// recorded apart and sends no mail; the management terms still hear of a
+// membership. admin-cli (people sign in through it) stays the console's.
 func TestReconcilerChangesAreRecordedWithoutMail(t *testing.T) {
 	f := newFixture(t)
 	membership := event("r1", start.Add(time.Second), "GROUP_MEMBERSHIP", "CREATE", "users/"+person.String()+"/groups/"+ykID, `{"id":"`+ykID+`","path":"/UYELER/YK"}`, admin, masterRealm)
-	membership.AuthClientID = kcadmClient
+	membership.AuthClientID = configClient
 	roles := event("r2", start.Add(2*time.Second), "CLIENT_ROLE_MAPPING", "CREATE", "groups/"+weblab+"/role-mappings/clients/"+formsUUID, `[{"name":"admin","clientRole":true,"containerId":"`+formsUUID+`"}]`, admin, masterRealm)
-	roles.AuthClientID = kcadmClient
+	roles.AuthClientID = configClient
 	direct := event("r3", start.Add(3*time.Second), "CLIENT_ROLE_MAPPING", "CREATE", "users/"+self.String()+"/role-mappings/clients/"+formsUUID, `[{"name":"admin","clientRole":true,"containerId":"`+formsUUID+`"}]`, admin, masterRealm)
-	direct.AuthClientID = kcadmClient
+	direct.AuthClientID = configClient
 	console := event("c1", start.Add(4*time.Second), "CLIENT_ROLE_MAPPING", "CREATE", "groups/"+weblab+"/role-mappings/clients/"+formsUUID, `[{"name":"admin","clientRole":true,"containerId":"`+formsUUID+`"}]`, admin, masterRealm)
 	console.AuthClientID = "77777777-0000-0000-0000-00000000c0c0"
 	for _, e := range []identity.AdminEvent{membership, roles, direct, console} {
@@ -466,5 +478,21 @@ func TestReconcilerChangesAreRecordedWithoutMail(t *testing.T) {
 	}
 	if slices.ContainsFunc(f.logs, func(l string) bool { return strings.Contains(l, "directly") }) {
 		t.Fatalf("a reconciler's service account role was warned: %q", f.logs)
+	}
+}
+
+// An automation client Keycloak does not know stops the reader before it
+// reads anything: a reconciler's changes are never mailed by mistake.
+func TestAnUnknownAutomationClientReadsNothing(t *testing.T) {
+	f := newFixture(t)
+	f.automation = []string{"no-such-client"}
+	f.restart(t)
+	f.src.add(event("e1", start.Add(time.Second), "CLIENT", "UPDATE", "clients/"+formsUUID, "", admin, clubRealm))
+	f.now = f.now.Add(time.Minute)
+	if err := f.svc.Pass(context.Background()); err == nil || !strings.Contains(err.Error(), "no-such-client") {
+		t.Fatalf("pass: %v", err)
+	}
+	if len(f.audit.Rows()) != 0 {
+		t.Fatal("rows written")
 	}
 }

@@ -69,25 +69,31 @@ keeps Keycloak's time.
 
 ## Reconcilers
 
-The realm's reconcilers (e-skylab-keycloak `config/app-assignments.sh`,
-`leader-app-roles.sh`, `dk-read-only.sh` and the others run from the release
-wizards) write with kcadm: an operator of the master realm signs in through
-the master realm's `admin-cli` client. The browser console signs in through
-`security-admin-console`. An admin event names the client by its internal id
-(`authDetails.clientId`, a UUID of the master realm that core cannot read),
-so `KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS` lists it; on the server:
+A change made by a reconciler, an automation that signs in with a
+**confidential** client of the club's realm and its service account, is
+recorded with `client` `keycloak:reconcile` and **sends no mail** (no
+membership mail, no privilege notice, no direct-role warning: reconcilers
+map roles to Groups and service accounts by design; Yusuf, 2026-11-25). The
+management terms still hear of a membership.
 
-```sh
-docker exec <keycloak container> /opt/keycloak/bin/kcadm.sh get clients -r master -q clientId=admin-cli --fields id --config <kcadm config>
-```
+`KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS` names those clients. Today that
+is `account-center-config` (e-skylab-keycloak
+`config/reconcile-account-center.sh` signs in with it and its secret, and
+writes Group and person role mappings). The setting takes the client id,
+which core turns into Keycloak's internal id with `view-clients` on the first
+pass (a client recreated keeps its client id, not its internal id); an
+internal id (UUID) is taken as it is. A client id Keycloak does not know
+stops the reader with an error until it is fixed: a reconciler's changes are
+never mailed by mistake, and nothing is skipped (the next pass reads from
+the same place).
 
-A change made through such a client is recorded with `client`
-`keycloak:reconcile` and **sends no mail** (no membership mail, no privilege
-notice, no direct-role warning: the reconcilers map service accounts' roles
-by design; Yusuf, 2026-11-25). The management terms still hear of a
-membership. A kcadm command typed by hand goes through the same client and
-is recorded the same way. Without the setting a reconciler's changes are
-recorded and mailed as the console's.
+**Never a public client.** `admin-cli` and `security-admin-console` are
+refused: people sign in through them (the master realm's administrators use
+`admin-cli` by hand with kcadm), and their changes must be mailed. So
+`config/app-assignments.sh`, `leader-app-roles.sh` and `dk-read-only.sh`,
+which sign in as a master administrator through `admin-cli`, are recorded
+and **mailed** as the console's until they move to a confidential client
+(an e-skylab-keycloak change, after its release freeze).
 
 ## Configuration
 
@@ -95,7 +101,7 @@ recorded and mailed as the console's.
 |---|---|---|
 | `KEYCLOAK_CONSOLE_AUDIT` | `off` | `on`, `off`; anything else stops core |
 | `KEYCLOAK_CONSOLE_AUDIT_INTERVAL` | `1m` | a Go duration from `15s` to `10m` |
-| `KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS` | none | the reconcilers' client ids (UUIDs), comma separated (above); anything else stops core |
+| `KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS` | none | the reconcilers' confidential clients, by client id (`account-center-config`) or internal id, comma separated (above); `admin-cli`, `security-admin-console` or a malformed value stops core |
 
 The startup line says `keycloak console audit: off (…)` or
 `keycloak console audit: on (every 1m0s; GROUP,…)`. On without Keycloak (the
@@ -133,8 +139,8 @@ few intervals, or `pass_total{outcome="failed"}` rising.
 
 1. Release core (migration `20261126110000`, after `20261126101700`) with
    the switch off.
-2. `KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS` (the master realm's
-   `admin-cli` id), then `KEYCLOAK_CONSOLE_AUDIT=on`. The first pass sets
+2. `KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS=account-center-config`, then
+   `KEYCLOAK_CONSOLE_AUDIT=on`. The first pass sets
    the cursor to now.
 3. Check: add someone to a test Group in the console; within a minute the
    panel's audit tab shows a `via` `console` row.

@@ -128,6 +128,16 @@ func tokenSubject(token string) (uuid.UUID, error) {
 	return id, nil
 }
 
+// ClientUUIDOf is the internal id (UUID) of the realm's client clientID
+// (view-clients), kept for the process.
+func (k *Keycloak) ClientUUIDOf(ctx context.Context, clientID string) (string, error) {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	return k.clientUUID(ctx, token, clientID)
+}
+
 // ClientIDOf is the client id of the client whose Keycloak UUID is
 // clientUUID (view-clients), kept for the process.
 func (k *Keycloak) ClientIDOf(ctx context.Context, clientUUID string) (string, error) {
