@@ -28,15 +28,21 @@ func backgroundSize(contentType string, data []byte) (float64, float64, error) {
 			w, h = h, w
 		}
 	}
-	if !(w > 0 && h > 0) || !finite(w, h) {
+	// A size under minBackgroundSide (an SVG of width="0.0000001") would
+	// scale the background past any page.
+	if !finite(w, h) || w < minBackgroundSide || h < minBackgroundSide {
 		return 0, 0, invalid(CodeBackgroundSizeUnknown)
 	}
 	return w, h, nil
 }
 
-// svgSize reads the root svg element's width and height in px (or
-// unitless); when one is missing or in another unit the viewBox gives it,
-// keeping the viewBox's ratio.
+// minBackgroundSide is the smallest natural side, in px, a placed
+// background may have.
+const minBackgroundSide = 1e-3
+
+// svgSize reads the root svg element's width and height in an absolute
+// unit (px or unitless, pt, pc, mm, cm, in); when one is missing or in a
+// relative unit (%, em) the viewBox gives it, keeping the viewBox's ratio.
 func svgSize(data []byte) (float64, float64) {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	for {
@@ -81,11 +87,22 @@ func svgSize(data []byte) (float64, float64) {
 	}
 }
 
+// svgUnits are the absolute CSS units in px (96 per inch).
+var svgUnits = map[string]float64{"px": 1, "pt": 96.0 / 72, "pc": 16, "mm": 96 / 25.4, "cm": 96 / 2.54, "in": 96}
+
+// svgLength is an SVG width or height in px; 0 when it is missing, not a
+// number or in a relative unit.
 func svgLength(value string) float64 {
-	value = strings.TrimSuffix(strings.TrimSpace(value), "px")
-	n, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	value = strings.ToLower(strings.TrimSpace(value))
+	factor := 1.0
+	if len(value) > 2 {
+		if f, ok := svgUnits[value[len(value)-2:]]; ok {
+			factor, value = f, strings.TrimSpace(value[:len(value)-2])
+		}
+	}
+	n, err := strconv.ParseFloat(value, 64)
 	if err != nil || !finite(n) {
 		return 0
 	}
-	return n
+	return n * factor
 }

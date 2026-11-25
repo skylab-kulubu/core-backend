@@ -235,7 +235,11 @@ func TestLayoutHTMLPlacesTheImageBackground(t *testing.T) {
 	for _, c := range cases {
 		assets := renderAssetReader{assets: map[uuid.UUID]Asset{id: {ContentType: "image/png", Data: sources[[2]float64{c.Source.Width, c.Source.Height}]}}}
 		placement := c.Placement
-		layout := Layout{Width: c.Page.Width, Height: c.Page.Height, Orientation: "landscape", BackgroundMediaID: &id, BackgroundPlacement: &placement,
+		orientation := "landscape"
+		if c.Page.Height > c.Page.Width {
+			orientation = "portrait"
+		}
+		layout := Layout{Width: c.Page.Width, Height: c.Page.Height, Orientation: orientation, BackgroundMediaID: &id, BackgroundPlacement: &placement,
 			Elements: []Element{{ID: "name", Kind: "recipientName", X: 10, Y: 10, Width: 400, Height: 40}, {ID: "serial", Kind: "serial", X: 10, Y: 60, Width: 400, Height: 40}}}
 		html, err := LayoutHTML(t.Context(), layout, PreviewData{RecipientName: "Ada", Serial: "SKY-1"}, "https://skyl.app/c/X", assets)
 		if err != nil {
@@ -294,6 +298,13 @@ func TestBackgroundSize(t *testing.T) {
 		"svg viewBox":      {"image/svg+xml", []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080"/>`), 1920, 1080},
 		"svg width":        {"image/svg+xml; charset=utf-8", []byte(`<svg width="960" height="100%" viewBox="0,0,1920,1080"/>`), 960, 540},
 		"svg no size":      {"image/svg+xml", []byte(`<svg width="100%"/>`), 0, 0},
+		"svg in mm":        {"image/svg+xml", []byte(`<svg width="297mm" height="210mm"/>`), 297 * 96 / 25.4, 210 * 96 / 25.4},
+		"svg in pt and in": {"image/svg+xml", []byte(`<svg width="842pt" height="8.5in"/>`), 842 * 96 / 72.0, 8.5 * 96},
+		"svg in cm and pc": {"image/svg+xml", []byte(`<svg width="10 cm" height="6pc"/>`), 10 * 96 / 2.54, 6 * 16},
+		"svg in em":        {"image/svg+xml", []byte(`<svg width="10em" height="5em" viewBox="0 0 200 100"/>`), 200, 100},
+		"svg tiny":         {"image/svg+xml", []byte(`<svg width="0.0000001" height="0.0000001"/>`), 0, 0},
+		"svg tiny viewBox": {"image/svg+xml", []byte(`<svg viewBox="0 0 1e-9 1e-9"/>`), 0, 0},
+		"svg negative":     {"image/svg+xml", []byte(`<svg width="-10" height="10"/>`), 0, 0},
 		"not an svg":       {"image/svg+xml", []byte(`<html/>`), 0, 0},
 		"unreadable image": {"image/png", []byte("not an image"), 0, 0},
 	} {
@@ -305,7 +316,7 @@ func TestBackgroundSize(t *testing.T) {
 			}
 			continue
 		}
-		if err != nil || w != c.w || h != c.h {
+		if err != nil || !near(w, c.w, 1e-9) || !near(h, c.h, 1e-9) {
 			t.Errorf("%s: %gx%g %v, want %gx%g", name, w, h, err, c.w, c.h)
 		}
 	}
