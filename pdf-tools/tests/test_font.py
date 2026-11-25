@@ -106,13 +106,16 @@ def test_missing_latin_and_digits_too(client):
         (lambda: ff.ttf(fvar=True), 422, "font_variable"),
         (ff.ttc, 422, "font_collection"),
         (lambda: ff.ttf(fs_type=0x0002), 422, "font_embedding_restricted"),
+        (lambda: ff.ttf(fs_type=0x0006), 422, "font_embedding_restricted"),
+        (lambda: ff.ttf(fs_type=0x0200), 422, "font_embedding_restricted"),
+        (lambda: ff.ttf(fs_type=0x0208), 422, "font_embedding_restricted"),
         (ff.bad_head, 422, "font_unreadable"),
         (lambda: ff.ttf()[: 400], 422, "font_unreadable"),
         (lambda: b"hello, not a font", 422, "font_unreadable"),
         (lambda: b"wOFF" + b"\x00" * 60, 422, "font_unreadable"),
         (lambda: b"wOF2ttcf" + b"\x00" * 60, 422, "font_collection"),
     ],
-    ids=["fvar", "ttc", "restricted", "ots-reject", "truncated", "not-a-font", "woff1", "woff2-collection"],
+    ids=["fvar", "ttc", "restricted", "restricted-and-print", "bitmap-only", "editable-bitmap-only", "ots-reject", "truncated", "not-a-font", "woff1", "woff2-collection"],
 )
 def test_refused(client, fixture, status, code):
     st, headers, body = client.post(PATH, fixture())
@@ -129,6 +132,42 @@ def test_restricted_says_its_fs_type(client):
 def test_editable_embedding_passes(client):
     r, _ = sanitized(client, ff.ttf(fs_type=0x0008))
     assert r["fsType"] == 8
+
+
+def test_woff2_bomb_is_refused_quickly(client):
+    """A few KiB that would inflate to 16 MiB: OTS refuses it (its
+    compression ratio), nothing is written large."""
+    bomb = ff.woff2_bomb()
+    assert len(bomb) < 64 << 10
+    started = time.monotonic()
+    st, headers, body = client.post(PATH, bomb)
+    assert st == 422 and problem(422, headers, body)["code"] == "font_unreadable"
+    assert time.monotonic() - started < 5
+
+
+def test_one_font_job_at_a_time():
+    """Two workers, but one font job at a time: the second font waits for
+    the first (a PDF job does not)."""
+    pool = Pool(size=2, timeout=60.0, queue_wait=0.5, test_hooks=True, memory_mib=0)
+    server = make_server("127.0.0.1", 0, pool, font_timeout=10.0)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        c = Client(server.server_address[1])
+        results = []
+        first = threading.Thread(target=lambda: results.append(c.post("/v1/_font_sleep", b"x", {"seconds": 2})[0]))
+        first.start()
+        time.sleep(0.3)
+        st, headers, body = c.post("/v1/_font_sleep", b"x", {"seconds": 0.1})
+        assert st == 503 and problem(503, headers, body)["code"] == "busy" and headers["retry-after"] == "5"
+        assert c.post("/v1/_sleep", b"x", {"seconds": 0.1})[0] == 200
+        first.join()
+        assert results == [200]
+        assert c.post("/v1/_font_sleep", b"x", {"seconds": 0.1})[0] == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+        pool.close()
 
 
 def test_ots_reason_is_given(client):

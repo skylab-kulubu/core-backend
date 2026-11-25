@@ -10,7 +10,7 @@ from functools import lru_cache
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.t2CharStringPen import T2CharStringPen
 from fontTools.pens.ttGlyphPen import TTGlyphPen
-from fontTools.ttLib import TTCollection, TTFont
+from fontTools.ttLib import TTCollection, TTFont, newTable, woff2 as fonttools_woff2
 
 TURKISH = "ğĞıİşŞçÇöÖüÜ"
 ALL = string.ascii_letters + string.digits + TURKISH
@@ -110,6 +110,35 @@ def woff2(data: bytes) -> bytes:
     font = TTFont(io.BytesIO(data))
     font.flavor = "woff2"
     return _save(font)
+
+
+@lru_cache(maxsize=None)
+def woff2_bomb(inflated: int = 16 << 20) -> bytes:
+    """A WOFF2 of a few KiB whose tables inflate to `inflated` bytes: a
+    table of zeros beside a real font's."""
+    import brotli
+
+    class Fast:
+        MODE_GENERIC, MODE_TEXT, MODE_FONT = brotli.MODE_GENERIC, brotli.MODE_TEXT, brotli.MODE_FONT
+        error = brotli.error
+
+        @staticmethod
+        def compress(data, mode=brotli.MODE_GENERIC, **_):
+            return brotli.compress(data, mode=mode, quality=1)
+
+        decompress = staticmethod(brotli.decompress)
+
+    font = TTFont(io.BytesIO(ttf()))
+    zeros = newTable("zzzz")
+    zeros.data = bytes(inflated)
+    font["zzzz"] = zeros
+    font.flavor = "woff2"
+    saved = fonttools_woff2.brotli
+    fonttools_woff2.brotli = Fast
+    try:
+        return _save(font)
+    finally:
+        fonttools_woff2.brotli = saved
 
 
 def ttc() -> bytes:

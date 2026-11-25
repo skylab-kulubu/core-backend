@@ -28,6 +28,10 @@ MAX_FONT_BODY_BYTES = MAX_FONT_BYTES + (1 << 20)
 # its worker could be killed.
 FONT_TIMEOUT_SECONDS = 10.0
 FONT_OTS_SHARE = 0.7
+# One font job at a time, whatever the workers: OTS writes the sanitized
+# font (up to fonts.MAX_SFNT_BYTES) to /tmp, a 64 MiB tmpfs, and two large
+# ones at once would fill it. A font request waits for the one before it as
+# long as a job waits for a worker, then is busy.
 # The content types a font may come as for the whole body.
 _FONT_TYPES = {"font/ttf", "font/otf", "font/woff2", "font/sfnt", "application/font-sfnt", "application/octet-stream"}
 # Requests being read or waiting for a worker at once; more are turned
@@ -124,6 +128,7 @@ class Handler(BaseHTTPRequestHandler):
     pool: Pool
     admission: threading.BoundedSemaphore
     font_timeout: float = FONT_TIMEOUT_SECONDS
+    font_gate: threading.BoundedSemaphore
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         pass
@@ -317,12 +322,22 @@ class Handler(BaseHTTPRequestHandler):
         else:
             raise Problem("bad_request", "send multipart/form-data (file) or the font as the body (font/ttf, font/otf, font/woff2)")
         if op in _TEST_OPS.values():
-            return len(body), self.pool.run(op, params.get("seconds", 1), timeout=self.font_timeout), "text/plain"  # type: ignore[return-value]
-        if not data:
-            raise Problem("bad_request", "the file part is missing")
-        if len(data) > MAX_FONT_BYTES:
-            raise Problem("font_too_large", f"at most {MAX_FONT_BYTES >> 20} MiB")
-        result: dict = self.pool.run(op, data, self.font_timeout * FONT_OTS_SHARE, timeout=self.font_timeout)  # type: ignore[assignment]
+            args: tuple = (params.get("seconds", 1),)
+        else:
+            if not data:
+                raise Problem("bad_request", "the file part is missing")
+            if len(data) > MAX_FONT_BYTES:
+                raise Problem("font_too_large", f"at most {MAX_FONT_BYTES >> 20} MiB")
+            args = (data, self.font_timeout * FONT_OTS_SHARE)
+        if not self.font_gate.acquire(timeout=self.pool.queue_wait):
+            raise Problem("busy", "another font is being checked")
+        try:
+            result = self.pool.run(op, *args, timeout=self.font_timeout)
+        finally:
+            self.font_gate.release()
+        if op in _TEST_OPS.values():
+            return len(body), result, "text/plain"  # type: ignore[return-value]
+        assert isinstance(result, dict)
         result["woff2"] = base64.b64encode(result["woff2"]).decode("ascii")
         return len(body), json.dumps(result, ensure_ascii=False).encode(), "application/json"
 
@@ -337,7 +352,12 @@ def make_server(host: str, port: int, pool: Pool, font_timeout: float = FONT_TIM
     handler = type(
         "BoundHandler",
         (Handler,),
-        {"pool": pool, "admission": threading.BoundedSemaphore(MAX_REQUESTS), "font_timeout": font_timeout},
+        {
+            "pool": pool,
+            "admission": threading.BoundedSemaphore(MAX_REQUESTS),
+            "font_timeout": font_timeout,
+            "font_gate": threading.BoundedSemaphore(1),
+        },
     )
     return Server((host, port), handler)
 

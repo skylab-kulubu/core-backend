@@ -28,8 +28,10 @@ CHECKED = TURKISH + string.ascii_uppercase + string.ascii_lowercase + string.dig
 # The sanitizer's command (the tests put another in its place).
 OTS_COMMAND = [ots.OTS_SANITIZE]
 
-# fsType bit 1: Restricted License embedding.
+# fsType bit 1: Restricted License embedding; bit 9: bitmap embedding only
+# (the outlines may not be embedded, which a web page and a PDF need).
 FS_TYPE_RESTRICTED = 0x0002
+FS_TYPE_BITMAP_ONLY = 0x0200
 
 # brotli quality by the sfnt's size: 11 (WOFF2's usual) is slow on large
 # fonts, and a request has 10 s on half a CPU.
@@ -190,6 +192,8 @@ def sanitize(data: bytes, timeout: float = 10.0) -> dict:
         fs_type = int(getattr(os2, "fsType", 0)) if os2 is not None else 0
         if fs_type & FS_TYPE_RESTRICTED:
             raise Problem("font_embedding_restricted", "the font's embedding permission is Restricted License", fsType=fs_type)
+        if fs_type & FS_TYPE_BITMAP_ONLY:
+            raise Problem("font_embedding_restricted", "the font allows bitmap embedding only", fsType=fs_type)
         family = _name(font, 16, 1)
         if not family:
             raise Problem("font_unreadable", "the font has no family name")

@@ -149,7 +149,8 @@ in order; the first that fails answers:
    table it cannot read refuses the font (`font_unreadable`, its first error
    in `reason`).
 3. fontTools reads the sanitized font: an `fvar` table is `font_variable`;
-   OS/2 `fsType` bit 1 (Restricted License embedding) is
+   OS/2 `fsType` bit 1 (Restricted License embedding) or bit 9 (bitmap
+   embedding only: the outlines may not be embedded) is
    `font_embedding_restricted` (with `fsType`).
 4. The facts, below.
 5. The sanitized font is written as WOFF2 (brotli; the glyf transform and
@@ -200,9 +201,9 @@ RFC 9457 `application/problem+json`, with a `code`:
 | `font_unreadable` | 422 | not a TrueType, OpenType or WOFF2 font, refused by OTS, or one that stopped its worker |
 | `font_collection` | 422 | a font collection (TTC) |
 | `font_variable` | 422 | a variable font (`fvar`) |
-| `font_embedding_restricted` | 422 | `fsType` says Restricted License embedding (`fsType` in the answer) |
+| `font_embedding_restricted` | 422 | `fsType` says Restricted License or bitmap-only embedding (`fsType` in the answer) |
 | `font_timeout` | 422 | took longer than 10 s; the worker was stopped |
-| `busy` | 503 | every worker busy for 10 s, or 4 requests already in; `Retry-After: 5` |
+| `busy` | 503 | every worker busy for 10 s, 4 requests already in, or another font being checked for 10 s; `Retry-After: 5` |
 | `internal` | 500 | an unexpected error, or no worker could take the job |
 
 A 4xx is the input's: the same request fails again. A 5xx may pass later.
@@ -222,7 +223,10 @@ A 4xx is the input's: the same request fails again. A 5xx may pass later.
   A font of almost 10 MiB is checked within 200 MiB and 10 s on half a CPU
   (the tests measure one).
 - A font of at most 10 MiB; OTS's output at most 48 MiB, written to `/tmp`
-  (OTS seeks in it) and removed after the job.
+  (OTS seeks in it) and removed after the job. One font job at a time,
+  whatever the workers, so two large fonts never share the 64 MiB `/tmp`: a
+  font request waits for the one before it at most 10 s, then is `503 busy`.
+  A WOFF2 that inflates far more than a font does is refused by OTS.
 
 Environment: `PORT` (8080), `PDF_TOOLS_WORKERS` (2),
 `PDF_TOOLS_TIMEOUT_SECONDS` (15), `PDF_TOOLS_WORKER_MEMORY_MIB` (300; 0 turns
