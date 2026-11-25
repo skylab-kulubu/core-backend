@@ -24,8 +24,8 @@ type consoleAuditConfig struct {
 	Interval time.Duration
 	// AutomationClients is KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS: the
 	// club realm's confidential clients whose service accounts reconcile
-	// it (account-center-config), by client id or internal id, comma
-	// separated. admin-cli is refused: people sign in through it.
+	// it (account-center-config), by client id, comma separated. A UUID,
+	// admin-cli and security-admin-console are refused.
 	AutomationClients []string
 }
 
@@ -57,12 +57,10 @@ func consoleAuditFromEnv(getenv func(string) string) (consoleAuditConfig, error)
 		if raw == "" {
 			continue
 		}
-		if id, err := uuid.Parse(raw); err == nil {
-			cfg.AutomationClients = append(cfg.AutomationClients, id.String())
-			continue
-		}
-		if !automationClientPattern.MatchString(raw) || slices.Contains(publicAdminClients, raw) {
-			return consoleAuditConfig{}, fmt.Errorf("KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS takes confidential reconciler clients (account-center-config), comma separated, not %q", raw)
+		// A client id only: an internal id (a UUID) could name the master
+		// realm's admin-cli, which core cannot check, and silence people.
+		if _, err := uuid.Parse(raw); err == nil || !automationClientPattern.MatchString(raw) || slices.Contains(publicAdminClients, raw) {
+			return consoleAuditConfig{}, fmt.Errorf("KEYCLOAK_CONSOLE_AUDIT_AUTOMATION_CLIENTS takes the client ids of confidential reconciler clients (account-center-config), comma separated, not %q", raw)
 		}
 		cfg.AutomationClients = append(cfg.AutomationClients, raw)
 	}

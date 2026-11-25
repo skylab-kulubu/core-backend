@@ -46,3 +46,21 @@ func TestKeycloakAdminEvents(t *testing.T) {
 		t.Fatalf("without view-events: %v", err)
 	}
 }
+
+// The console audit checks a reconciler's client: confidential (not
+// public) and with a service account.
+func TestKeycloakClientInfoOf(t *testing.T) {
+	f := newAccountKeycloak()
+	f.answers["GET /clients"] = accountAnswer{200, `[{"id":"5b0e3c1a-1111-4222-8333-944455556666","clientId":"account-center-config","publicClient":false,"serviceAccountsEnabled":true}]`}
+	k := f.serve(t)
+	info, err := k.ClientInfoOf(context.Background(), "account-center-config")
+	if err != nil || info.ID != "5b0e3c1a-1111-4222-8333-944455556666" || info.Public || !info.ServiceAccounts {
+		t.Fatalf("%+v %v", info, err)
+	}
+	if !strings.Contains(f.last().path, "clientId=account-center-config") {
+		t.Fatalf("query %s", f.last().path)
+	}
+	if _, err := k.ClientInfoOf(context.Background(), "other"); !errors.Is(err, identity.ErrNotFound) {
+		t.Fatalf("unknown: %v", err)
+	}
+}

@@ -69,11 +69,16 @@ func (s *source) ClientIDOf(_ context.Context, id string) (string, error) {
 	return "", identity.ErrNotFound
 }
 
-func (s *source) ClientUUIDOf(_ context.Context, clientID string) (string, error) {
-	if clientID == "account-center-config" {
-		return configClient, nil
+func (s *source) ClientInfoOf(_ context.Context, clientID string) (identity.ClientInfo, error) {
+	switch clientID {
+	case "account-center-config":
+		return identity.ClientInfo{ID: configClient, ServiceAccounts: true}, nil
+	case "admin-cli":
+		return identity.ClientInfo{ID: "a0000000-0000-0000-0000-00000000a0a0", Public: true}, nil
+	case "login-only":
+		return identity.ClientInfo{ID: "b0000000-0000-0000-0000-00000000b0b0"}, nil
 	}
-	return "", identity.ErrNotFound
+	return identity.ClientInfo{}, identity.ErrNotFound
 }
 
 func (s *source) GetGroup(_ context.Context, id string) (identity.Group, error) {
@@ -494,5 +499,24 @@ func TestAnUnknownAutomationClientReadsNothing(t *testing.T) {
 	}
 	if len(f.audit.Rows()) != 0 {
 		t.Fatal("rows written")
+	}
+}
+
+// Only a confidential client with a service account may be a reconciler:
+// a public one (people sign in through it) or one without a service
+// account stops the reader before it reads.
+func TestAutomationClientMustBeAConfidentialServiceAccount(t *testing.T) {
+	for _, client := range []string{"admin-cli", "login-only"} {
+		f := newFixture(t)
+		f.automation = []string{client}
+		f.restart(t)
+		f.src.add(event("e1", start.Add(time.Second), "CLIENT", "UPDATE", "clients/"+formsUUID, "", admin, clubRealm))
+		f.now = f.now.Add(time.Minute)
+		if err := f.svc.Pass(context.Background()); err == nil || !strings.Contains(err.Error(), "not a confidential client") {
+			t.Fatalf("%s: %v", client, err)
+		}
+		if len(f.audit.Rows()) != 0 {
+			t.Fatalf("%s: rows written", client)
+		}
 	}
 }

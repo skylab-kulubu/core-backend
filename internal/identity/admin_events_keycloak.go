@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Nerzal/gocloak/v13"
 	"github.com/google/uuid"
 )
 
@@ -128,14 +129,38 @@ func tokenSubject(token string) (uuid.UUID, error) {
 	return id, nil
 }
 
-// ClientUUIDOf is the internal id (UUID) of the realm's client clientID
-// (view-clients), kept for the process.
-func (k *Keycloak) ClientUUIDOf(ctx context.Context, clientID string) (string, error) {
+// ClientInfo is what the console audit checks of a reconciler's client.
+type ClientInfo struct {
+	// ID is Keycloak's internal id (a UUID).
+	ID string
+	// Public is a public client (no secret: anyone may sign in through
+	// it); ServiceAccounts a client with a service account.
+	Public          bool
+	ServiceAccounts bool
+}
+
+// ClientInfoOf reads the realm's client clientID (view-clients); ErrNotFound
+// when there is none.
+func (k *Keycloak) ClientInfoOf(ctx context.Context, clientID string) (ClientInfo, error) {
 	token, err := k.accessToken(ctx)
 	if err != nil {
-		return "", err
+		return ClientInfo{}, err
 	}
-	return k.clientUUID(ctx, token, clientID)
+	clients, err := k.gc.GetClients(ctx, token, k.realm, gocloak.GetClientsParams{ClientID: &clientID})
+	if err != nil {
+		return ClientInfo{}, mapKCErr(err)
+	}
+	for _, c := range clients {
+		if c == nil || c.ID == nil || c.ClientID == nil || *c.ClientID != clientID {
+			continue
+		}
+		return ClientInfo{
+			ID:              *c.ID,
+			Public:          c.PublicClient != nil && *c.PublicClient,
+			ServiceAccounts: c.ServiceAccountsEnabled != nil && *c.ServiceAccountsEnabled,
+		}, nil
+	}
+	return ClientInfo{}, ErrNotFound
 }
 
 // ClientIDOf is the client id of the client whose Keycloak UUID is

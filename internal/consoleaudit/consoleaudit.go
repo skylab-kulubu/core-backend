@@ -64,10 +64,10 @@ type Source interface {
 	AdminEvents(ctx context.Context, fromMillis int64, max int, resourceTypes []string) ([]identity.AdminEvent, error)
 	// ServiceAccountSubject is core's own subject: its events are skipped.
 	ServiceAccountSubject(ctx context.Context) (uuid.UUID, error)
-	// ClientIDOf names a client by its Keycloak UUID; ClientUUIDOf is the
-	// other way.
+	// ClientIDOf names a client by its Keycloak UUID; ClientInfoOf reads a
+	// client by its client id.
 	ClientIDOf(ctx context.Context, clientUUID string) (string, error)
-	ClientUUIDOf(ctx context.Context, clientID string) (string, error)
+	ClientInfoOf(ctx context.Context, clientID string) (identity.ClientInfo, error)
 	// GetGroup reads a Group by id, for its path.
 	GetGroup(ctx context.Context, idOrPath string) (identity.Group, error)
 }
@@ -117,8 +117,8 @@ type Config struct {
 	Roles      identity.GroupRolesNotifier
 	// AutomationClients are the confidential clients of the club's realm
 	// whose service accounts reconcile it (account-center-config), by
-	// client id (resolved to Keycloak's internal id with view-clients) or
-	// by that internal id. Their changes are recorded as keycloak:reconcile
+	// client id (resolved to Keycloak's internal id with view-clients; a
+	// public client or one without a service account is refused). Their changes are recorded as keycloak:reconcile
 	// and send no mail (Yusuf, 2026-11-25). Never a public client such as
 	// admin-cli: people sign in through it too.
 	AutomationClients []string
@@ -332,21 +332,23 @@ func (s *Service) handle(ctx context.Context, e identity.AdminEvent) error {
 	return nil
 }
 
-// automationIDs are AutomationClients as Keycloak's internal ids: a UUID
-// as it is, a client id looked up in the club's realm. A client Keycloak
-// does not know is an error: the pass reads nothing until it is fixed.
+// automationIDs are AutomationClients (client ids of the club's realm) as
+// Keycloak's internal ids. Each must be a confidential client with a
+// service account: a public one (admin-cli) is one people sign in through,
+// and their changes must be mailed. A client Keycloak does not know, or
+// one that is not such, is an error: the pass reads nothing until the
+// setting is fixed.
 func (s *Service) automationIDs(ctx context.Context) ([]string, error) {
 	out := []string{}
 	for _, client := range s.cfg.AutomationClients {
-		if id, err := uuid.Parse(client); err == nil {
-			out = append(out, id.String())
-			continue
-		}
-		id, err := s.cfg.Source.ClientUUIDOf(ctx, client)
+		info, err := s.cfg.Source.ClientInfoOf(ctx, client)
 		if err != nil {
 			return nil, fmt.Errorf("consoleaudit: the automation client %q: %w", client, err)
 		}
-		out = append(out, id)
+		if info.Public || !info.ServiceAccounts {
+			return nil, fmt.Errorf("consoleaudit: the automation client %q is not a confidential client with a service account (public %t, service account %t)", client, info.Public, info.ServiceAccounts)
+		}
+		out = append(out, info.ID)
 	}
 	return out, nil
 }
