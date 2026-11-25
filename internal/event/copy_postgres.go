@@ -90,7 +90,7 @@ func (s *PostgresStore) Copy(ctx context.Context, plan CopyPlan) (Event, []strin
 	if err := copyMap(ctx, tx, plan); err != nil {
 		return Event{}, nil, err
 	}
-	if err := copyDoorStaff(ctx, tx, plan, skippedParts); err != nil {
+	if err := s.copyDoorStaff(ctx, tx, plan, skippedParts); err != nil {
 		return Event{}, nil, err
 	}
 	if err := copySchedule(ctx, tx, plan); err != nil {
@@ -135,8 +135,10 @@ func copyCover(ctx context.Context, tx pgx.Tx, plan CopyPlan, skippedParts map[s
 	return savepoint.Commit(ctx)
 }
 
-// copyDoorStaff copies the source's door staff whose accounts are active.
-func copyDoorStaff(ctx context.Context, tx pgx.Tx, plan CopyPlan, skippedParts map[string]bool) error {
+// copyDoorStaff copies the source's door staff whose accounts are active,
+// and queues the door staff mail of each (docs/door-staff-mail.md): they are
+// new to the copy's door staff.
+func (s *PostgresStore) copyDoorStaff(ctx context.Context, tx pgx.Tx, plan CopyPlan, skippedParts map[string]bool) error {
 	switch plan.DoorStaff {
 	case CopyRefused:
 		var has bool
@@ -146,17 +148,25 @@ func copyDoorStaff(ctx context.Context, tx pgx.Tx, plan CopyPlan, skippedParts m
 		skippedParts[SkippedDoorStaff] = has
 		return nil
 	case CopyWrite:
-		_, err := tx.Exec(ctx, `
+		rows, err := tx.Query(ctx, `
 			INSERT INTO event_door_staff (event_id, user_id)
 			SELECT $2, staff.user_id FROM event_door_staff staff
 			JOIN users u ON u.id = staff.user_id AND u.account_state = 'active'
 			WHERE staff.event_id = $1
-				AND NOT EXISTS (SELECT 1 FROM account_deletion_requests r WHERE r.subject_id = staff.user_id)`,
+				AND NOT EXISTS (SELECT 1 FROM account_deletion_requests r WHERE r.subject_id = staff.user_id)
+			RETURNING user_id`,
 			plan.Source, plan.Event.ID)
+		var added []uuid.UUID
+		if err == nil {
+			added, err = pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+		}
 		if subjectlock.IsInactiveAccountReference(err) {
 			return ErrForbidden
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		return s.queueDoorStaffMail(ctx, tx, plan.Event.ID, added)
 	default:
 		return nil
 	}

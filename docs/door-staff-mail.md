@@ -78,7 +78,8 @@ drops its row when it comes due.
    and inbox text (skymail-frontend; waits for the SkyNotify move).
 3. `PANEL_URL`, the panel's origin: `https://admin.yildizskylab.com` in
    production (sandbox: the sandbox panel's origin). Optional: unset, the
-   mail has no door link.
+   mail has no door link. Anything but a bare `https://` origin (`http://`
+   only for localhost) turns the mail off, and the startup line says why.
 4. `DOOR_STAFF_MAIL=on`; the startup line reads
    `door staff mail: on (event.door-staff-added, after 2m0s; door link on the panel)`.
 

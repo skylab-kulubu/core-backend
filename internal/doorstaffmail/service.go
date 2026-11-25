@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -117,6 +118,9 @@ func NewService(config Config) (*Service, error) {
 		logger = log.Default()
 	}
 	config.PanelURL = strings.TrimRight(strings.TrimSpace(config.PanelURL), "/")
+	if err := checkPanelURL(config.PanelURL); err != nil {
+		return nil, err
+	}
 	return &Service{config: config, now: now, logger: logger, location: location}, nil
 }
 
@@ -254,6 +258,21 @@ func (s *Service) format(t *time.Time) string {
 		return ""
 	}
 	return t.In(s.location).Format(dateLayout)
+}
+
+// checkPanelURL refuses a PANEL_URL that is not a bare https origin
+// (http only for a local panel): the mail's link must not lead elsewhere.
+func checkPanelURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	local := u != nil && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1")
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") ||
+		(u.Scheme != "https" && !(u.Scheme == "http" && local)) {
+		return errors.New("doorstaffmail: PANEL_URL must be the panel's https origin, e.g. https://admin.example")
+	}
+	return nil
 }
 
 func backoff(failures int) time.Duration {

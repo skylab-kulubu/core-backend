@@ -240,3 +240,17 @@ func TestAFailureIsTriedAgainAndARefusalIsDone(t *testing.T) {
 		t.Fatalf("a refusal: report %+v", report)
 	}
 }
+
+func TestPanelURLMustBeAnHTTPSOrigin(t *testing.T) {
+	f := setup()
+	for raw, ok := range map[string]bool{
+		"": true, "https://admin.yildizskylab.com": true, "https://admin.yildizskylab.com/": true, "http://localhost:3000": true,
+		"http://admin.yildizskylab.com": false, "admin.yildizskylab.com": false, "https://admin.yildizskylab.com/events": false,
+		"https://admin.yildizskylab.com?x=1": false, "javascript:alert(1)": false,
+	} {
+		_, err := doorstaffmail.NewService(doorstaffmail.Config{Queue: f.queue, Events: f.events, Users: f.users, Mail: f.mail, PanelURL: raw})
+		if (err == nil) != ok {
+			t.Errorf("%q: %v, want ok %v", raw, err, ok)
+		}
+	}
+}
