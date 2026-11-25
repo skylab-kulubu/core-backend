@@ -105,6 +105,8 @@ services:
       TICKET_STATUS_MAIL: ${TICKET_STATUS_MAIL:-off}
       # A published Event's new time or place (docs/event-updated-notification.md).
       EVENT_UPDATED_NOTIFICATION: ${EVENT_UPDATED_NOTIFICATION:-off}
+      # Its other details, when the editor says to tell (event.changed).
+      EVENT_CHANGED_NOTIFICATION: ${EVENT_CHANGED_NOTIFICATION:-off}
       # The reminder the day before an Event (docs/event-reminder.md).
       EVENT_REMINDER_NOTIFICATION: ${EVENT_REMINDER_NOTIFICATION:-off}
       SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY: ${SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY-event.reminder}

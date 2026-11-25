@@ -28,6 +28,10 @@ type PostgresStore struct {
 	// it, unless the editor said no. Set at startup, read by every
 	// request: atomic.
 	notifyUpdated atomic.Bool
+	// notifyChanged also queues a change of a published Event's other
+	// details (name, description, attendee note, capacity, links) when the
+	// editor says to tell (EVENT_CHANGED_NOTIFICATION, event.changed).
+	notifyChanged atomic.Bool
 	// notifyTickets lets Publish queue a draft's Tickets' Notifications
 	// (event.ticket-created) when the publisher asks (NotifyTicketsOnPublish).
 	notifyTickets atomic.Bool

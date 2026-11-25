@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -120,6 +121,11 @@ func (m *fakeMail) EventUpdated(_ context.Context, key string, holder mail.Ticke
 		name = holder.Sub.String()
 	}
 	return m.fail[name]
+}
+
+// EventChanged records the call as EventUpdated does; the key names the type.
+func (m *fakeMail) EventChanged(ctx context.Context, key string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time) error {
+	return m.EventUpdated(ctx, key, holder, vars, source, expiresAt)
 }
 
 type tickets []ticket.Ticket
@@ -311,6 +317,90 @@ func TestOnlyTheToldFieldsAreAnnounced(t *testing.T) {
 				t.Fatalf("vars %v, want summary %q with the Event as it is", vars, tc.summary)
 			}
 		})
+	}
+}
+
+// Details told alone go as event.changed, naming the fields, never their
+// text, while Changed is on; undone within the window, or with Changed off,
+// they tell nobody. With time or place told too, event.updated goes, once.
+func TestToldDetailsGoAsEventChanged(t *testing.T) {
+	changedService := func(f *fixture, ev event.Event, changed bool) *eventupdatenotify.Service {
+		t.Helper()
+		svc, err := eventupdatenotify.NewService(eventupdatenotify.Config{
+			Queue: f.queue, Tickets: f.tickets, Events: events{ev.ID: ev}, Users: users{f.member: {ID: f.member, Email: "Ayse@Example.com", AccountState: user.AccountActive}}, Mail: f.mail,
+			Changed: changed, Now: func() time.Time { return now }, Logger: log.New(io.Discard, "", 0),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return svc
+	}
+	detailsOnly := func(f *fixture, before event.Event, fields ...string) eventupdatenotify.Queued {
+		digests := event.DetailDigests(before)
+		row := f.queue1(func(r *eventupdatenotify.Queued) {
+			r.BeforeStart, r.BeforeEnd, r.BeforeLocation = f.ev.StartDate, f.ev.EndDate, f.ev.Location
+			r.ToldFields = fields
+			r.BeforeDetails = map[string]string{}
+			for _, field := range fields {
+				r.BeforeDetails[field] = digests[field]
+			}
+		})
+		return row
+	}
+
+	f := setup(t)
+	before := f.ev
+	before.Name, before.Description, before.Capacity = "Gece Kodu (taslak ad)", "Eski açıklama", 30
+	row := detailsOnly(f, before, event.FieldCapacity, event.FieldDescription, event.FieldName)
+	report, err := changedService(f, f.ev, true).Pass(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Sent != 2 || len(f.mail.calls) != 2 {
+		t.Fatalf("report %+v, calls %d", report, len(f.mail.calls))
+	}
+	c := f.mail.calls[0]
+	if c.key != "core:event.changed:"+row.ID.String()+":"+f.member.String()+":v1" {
+		t.Fatalf("key %q", c.key)
+	}
+	want := map[string]string{
+		"EventId": f.ev.ID.String(), "EventName": "Gece Kodu", "ChangedFields": "adı, açıklaması ve kontenjanı",
+		"ChangeSummary": "Etkinliğin adı, açıklaması ve kontenjanı değişti.", "StartsAt": "20.11.2026 18:30", "Venue": "Kongre Merkezi",
+	}
+	if len(c.vars) != len(want) {
+		t.Fatalf("vars %v, want %v", c.vars, want)
+	}
+	for k, v := range want {
+		if c.vars[k] != v {
+			t.Fatalf("%s = %q, want %q", k, c.vars[k], v)
+		}
+	}
+
+	// Undone within the window: the digests match again.
+	g := setup(t)
+	detailsOnly(g, g.ev, event.FieldName)
+	if report, err := changedService(g, g.ev, true).Pass(context.Background()); err != nil || report.Dropped != 1 || len(g.mail.calls) != 0 {
+		t.Fatalf("undone: report %+v, %v", report, err)
+	}
+
+	// Changed off: nobody.
+	h := setup(t)
+	detailsOnly(h, before, event.FieldName)
+	if report, err := changedService(h, h.ev, false).Pass(context.Background()); err != nil || report.Dropped != 1 || len(h.mail.calls) != 0 {
+		t.Fatalf("off: report %+v, %v", report, err)
+	}
+
+	// Time told too: event.updated alone.
+	k := setup(t)
+	k.queue1(func(r *eventupdatenotify.Queued) {
+		r.ToldFields = []string{event.FieldStart, event.FieldName}
+		r.BeforeDetails = map[string]string{event.FieldName: event.DetailDigests(before)[event.FieldName]}
+	})
+	if _, err := changedService(k, k.ev, true).Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(k.mail.calls) != 2 || !strings.HasPrefix(k.mail.calls[0].key, "core:event.updated:") || k.mail.calls[0].vars["ChangeSummary"] != "Etkinliğin saati değişti." {
+		t.Fatalf("calls %+v", k.mail.calls)
 	}
 }
 

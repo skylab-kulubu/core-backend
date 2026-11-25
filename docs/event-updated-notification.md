@@ -63,9 +63,14 @@ Each answer is recorded in `event_change_notice_choices`, in the update's
 transaction: the Event, who saved (`decided_by`, a `users` row; a principal
 without one, such as a service account, is recorded as nobody), which fields
 changed, the answer (`NULL` when the body did not say) and whether a notice
-was queued (`false` for a no, and for every answer while
-`EVENT_UPDATED_NOTIFICATION` is off). Only changes of time or place of a
-published Event that is not over are recorded. Ids and field names only: an
+was queued. Only changes of a published Event that is not over are
+recorded: of its time or place always, of its other details only while
+`EVENT_CHANGED_NOTIFICATION` is on ([Other details](#other-details)). One
+save is one row with all its changed fields. `queued` is true when any of
+them joined a notice: its time or place told (not a no, while
+`EVENT_UPDATED_NOTIFICATION` is on) or its details told (a yes, while
+`EVENT_CHANGED_NOTIFICATION` is on); false for a no, and for an answer
+whose switch is off. Ids and field names only: an
 account deleted outright empties `decided_by`; an Event deleted takes its
 rows. A row is kept three years after `decided_at`, as the Team audit
 record, then deleted by the retention sweep's `event_change_notices_age`
@@ -76,6 +81,41 @@ reads it yet:
 SELECT decided_at, decided_by, fields, notify, queued
 FROM event_change_notice_choices WHERE event_id = '…' ORDER BY decided_at;
 ```
+
+## Other details
+
+While `EVENT_CHANGED_NOTIFICATION=on`, the same question covers a published
+Event's other details (etkinlik-bildirim-secenekleri b): its name
+(`name`), description (`description`), attendee note (`attendeeNote`),
+capacity (`capacity`) and links (`links`: the external registration link,
+LinkedIn, the application form and the extra forms, by label and address).
+The panel's box is then unticked by default.
+
+| The save | Its details |
+|---|---|
+| `"notifyTicketHolders": true` | told |
+| `false`, or the field left out (an older client) | not told |
+
+They join the same waiting row and window. The row keeps, for each detail
+field first told, the SHA-256 of its value before that change
+(`before_details`; never the text), and the worker leaves out a field whose
+value is back to it. The row then sends one Notification:
+
+- a told start, end or location changed: `event.updated`, as above (the
+  details are not named; the Ticket page shows the Event as it is);
+- only told details changed: `event.changed` (Idempotency-Key
+  `core:event.changed:<rowId>:<sub>:v1`), the same way to members and guests,
+  with `EventId`, `EventName` (the name now), `ChangedFields` ("adı,
+  açıklaması ve kontenjanı"), `ChangeSummary` ("Etkinliğin adı, açıklaması
+  ve kontenjanı değişti."), `StartsAt`, `Venue`, and `TicketUrl` and
+  `TicketCode` while `TICKET_PAGE_URL` is set. The new text is not in the
+  mail.
+
+Off, a change of details queues nothing and is not recorded; a waiting row
+that told details alone tells nobody. The type needs SkyMail's template
+`event.changed` and its inbox text before it is turned on. The worker runs
+while either switch is on; the startup line reads
+`event updated notification: time and place on, other details off (event.updated, event.changed; changes gathered for 15m0s)`.
 
 This is a transactional mail about the holder's own Ticket, not an
 announcement: the type is required (no preferences, no consent, no unsubscribe
@@ -185,7 +225,7 @@ Ticket deleted takes its record of sends with it; an Event deleted, its rows.
    (skymail-frontend Template seed: the template `event.updated` and
    `PUT /v1/notification_types/event.updated`).
 3. `EVENT_UPDATED_NOTIFICATION=on`; the startup line reads
-   `event updated notification: on (event.updated, changes gathered for 15m0s)`.
+   `event updated notification: time and place on, other details off (event.updated, event.changed; changes gathered for 15m0s)`.
 
 Rollback: `EVENT_UPDATED_NOTIFICATION=off` (or unset); the panel's question
 then decides nothing (nothing is queued either way). The rows already
