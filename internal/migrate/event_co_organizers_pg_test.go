@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	eventCoOrganizersVersion = "20261126150000"
+	eventCoOrganizersVersion = "20261126151000"
 	eventCoOrganizersDown    = eventCoOrganizersVersion + "_event_co_organizers.down.sql"
 )
 

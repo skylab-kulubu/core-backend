@@ -2028,7 +2028,7 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 	// An Event's Co-organizers (docs/co-organizers.md): the table with its
 	// choices' check, its two indexes and the guards of its two account
 	// links.
-	20261126150000: `
+	20261126151000: `
 		SELECT 1
 		WHERE to_regclass('public.event_co_organizers') IS NOT NULL
 		  AND EXISTS (
