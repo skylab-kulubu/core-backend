@@ -25,7 +25,12 @@ type Layout struct {
 	Orientation       string     `json:"orientation"`
 	BackgroundColor   string     `json:"backgroundColor"`
 	BackgroundMediaID *uuid.UUID `json:"backgroundMediaId,omitempty"`
-	Elements          []Element  `json:"elements"`
+	// BackgroundPlacement places the background; nil (a layout written
+	// before it) prints the background as before (LegacyImagePlacement,
+	// LegacyPDFPlacement), and is stored as before, so the checksum of
+	// such a layout does not change.
+	BackgroundPlacement *BackgroundPlacement `json:"backgroundPlacement,omitempty"`
+	Elements            []Element            `json:"elements"`
 }
 
 type Element struct {
