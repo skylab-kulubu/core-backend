@@ -202,6 +202,37 @@ func TestFillingInEarlierGuestsDetails(t *testing.T) {
 	if got := w.guestDetails(t, "tickets", "form_response_id = $1", linus); got[3] != "" {
 		t.Fatalf("a member's Ticket took %v", got)
 	}
+
+	// Retention: an Event that ended over 90 days ago gets no phone back, one
+	// over two years ago nothing at all (the sweeps cleared them).
+	if _, err := w.pool.Exec(ctx, `UPDATE tickets SET guest_phone_number = '', guest_university = '', guest_department = '', guest_grade = '' WHERE form_response_id = $1`, ada); err != nil {
+		t.Fatal(err)
+	}
+	ended := func(days int) {
+		t.Helper()
+		if _, err := w.pool.Exec(ctx, `UPDATE events SET start_date = now() - make_interval(days => $2 + 1), end_date = now() - make_interval(days => $2) WHERE id = $1`, w.ev.ID, days); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ended(100)
+	late, err := fill.FillDetails(ctx, w.ev.ID, true)
+	if err != nil || late.Tickets != 1 || late.TicketsFilled != 1 || late.PhoneExpired != 1 || late.Filled[formsfeed.DetailPhone] != 0 || late.Expired != 0 {
+		t.Fatalf("90 days on %+v %v", late, err)
+	}
+	if got := w.guestDetails(t, "tickets", "form_response_id = $1", ada); got != ([4]string{"", "YTÜ", "Fizik", "3"}) {
+		t.Fatalf("90 days on: %v", got)
+	}
+	if _, err := w.pool.Exec(ctx, `UPDATE tickets SET guest_university = '', guest_department = '', guest_grade = '' WHERE form_response_id = $1`, ada); err != nil {
+		t.Fatal(err)
+	}
+	ended(800)
+	old, err := fill.FillDetails(ctx, w.ev.ID, true)
+	if err != nil || old.Tickets != 0 || old.TicketsFilled != 0 || old.Expired != 1 {
+		t.Fatalf("two years on %+v %v", old, err)
+	}
+	if got := w.guestDetails(t, "tickets", "form_response_id = $1", ada); got != ([4]string{}) {
+		t.Fatalf("two years on: %v", got)
+	}
 }
 
 // The HTTP report of Forms' named guest, with the Unticketed respondents

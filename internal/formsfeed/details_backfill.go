@@ -62,6 +62,12 @@ type DetailsReport struct {
 	// one detail (dry run: that would).
 	Tickets       int
 	TicketsFilled int
+	// Expired are the guest Tickets past the details' retention (the
+	// Event's end, or without a date the registration, + 2 years): left
+	// alone. PhoneExpired are Tickets whose phone stays empty, the Event
+	// ended over 90 days ago (the phone's retention).
+	Expired      int
+	PhoneExpired int
 	// Respondents and RespondentsFilled are the same for the Unticketed
 	// respondents' guest rows.
 	Respondents       int
@@ -81,7 +87,26 @@ type detailsRow struct {
 	id         uuid.UUID
 	responseID uuid.UUID
 	fields     [4]string
+	// expired is a Ticket past the guest details' retention (its Event's
+	// end, or without a date its registration, + 2 years): never filled
+	// again. noPhone is one past the phone's (the Event's end + 90 days).
+	expired bool
+	noPhone bool
 }
+
+// Retention the fill keeps to (internal/retention: guest_identity,
+// linked_guest_details and guest_phone), so that it brings back nothing a
+// sweep cleared: the details 2 years after the Event's end (an Event
+// without a date: the Ticket's registration), the phone 90 days after it.
+const (
+	detailsRetentionDays = 2 * 365
+	phoneRetentionDays   = 90
+)
+
+// detailsEventEndSQL is when the Event of Ticket t ended, as the retention
+// sweep reads it.
+const detailsEventEndSQL = `(SELECT COALESCE(te.end_date, (SELECT max(rd.end_date) FROM event_days rd WHERE rd.event_id = te.id), te.start_date)
+	FROM events te WHERE te.id = t.event_id)`
 
 // detailNames are the details in the order of detailsRow.fields.
 var detailNames = [4]string{DetailPhone, DetailUniversity, DetailDepartment, DetailGrade}
@@ -123,15 +148,17 @@ func (b *DetailsBackfill) FillDetails(ctx context.Context, eventID uuid.UUID, ap
 		return report, ErrDetailsNoMapping
 	}
 	tickets, err := b.detailRows(ctx, `
-		SELECT id, form_response_id, guest_phone_number, guest_university, guest_department, guest_grade
-		FROM tickets
-		WHERE event_id = $1 AND ticket_type = 'GUEST' AND form_response_id IS NOT NULL
-		  AND status IS DISTINCT FROM 'cancelled' AND guest_email <> ''`, eventID)
+		SELECT t.id, t.form_response_id, t.guest_phone_number, t.guest_university, t.guest_department, t.guest_grade,
+			COALESCE(`+detailsEventEndSQL+`, t.created_at) < now() - make_interval(days => `+fmt.Sprint(detailsRetentionDays)+`),
+			COALESCE(`+detailsEventEndSQL+` < now() - make_interval(days => `+fmt.Sprint(phoneRetentionDays)+`), false)
+		FROM tickets t
+		WHERE t.event_id = $1 AND t.ticket_type = 'GUEST' AND t.form_response_id IS NOT NULL
+		  AND t.status IS DISTINCT FROM 'cancelled' AND t.guest_email <> ''`, eventID)
 	if err != nil {
 		return report, err
 	}
 	respondents, err := b.detailRows(ctx, `
-		SELECT id, form_response_id, phone_number, university, department, grade
+		SELECT id, form_response_id, phone_number, university, department, grade, false, false
 		FROM event_form_respondents
 		WHERE event_id = $1 AND user_id IS NULL`, eventID)
 	if err != nil {
@@ -155,7 +182,7 @@ func (b *DetailsBackfill) detailRows(ctx context.Context, query string, eventID 
 	out := map[uuid.UUID][]detailsRow{}
 	for rows.Next() {
 		var r detailsRow
-		if err := rows.Scan(&r.id, &r.responseID, &r.fields[0], &r.fields[1], &r.fields[2], &r.fields[3]); err != nil {
+		if err := rows.Scan(&r.id, &r.responseID, &r.fields[0], &r.fields[1], &r.fields[2], &r.fields[3], &r.expired, &r.noPhone); err != nil {
 			return nil, err
 		}
 		out[r.responseID] = append(out[r.responseID], r)
@@ -184,7 +211,14 @@ func (b *DetailsBackfill) fillForm(ctx context.Context, m Mapping, tickets, resp
 				report.Grades[d.Grade]++
 			}
 			for _, row := range tickets[item.ResponseID] {
+				if row.expired {
+					report.Expired++
+					continue
+				}
 				report.Tickets++
+				if row.noPhone && d.Phone != "" && row.fields[0] == "" {
+					report.PhoneExpired++
+				}
 				if fill := plan(row, d, report.Filled, report.Kept); fill != nil {
 					report.TicketsFilled++
 					batch.Queue(`
@@ -239,7 +273,11 @@ func (b *DetailsBackfill) fillForm(ctx context.Context, m Mapping, tickets, resp
 func plan(row detailsRow, d Details, filled, kept map[string]int) *[4]string {
 	var fill [4]string
 	some := false
-	for i, v := range d.fields() {
+	values := d.fields()
+	if row.noPhone {
+		values[0] = ""
+	}
+	for i, v := range values {
 		switch {
 		case v == "":
 		case row.fields[i] == "":

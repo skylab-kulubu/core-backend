@@ -224,7 +224,12 @@ core-backend backfill-form-guest-details -event <id> [-apply]
   GUEST, one linked to the guest's account since too; not a cancelled
   Ticket, nor one whose identity retention cleared) and on its Unticketed
   respondent's guest row, only where the row has none: a run again finds
-  nothing to do. Never a signed-in person's Ticket.
+  nothing to do. Never a signed-in person's Ticket. It keeps to the
+  retention sweep ([retention-sweep.md](retention-sweep.md)), so that it
+  brings back nothing a sweep cleared: a Ticket whose Event ended over two
+  years ago (an Event without a date: registered then) takes nothing
+  (`tickets_expired`), one whose Event ended over 90 days ago no phone
+  (`phone_expired`).
 - Without `-apply` it only counts. It prints counts only (`answers`,
   `skipped` for an item of Forms' page that did not read, `tickets`,
   `tickets_fill`, `respondents_fill`, `fill_<detail>`, `kept_<detail>` for

@@ -96,6 +96,8 @@ func formDetailsBackfillCommand(ctx context.Context, args []string, out io.Write
 	line("skipped", report.Skipped)
 	line("tickets", report.Tickets)
 	line("tickets_fill", report.TicketsFilled)
+	line("tickets_expired", report.Expired)
+	line("phone_expired", report.PhoneExpired)
 	line("respondents", report.Respondents)
 	line("respondents_fill", report.RespondentsFilled)
 	for _, name := range []string{formsfeed.DetailPhone, formsfeed.DetailUniversity, formsfeed.DetailDepartment, formsfeed.DetailGrade} {
