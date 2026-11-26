@@ -23,6 +23,15 @@ type Service interface {
 	// the drafts p may see (VisibleTo), every team's or ownerTeam's.
 	List(ctx context.Context, p *authz.Principal, ownerTeam string, activeOnly, drafts bool) ([]Event, error)
 	ListLifecycle(ctx context.Context, p authz.Principal, ownerTeam string, visibility lifecycle.Visibility) ([]Event, error)
+	// ListTeam is List for a team's Events: those team names as their
+	// Owner team or as one of their Co-organizer teams shown outside the
+	// panel (a helper team is never matched; ?team=, docs/co-organizers.md).
+	ListTeam(ctx context.Context, p *authz.Principal, team string, activeOnly, drafts bool) ([]Event, error)
+	// ListManaged reads the current Events p may edit (Update, its
+	// Co-organizers included), drafts included (?managed=true): every
+	// team's, or ownerTeam's (as Owner team) or team's (as ListTeam) when
+	// one is given.
+	ListManaged(ctx context.Context, p authz.Principal, ownerTeam, team string, activeOnly bool) ([]Event, error)
 	// Get reads the Event p may see: a draft that p may not see is
 	// ErrNotFound, as are the reads of its days and Sessions below.
 	Get(ctx context.Context, p *authz.Principal, id uuid.UUID) (Event, error)
@@ -261,6 +270,55 @@ func (s *service) List(ctx context.Context, p *authz.Principal, ownerTeam string
 		return nil, err
 	}
 	return s.publishAll(s.visibleOnly(p, events)), nil
+}
+
+func (s *service) ListTeam(ctx context.Context, p *authz.Principal, team string, activeOnly, drafts bool) ([]Event, error) {
+	if !drafts || activeOnly || p == nil {
+		events, err := s.store.ListTeam(ctx, team, activeOnly, false)
+		if err != nil {
+			return nil, err
+		}
+		return s.publishAll(events), nil
+	}
+	events, err := s.store.ListTeam(ctx, team, false, true)
+	if err != nil {
+		return nil, err
+	}
+	return s.publishAll(s.visibleOnly(p, events)), nil
+}
+
+// ListManaged decides each Event on the Event itself (AuthzResource): a
+// Co-organizer team's or person's Events come with the Owner team's, and a
+// Leader of a Team above with the Team's. It reads the candidates of the
+// whole club, as the dashboard does: the token alone cannot name the Teams
+// below the ones p leads.
+func (s *service) ListManaged(ctx context.Context, p authz.Principal, ownerTeam, team string, activeOnly bool) ([]Event, error) {
+	var (
+		events []Event
+		err    error
+	)
+	if team != "" {
+		events, err = s.store.ListTeam(ctx, team, activeOnly, true)
+	} else {
+		events, err = s.store.ListIncludingDrafts(ctx, ownerTeam)
+	}
+	if err != nil {
+		return nil, err
+	}
+	now := s.clock()
+	out := make([]Event, 0, len(events))
+	for _, e := range events {
+		if ownerTeam != "" && e.OwnerTeam != ownerTeam {
+			continue
+		}
+		if activeOnly && !e.ActiveAt(now) {
+			continue
+		}
+		if s.authz.Allow(p, s.eventResource(e, authz.TypeEvent), authz.Update) {
+			out = append(out, e)
+		}
+	}
+	return s.publishAll(out), nil
 }
 
 // visibleOnly are the events p may see, decided per Event: its

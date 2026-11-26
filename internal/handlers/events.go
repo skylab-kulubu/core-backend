@@ -202,6 +202,32 @@ func draftsQuery(c fiber.Ctx) (bool, error) {
 	}
 }
 
+// eventListFilterInvalid refuses a list whose ?team= or ?managed= cannot
+// be read or meets a filter it does not go with (docs/co-organizers.md).
+const eventListFilterInvalid = "event_list_filter_invalid"
+
+// teamFilters reads ?team= (an Event whose Owner team or shown
+// Co-organizer team it is) and ?managed= (true: the Events the caller may
+// edit). Neither goes with the archive (?lifecycle= other than current),
+// and ?team= not with ?ownerTeam=.
+func teamFilters(c fiber.Ctx, owner string, visibility lifecycle.Visibility) (team string, managed bool, err error) {
+	team = strings.TrimSpace(c.Query("team"))
+	switch c.Query("managed") {
+	case "", "false":
+	case "true":
+		managed = true
+	default:
+		return "", false, event.ErrInvalid
+	}
+	if (team != "" || managed) && visibility != lifecycle.CurrentOnly {
+		return "", false, event.ErrInvalid
+	}
+	if team != "" && strings.TrimSpace(owner) != "" {
+		return "", false, event.ErrInvalid
+	}
+	return team, managed, nil
+}
+
 // withoutCurrentDrafts leaves out the drafts that are not archived:
 // lifecycle=all is the current list and the archive together, and the
 // current list carries a draft only with ?drafts=include (ADR 0066). An
@@ -229,7 +255,35 @@ func (h *EventHandler) List(c fiber.Ctx) error {
 	}
 	owner := c.Query("ownerTeam")
 	activeOnly := c.Query("active") == "true"
+	team, managed, err := teamFilters(c, owner, visibility)
+	if err != nil {
+		return problemCode(c, fiber.StatusBadRequest, "Bad Request", eventListFilterInvalid)
+	}
 	p, callerErr := caller(c)
+	if managed {
+		if callerErr != nil {
+			return eventError(c, callerErr)
+		}
+		events, err := h.svc.ListManaged(c.Context(), p, owner, team, activeOnly)
+		if err != nil {
+			return eventError(c, err)
+		}
+		return c.JSON(h.svc.ProjectAllFor(&p, events))
+	}
+	if team != "" {
+		if callerErr != nil {
+			events, err := h.svc.ListTeam(c.Context(), nil, team, true, false)
+			if err != nil {
+				return eventError(c, err)
+			}
+			return c.JSON(h.svc.ProjectAllFor(nil, events))
+		}
+		events, err := h.svc.ListTeam(c.Context(), &p, team, activeOnly, drafts)
+		if err != nil {
+			return eventError(c, err)
+		}
+		return c.JSON(h.svc.ProjectAllFor(&p, events))
+	}
 	if visibility != lifecycle.CurrentOnly {
 		if callerErr != nil {
 			return eventError(c, callerErr)
@@ -425,6 +479,9 @@ type copyBody struct {
 	// OwnerTeam is the copy's Owner team (ticket 16); none is the
 	// source's.
 	OwnerTeam string `json:"ownerTeam"`
+	// IncludeCoOrganizerPeople copies the source's Co-organizer people
+	// (docs/co-organizers.md); its Co-organizer teams always come along.
+	IncludeCoOrganizerPeople bool `json:"includeCoOrganizerPeople"`
 	// IncludeCertificateTemplate false leaves the certificate template
 	// out (its Event template and binding); none copies it.
 	IncludeCertificateTemplate *bool `json:"includeCertificateTemplate"`
@@ -457,6 +514,7 @@ func (h *EventHandler) Copy(c fiber.Ctx) error {
 		SkipCertificateTemplate:     body.IncludeCertificateTemplate != nil && !*body.IncludeCertificateTemplate,
 		IncludeExternalRegistration: body.IncludeExternalRegistration,
 		IncludeAttendeeNote:         body.IncludeAttendeeNote,
+		IncludeCoOrganizerPeople:    body.IncludeCoOrganizerPeople,
 	})
 	if err != nil {
 		return eventError(c, err)

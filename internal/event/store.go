@@ -28,6 +28,11 @@ type Store interface {
 	ListIncludingDrafts(ctx context.Context, ownerTeam string) ([]Event, error)
 	// ListLifecycle reads Events by their lifecycle, in every status.
 	ListLifecycle(ctx context.Context, ownerTeam string, visibility lifecycle.Visibility) ([]Event, error)
+	// ListTeam reads the current Events team names as their Owner team or
+	// as one of their Co-organizer teams shown outside the panel
+	// (visibility co_organizer; a helper team is never matched), drafts
+	// only with drafts (docs/co-organizers.md, ?team=).
+	ListTeam(ctx context.Context, team string, activeOnly, drafts bool) ([]Event, error)
 	Get(ctx context.Context, id uuid.UUID) (Event, error)
 	GetIncludingArchived(ctx context.Context, id uuid.UUID) (Event, error)
 	Create(ctx context.Context, e Event) (Event, error)
