@@ -297,7 +297,7 @@ type DirectUploadStore interface {
 }
 
 func (s *service) StartDirectUpload(ctx context.Context, p authz.Principal, req DirectUploadRequest) (DirectUpload, error) {
-	purpose, err := s.directPurpose(p, req.Purpose)
+	purpose, err := s.directPurpose(ctx, p, req.Purpose)
 	if err != nil {
 		return DirectUpload{}, err
 	}
@@ -478,7 +478,7 @@ type directCompletion struct {
 }
 
 func (c directCompletion) run(ctx context.Context, p authz.Principal, sent []UploadedPart) (Media, error) {
-	purpose, types, err := c.rules(p)
+	purpose, types, err := c.rules(ctx, p)
 	if err != nil {
 		// A purpose switched off since the start is core's change, not the
 		// uploader's refusal: the charge is given back.
@@ -569,8 +569,8 @@ func (c directCompletion) run(ctx context.Context, p authz.Principal, sent []Upl
 // started with: the types both accept, and the declared size within the
 // smaller maximum. A private purpose is refused here too: only a public
 // object is copied to files/.
-func (c directCompletion) rules(p authz.Principal) (Purpose, []string, error) {
-	purpose, err := c.directPurpose(p, c.rec.Purpose)
+func (c directCompletion) rules(ctx context.Context, p authz.Principal) (Purpose, []string, error) {
+	purpose, err := c.directPurpose(ctx, p, c.rec.Purpose)
 	if err != nil {
 		return Purpose{}, nil, err
 	}
@@ -865,12 +865,12 @@ func (s *service) directUploadView(ctx context.Context, storage MultipartStore, 
 // directPurpose is the purpose the caller may send by Direct upload now,
 // or the rule that refuses it, checked in the order single-step uploads
 // check theirs.
-func (s *service) directPurpose(p authz.Principal, name string) (Purpose, error) {
+func (s *service) directPurpose(ctx context.Context, p authz.Principal, name string) (Purpose, error) {
 	purpose, ok := s.addresses.Catalogue.Lookup(name)
 	if !ok || name == PurposeLegacy {
 		return Purpose{}, &PurposeRefusal{Err: ErrPurposeUnknown, Purpose: name}
 	}
-	if err := s.purposeRefusal(p, purpose, TransportDirect); err != nil {
+	if err := s.purposeRefusal(ctx, p, purpose, TransportDirect); err != nil {
 		return Purpose{}, err
 	}
 	return purpose, nil

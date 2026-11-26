@@ -34,3 +34,19 @@ func TestClubName(t *testing.T) {
 		t.Fatalf("ClubName = %q", ClubName)
 	}
 }
+
+func TestCoNames(t *testing.T) {
+	for _, tc := range []struct {
+		teams []string
+		want  string
+	}{
+		{nil, ""},
+		{[]string{"WEBLAB"}, "WEBLAB"},
+		{[]string{"WEBLAB", "ARTLAB"}, "WEBLAB, ARTLAB"},
+		{[]string{"", "DK", "GECEKODU"}, "GECEKODU"},
+	} {
+		if got := CoNames(tc.teams); got != tc.want {
+			t.Errorf("CoNames(%q) = %q, want %q", tc.teams, got, tc.want)
+		}
+	}
+}

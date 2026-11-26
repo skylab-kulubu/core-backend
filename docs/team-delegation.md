@@ -401,7 +401,7 @@ its code; a change is a `team.create`, `team.code` or `team.delete` row.
   Team. The same name rules for everyone. While core's
   records name the old code it is `409 code_in_use` with `records`, the
   kinds (`event`, `certificate`, `certificate_template`,
-  `certificate_template_binding`), never a record. The old code is retired
+  `certificate_template_binding`, `event_co_organizer`), never a record. The old code is retired
   (`renamed`); every Group under the Team moves with it; every kept Group
   read (Group overage, delegation, the Owner team tree) is forgotten. The
   same code is a no-op `200`.

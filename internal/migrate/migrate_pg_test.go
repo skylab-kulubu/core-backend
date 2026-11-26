@@ -1149,6 +1149,11 @@ func TestAccountErasureServiceStepsAreForwardOnlyOnceProofExists(t *testing.T) {
 // migration can run.
 func undoAccountLifecycleDependents(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	// form_respondents' down keeps its table and identity trigger; the
+	// trigger goes by hand, as that migration's down describes.
+	if _, err := pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS event_form_respondents_require_active_subject ON event_form_respondents`); err != nil {
+		t.Fatalf("form respondents identity trigger: %v", err)
+	}
 	for _, name := range []string{
 		"migrations/20261127183000_certificate_fonts.down.sql",
 		"migrations/20261126151000_event_co_organizers.down.sql",

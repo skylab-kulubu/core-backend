@@ -274,16 +274,20 @@ type EventSummary struct {
 }
 
 type PublicCertificate struct {
-	Serial        string     `json:"serial"`
-	RecipientName string     `json:"recipientName"`
-	EventName     string     `json:"eventName"`
-	OwnerTeam     string     `json:"ownerTeam"`
-	OrganizerName string     `json:"organizerName"` // organizer.Name(OwnerTeam)
-	Status        string     `json:"status"`
-	VerifyURL     string     `json:"verifyUrl"`
-	PDFURL        string     `json:"pdfUrl,omitempty"`
-	IssuedAt      time.Time  `json:"issuedAt"`
-	RevokedAt     *time.Time `json:"revokedAt,omitempty"`
+	Serial        string `json:"serial"`
+	RecipientName string `json:"recipientName"`
+	EventName     string `json:"eventName"`
+	OwnerTeam     string `json:"ownerTeam"`
+	OrganizerName string `json:"organizerName"` // organizer.Name(OwnerTeam)
+	// CoOrganizerNames names the Co-organizer teams shown outside the panel
+	// when it was issued (its snapshot, docs/co-organizers.md); left out
+	// for none and for a certificate issued before core kept it.
+	CoOrganizerNames string     `json:"coOrganizerNames,omitempty"`
+	Status           string     `json:"status"`
+	VerifyURL        string     `json:"verifyUrl"`
+	PDFURL           string     `json:"pdfUrl,omitempty"`
+	IssuedAt         time.Time  `json:"issuedAt"`
+	RevokedAt        *time.Time `json:"revokedAt,omitempty"`
 	// Attendance is the attendance the certificate was issued on, absent
 	// for one issued before core kept it. It names no Session, check-in
 	// time or manual issue.

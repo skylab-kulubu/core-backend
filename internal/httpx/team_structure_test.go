@@ -274,6 +274,22 @@ func TestTeamCodeInUse(t *testing.T) {
 	}
 }
 
+// A code an Event names as one of its Co-organizer teams is a record of
+// core's too (docs/co-organizers.md): it is not changed while named.
+func TestTeamCodeOfACoOrganizerInUse(t *testing.T) {
+	t.Parallel()
+	e := newDelegationEnv(t, delegationSetup{on: true, leaderCodes: true})
+	e.codes.HoldAs(teamcode.RecordEventCoOrganizer, "FRONT")
+	got := e.changeCode("yk", "/UYELER/ARGE/WEBLAB/FRONT", "FRONTEND")
+	wantStatus(t, "yk", got, fiber.StatusConflict, "code_in_use")
+	if records, _ := got.problem()["records"].([]any); len(records) != 1 || records[0] != teamcode.RecordEventCoOrganizer {
+		t.Errorf("records %v", got.problem()["records"])
+	}
+	if e.idOf("/UYELER/ARGE/WEBLAB/FRONT") == "" || len(e.codes.Retired()) != 0 {
+		t.Errorf("a refused change renamed or retired: %v", e.codes.Retired())
+	}
+}
+
 // A Sub-team never takes a Leader group's name, nor one that looks like it,
 // nor a taken one (#227 review Y1: a Sub-team made KOORDINATORLER would
 // make its members Leaders of the Team above).

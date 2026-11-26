@@ -124,6 +124,19 @@ func (t *TeamTree) TeamCompetitionManage(team string) bool {
 	return authz.CompetitionManageValue(g.Attributes[authz.TeamAttrCompetitionManage])
 }
 
+// TeamDoorScan is the Team door scan setting of the one Group named team
+// (team_door_scan): true only when it says "true" (any case); false when it
+// says anything else, or the Group cannot be found or the tree read. The
+// panel's hint (event viewer.can door.checkIn) reads it; the door reads the
+// Group itself.
+func (t *TeamTree) TeamDoorScan(team string) bool {
+	g, ok := t.only(team)
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(g.Attributes["team_door_scan"]), "true")
+}
+
 // ForgetAll drops the kept tree: core's own write of a Team's setting or
 // name is seen at the next decision. A read already running when it is
 // called may have read Keycloak before the write: its answer goes only to

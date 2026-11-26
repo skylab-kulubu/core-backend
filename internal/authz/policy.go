@@ -111,6 +111,13 @@ type Resource struct {
 	// OwningProduct), for Upload on TypeMedia: the one product whose service
 	// account may upload a MediaUploaderServiceOnly purpose.
 	MediaOwner Product
+	// CoOrganizerSeat says, for Upload on TypeMedia, that the caller holds
+	// a seat on a current Event as one of its Co-organizers
+	// (docs/co-organizers.md): an Event's editor's upload rules
+	// (MediaUploaderEventEditor, MediaUploaderCertificateTemplateEditor)
+	// name no Event and let such a person in. The media service reads it
+	// with the request's context.
+	CoOrganizerSeat bool
 }
 
 type Policy struct {

@@ -328,6 +328,13 @@ func (a *authorizer) isOwnerMember(p Principal, r Resource) bool {
 	return len(a.seats(p, r)) > 0
 }
 
+// coOrganizerSeat reports whether r says p holds a Co-organizer seat on a
+// current Event (Resource.CoOrganizerSeat): a person, never a service
+// account.
+func coOrganizerSeat(p Principal, r Resource) bool {
+	return r.CoOrganizerSeat && p.ID != "" && !p.ServiceAccount
+}
+
 func (a *authorizer) allowMedia(p Principal, r Resource, action Action) bool {
 	switch action {
 	case Read:
@@ -355,19 +362,23 @@ func (a *authorizer) allowMedia(p Principal, r Resource, action Action) bool {
 // is the list of rules the Media purpose catalogue may name (Known).
 var mediaUploaders = map[MediaUploader]func(a *authorizer, p Principal, r Resource) bool{
 	MediaUploaderAuthenticated: func(*authorizer, Principal, Resource) bool { return true },
-	MediaUploaderEventEditor: func(a *authorizer, p Principal, _ Resource) bool {
+	// Who may create an Event for some Owner team, or holds a Co-organizer
+	// seat on a current Event (Resource.CoOrganizerSeat,
+	// docs/co-organizers.md). Which Event the Media ends up on is checked
+	// when it is linked.
+	MediaUploaderEventEditor: func(a *authorizer, p Principal, r Resource) bool {
 		return a.forSomeOwnerTeam(p, func(team string) bool {
 			return a.allowEvent(p, Resource{Type: TypeEvent, OwnerTeam: team}, Create)
-		})
+		}) || coOrganizerSeat(p, r)
 	},
 	// Who may create a certificate template, or edit an Event: an Event's
 	// editor makes its Event template (docs/certificate-event-templates.md).
 	// Which template the asset ends up on is checked when it is linked.
-	MediaUploaderCertificateTemplateEditor: func(a *authorizer, p Principal, _ Resource) bool {
+	MediaUploaderCertificateTemplateEditor: func(a *authorizer, p Principal, r Resource) bool {
 		return a.forSomeOwnerTeam(p, func(team string) bool {
 			return a.allowCertificateTemplate(p, Resource{Type: TypeCertificateTemplate, OwnerTeam: team}, Create) ||
 				a.allowEvent(p, Resource{Type: TypeEvent, OwnerTeam: team}, Update)
-		})
+		}) || coOrganizerSeat(p, r)
 	},
 	// Who may create a certificate template for some Owner team (a Leader,
 	// certificate:template:manage) or a club-wide one (Privileged): the
