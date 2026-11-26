@@ -127,7 +127,8 @@ which do not change.
   by the person (`personId`, SkyPass, `CheckInUser`) as well.
 - **Answers** carry its `ownerId`, but no `owner` summary: the Ticket is the
   guest's name and e-mail, and the account's own name and addresses are not
-  an operator's to learn from it.
+  an operator's to learn from it. The attendee export (XLSX/CSV) writes the
+  guest's fields for it the same way.
 - **Counts**: the dashboard counts a linked Ticket as a guest's (its type).
 
 ## The command
