@@ -60,7 +60,7 @@ themselves (`attendees`, `session`, `entries`) follow them with Telefon,
 grade as the Ticket holds them (a Walk-in's, [walk-in.md](walk-in.md)); a
 member's university and department from their account, no phone (the
 account's phone is not shown to organizers). The grade is written as the
-panel shows it (Hazırlık, 1–4, Yüksek lisans, Doktora, Mezun, Diğer). The
+panel shows it (Hazırlık, 1.–4. sınıf, Yüksek lisans, Doktora, Mezun, Diğer). The
 phone is a text cell in the XLSX; in the CSV a leading `+` gets the
 apostrophe below, so Excel keeps it as text (Yusuf, 2026-11-26: the phone is
 exported).

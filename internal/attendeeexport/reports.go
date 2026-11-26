@@ -130,9 +130,9 @@ func (b *builder) contact(t ticket.Ticket) []any {
 	return []any{p.Phone, p.University, p.Department, gradeLabels[p.Grade]}
 }
 
-// gradeLabels are the grade keys as the panel's Kapıda kayıt shows them.
+// gradeLabels are the grade keys as the panel's ticket detail shows them.
 var gradeLabels = map[string]string{
-	"prep": "Hazırlık", "1": "1", "2": "2", "3": "3", "4": "4",
+	"prep": "Hazırlık", "1": "1. sınıf", "2": "2. sınıf", "3": "3. sınıf", "4": "4. sınıf",
 	"masters": "Yüksek lisans", "phd": "Doktora", "graduate": "Mezun", "other": "Diğer",
 }
 
