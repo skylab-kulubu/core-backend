@@ -101,6 +101,14 @@ func TestGuestTicketWrittenLinked(t *testing.T) {
 	if ci, err := e.svc.ResolveAndCheckIn(ctx, weblabLead, e.sess.ID, ticket.DoorCheckInTarget{PersonID: &e.adaID}); err != nil || ci.TicketID != got.ID {
 		t.Fatalf("desk check-in by the person: %+v %v", ci, err)
 	}
+	// The attendee export writes the guest's own fields, not the account's.
+	data, err := e.svc.BeginExport(ctx, yk, e.ev.ID, ticket.ExportRequest{Report: ticket.ExportAttendees, Format: "csv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if person := data.People[got.ID]; person.Email != "ada@kisisel.org" || person.LastName != "Byron" || person.Phone != "555" {
+		t.Fatalf("export: %+v", person)
+	}
 	// The member registering on the Event is told they are: no second
 	// Ticket.
 	if _, err := e.svc.Apply(ctx, e.ada, e.ev.ID); !errors.Is(err, ticket.ErrConflict) {
