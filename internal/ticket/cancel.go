@@ -151,7 +151,7 @@ func HolderCancel(ctx context.Context, tickets Store, events event.Store, t Tick
 func (s *service) cancelByOperator(ctx context.Context, p authz.Principal, id uuid.UUID, reason string, notify bool) (Ticket, error) {
 	reason = strings.TrimSpace(reason)
 	if utf8.RuneCountInString(reason) > MaxCancelReason {
-		return Ticket{}, ErrInvalid
+		return Ticket{}, invalidWith(CodeCancelReasonTooLong, map[string]any{"max": MaxCancelReason})
 	}
 	store, err := s.statusStore()
 	if err != nil {

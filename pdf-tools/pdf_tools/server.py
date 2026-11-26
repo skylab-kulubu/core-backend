@@ -1,8 +1,9 @@
-"""The HTTP server: POST /v1/inspect, /v1/strip-text, /v1/place, /v1/render
-and GET /healthz (README.md)."""
+"""The HTTP server: POST /v1/inspect, /v1/strip-text, /v1/place, /v1/render,
+/v1/font/sanitize and GET /healthz (README.md)."""
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -15,18 +16,31 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 from .errors import Problem
+from .fonts import MAX_FONT_BYTES
 from .worker import Pool
 
 MAX_PDF_BYTES = 20 << 20
 # The multipart envelope and the params part around the PDF.
 MAX_BODY_BYTES = MAX_PDF_BYTES + (1 << 20)
+MAX_FONT_BODY_BYTES = MAX_FONT_BYTES + (1 << 20)
+# A font job's seconds (the pool's own limit is the PDFs'); OTS, which runs
+# in its own process, gets FONT_OTS_SHARE of them so that it is done before
+# its worker could be killed.
+FONT_TIMEOUT_SECONDS = 10.0
+FONT_OTS_SHARE = 0.7
+# One font job at a time, whatever the workers: OTS writes the sanitized
+# font (up to fonts.MAX_SFNT_BYTES) to /tmp, a 64 MiB tmpfs, and two large
+# ones at once would fill it. A font request waits for the one before it as
+# long as a job waits for a worker, then is busy.
+# The content types a font may come as for the whole body.
+_FONT_TYPES = {"font/ttf", "font/otf", "font/woff2", "font/sfnt", "application/font-sfnt", "application/octet-stream"}
 # Requests being read or waiting for a worker at once; more are turned
 # away (each may hold a 20 MiB body).
 MAX_REQUESTS = 4
 
 # Only with test hooks on (the tests' pools): a job that sleeps, one whose
-# worker dies.
-_TEST_OPS = {"/v1/_sleep": "sleep", "/v1/_die": "die"}
+# worker dies (and the same as font jobs).
+_TEST_OPS = {"/v1/_sleep": "sleep", "/v1/_die": "die", "/v1/_font_sleep": "font-sleep", "/v1/_font_die": "font-die"}
 
 # The client went away or stalled: nothing to answer.
 _CLIENT_GONE = (BrokenPipeError, ConnectionResetError, TimeoutError)
@@ -36,6 +50,7 @@ _OPS = {
     "/v1/strip-text": "strip-text",
     "/v1/place": "place",
     "/v1/render": "render",
+    "/v1/font/sanitize": "font-sanitize",
 }
 
 
@@ -112,6 +127,8 @@ class Handler(BaseHTTPRequestHandler):
 
     pool: Pool
     admission: threading.BoundedSemaphore
+    font_timeout: float = FONT_TIMEOUT_SECONDS
+    font_gate: threading.BoundedSemaphore
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         pass
@@ -229,7 +246,7 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             self.admission.release()
 
-    def _read_body(self) -> bytes:
+    def _read_body(self, font: bool = False) -> bytes:
         if self.headers.get("Transfer-Encoding"):
             raise Problem("length_required", "send the body with a Content-Length")
         raw = self.headers.get("Content-Length")
@@ -241,6 +258,8 @@ class Handler(BaseHTTPRequestHandler):
             raise Problem("bad_request", "bad Content-Length") from None
         if length < 0:
             raise Problem("bad_request", "bad Content-Length")
+        if font and length > MAX_FONT_BODY_BYTES:
+            raise Problem("font_too_large", f"at most {MAX_FONT_BYTES >> 20} MiB")
         if length > MAX_BODY_BYTES:
             raise Problem("pdf_too_large", f"at most {MAX_PDF_BYTES >> 20} MiB")
         chunks = []
@@ -254,6 +273,8 @@ class Handler(BaseHTTPRequestHandler):
         return b"".join(chunks)
 
     def _handle(self, op: str, query: str) -> tuple[int, bytes, str]:
+        if op.startswith("font"):
+            return self._handle_font(op)
         body = self._read_body()
         ctype = self.headers.get("Content-Type", "")
         main = ctype.split(";", 1)[0].strip().lower()
@@ -285,6 +306,41 @@ class Handler(BaseHTTPRequestHandler):
             return len(body), result, "image/png"  # type: ignore[return-value]
         return len(body), result, "application/pdf"  # type: ignore[return-value]
 
+    def _handle_font(self, op: str) -> tuple[int, bytes, str]:
+        """POST /v1/font/sanitize: the font as the file part or the whole
+        body; JSON with the facts and the WOFF2 in base64."""
+        body = self._read_body(font=True)
+        ctype = self.headers.get("Content-Type", "")
+        main = ctype.split(";", 1)[0].strip().lower()
+        params: dict = {}
+        if main == "multipart/form-data":
+            parts = parse_multipart(body, ctype)
+            data = parts.get("file")
+            params = _params(parts.get("params"))
+        elif main in _FONT_TYPES:
+            data = body
+        else:
+            raise Problem("bad_request", "send multipart/form-data (file) or the font as the body (font/ttf, font/otf, font/woff2)")
+        if op in _TEST_OPS.values():
+            args: tuple = (params.get("seconds", 1),)
+        else:
+            if not data:
+                raise Problem("bad_request", "the file part is missing")
+            if len(data) > MAX_FONT_BYTES:
+                raise Problem("font_too_large", f"at most {MAX_FONT_BYTES >> 20} MiB")
+            args = (data, self.font_timeout * FONT_OTS_SHARE)
+        if not self.font_gate.acquire(timeout=self.pool.queue_wait):
+            raise Problem("busy", "another font is being checked")
+        try:
+            result = self.pool.run(op, *args, timeout=self.font_timeout)
+        finally:
+            self.font_gate.release()
+        if op in _TEST_OPS.values():
+            return len(body), result, "text/plain"  # type: ignore[return-value]
+        assert isinstance(result, dict)
+        result["woff2"] = base64.b64encode(result["woff2"]).decode("ascii")
+        return len(body), json.dumps(result, ensure_ascii=False).encode(), "application/json"
+
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True
@@ -292,11 +348,16 @@ class Server(ThreadingHTTPServer):
     request_queue_size = 16
 
 
-def make_server(host: str, port: int, pool: Pool) -> Server:
+def make_server(host: str, port: int, pool: Pool, font_timeout: float = FONT_TIMEOUT_SECONDS) -> Server:
     handler = type(
         "BoundHandler",
         (Handler,),
-        {"pool": pool, "admission": threading.BoundedSemaphore(MAX_REQUESTS)},
+        {
+            "pool": pool,
+            "admission": threading.BoundedSemaphore(MAX_REQUESTS),
+            "font_timeout": font_timeout,
+            "font_gate": threading.BoundedSemaphore(1),
+        },
     )
     return Server((host, port), handler)
 

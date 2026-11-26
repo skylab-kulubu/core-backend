@@ -183,12 +183,12 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		return FormResponseResult{}, ErrForbidden
 	}
 	if r.FormID == uuid.Nil {
-		return FormResponseResult{}, ErrInvalid
+		return FormResponseResult{}, invalid(CodeFormIDRequired)
 	}
 	switch r.Status {
 	case FormResponseAccepted, FormResponsePending, FormResponseDeclined:
 	default:
-		return FormResponseResult{}, ErrInvalid
+		return FormResponseResult{}, invalid(CodeFormStatusInvalid)
 	}
 	// A draft's form writes Tickets too (ADR 0066): its editors linked the
 	// form and shared it; an answer not written now would be lost.
@@ -231,7 +231,7 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 	switch {
 	case r.UserID != nil:
 		if *r.UserID == uuid.Nil {
-			return FormResponseResult{}, ErrInvalid
+			return FormResponseResult{}, invalid(CodeUserIDInvalid)
 		}
 	case r.Guest != nil:
 		guest = normalizeGuest(*r.Guest)
@@ -241,7 +241,7 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 			return FormResponseResult{Outcome: FormResponseNoRespondent}, nil
 		}
 		if guest.FirstName == "" || guest.LastName == "" {
-			return FormResponseResult{}, ErrInvalid
+			return FormResponseResult{}, invalid(CodeGuestNameRequired)
 		}
 	default:
 		return FormResponseResult{Outcome: FormResponseNoRespondent}, nil

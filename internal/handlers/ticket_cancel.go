@@ -66,12 +66,12 @@ func (h *TicketHandler) CancelTicket(c fiber.Ctx) error {
 	}
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "id")
 	}
 	var body ticketCancelBody
 	if raw := c.Body(); len(strings.TrimSpace(string(raw))) > 0 {
 		if err := json.Unmarshal(raw, &body); err != nil {
-			return problem(c, fiber.StatusBadRequest, "Bad Request")
+			return badBody(c)
 		}
 	}
 	cancelled, err := h.svc.CancelTicketTelling(auditContext(c, p), p, id, body.Reason, body.Notify)
@@ -96,7 +96,7 @@ func (h *TicketHandler) RestoreTicket(c fiber.Ctx) error {
 	}
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "id")
 	}
 	restored, err := h.svc.RestoreTicket(auditContext(c, p), p, id)
 	if err != nil {
@@ -117,7 +117,7 @@ func (h *TicketHandler) PromoteTicket(c fiber.Ctx) error {
 	}
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "id")
 	}
 	promoted, err := h.svc.PromoteTicket(auditContext(c, p), p, id)
 	if err != nil {
