@@ -66,6 +66,10 @@ type Options struct {
 	// its preview. Nil leaves those off (503 pdf_tools_unavailable); a
 	// layout without a placement prints as before without it.
 	PDFTools PDFTools
+	// Uploads stores the PDF a background text conversion leaves as a new
+	// certificate asset (media.Service). Nil refuses a conversion
+	// (asset_storage_unavailable).
+	Uploads AssetUploader
 }
 
 type service struct {
@@ -95,6 +99,7 @@ type service struct {
 	pdfTools         PDFTools
 	pdfCache         pdfCaches
 	pdfToolsErrors   pdfToolsMetrics
+	uploads          AssetUploader
 }
 
 // NewService preserves the original synchronous contract for existing embedders.
@@ -148,6 +153,7 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 		assets: opts.Assets, legacyImmediate: opts.LegacyImmediate, media: opts.Media, privateArtifacts: opts.PrivateArtifacts,
 		attendance: opts.Attendance, autoFinalize: opts.AutoFinalize, mails: opts.Mails,
 		mailPDFOn: opts.MailPDF, pdfTools: opts.PDFTools, pdfCache: newPDFCaches(),
+		uploads: opts.Uploads,
 	}
 }
 

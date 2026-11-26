@@ -133,4 +133,9 @@ type Service interface {
 	// picture the template editor draws it with (pdf-tools for a PDF).
 	AssetInfo(ctx context.Context, p authz.Principal, id uuid.UUID) (AssetInfo, error)
 	AssetPreview(ctx context.Context, p authz.Principal, id uuid.UUID, maxPx int) (AssetPreview, error)
+	// AssetText lists a PDF asset's text and ConvertAssetText turns the
+	// chosen pieces into layout elements over a new PDF without them
+	// (docs/certificate-template-errors.md, "Background text conversion").
+	AssetText(ctx context.Context, p authz.Principal, id uuid.UUID) (AssetText, error)
+	ConvertAssetText(ctx context.Context, p authz.Principal, id uuid.UUID, req TextConversionRequest) (TextConversion, error)
 }

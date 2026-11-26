@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/organizer"
@@ -33,6 +34,11 @@ func ValidateLayout(layout Layout) error {
 	}
 	if p := layout.BackgroundPlacement; p != nil && (layout.BackgroundMediaID == nil || !validPlacement(*p)) {
 		return invalid(CodeLayoutPlacementInvalid)
+	}
+	// The original of a converted background stands beside the background
+	// it was converted into, never alone.
+	if layout.BackgroundOriginalMediaID != nil && layout.BackgroundMediaID == nil {
+		return ErrInvalid
 	}
 	if len(layout.Elements) == 0 || len(layout.Elements) > maxLayoutElements {
 		return invalid(CodeLayoutElementCount)
@@ -89,6 +95,11 @@ func ValidateLayout(layout Layout) error {
 			return invalid(CodeLayoutTextTooLong)
 		}
 		if len(el.FontFamily) > 80 {
+			return invalid(CodeLayoutElementStyle)
+		}
+		if (el.FontStyle != "" && el.FontStyle != FontStyleItalic) ||
+			(el.Origin != "" && el.Origin != OriginBackgroundText) ||
+			!utf8.ValidString(el.SourceFont) || utf8.RuneCountInString(el.SourceFont) > maxSourceFontRunes {
 			return invalid(CodeLayoutElementStyle)
 		}
 	}
@@ -304,7 +315,13 @@ func elementStyle(el Element) string {
 	if borderColor == "" {
 		borderColor = "transparent"
 	}
-	return fmt.Sprintf("position:absolute;left:%spx;top:%spx;width:%spx;height:%spx;font-family:%s;font-size:%spx;font-weight:%d;color:%s;background:%s;border:%spx solid %s;border-radius:%spx;text-align:%s;line-height:%s;letter-spacing:%spx;opacity:%s;transform:rotate(%sdeg);transform-origin:center;white-space:pre-wrap;overflow:hidden;", number(el.X), number(el.Y), number(el.Width), number(el.Height), font, number(el.FontSize), el.FontWeight, color, background, number(el.BorderWidth), borderColor, number(el.BorderRadius), align, number(lineHeight), number(el.LetterSpacing), number(el.opacity()), number(el.Rotation))
+	style := fmt.Sprintf("position:absolute;left:%spx;top:%spx;width:%spx;height:%spx;font-family:%s;font-size:%spx;font-weight:%d;color:%s;background:%s;border:%spx solid %s;border-radius:%spx;text-align:%s;line-height:%s;letter-spacing:%spx;opacity:%s;transform:rotate(%sdeg);transform-origin:center;white-space:pre-wrap;overflow:hidden;", number(el.X), number(el.Y), number(el.Width), number(el.Height), font, number(el.FontSize), el.FontWeight, color, background, number(el.BorderWidth), borderColor, number(el.BorderRadius), align, number(lineHeight), number(el.LetterSpacing), number(el.opacity()), number(el.Rotation))
+	// Only an italic element says so: every other element's style, and
+	// so the page of a layout written before fontStyle, is as before.
+	if el.FontStyle == FontStyleItalic {
+		style += "font-style:italic;"
+	}
+	return style
 }
 
 // opacity is the element's opacity; a layout that leaves it out means 1.

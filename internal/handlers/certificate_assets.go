@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -12,6 +13,10 @@ import (
 // preview for five minutes: an asset does not change, and only who may
 // edit it reads it.
 const assetCacheControl = "private, max-age=300"
+
+// maxTextConversionBody bounds a text conversion's request: 500 ids and
+// their kinds fit many times over.
+const maxTextConversionBody = 256 << 10
 
 // AssetInfo answers GET /v1/certificate-assets/{id}/info: the asset's size
 // in layout px, with a PDF's page and text counts (pdf-tools).
@@ -53,4 +58,42 @@ func (h *CertificateHandler) AssetPreview(c fiber.Ctx) error {
 		c.Set(fiber.HeaderContentSecurityPolicy, "sandbox")
 	}
 	return c.Send(preview.Data)
+}
+
+// AssetText answers GET /v1/certificate-assets/{id}/text: a PDF asset's
+// text, piece by piece, with the font each would be set in (pdf-tools).
+func (h *CertificateHandler) AssetText(c fiber.Ctx) error {
+	p, id, err := certificateTemplateCaller(c)
+	if err != nil {
+		return certError(c, err)
+	}
+	text, err := h.svc.AssetText(c.Context(), p, id)
+	if err != nil {
+		return certError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, assetCacheControl)
+	return c.JSON(text)
+}
+
+// ConvertAssetText answers POST /v1/certificate-assets/{id}/text-conversion:
+// the chosen pieces of a PDF background's text as layout elements, over a
+// new PDF without them, which the editor applies to its draft.
+func (h *CertificateHandler) ConvertAssetText(c fiber.Ctx) error {
+	p, id, err := certificateTemplateCaller(c)
+	if err != nil {
+		return certError(c, err)
+	}
+	if len(c.Body()) > maxTextConversionBody {
+		return problem(c, fiber.StatusRequestEntityTooLarge, "Request Entity Too Large")
+	}
+	var req certificate.TextConversionRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return certError(c, certificate.ErrInvalid)
+	}
+	conversion, err := h.svc.ConvertAssetText(c.Context(), p, id, req)
+	if err != nil {
+		return certError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.JSON(conversion)
 }

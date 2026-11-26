@@ -117,10 +117,10 @@ func (s *service) checkLayoutMedia(ctx context.Context, layout, previous Layout)
 		return nil
 	}
 	linked := make(map[uuid.UUID]bool)
-	for _, id := range layoutAssetIDs(previous) {
+	for _, id := range layoutLinkedIDs(previous) {
 		linked[id] = true
 	}
-	for _, id := range layoutAssetIDs(layout) {
+	for _, id := range layoutLinkedIDs(layout) {
 		if linked[id] {
 			continue
 		}

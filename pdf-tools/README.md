@@ -43,6 +43,7 @@ shows.
   "encrypted": false,
   "textCount": 2,
   "truncated": false,
+  "objects": {"text": 2, "path": 14, "image": 1, "shading": 1, "form": 0},
   "spans": [
     {
       "id": "12",
@@ -102,6 +103,12 @@ shows.
 | `unmatched` | its operator could not be told apart for removal (below) |
 
 At most 5000 spans are read; `truncated` says there were more.
+
+`objects` counts what the page draws, Form XObjects' contents included:
+text objects (spaces-only ones too), paths, images, shadings and Form
+XObjects. A page with no text but many paths had its text turned into
+outlines (Canva's and Illustrator's outline export); one with an image
+and nothing else is a picture. Core says which when a PDF lists no text.
 
 ### `/v1/strip-text`
 

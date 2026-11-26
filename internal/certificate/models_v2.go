@@ -30,7 +30,14 @@ type Layout struct {
 	// LegacyPDFPlacement), and is stored as before, so the checksum of
 	// such a layout does not change.
 	BackgroundPlacement *BackgroundPlacement `json:"backgroundPlacement,omitempty"`
-	Elements            []Element            `json:"elements"`
+	// BackgroundOriginalMediaID is the PDF a background's text was
+	// converted from (POST /v1/certificate-assets/{id}/text-conversion,
+	// docs/certificate-template-errors.md, "Background text conversion"):
+	// BackgroundMediaID is then that PDF without the converted text. It is
+	// never printed and a published version copies no asset of it; the
+	// template keeps it linked so the editor can go back to it.
+	BackgroundOriginalMediaID *uuid.UUID `json:"backgroundOriginalMediaId,omitempty"`
+	Elements                  []Element  `json:"elements"`
 }
 
 type Element struct {
@@ -58,7 +65,24 @@ type Element struct {
 	Opacity         *float64   `json:"opacity,omitempty"` // nil (left out) = 1, as the panel's editor shows it; an explicit 0 stays 0
 	Fit             string     `json:"fit,omitempty"`
 	Locked          bool       `json:"locked,omitempty"`
+	// FontStyle is "italic" or empty (normal).
+	FontStyle string `json:"fontStyle,omitempty"`
+	// Origin is OriginBackgroundText for an element converted from the
+	// background PDF's text, empty otherwise. SourceFont is then the PDF's
+	// font name, which FontFamily stands in for.
+	Origin     string `json:"origin,omitempty"`
+	SourceFont string `json:"sourceFont,omitempty"`
 }
+
+// OriginBackgroundText is an element converted from its background PDF's
+// text (Element.Origin).
+const OriginBackgroundText = "backgroundText"
+
+// The bounds of an element's converted-text fields.
+const (
+	FontStyleItalic    = "italic"
+	maxSourceFontRunes = 120
+)
 
 type TemplateDraft struct {
 	Name          string `json:"name"`

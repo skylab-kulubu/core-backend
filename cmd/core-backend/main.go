@@ -1106,6 +1106,17 @@ func main() {
 	} else {
 		log.Printf("certificate pdf-tools: on")
 	}
+	mediaSvc := media.NewServiceWithOptions(mediaStore, blobs, az, cdnBase, media.ServiceOptions{
+		UploadStagingGrace: uploadStagingConfig.Grace,
+		Catalogue:          mediaPurposes,
+		ImageAddressMode:   imageAddressMode,
+		DecodeBudget:       decodeBudget,
+		ServiceProducts:    serviceClients.Products(),
+		Private:            privateMedia,
+		Direct:             directUploads,
+		Scans:              mediaScans,
+		CoOrganizerSeats:   events,
+	})
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
@@ -1118,6 +1129,7 @@ func main() {
 		Media:            media.NewLinker(mediaStore),
 		MailPDF:          certificatePDFAttachment,
 		PDFTools:         pdfTools,
+		Uploads:          mediaSvc,
 	})
 	worker("certificate issuance worker", certificate.MaintainIssuance(workers, certSvc, 2*time.Second, 10, func(err error) {
 		log.Printf("certificate issuance worker: %v", err)
@@ -1354,21 +1366,11 @@ func main() {
 			Audit:             teamAudit,
 			Groups:            dir,
 		}),
-		Seasons:         season.NewService(seasons, az),
-		SubjectRequests: subjectrequest.NewService(subjectrequest.NewPostgresStore(pool), az, nil),
-		Tickets:         ticketSvc,
-		Competitors:     competitor.NewService(competitors, events, az),
-		Media: media.NewServiceWithOptions(mediaStore, blobs, az, cdnBase, media.ServiceOptions{
-			UploadStagingGrace: uploadStagingConfig.Grace,
-			Catalogue:          mediaPurposes,
-			ImageAddressMode:   imageAddressMode,
-			DecodeBudget:       decodeBudget,
-			ServiceProducts:    serviceClients.Products(),
-			Private:            privateMedia,
-			Direct:             directUploads,
-			Scans:              mediaScans,
-			CoOrganizerSeats:   events,
-		}),
+		Seasons:                season.NewService(seasons, az),
+		SubjectRequests:        subjectrequest.NewService(subjectrequest.NewPostgresStore(pool), az, nil),
+		Tickets:                ticketSvc,
+		Competitors:            competitor.NewService(competitors, events, az),
+		Media:                  mediaSvc,
 		URLs:                   urlSvc,
 		Competitions:           competition.NewService(competitions, events, az),
 		FeedbackInvites:        feedbackInvites,

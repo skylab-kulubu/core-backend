@@ -34,12 +34,13 @@ const (
 	pdfOpInspect = "inspect"
 	pdfOpPlace   = "place"
 	pdfOpRender  = "render"
+	pdfOpStrip   = "strip-text"
 )
 
 // pdfToolsMetrics counts the calls to pdf-tools that failed on its side
 // (pdf_tools_unavailable), by operation. A PDF it refuses is not counted.
 type pdfToolsMetrics struct {
-	inspect, place, render atomic.Int64
+	inspect, place, render, strip atomic.Int64
 }
 
 func (m *pdfToolsMetrics) add(op string) {
@@ -50,6 +51,8 @@ func (m *pdfToolsMetrics) add(op string) {
 		m.place.Add(1)
 	case pdfOpRender:
 		m.render.Add(1)
+	case pdfOpStrip:
+		m.strip.Add(1)
 	}
 }
 
@@ -57,7 +60,8 @@ func (m *pdfToolsMetrics) prometheus() string {
 	return "# TYPE core_certificate_pdf_tools_errors_total counter\n" +
 		fmt.Sprintf("core_certificate_pdf_tools_errors_total{op=%q} %d\n", pdfOpInspect, m.inspect.Load()) +
 		fmt.Sprintf("core_certificate_pdf_tools_errors_total{op=%q} %d\n", pdfOpPlace, m.place.Load()) +
-		fmt.Sprintf("core_certificate_pdf_tools_errors_total{op=%q} %d\n", pdfOpRender, m.render.Load())
+		fmt.Sprintf("core_certificate_pdf_tools_errors_total{op=%q} %d\n", pdfOpRender, m.render.Load()) +
+		fmt.Sprintf("core_certificate_pdf_tools_errors_total{op=%q} %d\n", pdfOpStrip, m.strip.Load())
 }
 
 // lru is a least recently used cache bounded by entries and by bytes.

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"slices"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/media"
@@ -84,6 +85,19 @@ func layoutAssetIDs(layout Layout) []uuid.UUID {
 		out = append(out, id)
 	}
 	return out
+}
+
+// layoutLinkedIDs are the Media a layout links: its assets
+// (layoutAssetIDs) and the original of a converted PDF background, which
+// is linked (kept, and checked when it is new) but never printed nor
+// copied into a version. The database counts the same ones
+// (certificate_layout_media_ids).
+func layoutLinkedIDs(layout Layout) []uuid.UUID {
+	ids := layoutAssetIDs(layout)
+	if original := layout.BackgroundOriginalMediaID; original != nil && !slices.Contains(ids, *original) {
+		ids = append(ids, *original)
+	}
+	return ids
 }
 
 func (s *service) snapshotVersionAssets(ctx context.Context, versionID uuid.UUID, layout Layout) (_ map[string]VersionAssetRef, err error) {

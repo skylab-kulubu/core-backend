@@ -2114,6 +2114,12 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM pg_constraint
 			WHERE conrelid = to_regclass('public.media_legacy_answer_moves') AND conname = 'media_legacy_answer_moves_order_check'
 		)`,
+	// A converted PDF background's original is one of the Media a layout
+	// links (docs/certificate-template-errors.md, "Background text
+	// conversion").
+	20261127131500: `
+		SELECT 1 FROM pg_proc
+		WHERE proname = 'certificate_layout_media_ids' AND prosrc LIKE '%backgroundOriginalMediaId%'`,
 	// Form mappings (docs/form-mappings.md): the table with its two checks
 	// and the form index.
 	20261127100000: `

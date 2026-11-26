@@ -44,6 +44,8 @@ const (
 type AssetOrigin struct {
 	UploadedBy uuid.UUID
 	Purpose    string
+	// Name is the Media's file name.
+	Name string
 }
 
 // assetOrigins says where an asset's Media came from; MediaAssets does.
@@ -68,7 +70,7 @@ func (m MediaAssets) AssetOrigin(ctx context.Context, id uuid.UUID) (AssetOrigin
 	if err != nil {
 		return AssetOrigin{}, err
 	}
-	return AssetOrigin{UploadedBy: metadata.UploadedBy, Purpose: metadata.Purpose}, nil
+	return AssetOrigin{UploadedBy: metadata.UploadedBy, Purpose: metadata.Purpose, Name: metadata.Name}, nil
 }
 
 func (s *service) AssetInfo(ctx context.Context, p authz.Principal, id uuid.UUID) (AssetInfo, error) {

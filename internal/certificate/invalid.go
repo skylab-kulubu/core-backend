@@ -60,7 +60,13 @@ const (
 	CodeBackgroundPDFTooLarge   = "background_pdf_too_large"
 	CodeBackgroundPDFPages      = "background_pdf_pages"
 	CodeBackgroundPDFEncrypted  = "background_pdf_encrypted"
-	CodeRendererUnavailable     = "renderer_unavailable"
+	// Background text conversion (docs/certificate-template-errors.md):
+	// nothing convertible chosen, the chosen text not removed from the
+	// PDF, or a PDF with no text at all (outlines, a picture).
+	CodeBackgroundTextSelectionEmpty = "background_text_selection_empty"
+	CodeBackgroundTextStripFailed    = "background_text_strip_failed"
+	CodeBackgroundPDFNoText          = "background_pdf_no_text"
+	CodeRendererUnavailable          = "renderer_unavailable"
 	// CodePDFToolsUnavailable is pdf-tools not set up (PDF_TOOLS_URL),
 	// unreachable or failing on its side (503, UnavailableError).
 	CodePDFToolsUnavailable = "pdf_tools_unavailable"

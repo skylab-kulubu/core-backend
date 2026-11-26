@@ -1,6 +1,6 @@
 # Certificate template errors
 
-Saving, previewing or publishing a certificate template (`POST /v1/certificate-templates`, `PUT /v1/certificate-templates/{id}`, `POST /v1/certificate-templates/{id}/preview`, `POST /v1/certificate-templates/{id}/publish`) the Event preview (`POST /v1/events/{eventId}/certificates/preview`) and the asset routes (`GET /v1/certificate-assets/{id}/info`, `GET /v1/certificate-assets/{id}/preview`, below) answer a refused layout, asset or rendering with `400` and a `code` (RFC 9457 extension member), so the panel can say what to change, and a renderer that is down with `503` and `renderer_unavailable` (Gotenberg) or `pdf_tools_unavailable` (pdf-tools). A `400` without a `code` is still a malformed request (an unreadable body or id).
+Saving, previewing or publishing a certificate template (`POST /v1/certificate-templates`, `PUT /v1/certificate-templates/{id}`, `POST /v1/certificate-templates/{id}/preview`, `POST /v1/certificate-templates/{id}/publish`) the Event preview (`POST /v1/events/{eventId}/certificates/preview`) and the asset routes (`GET /v1/certificate-assets/{id}/info`, `GET /v1/certificate-assets/{id}/preview`, `GET /v1/certificate-assets/{id}/text`, `POST /v1/certificate-assets/{id}/text-conversion`, below) answer a refused layout, asset or rendering with `400` and a `code` (RFC 9457 extension member), so the panel can say what to change, and a renderer that is down with `503` and `renderer_unavailable` (Gotenberg) or `pdf_tools_unavailable` (pdf-tools). A `400` without a `code` is still a malformed request (an unreadable body or id).
 
 ## Required layers
 
@@ -34,6 +34,9 @@ A layout needs the recipient's name (`recipientName`) and at least one of the ve
 | `background_pdf_too_large` | A PDF background over 20 MB. |
 | `background_pdf_pages` | A PDF background that is not exactly one page. |
 | `background_pdf_encrypted` | A PDF background that is encrypted or password protected (pdf-tools reads it). |
+| `background_text_selection_empty` | A text conversion with nothing chosen, or a chosen piece that cannot be converted, is not one of the PDF's (an id from an older list), or lies outside the page as placed. |
+| `background_text_strip_failed` | pdf-tools could not remove the chosen text from the PDF (its `strip_incomplete`): the PDF was not changed. |
+| `background_pdf_no_text` | A text conversion of a PDF that has no text at all: its text was turned into outlines (Canva's and Illustrator's outline export) or it is a picture. The text list says which (`textMissing`). |
 | `renderer_unavailable` | `503`: core runs without its PDF renderer (Gotenberg), cannot reach it, or it failed on its side (5xx). A later try may pass; an issuance job tries again, at most five times. |
 | `pdf_tools_unavailable` | `503`: core runs without pdf-tools (`PDF_TOOLS_URL` unset), cannot reach it, it failed on its side (5xx), or it answered something that is not what it should (no PDF, no PNG). A later try may pass. A busy pdf-tools (503) gets one more try a moment later, then this. Only a placed PDF background and the asset routes of a PDF need pdf-tools; issuance never calls it. |
 | `render_failed` | The renderer refused the page (4xx) or answered no PDF. |
@@ -64,7 +67,7 @@ A layout with a `backgroundPlacement` and a PDF background is placed by pdf-tool
 - **Issuing** a certificate, the Event preview and every other print of a published version read the version's placed copy and never call pdf-tools; a copy that does not match its SHA-256 is not printed. A version published before placed copies (2026-11-25) prints its PDF as it was published, by Gotenberg's scale above, its placement not applied: a published version does not change how it looks.
 - **The draft preview** places the PDF on the fly; core keeps the placed PDFs in memory (at most 64 and 200 MiB, by the PDF's SHA-256, the page and the box).
 
-`core_certificate_pdf_tools_errors_total{op}` (`/v1/metrics`) counts the calls that failed on pdf-tools' side, by operation (`inspect`, `place`, `render`); a PDF it refuses, and a request its caller cancelled, is not counted.
+`core_certificate_pdf_tools_errors_total{op}` (`/v1/metrics`) counts the calls that failed on pdf-tools' side, by operation (`inspect`, `place`, `render`, `strip-text`); a PDF it refuses, and a request its caller cancelled, is not counted.
 
 ## Background placement
 
@@ -107,3 +110,84 @@ A PDF's is its first page's visible box (CropBox, turned by `/Rotate`) in pt × 
 `GET /v1/certificate-assets/{id}/preview?max=2000` answers a PDF's page as a PNG whose long side is `max` px (16–4000, default 2000; otherwise `400`), drawn by pdf-tools (`/v1/render`; core keeps the drawn pages in memory, at most 32 and 64 MiB, by the PDF's SHA-256 and `max`), and an image as itself, with its own type. Every answer has `X-Content-Type-Options: nosniff`; an SVG also `Content-Security-Policy: sandbox`.
 
 Both answer `Cache-Control: private, max-age=300`: an asset does not change, and only the editor's own browser keeps it.
+
+## Background text conversion
+
+The text of a PDF background can become layers the editor edits (certificate editor v2, ticket 08). Both routes need pdf-tools and take the PDF assets the asset routes above take, for the same people; an image is `400 asset_type_unsupported`.
+
+`GET /v1/certificate-assets/{id}/text` lists the PDF's text, one piece per run (one style along a line, pdf-tools' `runs`), in reading order, without positions. `Cache-Control: private, max-age=300`.
+
+```json
+{
+  "spans": [
+    {"id": "12", "text": "Katılım Belgesi", "sourceFont": "Montserrat-Bold", "font": "Montserrat", "fontWeight": 700,
+     "fontSubstituted": false, "fontSizePt": 40, "convertible": true},
+    {"id": "15", "text": "Ad Soyad", "sourceFont": "BrandonGrotesque-Regular", "font": "Noto Sans", "fontWeight": 400,
+     "fontSubstituted": true, "fontSizePt": 32, "convertible": true},
+    {"id": "20", "text": "SKY LAB", "sourceFont": "Helvetica", "font": "Helvetica", "fontWeight": 400,
+     "fontSubstituted": false, "fontSizePt": 9, "convertible": false, "reason": "stroke"}
+  ],
+  "truncated": false
+}
+```
+
+- `id` names the piece in a conversion (its first span's id).
+- `font`, `fontWeight` and `fontStyle` (`"italic"`, or left out) are what a conversion sets it in; `fontSubstituted` says `font` stands in for the PDF's family. `fontSizePt` is the PDF's size in pt; the element's size in px follows the placement.
+- `reason`, when `convertible` is false: pdf-tools' (`unreadable`, `stroke`, `invisible`, `clip`, `vertical`, `skewed`, `shared`, `unmatched`; [pdf-tools/README.md](../pdf-tools/README.md)), `limit` past the first 100 convertible pieces (a layout's most elements), `truncated` when the PDF has more text than pdf-tools reads (5000 spans; nothing of it can be removed then).
+- A PDF that lists nothing says why in `textMissing`: `outlines` (no text, but at least 20 shapes: its text was turned into outlines, as Canva's and Illustrator's outline export does, and cannot be converted), `image` (the page is a picture), `unknown`. The list is never empty without it.
+
+`POST /v1/certificate-assets/{id}/text-conversion` converts the chosen pieces:
+
+```json
+{
+  "spanIds": ["12", "15"],
+  "kinds": {"15": "recipientName"},
+  "page": {"width": 1123, "height": 794},
+  "placement": {"fit": "contain", "x": 0.5, "y": 0.5, "scale": 1},
+  "existingElements": 4
+}
+```
+
+- `kinds` turns a chosen piece into `recipientName`, `eventName`, `eventDates` or `issueDate`: the same box and style, the certificate's value instead of its text.
+- `page` is the layout's page in px (300–4000, else `layout_size_invalid`); `placement` the background's (`layout_background_placement_invalid` when it is not one); without it, as a layout without a placement prints a PDF (above).
+- `existingElements` is how many elements the draft keeps; with the new ones they stay within 100 (`layout_element_count`).
+- A malformed body (a kind core does not know, a kind for a piece not chosen, over 500 ids) is a `400` without a code; a body over 256 KiB is `413`.
+- The list marks pieces past the first 100 convertible ones `limit`, but a conversion takes any convertible piece: its bound is on the elements it makes (lines joined into a paragraph are one) with `existingElements`.
+- The new PDF is the caller's upload: someone who may read the PDF but may not upload a certificate asset is `403`, before pdf-tools does anything.
+
+Core reads the PDF (decrypting a private one), asks pdf-tools for its text, turns the chosen pieces into elements, has pdf-tools remove exactly their text-showing operators (`/v1/strip-text`, which reads its result back and refuses with `strip_incomplete` when a chosen text is still there or another one moved) and stores the result as a new certificate asset: private, encrypted, the caller's, pending, so it is purged in 24 hours unless a template links it. It answers (`Cache-Control: no-store`):
+
+```json
+{
+  "backgroundMediaId": "…the new PDF…",
+  "backgroundOriginalMediaId": "…the PDF converted…",
+  "elements": [{"id": "bgtext-…", "kind": "staticText", "text": "Katılım Belgesi", "x": 286.44, "y": 218.1, "width": 535.28, "height": 64,
+                "fontFamily": "Montserrat", "fontSize": 53.33, "minFontSize": 45.33, "fontWeight": 700, "lineHeight": 1.2,
+                "color": "#1a2659", "align": "center", "fit": "shrink", "origin": "backgroundText", "sourceFont": "Montserrat-Bold"}],
+  "warnings": [{"spanId": "15", "elementId": "bgtext-…", "kind": "fontSubstituted", "from": "BrandonGrotesque-Regular", "to": "Noto Sans"}]
+}
+```
+
+Nothing is saved: the editor sets the draft's background to `backgroundMediaId` and `backgroundOriginalMediaId` to the PDF converted (a draft that has an original already keeps its own), adds the elements, and the draft is saved as any other. `backgroundOriginalMediaId` is never printed and a published version copies no asset of it, but the template links it (the Media attachment keeps it), so the editor can go back: background = original, the original's field and every `origin: "backgroundText"` element removed. It needs a background beside it, else the layout is a `400` without a code.
+
+`warnings[].kind`: `fontSubstituted` (`from` the PDF's font, `to` the family set), `fontSizeBounded` (a size over 300 px set at 300), `textCut` (a paragraph over 4000 bytes cut; `from` and `to` in bytes), `outsidePage` (a piece outside the page as placed: no element, no `elementId`; its text is still removed from the PDF).
+
+### The rules
+
+- **Pieces and paragraphs.** Each run is an element with its own box: a line of one style is one element, a line where the style changes (a bold word, another colour) one element per style. Lines alone on their baseline, of one style and in one of pdf-tools' blocks, evenly spaced (their gaps within 10% of each other) and sharing an edge within 1 pt are one element, a paragraph: its alignment that edge, its `lineHeight` their spacing over the size, its lines kept (`\n`). A line not chosen splits a paragraph. A piece turned into a field never joins one.
+- **Alignment.** A one-line element is centred when its middle is within 2% of the page's middle (along the text), left aligned otherwise; a paragraph whose lines are of one width likewise.
+- **Box.** The text's extent along its baseline; across, a line box of `1.2 ×` the size centred on the middle of the PDF font's ascent and descent (a paragraph: one line box per line). It grows 15% from the edge its alignment keeps (both sides when centred) and is cut to the page. A one-line element has `fit: "shrink"` and `minFontSize` 0.85 × its size: a wider stand-in font shrinks it a little rather than breaking the line. A paragraph wraps instead, and one set in a stand-in font gets room for one more line. A piece off the page as placed is left out (warning `outsidePage`).
+- **Fields.** A piece turned into a field (`kinds`) prints values longer than the PDF's placeholder: an upright field's box reaches to the page's margin (4% of its width) on the side its alignment leaves open (left aligned: to the right; right aligned: to the left; centred: both sides, symmetric, to the nearer margin), never narrower than the grown box, and its `minFontSize` is half its size. A turned field keeps the grown box.
+- **Placement and turn.** pt on the PDF's visible page become px by the placement's box (`fill` scales width and height apart: the size follows the height). A turned text keeps its angle as the element's `rotation`, about the box's centre. Sheared, mirrored and vertical text is not convertible (pdf-tools).
+- **Style.** `color` is pdf-tools' sRGB (CMYK and other colour spaces converted), `opacity` its fill alpha (left out at 1). The text is NFC (a decomposed ş becomes one letter), ligatures spelled out. A size over 300 px is 300 (warning `fontSizeBounded`).
+- **Fonts** (`internal/certificate/fontmap.go`). The subset prefix (`ABCDEF+`) goes; the weight comes from the name's style part, after `-` or `,` (Thin 100 … Black 900), or else the font's description when it is a usual weight (100 … 900 by hundreds), else 400, italic from the name (Italic, Oblique) or its angle. The family, in order: (1) a font the template's team or the club uploaded (ticket 18; none yet), (2) core's catalog or the renderer's font of that family or a known name of it (`ArialMT` → Arial, `TimesNewRomanPSMT` → Times New Roman, `Helvetica-Bold` → Helvetica 700, `Montserrat-Bold` → Montserrat 700, Calibri → Carlito, Cambria → Caladea, Georgia → Georgia, which the renderer prints in Liberation Serif and so is warned of), (3) by class: a script font (Script, Vibes, Brush, Allura, Pinyon, Dancing, Signature, or flagged so) Great Vibes, a monospace one DejaVu Sans Mono, a serif one Noto Serif, any other Noto Sans. Great Vibes and Dancing Script are set at 400, upright. The element keeps the PDF's name in `sourceFont` and a stand-in is warned of (`fontSubstituted`). The PDF's embedded font file is never used: a subset holds only the letters the PDF prints.
+
+### Element fields
+
+- `origin`: `"backgroundText"` for a converted element, else left out.
+- `sourceFont`: the PDF's font name, at most 120 characters.
+- `fontStyle`: `"italic"` or left out; the page prints `font-style:italic`. Another value of any of the three is `layout_element_style_invalid`. A layout without them prints and checksums as before.
+
+### Limits
+
+pdf-tools reads one page of at most 20 MiB, at most 5000 spans, 15 s per request; an encrypted PDF is `background_pdf_encrypted`, more than one page `background_pdf_pages`. A conversion takes at most 500 ids and makes at most 100 elements. Without pdf-tools both routes are `503 pdf_tools_unavailable`; `core_certificate_pdf_tools_errors_total{op="strip-text"}` counts strip-text's failures on its side.
