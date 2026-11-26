@@ -45,7 +45,7 @@ click list and a form's channel statistics keep looking 90 days back
 clicks turn 90 days old. Until apply it is the clicks of the last 90 days;
 from apply on it only grows, counting every click since then.
 
-## Rules (rule set v12)
+## Rules (rule set v13)
 
 "Event end" is the Event's `end_date`, else its last day's `end_date`, else
 its `start_date` (ADR-0062). For `guest_identity`, an Event with none of them
@@ -60,7 +60,7 @@ owner, as in account erasure.
 | Rule | Table, columns | Anchor | Period | Action | Kept / left out |
 |---|---|---|---|---|---|
 | `guest_phone` | `tickets.guest_phone_number` | the Ticket's Event end | 90 days | emptied | consent or not (ADR-0062) |
-| `guest_identity` | `tickets.guest_first_name`, `guest_last_name`, `guest_email`, `guest_phone_number`; `certificates.recipient_email` of the Ticket's certificates without an owner, in the same statement | the person's **latest** Event end: every guest Ticket of the same address (trimmed, lower-cased), and every Ticket of the account whose `email` or `school_email` is that address (a guest who later became a member; v2); a Ticket without an address, its own Event. An undated Event counts from the Ticket's registration (v3): before v3 one undated Event made the person `anchorless`, and a member who had registered for one kept their old guest Tickets for good | 2 years | emptied; the Ticket, its check-ins and its certificate (name, serial, PDF) stay | a Ticket with a queued or running certificate job; an address with an active (confirmed, open) `event_invitations` consent given for the address |
+| `guest_identity` | `tickets.guest_first_name`, `guest_last_name`, `guest_email`, `guest_phone_number`, and a Walk-in's `guest_university`, `guest_department`, `guest_grade` (v4, [walk-in.md](walk-in.md)); `certificates.recipient_email` of the Ticket's certificates without an owner, in the same statement | the person's **latest** Event end: every guest Ticket of the same address (trimmed, lower-cased), and every Ticket of the account whose `email` or `school_email` is that address (a guest who later became a member; v2); a Ticket without an address, its own Event. An undated Event counts from the Ticket's registration (v3): before v3 one undated Event made the person `anchorless`, and a member who had registered for one kept their old guest Tickets for good | 2 years | emptied; the Ticket, its check-ins and its certificate (name, serial, PDF) stay | a Ticket with a queued or running certificate job; an address with an active (confirmed, open) `event_invitations` consent given for the address |
 | `door_staff` | `event_door_staff` | the Event end | 90 days | row deleted (a relationship row) | |
 | `url_hits_scrub` | `url_hits.ip`, `user_agent`, `user_id`, `utm_campaign`, `utm_term`, `utm_content`, `referer`; `utm_source`, `utm_medium` | `at` | 1 year | emptied; `referer` keeps its origin (`scheme://host`, lower-case, no user information, port, path, query or fragment); `utm_source` and `utm_medium` keep a known channel and become `other` otherwise (v3, below); the row (time, link, alias, channel) stays. The free UTM fields are whatever the link's author or the visitor typed into the address (an e-mail, a student number), so they go with the address (v2; account erasure already clears them) | only does anything in apply (above) |
 | `read_link_ip` | `media_read_link_opens.client_ip` | `opened_at` | 1 year | emptied; the open stays | only does anything in apply (above) |

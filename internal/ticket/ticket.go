@@ -191,6 +191,12 @@ type Ticket struct {
 	GuestLastName    string          `json:"guestLastName,omitempty"`
 	GuestEmail       string          `json:"guestEmail,omitempty"`
 	GuestPhoneNumber string          `json:"guestPhoneNumber,omitempty"`
+	// GuestUniversity, GuestDepartment and GuestGrade are what a Walk-in
+	// guest gave, all optional, for the Event's statistics (docs/walk-in.md):
+	// the grade is one of Grades. Empty for none.
+	GuestUniversity string `json:"guestUniversity,omitempty"`
+	GuestDepartment string `json:"guestDepartment,omitempty"`
+	GuestGrade      string `json:"guestGrade,omitempty"`
 	// Code is the Ticket's code as shown, XXXX-XXXX: the holder's and the
 	// panel's (docs/ticket-access-key-and-code.md). Not a credential.
 	Code string `json:"code,omitempty"`
