@@ -71,14 +71,19 @@ func ViewerAbilities() []string {
 }
 
 // viewer is what p may do on e.
+// viewer is what p may do on e: each key the decision its endpoint takes.
+// Three read more than one decision: event.manageOrganizers also
+// EVENT_CO_ORGANIZERS_WRITE; event.delete also that only event:manage
+// archives a published or cancelled Event (Delete, ADR 0066 decision 3);
+// certificate.template.assign also that who may edit the Event binds its
+// template (docs/certificate-event-templates.md).
 func (s *service) viewer(p authz.Principal, e Event) *Viewer {
 	v := &Viewer{Via: s.authz.EventVia(p, s.eventResource(e, authz.TypeEvent)), Can: make(map[string]bool, len(viewerAbilities))}
 	for _, a := range viewerAbilities {
-		if a.action == authz.ManageOrganizers {
-			v.Can[a.key] = s.canManageOrganizers(p, e)
-			continue
-		}
 		v.Can[a.key] = s.authz.Allow(p, s.eventResource(e, a.typ), a.action)
 	}
+	v.Can["event.manageOrganizers"] = s.canManageOrganizers(p, e)
+	v.Can["event.delete"] = v.Can["event.delete"] && (e.Status == StatusDraft || s.authz.Permitted(p, authz.RoleEventManage))
+	v.Can["certificate.template.assign"] = v.Can["certificate.template.assign"] || v.Can["event.update"]
 	return v
 }

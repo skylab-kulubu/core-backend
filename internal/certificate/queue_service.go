@@ -22,7 +22,7 @@ func (s *service) Summary(ctx context.Context, p authz.Principal, eventID uuid.U
 	if err != nil {
 		return EventSummary{}, err
 	}
-	if !s.canReadWorkspace(p, ev.OwnerTeam) {
+	if !s.canReadWorkspace(p, ev) {
 		return EventSummary{}, ErrForbidden
 	}
 	resolution, err := s.resolveForEvent(ctx, ev)
@@ -100,7 +100,7 @@ func (s *service) Attendance(ctx context.Context, p authz.Principal, eventID uui
 	if err != nil {
 		return AttendanceList{}, err
 	}
-	if !s.canReadWorkspace(p, ev.OwnerTeam) {
+	if !s.canReadWorkspace(p, ev) {
 		return AttendanceList{}, ErrForbidden
 	}
 	attendance, err := s.attendance.EventAttendance(ctx, eventID)
@@ -159,7 +159,7 @@ func (s *service) Finalize(ctx context.Context, p authz.Principal, eventID uuid.
 	if err != nil {
 		return Batch{}, err
 	}
-	if !s.canIssue(p, ev.OwnerTeam) {
+	if !s.canIssue(p, ev) {
 		return Batch{}, ErrForbidden
 	}
 	// Attendance finalization opens when the Event is published and has
@@ -196,7 +196,7 @@ func (s *service) QueueManual(ctx context.Context, p authz.Principal, eventID, t
 	if err != nil {
 		return Batch{}, err
 	}
-	if !s.canIssue(p, ev.OwnerTeam) {
+	if !s.canIssue(p, ev) {
 		return Batch{}, ErrForbidden
 	}
 	reason, err := normalizeJustification(justification)
@@ -240,7 +240,7 @@ func (s *service) Reissue(ctx context.Context, p authz.Principal, serial string)
 	if err != nil {
 		return Batch{}, err
 	}
-	resource := authz.Resource{Type: authz.TypeCertificate, OwnerTeam: cert.OwnerTeam}
+	resource := s.certificateResource(ctx, cert)
 	if !s.authz.Allow(p, resource, authz.Issue) ||
 		(cert.RevokedAt == nil && !s.authz.Allow(p, resource, authz.Revoke)) {
 		return Batch{}, ErrForbidden
@@ -276,7 +276,7 @@ func (s *service) GetBatch(ctx context.Context, p authz.Principal, id uuid.UUID)
 	if err != nil {
 		return Batch{}, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificate, OwnerTeam: ev.OwnerTeam}, authz.Read) {
+	if !s.authz.Allow(p, eventResource(ev, authz.TypeCertificate), authz.Read) {
 		return Batch{}, ErrForbidden
 	}
 	return batch, nil
@@ -290,7 +290,7 @@ func (s *service) ListBatches(ctx context.Context, p authz.Principal, eventID uu
 	if err != nil {
 		return nil, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificate, OwnerTeam: ev.OwnerTeam}, authz.Read) {
+	if !s.authz.Allow(p, eventResource(ev, authz.TypeCertificate), authz.Read) {
 		return nil, ErrForbidden
 	}
 	return s.jobs.ListBatches(ctx, eventID)
@@ -305,7 +305,7 @@ func (s *service) RetryBatch(ctx context.Context, p authz.Principal, id uuid.UUI
 	if err != nil {
 		return Batch{}, err
 	}
-	if !s.canIssue(p, ev.OwnerTeam) {
+	if !s.canIssue(p, ev) {
 		return Batch{}, ErrForbidden
 	}
 	if err := s.jobs.RetryBatch(ctx, id); err != nil {

@@ -306,7 +306,7 @@ func (s *service) ResendMail(ctx context.Context, p authz.Principal, serial stri
 	if err != nil {
 		return MailResend{}, err
 	}
-	if !s.canIssue(p, ev.OwnerTeam) {
+	if !s.canIssue(p, ev) {
 		return MailResend{}, ErrForbidden
 	}
 	if cert.RevokedAt != nil {
@@ -336,7 +336,7 @@ func (s *service) ResendEventMails(ctx context.Context, p authz.Principal, event
 	if err != nil {
 		return MailResend{}, err
 	}
-	if !s.canIssue(p, ev.OwnerTeam) {
+	if !s.canIssue(p, ev) {
 		return MailResend{}, ErrForbidden
 	}
 	return queue.ResendEventMails(ctx, eventID, scope, principalUUIDPtr(p), ResendAllCooldown)

@@ -2114,6 +2114,13 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM pg_constraint
 			WHERE conrelid = to_regclass('public.media_legacy_answer_moves') AND conname = 'media_legacy_answer_moves_order_check'
 		)`,
+	// A Ticket's resend and link renewal by an event editor (a
+	// Co-organizer's, docs/co-organizers.md): the basis check names them.
+	20261126190000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
+		  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.link.renew%'
+		  AND pg_get_constraintdef(oid) LIKE '%console%'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

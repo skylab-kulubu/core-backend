@@ -2,7 +2,7 @@
 
 An Event keeps **one** Owner team (for example YK). Beside it, a list of **Co-organizers** (Ortak düzenleyen) manages the Event: other teams and, where a team does not fit, single people. Keycloak is not touched: the list is core's data and core decides with it. Spec: `.scratch/etkinlik-ortak-yonetim/SPEC.md` (decisions of 2026-11-25); ADR 0092 in e-skylab.
 
-This page is the data, the routes (ticket 01) and the decisions (ticket 02). The decisions of `internal/event` read the Co-organizers; the other packages' (Tickets, certificates, Competitions, the door, the dashboard) move to them in ticket 03 (see "Decisions" below).
+This page is the data, the routes (ticket 01) and the decisions (tickets 02 and 03). Every decision on an Event, its Tickets, certificates, Competitions, competitors, door, mail list, feedback and dashboard reads the Co-organizers (see "Decisions" below).
 
 **`EVENT_CO_ORGANIZERS_WRITE`** (`on`/`off`, unset is `off`; any other value stops core at start): off, `PUT /v1/events/{id}/organizers` is `403 co_organizers_disabled` for everyone and `canManage` is `false`; `GET` still answers. It stays off until the decisions, the Team audit record and the mails (tickets 02–05) ship with it, so no list changes without its record; in particular it is not turned on before ticket 03 (every Event decision outside `internal/event` reading the Co-organizers) is merged.
 
@@ -17,7 +17,7 @@ This page is the data, the routes (ticket 01) and the decisions (ticket 02). The
 
 ## Decisions
 
-`authz.Resource` carries `CoOwnerTeams` (`{Code, MembersManage}`), `CoOrganizerIDs` (the people whose rights have not ended) and `TeamDoorScanTeams` (the organizer teams whose Team door scan is on). `event.AuthzResource(ev, type, now)` is the one place they are filled from an Event; an architecture test (`internal/event/authz_resource_arch_test.go`) lists the places that still build a decision out of an Event's Owner team alone, and only lets the list shrink.
+`authz.Resource` carries `CoOwnerTeams` (`{Code, MembersManage}`), `CoOrganizerIDs` (the people whose rights have not ended) and `TeamDoorScanTeams` (the organizer teams whose Team door scan is on). `event.AuthzResource(ev, type, now)` is the one place they are filled from an Event; an architecture test (`internal/event/authz_resource_arch_test.go`) keeps any other place from building a decision out of an Event's Owner team alone. What reads an Owner team alone on purpose stays on its own list: creating an Event in a team, moving an Event between Owner teams, a team certificate template's own team, and a certificate whose Event can no longer be read.
 
 For each organizer team the authorizer reads the person's levels in it (`ownerLevels`, a Leader of a Team above included), its **seat**: the Owner team's as before; a `members` Co-organizer team's Leader and member; a `leaders` Co-organizer team's Leader alone. A Co-organizer person has a Leader's seat.
 
@@ -33,13 +33,22 @@ For each organizer team the authorizer reads the person's levels in it (`ownerLe
 | Door (`Validate`) | door staff; a Leader's seat; a member's seat while that team's Team door scan is on |
 | Competitions | a Leader's seat (`leader` basis); a member's seat while that team's `team_competition_manage` is on (`member_setting`) |
 
+**Around the decisions.**
+
+- The door reads each organizer team's Team door scan (`team_door_scan`) only for the teams whose membership counts that the caller is in: the Owner team and the `members` Co-organizer teams (`TeamDoorScanTeams`).
+- A Ticket write is recorded in the Team audit record whatever seat it rests on: a Co-organizer team's Leader as `leader` through their Team; a Co-organizer person, or a member, as `event_editor` through the Event's team. A resend and a link renewal (`ticket.resend`, `ticket.link.renew`) take `event_editor` too (migration `20261126190000`).
+- The Media upload rules of an Event's editor (`event_editor`, `certificate_template_editor`) name no Event: they also let in who holds a Co-organizer seat on a current Event (`media.CoOrganizerSeats`, one query, read only when the caller's own teams let them in to none). A seat is a Co-organizer person, a Leader of a Co-organizer team (its `LIDERLER` or `KOORDINATORLER` subgroup), or a member of a `members` Co-organizer team; a plain member of a `leaders` team holds none. Every seat lasts as a person's rights do: `CoOrganizerPersonGrace` after the Event's end (or its start plus a day), never ending for an Event with no date. Which Event the Media ends up on is decided when it is linked.
+- A certificate is revoked and reissued on its Event's organizers as they are now (the Event's current Owner team and its Co-organizers), not on the Owner team it was issued under (`Certificate.OwnerTeam`, its snapshot); the snapshot decides only when the Event cannot be read. A change from before: once an Event moves to another Owner team, the old team's Leaders no longer revoke or reissue its certificates and the new team's do.
+- A team's competitor list (`GET …?ownerTeam=`) shows the team's members all of it, and a Co-organizer of one of the team's Events that Event's competitors (each Event read and decided once; a caller who is no person is refused with nothing read); the team's leaderboard stays the team's.
+- The dashboard's to-dos, counts and charts decide per Event.
+
 **Event-by-Event answers.** The Event's detail and list answer `viewer` to a signed-in caller:
 
 ```json
 "viewer": {"via": "coTeam", "can": {"event.update": true, "event.delete": false, "event.publish": true, "event.manageOrganizers": false, "event.assignDoorStaff": false, "ticket.read": true, "ticket.assign": true, "certificate.issue": true, "certificate.revoke": true, "certificate.template.assign": true, "competition.manage": true}}
 ```
 
-`via` is what the right to edit rests on, the strongest: `privileged`, `owner`, `coTeam`, `coPerson`, or `none`. Each `can` is the decision it names on the Event (`event.manageOrganizers` also reads `EVENT_CO_ORGANIZERS_WRITE`). The panel reads it instead of `teamCan(ownerTeam, …)`; `GET /v1/users/me/capabilities` keeps the decisions that name no Event ("for which team may I create one").
+`via` is what the right to edit rests on, the strongest: `privileged`, `owner`, `coTeam`, `coPerson`, or `none`. Each `can` is the decision its endpoint takes on the Event: `event.manageOrganizers` also reads `EVENT_CO_ORGANIZERS_WRITE`; `event.delete` is false on a published or cancelled Event but for `event:manage` (only it archives one); `certificate.template.assign` is also true for who may edit the Event (they bind its template). The panel reads it instead of `teamCan(ownerTeam, …)`; `GET /v1/users/me/capabilities` keeps the decisions that name no Event ("for which team may I create one").
 
 ## Limits
 

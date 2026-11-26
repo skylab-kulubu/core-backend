@@ -3,10 +3,12 @@ package event
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
@@ -130,4 +132,56 @@ func dropOwnerCoOrganizer(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, own
 	}
 	_, err := tx.Exec(ctx, `DELETE FROM event_co_organizers WHERE event_id = $1 AND lower(team_code) = lower(btrim($2))`, eventID, ownerTeam)
 	return err
+}
+
+// HasCoOrganizerSeat reports whether p holds a seat on a current Event as
+// one of its Co-organizers (media.CoOrganizerSeats, docs/co-organizers.md):
+// a person row, or a team row of a team p leads (its leader subgroup), or
+// of a "members" team p is in; a row only while the Event's rights last
+// (CoOrganizerPersonGrace after its end, or after its start plus a day; an
+// Event with no date never ends). A read that fails is no seat.
+func (s *PostgresStore) HasCoOrganizerSeat(ctx context.Context, p authz.Principal) bool {
+	var person *uuid.UUID
+	if id, err := uuid.Parse(p.ID); err == nil {
+		person = &id
+	}
+	members, leads := seatTeams(p)
+	if person == nil && len(members) == 0 {
+		return false
+	}
+	var seat bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM event_co_organizers c
+			JOIN events e ON e.id = c.event_id AND e.archived_at IS NULL
+			WHERE (c.user_id = $1
+			    OR c.team_code = ANY($2::text[])
+			    OR (c.management = 'members' AND c.team_code = ANY($3::text[])))
+			  AND (COALESCE(e.end_date, e.start_date + interval '1 day') IS NULL
+			    OR COALESCE(e.end_date, e.start_date + interval '1 day') + make_interval(secs => $4) > now()))`,
+		person, leads, members, CoOrganizerPersonGrace.Seconds()).Scan(&seat)
+	return err == nil && seat
+}
+
+// seatTeams are the team codes p's Groups name, each segment of each path
+// (members), and those p leads: the segment right above a leader subgroup
+// (leads). Never nil.
+func seatTeams(p authz.Principal) (members, leads []string) {
+	members, leads = []string{}, []string{}
+	leaders := authz.DefaultPolicy().LeaderSubgroups
+	for _, group := range p.Groups {
+		segments := strings.Split(strings.Trim(group, "/"), "/")
+		for i, segment := range segments {
+			if segment == "" {
+				continue
+			}
+			if !slices.Contains(members, segment) {
+				members = append(members, segment)
+			}
+			if i == len(segments)-2 && slices.Contains(leaders, segments[i+1]) && !slices.Contains(leads, segment) {
+				leads = append(leads, segment)
+			}
+		}
+	}
+	return members, leads
 }

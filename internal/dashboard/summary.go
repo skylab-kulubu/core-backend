@@ -342,20 +342,14 @@ func sortEventStats(stats []EventStat) {
 }
 
 // covered are the Events whose applications p may read: the decision of
-// GET /v1/events/{id}/tickets, taken once per Owner team, and of a draft
-// only the ones p may see (event.VisibleTo, ADR 0066).
+// GET /v1/events/{id}/tickets, taken per Event (its Co-organizers are its
+// own, docs/co-organizers.md), and of a draft only the ones p may see
+// (event.VisibleTo, ADR 0066).
 func (s *service) covered(p authz.Principal, events []event.Event) []event.Event {
-	type decision struct{ read, draft bool }
-	allowed := make(map[string]decision)
 	out := make([]event.Event, 0, len(events))
+	now := time.Now()
 	for _, e := range events {
-		d, seen := allowed[e.OwnerTeam]
-		if !seen {
-			d.read = s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: e.OwnerTeam}, authz.Read)
-			d.draft = event.VisibleTo(s.authz, &p, event.Event{OwnerTeam: e.OwnerTeam, Status: event.StatusDraft})
-			allowed[e.OwnerTeam] = d
-		}
-		if d.read && (e.Status != event.StatusDraft || d.draft) {
+		if s.authz.Allow(p, event.AuthzResource(e, authz.TypeTicket, now), authz.Read) && event.VisibleTo(s.authz, &p, e) {
 			out = append(out, e)
 		}
 	}

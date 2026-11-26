@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -93,7 +94,7 @@ func (s *service) eventFor(ctx context.Context, p authz.Principal, eventID uuid.
 }
 
 func (s *service) allow(p authz.Principal, ev event.Event, action authz.Action) error {
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCompetition, OwnerTeam: ev.OwnerTeam}, action) {
+	if !s.authz.Allow(p, event.AuthzResource(ev, authz.TypeCompetition, time.Now()), action) {
 		return ErrForbidden
 	}
 	return nil
@@ -118,7 +119,7 @@ func (s *service) loadWriter(ctx context.Context, p authz.Principal, id uuid.UUI
 	if err != nil {
 		return Competition{}, "", err
 	}
-	basis := s.authz.CompetitionBasis(p, authz.Resource{Type: authz.TypeCompetition, OwnerTeam: ev.OwnerTeam})
+	basis := s.authz.CompetitionBasis(p, event.AuthzResource(ev, authz.TypeCompetition, time.Now()))
 	if basis == "" {
 		return Competition{}, "", ErrForbidden
 	}

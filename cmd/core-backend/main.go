@@ -1302,6 +1302,7 @@ func main() {
 			Private:            privateMedia,
 			Direct:             directUploads,
 			Scans:              mediaScans,
+			CoOrganizerSeats:   events,
 		}),
 		URLs:                   urlSvc,
 		Competitions:           competition.NewService(competitions, events, az),

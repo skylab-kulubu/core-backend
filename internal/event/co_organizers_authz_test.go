@@ -176,6 +176,14 @@ func TestViewerMatchesTheDecisions(t *testing.T) {
 		}
 		for _, key := range event.ViewerAbilities() {
 			want := az.Allow(c.p, event.AuthzResource(read, actions[key].typ, time.Now()), actions[key].a)
+			switch key {
+			case "event.delete":
+				// The endpoint archives a published Event for event:manage alone.
+				want = want && az.Permitted(c.p, authz.RoleEventManage)
+			case "certificate.template.assign":
+				// Who may edit the Event binds its template.
+				want = want || az.Allow(c.p, event.AuthzResource(read, authz.TypeEvent, time.Now()), authz.Update)
+			}
 			if got.Can[key] != want {
 				t.Errorf("%s: %s = %v, the decision says %v", c.p.ID, key, got.Can[key], want)
 			}
