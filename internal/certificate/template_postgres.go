@@ -43,6 +43,31 @@ func (s *PostgresStore) ListTemplates(ctx context.Context, filter TemplateFilter
 	return out, nil
 }
 
+// TemplatesUsingMedia lists the current templates whose draft or a
+// published version links the Media (its background, an image element,
+// or a version's asset copy).
+func (s *PostgresStore) TemplatesUsingMedia(ctx context.Context, mediaID uuid.UUID) ([]Template, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+templateCols+` FROM certificate_templates t
+		WHERE archived_at IS NULL AND (
+			$1::uuid = ANY (certificate_layout_media_ids(t.draft_layout, '{}'::jsonb))
+			OR EXISTS (SELECT 1 FROM certificate_template_versions v
+				WHERE v.template_id = t.id AND $1::uuid = ANY (certificate_layout_media_ids(v.layout, v.asset_manifest))))
+		ORDER BY id`, mediaID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Template, 0)
+	for rows.Next() {
+		t, err := scanTemplate(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresStore) GetTemplate(ctx context.Context, id uuid.UUID) (Template, error) {
 	t, err := scanTemplate(s.pool.QueryRow(ctx, `SELECT `+templateCols+` FROM certificate_templates WHERE id=$1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {

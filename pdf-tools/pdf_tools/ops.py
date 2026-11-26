@@ -39,6 +39,7 @@ def inspect(data: bytes) -> dict:
             "encrypted": False,
             "textCount": len(spans),
             "truncated": analysis.truncated,
+            "objects": analysis.objects,
             "spans": spans,
             "runs": runs,
         }

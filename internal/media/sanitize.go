@@ -34,7 +34,35 @@ var pngKeepAncillary = map[string]struct{}{
 const (
 	svgType = "image/svg+xml"
 	pdfType = "application/pdf"
+	// The font types (certificate_font): told by their first four bytes
+	// (detectFont), kept as they came. Core never parses a font: pdf-tools
+	// checks it (docs/certificate-fonts.md).
+	ttfType   = "font/ttf"
+	otfType   = "font/otf"
+	woff2Type = "font/woff2"
 )
+
+// detectFont names a font by its first four bytes: TrueType (00 01 00 00
+// or "true"), OpenType with CFF outlines ("OTTO") or WOFF2 ("wOF2"); "" for
+// anything else, a collection ("ttcf") and WOFF 1 included.
+func detectFont(data []byte) string {
+	if len(data) < 4 {
+		return ""
+	}
+	switch string(data[:4]) {
+	case "\x00\x01\x00\x00", "true":
+		return ttfType
+	case "OTTO":
+		return otfType
+	case "wOF2":
+		return woff2Type
+	}
+	return ""
+}
+
+func isFontType(contentType string) bool {
+	return contentType == ttfType || contentType == otfType || contentType == woff2Type
+}
 
 // rasterFormat is an image format Upload accepts as a raster image. The
 // serving policy serves every one of them inline, so a format added here
@@ -72,7 +100,8 @@ func isImage(data []byte) bool {
 
 // detectContentType names the type of a file from its content: one of the
 // raster formats, PDF when the file starts with its header, DOCX (isDOCX),
-// SVG when an <svg element opens in its first KiB, or "" for anything else.
+// a font by its first bytes (detectFont), SVG when an <svg element opens in
+// its first KiB, or "" for anything else.
 // isPDF, which finds the header anywhere in the first KiB, stays the rule
 // only for Media uploaded without a purpose. An SVG for a purpose that lists
 // it is stored sanitized (sanitizeSVG).
@@ -87,6 +116,9 @@ func detectContentType(data []byte) string {
 	}
 	if bytes.HasPrefix(data, []byte("%PDF-")) {
 		return pdfType
+	}
+	if font := detectFont(data); font != "" {
+		return font
 	}
 	// A DOCX is a ZIP package; it is recognized before anything that looks
 	// for markup in the first KiB.

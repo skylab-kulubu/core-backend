@@ -72,7 +72,18 @@ type Deps struct {
 	FeedbackReminders handlers.FeedbackReminders
 	// FormBackfills serves POST /v1/events/{id}/forms/{formId}/backfill
 	// (docs/form-pulls.md); nil leaves it out.
-	FormBackfills          handlers.FormBackfills
+	FormBackfills handlers.FormBackfills
+	// FormMappings serves the form mapping routes under
+	// /v1/events/{id}/forms/{formId} (docs/form-mappings.md); nil leaves
+	// them out.
+	FormMappings handlers.FormMappings
+	// FormRespondents serves the Unticketed respondent routes under
+	// /v1/events/{id}/respondents (docs/form-respondents.md); nil leaves
+	// them out.
+	FormRespondents handlers.FormRespondents
+	// FormResponseMapper runs the forms report through the form mappings
+	// (docs/form-mappings.md); nil takes it as before.
+	FormResponseMapper     handlers.FormResponseMapper
 	Media                  media.Service
 	URLs                   shorturl.Service
 	Certificates           certificate.Service
@@ -316,6 +327,9 @@ func New(deps Deps) *fiber.App {
 	seasons := handlers.NewSeasonHandler(deps.Seasons, deps.Events)
 	schedule := handlers.NewScheduleHandler(deps.Events)
 	tickets := handlers.NewTicketHandler(deps.Tickets)
+	if deps.FormResponseMapper != nil {
+		tickets.MapFormResponsesWith(deps.FormResponseMapper)
+	}
 	competitors := handlers.NewCompetitorHandler(deps.Competitors)
 	mediaH := handlers.NewMediaHandler(deps.Media).TrustProxies(trustedProxies)
 	urls := handlers.NewURLHandler(deps.URLs, deps.ParseToken, deps.URLAttributionGuard).TrustProxies(trustedProxies)
@@ -757,6 +771,20 @@ func New(deps Deps) *fiber.App {
 	if deps.FormBackfills != nil {
 		app.Post("/v1/events/:id/forms/:formId/backfill", handlers.NewFormBackfillHandler(deps.FormBackfills, log.Default()).Request)
 	}
+	if deps.FormMappings != nil {
+		formMappings := handlers.NewFormMappingHandler(deps.FormMappings, log.Default())
+		app.Get("/v1/events/:id/forms/:formId/questions", formMappings.Questions)
+		app.Get("/v1/events/:id/forms/:formId/mapping", formMappings.Get)
+		app.Put("/v1/events/:id/forms/:formId/mapping", formMappings.Put)
+		app.Delete("/v1/events/:id/forms/:formId/mapping", formMappings.Delete)
+	}
+	if deps.FormRespondents != nil {
+		respondents := handlers.NewFormRespondentHandler(deps.FormRespondents)
+		app.Get("/v1/events/:id/respondents", respondents.List)
+		app.Post("/v1/events/:id/respondents/tickets/preview", respondents.Preview)
+		app.Post("/v1/events/:id/respondents/tickets", respondents.Send)
+		app.Get("/v1/events/:id/respondents/ticket-jobs/:jobId", respondents.Job)
+	}
 	app.Post("/v1/events/:id/images", events.AddImages)
 	app.Delete("/v1/events/:id/images", events.RemoveImages)
 	app.Post("/v1/events/:id/files", events.AddFiles(event.Files))
@@ -804,6 +832,14 @@ func New(deps Deps) *fiber.App {
 		app.Put("/v1/certificate-templates/:id", certs.UpdateTemplate)
 		app.Post("/v1/certificate-templates/:id/publish", certs.PublishTemplate)
 		app.Post("/v1/certificate-templates/:id/preview", certs.PreviewTemplate)
+		app.Get("/v1/certificate-assets/:id/info", certs.AssetInfo)
+		app.Get("/v1/certificate-assets/:id/preview", certs.AssetPreview)
+		app.Get("/v1/certificate-assets/:id/text", certs.AssetText)
+		app.Post("/v1/certificate-assets/:id/text-conversion", certs.ConvertAssetText)
+		app.Get("/v1/certificate-fonts", certs.ListFonts)
+		app.Post("/v1/certificate-fonts", certs.CreateFont)
+		app.Get("/v1/certificate-fonts/:id/file", certs.FontFile)
+		app.Delete("/v1/certificate-fonts/:id", certs.ArchiveFont)
 		app.Get("/v1/certificate-template-bindings", certs.ListBindings)
 		app.Put("/v1/certificate-template-bindings", certs.SetBinding)
 		app.Delete("/v1/certificate-template-bindings/:scope/:scopeKey", certs.ClearBinding)

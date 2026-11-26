@@ -31,6 +31,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/competition"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/consent"
+	"github.com/skylab-kulubu/core-backend/internal/coorganizermail"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
 	"github.com/skylab-kulubu/core-backend/internal/doorqr"
 	"github.com/skylab-kulubu/core-backend/internal/doorstaffmail"
@@ -1005,6 +1006,15 @@ func main() {
 		log.Fatal(err)
 	}
 	worker("door staff mail", startDoorStaffMail(workers, doorStaffMail, events, doorstaffmail.NewPostgresQueue(pool), users, sky, strings.TrimSpace(os.Getenv("PANEL_URL")), log.Printf))
+	// A team or person added to, or removed from, an Event's Co-organizers
+	// (docs/co-organizers.md#mails).
+	coOrganizerMail, err := coOrganizerMailOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	worker("co-organizer mail", startCoOrganizerMail(workers, coOrganizerMail, events, coorganizermail.NewPostgresQueue(pool), users,
+		coorganizermail.DirectoryLeaders{Teams: teamTree, Directory: dir, LeaderSubgroups: authzPolicy.LeaderSubgroups},
+		sky, strings.TrimSpace(os.Getenv("PANEL_URL")), log.Printf))
 
 	var render certificate.Renderer
 	if baseURL := gotenbergURL(); baseURL != "" {
@@ -1092,6 +1102,26 @@ func main() {
 	} else {
 		log.Printf("certificate mail: PDF attachment off (CERTIFICATE_PDF_ATTACHMENT is not on)")
 	}
+	// pdf-tools (PDF_TOOLS_URL, pdf-tools/README.md): places a PDF
+	// background with a placement and reads and previews PDF assets. Unset,
+	// those answer 503 pdf_tools_unavailable and the rest works as before.
+	pdfTools := certificate.NewPDFTools(os.Getenv("PDF_TOOLS_URL"))
+	if pdfTools == nil {
+		log.Printf("certificate pdf-tools: off (PDF_TOOLS_URL is not set)")
+	} else {
+		log.Printf("certificate pdf-tools: on")
+	}
+	mediaSvc := media.NewServiceWithOptions(mediaStore, blobs, az, cdnBase, media.ServiceOptions{
+		UploadStagingGrace: uploadStagingConfig.Grace,
+		Catalogue:          mediaPurposes,
+		ImageAddressMode:   imageAddressMode,
+		DecodeBudget:       decodeBudget,
+		ServiceProducts:    serviceClients.Products(),
+		Private:            privateMedia,
+		Direct:             directUploads,
+		Scans:              mediaScans,
+		CoOrganizerSeats:   events,
+	})
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
@@ -1103,6 +1133,8 @@ func main() {
 		PrivateArtifacts: privateArtifacts,
 		Media:            media.NewLinker(mediaStore),
 		MailPDF:          certificatePDFAttachment,
+		PDFTools:         pdfTools,
+		Uploads:          mediaSvc,
 	})
 	worker("certificate issuance worker", certificate.MaintainIssuance(workers, certSvc, 2*time.Second, 10, func(err error) {
 		log.Printf("certificate issuance worker: %v", err)
@@ -1167,8 +1199,43 @@ func main() {
 		formsRecorder.Forms = formsClient
 	}
 	formsEvents := formsEventsRecorder(os.Getenv, formsClient, formsRecorder)
-	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, keycloakEventHandling, formsEvents)
+	// The form mappings (docs/form-mappings.md) build the guest of an
+	// answer that names nobody, by every way in (the HTTP report, the
+	// events, the pulls), with EVENTS_FORMS_ENABLED=true only: off, such an
+	// answer is no_respondent as before.
+	formMappingStore := formsfeed.NewPostgresMappings(pool)
+	var mappedGuests *formsfeed.MappedGuests
+	if formsEvents != nil {
+		mappedGuests = &formsfeed.MappedGuests{Store: formMappingStore, Events: events, Forms: formsClient}
+		formsRecorder.Mapped = mappedGuests
+	}
 	formPulls := formsfeed.NewPostgresPulls(pool)
+	// The Unticketed respondents (docs/form-respondents.md): with
+	// EVENTS_FORMS_ENABLED=true every answer goes between the Ticket rule
+	// and them (pending answers, "Otomatik bilet gönder" off) and a linked
+	// form's answers are gathered; off, answers take the rule alone as
+	// before. The list and the sending answer whatever the switch says
+	// (they read no Forms).
+	formRespondents := &formsfeed.Respondents{
+		Store: formsfeed.NewPostgresRespondents(pool), Events: events, Authz: az, Tickets: ticketSvc,
+		Jobs: formsfeed.NewPostgresTicketJobs(pool),
+		Capacity: func(ctx context.Context, id uuid.UUID) (event.Capacity, error) {
+			return event.ReadCapacity(ctx, pool, id)
+		},
+		People: users.Accounts, Logf: log.Printf,
+	}
+	if formsEvents != nil {
+		formsRecorder.Respondents = formRespondents
+		mappedGuests.Respondents = formRespondents
+		// Gatherings run only with the switch on: off, a job left in
+		// form_pulls must not hold the list's "collecting" nor a send-all
+		// job.
+		formRespondents.Pulls = formPulls
+	}
+	worker("respondent ticket jobs", (&formsfeed.TicketJobs{
+		Queue: formRespondents.Jobs, Respondents: formRespondents, Logf: log.Printf,
+	}).Run(workers))
+	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, keycloakEventHandling, formsEvents)
 	// The pulls share core.forms' switch (EVENTS_FORMS_ENABLED, the one
 	// switch of Forms' integration), whether or not the broker is on.
 	var formPuller *formsfeed.Puller
@@ -1177,6 +1244,13 @@ func main() {
 		worker("form pulls", formPuller.Run(workers))
 	}
 	formBackfills := &formsfeed.Backfills{Events: events, Authz: az, Queue: formPulls, On: formPuller != nil}
+	// The form mappings (docs/form-mappings.md): saved whatever the switch
+	// says; the questions are read with it on.
+	formCollects := &formsfeed.Collects{Queue: formPulls, Events: events, On: formPuller != nil, Logf: log.Printf}
+	formMappings := &formsfeed.Mappings{Events: events, Authz: az, Store: formMappingStore, On: formsEvents != nil, Collects: formCollects}
+	if formsClient != nil {
+		formMappings.Forms = formsClient
+	}
 	formsCounters := formsMetrics{puller: formPuller}
 	if formsEvents != nil {
 		formsCounters.recorder = formsRecorder
@@ -1293,27 +1367,24 @@ func main() {
 			Teams:            teamTree,
 
 			CoOrganizersWrite: coOrganizersWrite,
+			FormsLinked:       formCollects,
+			Audit:             teamAudit,
+			Groups:            dir,
 		}),
-		Seasons:         season.NewService(seasons, az),
-		SubjectRequests: subjectrequest.NewService(subjectrequest.NewPostgresStore(pool), az, nil),
-		Tickets:         ticketSvc,
-		Competitors:     competitor.NewService(competitors, events, az),
-		Media: media.NewServiceWithOptions(mediaStore, blobs, az, cdnBase, media.ServiceOptions{
-			UploadStagingGrace: uploadStagingConfig.Grace,
-			Catalogue:          mediaPurposes,
-			ImageAddressMode:   imageAddressMode,
-			DecodeBudget:       decodeBudget,
-			ServiceProducts:    serviceClients.Products(),
-			Private:            privateMedia,
-			Direct:             directUploads,
-			Scans:              mediaScans,
-		}),
+		Seasons:                season.NewService(seasons, az),
+		SubjectRequests:        subjectrequest.NewService(subjectrequest.NewPostgresStore(pool), az, nil),
+		Tickets:                ticketSvc,
+		Competitors:            competitor.NewService(competitors, events, az),
+		Media:                  mediaSvc,
 		URLs:                   urlSvc,
 		Competitions:           competition.NewService(competitions, events, az),
 		FeedbackInvites:        feedbackInvites,
 		FeedbackSender:         feedbackInvites,
 		FeedbackReminders:      feedbackInvites,
 		FormBackfills:          formBackfills,
+		FormMappings:           formMappings,
+		FormRespondents:        formRespondents,
+		FormResponseMapper:     formResponseMapper(mappedGuests),
 		Certificates:           certSvc,
 		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),
 		SkyPassWalletMetrics:   wallet,

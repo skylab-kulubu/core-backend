@@ -200,6 +200,9 @@ func certificateMailVars(c Certificate) map[string]string {
 		"FirstName": first, "EventName": c.EventName, "VerifyURL": c.VerifyURL,
 		// The template's "Düzenleyen" row: the organizer as the club shows it.
 		"Serial": c.Serial, "OwnerTeam": organizer.Name(c.OwnerTeam),
+		// The Co-organizer teams of its snapshot (docs/co-organizers.md);
+		// empty for none and for a certificate issued before it was kept.
+		"CoOrganizers": organizer.CoNames(c.CoOrganizerTeams),
 	}
 }
 
@@ -306,7 +309,7 @@ func (s *service) ResendMail(ctx context.Context, p authz.Principal, serial stri
 	if err != nil {
 		return MailResend{}, err
 	}
-	if !s.canIssue(p, ev.OwnerTeam) {
+	if !s.canIssue(p, ev) {
 		return MailResend{}, ErrForbidden
 	}
 	if cert.RevokedAt != nil {
@@ -336,7 +339,7 @@ func (s *service) ResendEventMails(ctx context.Context, p authz.Principal, event
 	if err != nil {
 		return MailResend{}, err
 	}
-	if !s.canIssue(p, ev.OwnerTeam) {
+	if !s.canIssue(p, ev) {
 		return MailResend{}, ErrForbidden
 	}
 	return queue.ResendEventMails(ctx, eventID, scope, principalUUIDPtr(p), ResendAllCooldown)

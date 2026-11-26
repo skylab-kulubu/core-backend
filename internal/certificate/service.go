@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -60,6 +61,19 @@ type Options struct {
 	// Mailer that is a CertificateAttachmentMailer; a PDF over SkyNotify's
 	// bound, or one that cannot be read, leaves the mail without it.
 	MailPDF bool
+	// PDFTools is core's internal PDF service (PDF_TOOLS_URL): it places a
+	// PDF background with a placement, reads a PDF asset's page and draws
+	// its preview. Nil leaves those off (503 pdf_tools_unavailable); a
+	// layout without a placement prints as before without it.
+	PDFTools PDFTools
+	// Uploads stores the PDF a background text conversion leaves as a new
+	// certificate asset (media.Service), and a certificate font's checked
+	// file. Nil refuses a conversion and a font (asset_storage_unavailable).
+	Uploads AssetUploader
+	// Fonts keeps the teams' and the club's certificate fonts
+	// (docs/certificate-fonts.md). Nil takes the store's (PostgresStore,
+	// MemoryStore).
+	Fonts FontStore
 }
 
 type service struct {
@@ -86,6 +100,11 @@ type service struct {
 	mails            MailQueue
 	mailPDFOn        bool
 	mailPDF          mailPDFMetrics
+	pdfTools         PDFTools
+	pdfCache         pdfCaches
+	pdfToolsErrors   pdfToolsMetrics
+	uploads          AssetUploader
+	fonts            FontStore
 }
 
 // NewService preserves the original synchronous contract for existing embedders.
@@ -129,6 +148,9 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 	if opts.Mails == nil {
 		opts.Mails, _ = store.(MailQueue)
 	}
+	if opts.Fonts == nil {
+		opts.Fonts, _ = store.(FontStore)
+	}
 	if opts.Attendance == nil {
 		opts.Attendance = memoryAttendance{events: events, tickets: tickets, certs: store, jobs: opts.Jobs, users: users}
 	}
@@ -138,17 +160,36 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 		templates: opts.Templates, jobs: opts.Jobs, artifacts: opts.Artifacts,
 		assets: opts.Assets, legacyImmediate: opts.LegacyImmediate, media: opts.Media, privateArtifacts: opts.PrivateArtifacts,
 		attendance: opts.Attendance, autoFinalize: opts.AutoFinalize, mails: opts.Mails,
-		mailPDFOn: opts.MailPDF,
+		mailPDFOn: opts.MailPDF, pdfTools: opts.PDFTools, pdfCache: newPDFCaches(),
+		uploads: opts.Uploads, fonts: opts.Fonts,
 	}
 }
 
-func (s *service) canIssue(p authz.Principal, ownerTeam string) bool {
-	return s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificate, OwnerTeam: ownerTeam}, authz.Issue)
+// eventResource is ev's decision of type t, its Co-organizers included
+// (event.AuthzResource, docs/co-organizers.md).
+func eventResource(ev event.Event, t authz.Type) authz.Resource {
+	return event.AuthzResource(ev, t, time.Now())
 }
 
-func (s *service) canReadWorkspace(p authz.Principal, ownerTeam string) bool {
-	return s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificate, OwnerTeam: ownerTeam}, authz.Read) ||
-		s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: ownerTeam}, authz.Read)
+func (s *service) canIssue(p authz.Principal, ev event.Event) bool {
+	return s.authz.Allow(p, eventResource(ev, authz.TypeCertificate), authz.Issue)
+}
+
+func (s *service) canReadWorkspace(p authz.Principal, ev event.Event) bool {
+	return s.authz.Allow(p, eventResource(ev, authz.TypeCertificate), authz.Read) ||
+		s.authz.Allow(p, eventResource(ev, authz.TypeCertificateTemplate), authz.Read)
+}
+
+// certificateResource is the decision on a certificate c: its Event's, the
+// Event's Co-organizers included; the Owner team it was issued under when
+// the Event cannot be read.
+func (s *service) certificateResource(ctx context.Context, c Certificate) authz.Resource {
+	if s.events != nil {
+		if ev, err := s.events.GetIncludingArchived(ctx, c.EventID); err == nil {
+			return eventResource(ev, authz.TypeCertificate)
+		}
+	}
+	return authz.Resource{Type: authz.TypeCertificate, OwnerTeam: c.OwnerTeam}
 }
 
 // eligible decides one Ticket by the Event's rule over the counted and
@@ -254,7 +295,7 @@ func (s *service) materializeLegacy(ctx context.Context, ev event.Event, t ticke
 	if err != nil {
 		return Certificate{}, err
 	}
-	c := Certificate{EventID: ev.ID, TicketID: t.ID, OwnerID: t.OwnerID, Serial: serial, RecipientName: name, RecipientEmail: email, EventName: ev.Name, OwnerTeam: ev.OwnerTeam, VerifyURL: url, TemplateSource: "legacy", Attendance: attendance}
+	c := Certificate{EventID: ev.ID, TicketID: t.ID, OwnerID: t.OwnerID, Serial: serial, RecipientName: name, RecipientEmail: email, EventName: ev.Name, OwnerTeam: ev.OwnerTeam, VerifyURL: url, TemplateSource: "legacy", Attendance: attendance, CoOrganizerTeams: coOrganizerSnapshot(ev)}
 	created, err := s.store.Create(ctx, c, pdf)
 	if err != nil {
 		return Certificate{}, err
@@ -309,7 +350,7 @@ func (s *service) RecomputeEvent(ctx context.Context, p authz.Principal, eventID
 	if err != nil {
 		return nil, err
 	}
-	if !s.canIssue(p, ev.OwnerTeam) {
+	if !s.canIssue(p, ev) {
 		return nil, ErrForbidden
 	}
 	if err := issuable(ev); err != nil {
@@ -340,7 +381,7 @@ func (s *service) Issue(ctx context.Context, p authz.Principal, eventID, ticketI
 	if err != nil {
 		return Certificate{}, err
 	}
-	if !s.canIssue(p, ev.OwnerTeam) {
+	if !s.canIssue(p, ev) {
 		return Certificate{}, ErrForbidden
 	}
 	if err := issuable(ev); err != nil {
@@ -364,7 +405,7 @@ func (s *service) Revoke(ctx context.Context, p authz.Principal, serial string) 
 	if err != nil {
 		return err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificate, OwnerTeam: c.OwnerTeam}, authz.Revoke) {
+	if !s.authz.Allow(p, s.certificateResource(ctx, c), authz.Revoke) {
 		return ErrForbidden
 	}
 	_, err = s.store.Revoke(ctx, serial)
@@ -382,7 +423,7 @@ func (s *service) Verify(ctx context.Context, serial string) (PublicCertificate,
 		status = "revoked"
 		pdfURL = ""
 	}
-	return PublicCertificate{Serial: c.Serial, RecipientName: c.RecipientName, EventName: c.EventName, OwnerTeam: c.OwnerTeam, OrganizerName: organizer.Name(c.OwnerTeam), Status: status, VerifyURL: c.VerifyURL, PDFURL: pdfURL, IssuedAt: c.IssuedAt, RevokedAt: c.RevokedAt, Attendance: publicAttendance(c.Attendance)}, nil
+	return PublicCertificate{Serial: c.Serial, RecipientName: c.RecipientName, EventName: c.EventName, OwnerTeam: c.OwnerTeam, OrganizerName: organizer.Name(c.OwnerTeam), CoOrganizerNames: coOrganizerNames(c), Status: status, VerifyURL: c.VerifyURL, PDFURL: pdfURL, IssuedAt: c.IssuedAt, RevokedAt: c.RevokedAt, Attendance: publicAttendance(c.Attendance)}, nil
 }
 
 func (s *service) PDF(ctx context.Context, serial string) ([]byte, error) {
@@ -433,7 +474,7 @@ func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uu
 	if err != nil {
 		return nil, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificate, OwnerTeam: ev.OwnerTeam}, authz.Read) {
+	if !s.authz.Allow(p, eventResource(ev, authz.TypeCertificate), authz.Read) {
 		return nil, ErrForbidden
 	}
 	certs, err := s.store.ListByEvent(ctx, eventID)

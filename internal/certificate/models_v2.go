@@ -30,7 +30,14 @@ type Layout struct {
 	// LegacyPDFPlacement), and is stored as before, so the checksum of
 	// such a layout does not change.
 	BackgroundPlacement *BackgroundPlacement `json:"backgroundPlacement,omitempty"`
-	Elements            []Element            `json:"elements"`
+	// BackgroundOriginalMediaID is the PDF a background's text was
+	// converted from (POST /v1/certificate-assets/{id}/text-conversion,
+	// docs/certificate-template-errors.md, "Background text conversion"):
+	// BackgroundMediaID is then that PDF without the converted text. It is
+	// never printed and a published version copies no asset of it; the
+	// template keeps it linked so the editor can go back to it.
+	BackgroundOriginalMediaID *uuid.UUID `json:"backgroundOriginalMediaId,omitempty"`
+	Elements                  []Element  `json:"elements"`
 }
 
 type Element struct {
@@ -58,7 +65,29 @@ type Element struct {
 	Opacity         *float64   `json:"opacity,omitempty"` // nil (left out) = 1, as the panel's editor shows it; an explicit 0 stays 0
 	Fit             string     `json:"fit,omitempty"`
 	Locked          bool       `json:"locked,omitempty"`
+	// FontStyle is "italic" or empty (normal).
+	FontStyle string `json:"fontStyle,omitempty"`
+	// Origin is OriginBackgroundText for an element converted from the
+	// background PDF's text, empty otherwise. SourceFont is then the PDF's
+	// font name, which FontFamily stands in for.
+	Origin     string `json:"origin,omitempty"`
+	SourceFont string `json:"sourceFont,omitempty"`
+	// FontMediaID names the checked file of a team's or the club's
+	// certificate font (docs/certificate-fonts.md) a text element is set
+	// in; FontFamily stays its name as the editor shows it. The page embeds
+	// the file and falls back to FontFamily's stack.
+	FontMediaID *uuid.UUID `json:"fontMediaId,omitempty"`
 }
+
+// OriginBackgroundText is an element converted from its background PDF's
+// text (Element.Origin).
+const OriginBackgroundText = "backgroundText"
+
+// The bounds of an element's converted-text fields.
+const (
+	FontStyleItalic    = "italic"
+	maxSourceFontRunes = 120
+)
 
 type TemplateDraft struct {
 	Name          string `json:"name"`
@@ -112,6 +141,29 @@ type VersionAssetRef struct {
 	// Encryption opens the copy of a private asset, which is kept encrypted
 	// in the private bucket; nil for a public copy.
 	Encryption *media.Encryption `json:"encryption,omitempty"`
+	// Placed is a PDF background's copy placed on the version's page by
+	// its placement (pdf-tools /place), which every render of the version
+	// prints instead of placing it again; nil for an image, a layout
+	// without a placement, and a version published before placed copies.
+	Placed *PlacedAssetRef `json:"placed,omitempty"`
+}
+
+// PlacedAssetRef is a version's placed copy of its PDF background, stored
+// beside the asset's copy and, for a private asset, as encrypted as it.
+type PlacedAssetRef struct {
+	Key        string            `json:"key"`
+	Encryption *media.Encryption `json:"encryption,omitempty"`
+	// Checksum is the placed PDF's SHA-256, hex; a copy that reads back
+	// otherwise is not printed.
+	Checksum string `json:"checksum"`
+}
+
+// Sealed is the placed copy's private object; false for a public copy.
+func (r PlacedAssetRef) Sealed() (media.SealedObject, bool) {
+	if r.Encryption == nil {
+		return media.SealedObject{}, false
+	}
+	return media.SealedObject{Key: r.Key, Encryption: *r.Encryption}, true
 }
 
 // Sealed is the copy's private object; false for a public copy.
@@ -222,16 +274,20 @@ type EventSummary struct {
 }
 
 type PublicCertificate struct {
-	Serial        string     `json:"serial"`
-	RecipientName string     `json:"recipientName"`
-	EventName     string     `json:"eventName"`
-	OwnerTeam     string     `json:"ownerTeam"`
-	OrganizerName string     `json:"organizerName"` // organizer.Name(OwnerTeam)
-	Status        string     `json:"status"`
-	VerifyURL     string     `json:"verifyUrl"`
-	PDFURL        string     `json:"pdfUrl,omitempty"`
-	IssuedAt      time.Time  `json:"issuedAt"`
-	RevokedAt     *time.Time `json:"revokedAt,omitempty"`
+	Serial        string `json:"serial"`
+	RecipientName string `json:"recipientName"`
+	EventName     string `json:"eventName"`
+	OwnerTeam     string `json:"ownerTeam"`
+	OrganizerName string `json:"organizerName"` // organizer.Name(OwnerTeam)
+	// CoOrganizerNames names the Co-organizer teams shown outside the panel
+	// when it was issued (its snapshot, docs/co-organizers.md); left out
+	// for none and for a certificate issued before core kept it.
+	CoOrganizerNames string     `json:"coOrganizerNames,omitempty"`
+	Status           string     `json:"status"`
+	VerifyURL        string     `json:"verifyUrl"`
+	PDFURL           string     `json:"pdfUrl,omitempty"`
+	IssuedAt         time.Time  `json:"issuedAt"`
+	RevokedAt        *time.Time `json:"revokedAt,omitempty"`
 	// Attendance is the attendance the certificate was issued on, absent
 	// for one issued before core kept it. It names no Session, check-in
 	// time or manual issue.

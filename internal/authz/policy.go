@@ -111,6 +111,13 @@ type Resource struct {
 	// OwningProduct), for Upload on TypeMedia: the one product whose service
 	// account may upload a MediaUploaderServiceOnly purpose.
 	MediaOwner Product
+	// CoOrganizerSeat says, for Upload on TypeMedia, that the caller holds
+	// a seat on a current Event as one of its Co-organizers
+	// (docs/co-organizers.md): an Event's editor's upload rules
+	// (MediaUploaderEventEditor, MediaUploaderCertificateTemplateEditor)
+	// name no Event and let such a person in. The media service reads it
+	// with the request's context.
+	CoOrganizerSeat bool
 }
 
 type Policy struct {
@@ -203,6 +210,13 @@ const (
 	// certificate template, or edit an Event (its Event template), for at
 	// least one Owner team.
 	MediaUploaderCertificateTemplateEditor MediaUploader = "certificate_template_editor"
+	// MediaUploaderCertificateFontEditor is a person who may create a
+	// certificate template for at least one Owner team, or a club-wide one
+	// (Privileged): who may upload a team's or the club's certificate font
+	// (docs/certificate-fonts.md). An Event's editor who may not create a
+	// template is not one: they use their team's fonts, they do not upload
+	// them.
+	MediaUploaderCertificateFontEditor MediaUploader = "certificate_font_editor"
 	// MediaUploaderServiceOnly is no person: only the owning product's service
 	// account, with the media:attach role, may start such an upload (Skyforms
 	// for a guest Answer file). Core's own purposes (a video's frame) are

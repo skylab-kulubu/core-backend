@@ -73,6 +73,26 @@ func (a *afterCheckIn) CanRecordFormResponse(p authz.Principal) bool {
 	return a.inner.CanRecordFormResponse(p)
 }
 
+func (a *afterCheckIn) KeepFormRespondent(ctx context.Context, eventID uuid.UUID, r FormRespondent) error {
+	return a.inner.KeepFormRespondent(ctx, eventID, r)
+}
+
+func (a *afterCheckIn) EnsureFormRespondent(ctx context.Context, userID uuid.UUID) (bool, error) {
+	return a.inner.EnsureFormRespondent(ctx, userID)
+}
+
+func (a *afterCheckIn) BeginFormRespondentSend(ctx context.Context, p authz.Principal, eventID uuid.UUID) (*FormRespondentSend, error) {
+	return a.inner.BeginFormRespondentSend(ctx, p, eventID)
+}
+
+func (a *afterCheckIn) FinishFormRespondentJob(ctx context.Context, eventID, jobID uuid.UUID, sum FormRespondentSummary, err error) {
+	a.inner.FinishFormRespondentJob(ctx, eventID, jobID, sum, err)
+}
+
+func (a *afterCheckIn) AdmitFormRespondent(ctx context.Context, eventID uuid.UUID, r FormRespondent) (FormRespondentOutcome, error) {
+	return a.inner.AdmitFormRespondent(ctx, eventID, r)
+}
+
 func (a *afterCheckIn) Mine(ctx context.Context, p authz.Principal) ([]Ticket, error) {
 	return a.inner.Mine(ctx, p)
 }

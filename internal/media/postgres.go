@@ -448,7 +448,7 @@ type postgresMediaTx interface {
 }
 
 func lockMediaReferenceWriters(ctx context.Context, tx postgresMediaTx) error {
-	_, err := tx.Exec(ctx, `LOCK TABLE events, event_images, event_files, event_videos, event_ticket_images, users, certificate_templates, certificate_template_versions, media_attachments IN SHARE MODE`)
+	_, err := tx.Exec(ctx, `LOCK TABLE events, event_images, event_files, event_videos, event_ticket_images, users, certificate_templates, certificate_template_versions, certificate_fonts, media_attachments IN SHARE MODE`)
 	return err
 }
 
@@ -478,8 +478,8 @@ func referencedSQL(id string) string {
 // Media attachments from the same list and its triggers keep them in step
 // (its copy stays as written: migrations are frozen); an Event's files and
 // videos came later, with their own triggers (20260928160000), and so did
-// their posters (20260929140000), frames (20260929160000) and an Event's
-// map (20261122160000).
+// their posters (20260929140000), frames (20260929160000), an Event's map
+// (20261122160000) and a certificate font's file (20261127183000).
 var coreLinkSources = []struct {
 	table     string
 	ownerType string
@@ -501,6 +501,7 @@ var coreLinkSources = []struct {
 	{table: "users", ownerType: "user", role: RoleProfilePicture, owner: "id", media: "profile_picture_id"},
 	{table: "certificate_templates", ownerType: "certificate_template", role: RoleCertificateAsset, owner: "id", media: "draft_layout", layout: true},
 	{table: "certificate_template_versions", ownerType: "certificate_template_version", role: RoleCertificateAsset, owner: "id", media: "layout", manifest: "asset_manifest", layout: true},
+	{table: "certificate_fonts", ownerType: "certificate_font", role: RoleCertificateFont, owner: "id", media: "media_id"},
 }
 
 // coreLinksSQL selects a row for each of core's own links to the Media id
