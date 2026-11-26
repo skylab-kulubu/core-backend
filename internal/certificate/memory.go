@@ -30,6 +30,8 @@ type MemoryStore struct {
 	mails []*memoryMail
 	// resendAllAt is when "Herkese yeniden gönder" last ran, by Event.
 	resendAllAt map[uuid.UUID]time.Time
+	// fonts are the certificate fonts (font_store.go).
+	fonts map[uuid.UUID]Font
 }
 
 func NewMemoryStore() *MemoryStore {

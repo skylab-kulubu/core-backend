@@ -64,7 +64,11 @@ func metric(t *testing.T, text, sample string) float64 {
 func TestDecodeBudgetMetricsShowWaitsAndSaturation(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	budget := media.NewDecodeBudget(media.DecodeBudgetConfig{Slots: 1, Wait: 50 * time.Millisecond})
+	// A second of waiting: the request that waits and gets the slot (below)
+	// must still be waiting when the slot is freed, however slow a shared CI
+	// runner is between its start and the release; at 50 ms it was refused
+	// busy there now and then.
+	budget := media.NewDecodeBudget(media.DecodeBudgetConfig{Slots: 1, Wait: time.Second})
 
 	text := budget.Prometheus()
 	for sample, want := range map[string]float64{
@@ -141,7 +145,9 @@ func TestDecodeBudgetMetricsShowWaitsAndSaturation(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	release()
-	(<-got)()
+	if second := <-got; second != nil {
+		second()
+	}
 
 	text = budget.Prometheus()
 	for sample, want := range map[string]float64{
@@ -157,8 +163,8 @@ func TestDecodeBudgetMetricsShowWaitsAndSaturation(t *testing.T) {
 			t.Errorf("after: %s = %v, want %v", sample, got, want)
 		}
 	}
-	if waited := metric(t, text, "skylab_media_decode_wait_seconds_total"); waited < 0.05 {
-		t.Errorf("wait seconds = %v, want at least the busy request's 50ms", waited)
+	if waited := metric(t, text, "skylab_media_decode_wait_seconds_total"); waited < 1 {
+		t.Errorf("wait seconds = %v, want at least the busy request's wait", waited)
 	}
 }
 

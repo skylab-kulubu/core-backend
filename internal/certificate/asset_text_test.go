@@ -39,7 +39,13 @@ type textToolsContract struct {
 
 func (c *textToolsContract) server(t *testing.T) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(c.handler())
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func (c *textToolsContract) handler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		problem := func(status int, code string) {
 			w.Header().Set("Content-Type", "application/problem+json")
 			w.WriteHeader(status)
@@ -84,9 +90,7 @@ func (c *textToolsContract) server(t *testing.T) *httptest.Server {
 		default:
 			problem(http.StatusNotFound, "not_found")
 		}
-	}))
-	t.Cleanup(srv.Close)
-	return srv
+	}
 }
 
 func contractSpan(id, text string, x, y, size, width float64, font map[string]any) map[string]any {
@@ -206,7 +210,7 @@ func TestAssetTextLists(t *testing.T) {
 	t.Parallel()
 	tools := &textToolsContract{inspect: certificateInspect()}
 	c := newTextCertificates(t, tools, true, true)
-	text, err := c.service.AssetText(context.Background(), c.editor, c.original)
+	text, err := c.service.AssetText(context.Background(), c.editor, c.original, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +248,7 @@ func TestAssetTextSaysWhyThereIsNone(t *testing.T) {
 				inspect["objects"] = objects
 			}
 			c := newTextCertificates(t, &textToolsContract{inspect: inspect}, true, true)
-			text, err := c.service.AssetText(context.Background(), c.editor, c.original)
+			text, err := c.service.AssetText(context.Background(), c.editor, c.original, nil)
 			if err != nil || len(text.Spans) != 0 || text.TextMissing != want {
 				t.Fatalf("text %+v, %v", text, err)
 			}

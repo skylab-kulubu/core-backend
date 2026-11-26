@@ -98,6 +98,7 @@ func TestEventMapImageMigration(t *testing.T) {
 // it back.
 func undoEventMapImage(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	undoCertificateFonts(t, pool)
 	if _, err := pool.Exec(context.Background(), readDown(t, eventMapImageVersion+"_event_map_image.down.sql")); err != nil {
 		t.Fatalf("event map image down: %v", err)
 	}

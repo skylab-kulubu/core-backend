@@ -79,6 +79,11 @@ func layoutAssetIDs(layout Layout) []uuid.UUID {
 		if element.MediaID != nil {
 			seen[*element.MediaID] = struct{}{}
 		}
+		// A certificate font is copied like an image: a version prints
+		// what it was published with, whatever happens to the font.
+		if element.FontMediaID != nil {
+			seen[*element.FontMediaID] = struct{}{}
+		}
 	}
 	out := make([]uuid.UUID, 0, len(seen))
 	for id := range seen {

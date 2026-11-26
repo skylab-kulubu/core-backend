@@ -669,6 +669,8 @@ func (s *PostgresStore) anonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		`UPDATE certificate_templates SET created_by = NULL WHERE created_by = $1`,
 		`UPDATE certificate_template_versions SET published_by = NULL WHERE published_by = $1`,
 		`UPDATE certificate_template_bindings SET updated_by = NULL WHERE updated_by = $1`,
+		// A team's certificate font stays the team's (docs/certificate-fonts.md).
+		`UPDATE certificate_fonts SET uploaded_by = NULL WHERE uploaded_by = $1`,
 		`UPDATE certificate_event_state SET attendance_finalized_by = NULL WHERE attendance_finalized_by = $1`,
 		`UPDATE certificate_batches SET requested_by = NULL WHERE requested_by = $1`,
 		// An organizer's form pulls and send-all jobs (docs/form-respondents.md)

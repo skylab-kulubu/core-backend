@@ -3,6 +3,7 @@ package certificate
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,7 +17,7 @@ import (
 
 // PDFTools is core's internal PDF service (pdf-tools/README.md): it reads a
 // background PDF's page, places its page into a box on a new page and
-// renders it to PNG. Core finds it at PDF_TOOLS_URL; nil while that is
+// renders it to PNG. PDFToolsClient also checks fonts (FontSanitizer). Core finds it at PDF_TOOLS_URL; nil while that is
 // unset, and then a placed PDF background, the asset info of a PDF and its
 // preview answer 503 pdf_tools_unavailable while the rest works as before.
 type PDFTools interface {
@@ -138,6 +139,30 @@ func (c *PDFToolsClient) StripText(ctx context.Context, pdf []byte, spanIDs []st
 	return body, nil
 }
 
+// SanitizeFont checks a font with pdf-tools (/v1/font/sanitize): OTS, then
+// fontTools; the answer is the font's facts and the font as WOFF2. A font
+// pdf-tools refuses is one of the font codes (pdfToolsRefusal).
+func (c *PDFToolsClient) SanitizeFont(ctx context.Context, font []byte) (SanitizedFont, error) {
+	body, err := c.call(ctx, "/v1/font/sanitize", font, nil, "application/json", maxPDFToolsJSONBytes)
+	if err != nil {
+		return SanitizedFont{}, err
+	}
+	var answer struct {
+		SanitizedFont
+		WOFF2 string `json:"woff2"`
+	}
+	if err := json.Unmarshal(body, &answer); err != nil {
+		return SanitizedFont{}, pdfToolsUnavailable(errors.New("pdf-tools: font/sanitize answered no JSON"))
+	}
+	woff2, err := base64.StdEncoding.DecodeString(answer.WOFF2)
+	if err != nil || !bytes.HasPrefix(woff2, woff2Signature) {
+		return SanitizedFont{}, pdfToolsUnavailable(errors.New("pdf-tools: font/sanitize answered no WOFF2"))
+	}
+	out := answer.SanitizedFont
+	out.WOFF2 = woff2
+	return out, nil
+}
+
 func (c *PDFToolsClient) Place(ctx context.Context, pdf []byte, page PDFPage, rect PDFRect) ([]byte, error) {
 	params := struct {
 		PDFPage
@@ -215,6 +240,10 @@ func (c *PDFToolsClient) post(ctx context.Context, path string, form []byte, con
 		return nil, c.busyWait(resp.Header.Get("Retry-After")), pdfToolsUnavailable(fmt.Errorf("pdf-tools: HTTP %d", resp.StatusCode))
 	case resp.StatusCode >= 500:
 		return nil, 0, pdfToolsUnavailable(fmt.Errorf("pdf-tools: HTTP %d", resp.StatusCode))
+	case resp.StatusCode == http.StatusNotFound:
+		// No such route: a pdf-tools older than the call (its image not yet
+		// the one with /v1/font/sanitize), not the input's fault.
+		return nil, 0, pdfToolsUnavailable(fmt.Errorf("pdf-tools: HTTP %d on %s", resp.StatusCode, path))
 	case resp.StatusCode >= 400:
 		return nil, 0, pdfToolsRefusal(body)
 	case resp.StatusCode != http.StatusOK || len(body) == 0 || len(body) > limit:
@@ -242,6 +271,15 @@ func pdfToolsRefusal(body []byte) error {
 		return invalid(CodeBackgroundPDFTooLarge)
 	case "pdf_unreadable", "pdf_timeout":
 		return invalid(CodeBackgroundPDFUnreadable)
+	// A font's (/v1/font/sanitize; docs/certificate-fonts.md).
+	case "font_unreadable", "font_timeout":
+		return invalid(CodeFontUnreadable)
+	case "font_too_large":
+		return invalid(CodeFontTooLarge)
+	case "font_variable", "font_collection":
+		return invalid(CodeFontUnsupported)
+	case "font_embedding_restricted":
+		return invalid(CodeFontEmbeddingRestricted)
 	default:
 		return invalid(CodeRenderFailed)
 	}

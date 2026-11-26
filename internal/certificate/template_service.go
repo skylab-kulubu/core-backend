@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -67,7 +68,7 @@ func (s *service) CreateTemplate(ctx context.Context, p authz.Principal, in Temp
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: in.OwnerTeam}, authz.Create) {
 		return Template{}, ErrForbidden
 	}
-	if err := s.checkLayoutMedia(ctx, in.Layout, Layout{}); err != nil {
+	if err := s.checkLayoutMedia(ctx, in.Layout, Layout{}, Layout{}, in.OwnerTeam); err != nil {
 		return Template{}, err
 	}
 	item := Template{
@@ -99,7 +100,7 @@ func (s *service) UpdateTemplate(ctx context.Context, p authz.Principal, id uuid
 		}
 		existing.OwnerTeam = normalizeTeam(in.OwnerTeam)
 	}
-	if err := s.checkLayoutMedia(ctx, in.Layout, existing.DraftLayout); err != nil {
+	if err := s.checkLayoutMedia(ctx, in.Layout, existing.DraftLayout, existing.DraftLayout, existing.OwnerTeam); err != nil {
 		return Template{}, err
 	}
 	existing.Name = strings.TrimSpace(in.Name)
@@ -111,21 +112,75 @@ func (s *service) UpdateTemplate(ctx context.Context, p authz.Principal, id uuid
 }
 
 // checkLayoutMedia checks each Media the layout links that the previous
-// draft did not: a certificate asset, or a legacy Media.
-func (s *service) checkLayoutMedia(ctx context.Context, layout, previous Layout) error {
-	if s.media == nil {
-		return nil
+// draft did not: a certificate asset, or a legacy Media, for a background or
+// an image (a certificate font's file, or a font upload, is
+// asset_type_unsupported there); an element's font a certificate font of
+// ownerTeam or the club, unless keptFonts (the draft before, or the layout
+// a copy starts from) has it already (checkLayoutFonts).
+func (s *service) checkLayoutMedia(ctx context.Context, layout, previous, keptFonts Layout, ownerTeam string) error {
+	if err := s.checkLayoutFonts(ctx, layout, keptFonts, ownerTeam); err != nil {
+		return err
 	}
 	linked := make(map[uuid.UUID]bool)
 	for _, id := range layoutLinkedIDs(previous) {
 		linked[id] = true
 	}
+	if err := s.checkDrawnMedia(ctx, layout, linked); err != nil {
+		return err
+	}
+	if s.media == nil {
+		return nil
+	}
+	fonts := layoutFontIDs(layout)
 	for _, id := range layoutLinkedIDs(layout) {
 		if linked[id] {
 			continue
 		}
-		if err := s.media.CheckLink(ctx, id, media.RoleCertificateAsset); err != nil {
+		role := media.RoleCertificateAsset
+		if slices.Contains(fonts, id) {
+			role = media.RoleCertificateFont
+		}
+		if err := s.media.CheckLink(ctx, id, role); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// checkDrawnMedia refuses a background, its original or an image element
+// that is a certificate_font Media (a font's checked file, or an upload no
+// one checked): asset_type_unsupported when the draft is saved, not when it
+// prints. A Media linked before (linked) is not read again.
+func (s *service) checkDrawnMedia(ctx context.Context, layout Layout, linked map[uuid.UUID]bool) error {
+	origins, ok := s.assets.(assetOrigins)
+	if !ok {
+		return nil
+	}
+	var drawn []uuid.UUID
+	for _, id := range []*uuid.UUID{layout.BackgroundMediaID, layout.BackgroundOriginalMediaID} {
+		if id != nil {
+			drawn = append(drawn, *id)
+		}
+	}
+	for _, el := range layout.Elements {
+		if el.MediaID != nil {
+			drawn = append(drawn, *el.MediaID)
+		}
+	}
+	for _, id := range drawn {
+		if linked[id] {
+			continue
+		}
+		origin, err := origins.AssetOrigin(ctx, id)
+		if errors.Is(err, ErrNotFound) {
+			// The link check says what is wrong with it.
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if origin.Purpose == media.PurposeCertificateFont {
+			return invalid(CodeAssetTypeUnsupported)
 		}
 	}
 	return nil

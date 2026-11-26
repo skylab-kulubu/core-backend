@@ -28,7 +28,7 @@ A layout needs the recipient's name (`recipientName`) and at least one of the ve
 | `background_size_unknown` | An image background with a placement whose natural size core cannot read (PNG, JPEG, GIF, WebP, or an SVG with a `width` and `height` in px, pt, pc, mm, cm or in, or a `viewBox`), or a side under 0.001 px. |
 | `asset_empty` | A background or image Media has no bytes. |
 | `asset_too_large` | An image over 20 MB, or a template's assets over 50 MB together. |
-| `asset_type_unsupported` | A background that is neither an image nor a PDF, or an image element that is not an image. |
+| `asset_type_unsupported` | A background that is neither an image nor a PDF, or an image element that is not an image; when the draft is saved, a background, its original or an image that is a certificate font's file or a font upload ([certificate-fonts.md](certificate-fonts.md)). |
 | `asset_storage_unavailable` | Core runs without the storage the assets are copied to. |
 | `background_pdf_unreadable` | A PDF background that is not a PDF the renderer can read. |
 | `background_pdf_too_large` | A PDF background over 20 MB. |
@@ -38,16 +38,24 @@ A layout needs the recipient's name (`recipientName`) and at least one of the ve
 | `background_text_strip_failed` | pdf-tools could not remove the chosen text from the PDF (its `strip_incomplete`): the PDF was not changed. |
 | `background_pdf_no_text` | A text conversion of a PDF that has no text at all: its text was turned into outlines (Canva's and Illustrator's outline export) or it is a picture. The text list says which (`textMissing`). |
 | `renderer_unavailable` | `503`: core runs without its PDF renderer (Gotenberg), cannot reach it, or it failed on its side (5xx). A later try may pass; an issuance job tries again, at most five times. |
-| `pdf_tools_unavailable` | `503`: core runs without pdf-tools (`PDF_TOOLS_URL` unset), cannot reach it, it failed on its side (5xx), or it answered something that is not what it should (no PDF, no PNG). A later try may pass. A busy pdf-tools (503) gets one more try a moment later, then this. Only a placed PDF background and the asset routes of a PDF need pdf-tools; issuance never calls it. |
+| `pdf_tools_unavailable` | `503`: core runs without pdf-tools (`PDF_TOOLS_URL` unset), cannot reach it, it failed on its side (5xx), or it answered something that is not what it should (no PDF, no PNG, no WOFF2), or `404` for a route it does not have (an image older than the call). A later try may pass. A busy pdf-tools (503) gets one more try a moment later, then this. Only a placed PDF background and the asset routes of a PDF need pdf-tools; issuance never calls it. |
 | `render_failed` | The renderer refused the page (4xx) or answered no PDF. |
 | `template_event_scoped` | An Event template bound to a team, the club or another Event (`PUT /v1/certificate-template-bindings`); it serves its own Event only ([certificate-event-templates.md](certificate-event-templates.md)). |
 | `template_event_exists` | `409`: the Event has an Event template already (`POST /v1/events/{eventId}/certificate-template`). The answer's `templateId` is the current one, which the panel opens instead. |
+| `font_unreadable` | A certificate font that is not a TrueType, OpenType or WOFF2 font, did not pass pdf-tools' check (OTS), has no family name, or took pdf-tools over 10 s ([certificate-fonts.md](certificate-fonts.md)). |
+| `font_too_large` | A certificate font over 10 MiB (the upload, or the WOFF2 pdf-tools wrote). |
+| `font_unsupported` | A variable font (`fvar`) or a font collection (TTC): one static face per file. |
+| `font_embedding_restricted` | A font whose embedding permission (OS/2 `fsType`) is Restricted License. |
+| `font_exists` | `409`: the team (or the club) has a current font of that family (in any case), weight and style. The answer's `fontId` is that font. |
+| `layout_font_out_of_scope` | A text element's `fontMediaId` is not a current certificate font of the template's team or the club's (an Event template: its Event's team), newly linked: another team's, an archived one, or a Media that is no font. A font the draft had already stays, and so does one a new Event template copies from its source. |
 
 ## Fonts
 
 An element's `fontFamily` is one of the renderer's fonts (Arial, Helvetica, Carlito, Noto Sans, Noto Sans Display, DejaVu Sans, DejaVu Sans Condensed, Liberation Sans, Georgia, Times New Roman, Caladea, Noto Serif, Noto Serif Display, DejaVu Serif, DejaVu Serif Condensed, Liberation Serif, Courier New, DejaVu Sans Mono, Liberation Mono) or one of core's catalog: Montserrat, Poppins, Open Sans, Roboto, Inter, Raleway, Playfair Display, Merriweather, Great Vibes, Dancing Script. Any other name prints in Liberation Sans. Names match in any case.
 
 A catalog font used by the layout's text is embedded in the page it prints (`@font-face`, WOFF2 data URIs, Google Fonts' latin and latin-ext subsets, which hold every Turkish letter); a font the layout does not use is not. Each has 400 and 700 and an italic 400; Great Vibes and Dancing Script have 400 alone. The files and each family's `OFL.txt` are in `internal/certificate/fonts/`.
+
+A certificate font a team or the club uploaded ([certificate-fonts.md](certificate-fonts.md)) is named by the element's `fontMediaId` (its checked WOFF2); `fontFamily` stays its name. The page embeds it once a file (and a style) as `@font-face{font-family:'cf-<mediaId>';font-style:<the element's>;font-weight:1 1000;src:url(data:font/woff2;base64,…)}` and sets the element in `'cf-<mediaId>',` followed by `fontFamily`'s stack, so a letter the font lacks prints in the fallback. A `fontMediaId` on an image, a shape or the QR, or the zero id, is `layout_element_style_invalid`. A font no element uses is not on the page; a published version copies the file like an image (it counts toward the 50 MB).
 
 A page with an embedded font fits its text (shrink-to-fit, the Owner team's short code) once the fonts are in (`document.fonts.ready`) and then sets `window.__certFitDone`; core asks Gotenberg to print it once `window.__certFitDone === true` (`waitForExpression`). Gotenberg checks every 100 ms until the request times out, which answers `503 renderer_unavailable` (tried again); the flag is set even when fitting fails. A page without embedded fonts is posted as before, with no wait.
 
@@ -132,7 +140,8 @@ The text of a PDF background can become layers the editor edits (certificate edi
 ```
 
 - `id` names the piece in a conversion (its first span's id).
-- `font`, `fontWeight` and `fontStyle` (`"italic"`, or left out) are what a conversion sets it in; `fontSubstituted` says `font` stands in for the PDF's family. `fontSizePt` is the PDF's size in pt; the element's size in px follows the placement.
+- `font`, `fontWeight` and `fontStyle` (`"italic"`, or left out) are what a conversion sets it in; `fontSubstituted` says `font` stands in for the PDF's family; `fontMediaId`, when `font` is a certificate font of the template's team or the club's.
+- `?template={id}` (optional; a template the caller may edit, else `403`/`404`) matches against that template's team's certificate fonts and the club's; without it, the club's alone. `fontSizePt` is the PDF's size in pt; the element's size in px follows the placement.
 - `reason`, when `convertible` is false: pdf-tools' (`unreadable`, `stroke`, `invisible`, `clip`, `vertical`, `skewed`, `shared`, `unmatched`; [pdf-tools/README.md](../pdf-tools/README.md)), `limit` past the first 100 convertible pieces (a layout's most elements), `truncated` when the PDF has more text than pdf-tools reads (5000 spans; nothing of it can be removed then).
 - A PDF that lists nothing says why in `textMissing`: `outlines` (no text, but at least 20 shapes: its text was turned into outlines, as Canva's and Illustrator's outline export does, and cannot be converted), `image` (the page is a picture), `unknown`. The list is never empty without it.
 
@@ -144,13 +153,15 @@ The text of a PDF background can become layers the editor edits (certificate edi
   "kinds": {"15": "recipientName"},
   "page": {"width": 1123, "height": 794},
   "placement": {"fit": "contain", "x": 0.5, "y": 0.5, "scale": 1},
-  "existingElements": 4
+  "existingElements": 4,
+  "templateId": "…the template the draft is of (optional)…"
 }
 ```
 
 - `kinds` turns a chosen piece into `recipientName`, `eventName`, `eventDates` or `issueDate`: the same box and style, the certificate's value instead of its text.
 - `page` is the layout's page in px (300–4000, else `layout_size_invalid`); `placement` the background's (`layout_background_placement_invalid` when it is not one); without it, as a layout without a placement prints a PDF (above).
 - `existingElements` is how many elements the draft keeps; with the new ones they stay within 100 (`layout_element_count`).
+- `templateId` (optional) is as the list's `?template=`: an element set in a certificate font has its `fontMediaId`.
 - A malformed body (a kind core does not know, a kind for a piece not chosen, over 500 ids) is a `400` without a code; a body over 256 KiB is `413`.
 - The list marks pieces past the first 100 convertible ones `limit`, but a conversion takes any convertible piece: its bound is on the elements it makes (lines joined into a paragraph are one) with `existingElements`.
 - The new PDF is the caller's upload: someone who may read the PDF but may not upload a certificate asset is `403`, before pdf-tools does anything.
@@ -180,7 +191,7 @@ Nothing is saved: the editor sets the draft's background to `backgroundMediaId` 
 - **Fields.** A piece turned into a field (`kinds`) prints values longer than the PDF's placeholder: an upright field's box reaches to the page's margin (4% of its width) on the side its alignment leaves open (left aligned: to the right; right aligned: to the left; centred: both sides, symmetric, to the nearer margin), never narrower than the grown box, and its `minFontSize` is half its size. A turned field keeps the grown box.
 - **Placement and turn.** pt on the PDF's visible page become px by the placement's box (`fill` scales width and height apart: the size follows the height). A turned text keeps its angle as the element's `rotation`, about the box's centre. Sheared, mirrored and vertical text is not convertible (pdf-tools).
 - **Style.** `color` is pdf-tools' sRGB (CMYK and other colour spaces converted), `opacity` its fill alpha (left out at 1). The text is NFC (a decomposed ş becomes one letter), ligatures spelled out. A size over 300 px is 300 (warning `fontSizeBounded`).
-- **Fonts** (`internal/certificate/fontmap.go`). The subset prefix (`ABCDEF+`) goes; the weight comes from the name's style part, after `-` or `,` (Thin 100 … Black 900), or else the font's description when it is a usual weight (100 … 900 by hundreds), else 400, italic from the name (Italic, Oblique) or its angle. The family, in order: (1) a font the template's team or the club uploaded (ticket 18; none yet), (2) core's catalog or the renderer's font of that family or a known name of it (`ArialMT` → Arial, `TimesNewRomanPSMT` → Times New Roman, `Helvetica-Bold` → Helvetica 700, `Montserrat-Bold` → Montserrat 700, Calibri → Carlito, Cambria → Caladea, Georgia → Georgia, which the renderer prints in Liberation Serif and so is warned of), (3) by class: a script font (Script, Vibes, Brush, Allura, Pinyon, Dancing, Signature, or flagged so) Great Vibes, a monospace one DejaVu Sans Mono, a serif one Noto Serif, any other Noto Sans. Great Vibes and Dancing Script are set at 400, upright. The element keeps the PDF's name in `sourceFont` and a stand-in is warned of (`fontSubstituted`). The PDF's embedded font file is never used: a subset holds only the letters the PDF prints.
+- **Fonts** (`internal/certificate/fontmap.go`). The subset prefix (`ABCDEF+`) goes; the weight comes from the name's style part, after `-` or `,` (Thin 100 … Black 900), or else the font's description when it is a usual weight (100 … 900 by hundreds), else 400, italic from the name (Italic, Oblique) or its angle. The family, in order: (1) a certificate font of the template's team or the club's ([certificate-fonts.md](certificate-fonts.md); the `templateId`'s team, the club's alone without it) whose family is the PDF's by the same key (`familyKey`: Brandon Grotesque, `BrandonGrotesque-Bold` and `ABCDEF+BrandonGrotesque` are one): of its faces the one of the PDF's style nearest its weight (the heavier of two as near), set at that face's weight and style, with `fontMediaId`, no warning, (2) core's catalog or the renderer's font of that family or a known name of it (`ArialMT` → Arial, `TimesNewRomanPSMT` → Times New Roman, `Helvetica-Bold` → Helvetica 700, `Montserrat-Bold` → Montserrat 700, Calibri → Carlito, Cambria → Caladea, Georgia → Georgia, which the renderer prints in Liberation Serif and so is warned of), (3) by class: a script font (Script, Vibes, Brush, Allura, Pinyon, Dancing, Signature, or flagged so) Great Vibes, a monospace one DejaVu Sans Mono, a serif one Noto Serif, any other Noto Sans. Great Vibes and Dancing Script are set at 400, upright. The element keeps the PDF's name in `sourceFont` and a stand-in is warned of (`fontSubstituted`). The PDF's embedded font file is never used: a subset holds only the letters the PDF prints.
 
 ### Element fields
 

@@ -3,6 +3,8 @@ package certificate
 import (
 	"strings"
 	"unicode"
+
+	"github.com/google/uuid"
 )
 
 // fontMatch is the font a converted PDF text is set in: a family the
@@ -14,6 +16,9 @@ type fontMatch struct {
 	Weight      int
 	Style       string // "" or FontStyleItalic
 	Substituted bool
+	// MediaID is the certificate font's file when the family is one the
+	// template's team or the club uploaded (Element.FontMediaID).
+	MediaID *uuid.UUID
 }
 
 // fontAlias is a family the renderer draws for a PDF font family. alias:
@@ -93,14 +98,15 @@ var styleSuffixes = []string{
 }
 
 // mapFont is the family, weight and style a PDF font is set in (SPEC §5.3):
-// (1) a family of the template's team or the club uploaded (uploaded,
-// their names; ticket 18, nil until then), (2) the catalog or the
+// (1) a family of the template's team or the club uploaded (uploaded, their
+// current certificate fonts: the face of the PDF's style nearest its
+// weight, set at that face's weight and style), (2) the catalog or the
 // renderer's font of that family or a known name of it (ArialMT is Arial,
 // Montserrat-Bold is Montserrat 700), (3) by its class: a script font
 // Great Vibes, a monospace one DejaVu Sans Mono, a serif one Noto Serif,
 // any other Noto Sans. The PDF's embedded font file is never used: a
 // subset holds only the letters the PDF prints.
-func mapFont(font PDFFont, uploaded []string) fontMatch {
+func mapFont(font PDFFont, uploaded []Font) fontMatch {
 	name := stripSubset(strings.TrimSpace(font.Name))
 	// A weight word in the name wins; then the font's description, when
 	// it is a usual weight (100 … 900, by hundreds): some producers write
@@ -119,23 +125,60 @@ func mapFont(font PDFFont, uploaded []string) fontMatch {
 		match.Style = FontStyleItalic
 	}
 	keys := []string{familyKey(font.Family), familyKey(name)}
-	match.Family, match.Substituted = pickFamily(keys, uploaded, font, low)
+	if face, ok := uploadedFace(keys, uploaded, match.Weight, match.Style); ok {
+		id := face.MediaID
+		match.Family, match.MediaID, match.Weight, match.Style = face.Family, &id, face.Weight, ""
+		if face.Style == FontStyleItalic {
+			match.Style = FontStyleItalic
+		}
+		return match
+	}
+	match.Family, match.Substituted = pickFamily(keys, font, low)
 	if singleStyleFamilies[match.Family] {
 		match.Weight, match.Style = 400, ""
 	}
 	return match
 }
 
-// pickFamily is the family for the font's keys and whether it stands in
-// for another family.
-func pickFamily(keys, uploaded []string, font PDFFont, low string) (string, bool) {
-	for _, family := range uploaded {
-		for _, key := range keys {
-			if key != "" && familyKey(family) == key {
-				return family, false
-			}
+// uploadedFace is the certificate font of the font's family (by its keys)
+// that is closest to weight and style: the same style first, then the
+// nearest weight, the heavier of two as near.
+func uploadedFace(keys []string, uploaded []Font, weight int, style string) (Font, bool) {
+	var best Font
+	found := false
+	score := func(f Font) int {
+		s := abs(f.Weight - weight)
+		if f.Weight > weight {
+			s-- // the heavier of two as near
+		}
+		fontItalic := f.Style == FontStyleItalic
+		if fontItalic != (style == FontStyleItalic) {
+			s += 10000
+		}
+		return s
+	}
+	for _, f := range uploaded {
+		key := familyKey(f.Family)
+		if key == "" || (key != keys[0] && key != keys[1]) {
+			continue
+		}
+		if !found || score(f) < score(best) {
+			best, found = f, true
 		}
 	}
+	return best, found
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// pickFamily is the family for the font's keys and whether it stands in
+// for another family.
+func pickFamily(keys []string, font PDFFont, low string) (string, bool) {
 	for _, key := range keys {
 		if alias, ok := fontAliases[key]; ok && key != "" {
 			return alias.family, !alias.alias

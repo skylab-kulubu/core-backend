@@ -1,6 +1,7 @@
 package certificate
 
 import (
+	"context"
 	"embed"
 	"encoding/base64"
 	"io/fs"
@@ -8,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/google/uuid"
 )
 
 // catalogFiles are the catalog's font files, each named
@@ -106,15 +109,25 @@ func (f catalogFont) faceCSS() (string, error) {
 
 // fontFaces is the @font-face rules of the fonts the layout's text uses,
 // none for a font the renderer has: a page carries only what it draws.
-// assets is where an uploaded font is read from (the catalog's are built
-// in).
-func fontFaces(layout Layout, assets AssetReader) (string, error) {
+// assets is where a certificate font's file is read from (the catalog's
+// are built in): a draft's Media, or a published version's copies.
+func fontFaces(ctx context.Context, layout Layout, assets AssetReader) (string, error) {
 	var css strings.Builder
 	seen := map[string]bool{}
+	files := map[uuid.UUID]string{}
 	for _, el := range layout.Elements {
-		switch el.Kind {
-		case "image", "shape", "verificationQr":
+		if !drawsText(el.Kind) {
 			continue
+		}
+		if el.FontMediaID != nil {
+			face, err := uploadedFontFace(ctx, assets, *el.FontMediaID, el, files)
+			if err != nil {
+				return "", err
+			}
+			if !seen[face.key] {
+				seen[face.key] = true
+				css.WriteString(face.css)
+			}
 		}
 		font, ok := catalogFontNamed(el.FontFamily)
 		if !ok || seen[font.Dir] {
