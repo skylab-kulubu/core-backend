@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -142,8 +143,10 @@ type call struct {
 	typ, key string
 	holder   mail.TicketHolder
 	vars     map[string]string
-	source   mail.NotificationSource
-	expiry   *time.Time
+	// raw are the variables as sent: vars holds the text ones.
+	raw    map[string]any
+	source mail.NotificationSource
+	expiry *time.Time
 }
 
 // fakeMail answers err to the holders in fail, nil to the rest.
@@ -152,8 +155,8 @@ type fakeMail struct {
 	fail  map[string]error
 }
 
-func (m *fakeMail) EventReminder(_ context.Context, typ, key string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time) error {
-	m.calls = append(m.calls, call{typ, key, holder, vars, source, expiresAt})
+func (m *fakeMail) EventReminder(_ context.Context, typ, key string, holder mail.TicketHolder, vars map[string]any, source mail.NotificationSource, expiresAt *time.Time) error {
+	m.calls = append(m.calls, call{typ, key, holder, textVars(vars), vars, source, expiresAt})
 	name := holder.Email
 	if holder.Sub != uuid.Nil {
 		name = holder.Sub.String()
@@ -340,7 +343,7 @@ func TestEachAddressGetsOneReminderAndOnlyActiveTicketsCount(t *testing.T) {
 		"EventId": f.ev.ID.String(), "EventName": "Gece Kodu", "StartsAt": "25.11.2026 10:00", "Venue": "Kongre Merkezi",
 		"OwnerTeam": first.vars["OwnerTeam"], "TicketUrl": "https://yildizskylab.com/bilet/7Q2MK4XRWZ3HN5TJVB6PDYCGEA",
 		"TicketQrUrl": "https://api.example.test/v1/public/tickets/7Q2MK4XRWZ3HN5TJVB6PDYCGEA/qr.png", "TicketCode": "K7M2-QX9F",
-		"MapUrl": first.vars["MapUrl"], "CoOrganizers": "", "Theme": "", "EventBannerUrl": "",
+		"MapUrl": first.vars["MapUrl"], "CoOrganizers": "", "TicketNote": "", "Theme": "", "EventBannerUrl": "",
 	}
 	if len(first.vars) != len(want) || first.vars["OwnerTeam"] == "" || !strings.HasPrefix(first.vars["MapUrl"], "https://") {
 		t.Fatalf("vars %v", first.vars)
@@ -537,5 +540,45 @@ func TestNewServiceRefusesANegativeBound(t *testing.T) {
 	}
 	if _, err := eventreminder.NewService(eventreminder.Config{}); err == nil {
 		t.Fatal("an empty config must be refused")
+	}
+}
+
+// textVars are the text variables of vars.
+func textVars(vars map[string]any) map[string]string {
+	out := map[string]string{}
+	for k, v := range vars {
+		if s, ok := v.(string); ok {
+			out[k] = s
+		}
+	}
+	return out
+}
+
+// The organizer's announcement goes in the reminder (docs/ticket-note.md):
+// the note and its parts, an https address a link of its own.
+func TestTheReminderCarriesTheTicketNote(t *testing.T) {
+	t.Parallel()
+	f := newFixture()
+	note := "WhatsApp grubu: https://chat.whatsapp.com/Ornek123."
+	f.ev.TicketNote = &note
+	f.events[f.ev.ID] = f.ev
+	f.queue1(f.member("ayse@example.com"))
+	if _, err := f.service(t, mail.EventReminderType).Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.mail.calls) != 1 {
+		t.Fatalf("calls %+v", f.mail.calls)
+	}
+	raw := f.mail.calls[0].raw
+	if raw["TicketNote"] != note {
+		t.Fatalf("TicketNote %v", raw["TicketNote"])
+	}
+	want := []event.NotePart{
+		{Text: "WhatsApp grubu: "},
+		{Text: "https://chat.whatsapp.com/Ornek123", URL: "https://chat.whatsapp.com/Ornek123"},
+		{Text: "."},
+	}
+	if got, _ := raw["TicketNoteParts"].([]event.NotePart); !slices.Equal(got, want) {
+		t.Fatalf("TicketNoteParts %#v", raw["TicketNoteParts"])
 	}
 }

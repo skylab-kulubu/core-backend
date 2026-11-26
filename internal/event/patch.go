@@ -47,6 +47,9 @@ type Patch struct {
 	FormResponsesAutoTicket optional.Field[bool] `json:"formResponsesAutoTicket"`
 	// AttendeeNote writes the organizer's note; null or "" clears it.
 	AttendeeNote optional.Field[string] `json:"attendeeNote"`
+	// TicketNote writes the announcement the ticket mails carry; null or ""
+	// clears it (docs/ticket-note.md).
+	TicketNote optional.Field[string] `json:"ticketNote"`
 	// Theme picks the Event's theme, a key of the catalogue; null, "" or
 	// "kurumsal" is Kurumsal. TicketAccentColor sets the ticket page's
 	// colour, #RRGGBB; null or "" clears it (docs/event-theme.md).
@@ -163,6 +166,10 @@ func (p Patch) apply(existing Event) (Event, error) {
 	if p.AttendeeNote.Set || p.AttendeeNote.Null {
 		note := p.AttendeeNote.Value
 		e.AttendeeNote = &note
+	}
+	if p.TicketNote.Set || p.TicketNote.Null {
+		note := p.TicketNote.Value
+		e.TicketNote = &note
 	}
 	if p.Theme.Set {
 		key := p.Theme.Value

@@ -93,14 +93,14 @@ type Queue interface {
 
 // Mailer posts the Notification (mail.SkyNotify).
 type Mailer interface {
-	TicketCreated(ctx context.Context, idempotencyKey string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time, attachments []mail.Attachment) error
+	TicketCreated(ctx context.Context, idempotencyKey string, holder mail.TicketHolder, vars map[string]any, source mail.NotificationSource, expiresAt *time.Time, attachments []mail.Attachment) error
 }
 
 // StatusMailer posts the waiting list's and the cancellation's mails
 // (mail.SkyNotify): typ is mail.WaitlistJoinedType, mail.WaitlistPromotedType
 // or mail.TicketCancelledType. A Mailer that is not one drops those rows.
 type StatusMailer interface {
-	TicketStatus(ctx context.Context, typ, idempotencyKey string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time, attachments []mail.Attachment) error
+	TicketStatus(ctx context.Context, typ, idempotencyKey string, holder mail.TicketHolder, vars map[string]any, source mail.NotificationSource, expiresAt *time.Time, attachments []mail.Attachment) error
 }
 
 // PDFs draws the PDF ticket an access key opens and names it
@@ -465,8 +465,11 @@ func (s *Service) holder(ctx context.Context, t ticket.Ticket) (mail.TicketHolde
 // docs/ticket-created-notification.md): TicketUrl, its page; TicketQrUrl,
 // its QR as a remote image; TicketCode, its code as text. A member and a
 // guest get the same. EventUrl is never sent: the site has no Event page.
-func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]string {
-	vars := map[string]string{
+// TicketNote and TicketNoteParts are the organizer's announcement
+// (docs/ticket-note.md); event.waitlist-promoted gets them too, the
+// waiting list's and the cancellation's mails do not.
+func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]any {
+	vars := map[string]any{
 		"EventId":   ev.ID.String(),
 		"EventName": ev.Name,
 		"EventDate": "",
@@ -483,7 +486,9 @@ func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]string {
 	}
 	// The Event's theme and poster, for the template's look
 	// (docs/event-theme.md#mails); every status mail keeps them.
-	event.WithMailLook(vars, ev)
+	for k, v := range event.MailLook(ev) {
+		vars[k] = v
+	}
 	if link := s.config.Page.Link(t.AccessKey); link != "" {
 		vars["TicketUrl"] = link
 		vars["TicketCode"] = t.Code
@@ -492,6 +497,9 @@ func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]string {
 			vars["TicketQrUrl"] = origin + "/v1/public/tickets/" + t.AccessKey + "/qr.png"
 		}
 	}
+	// The organizer's announcement (docs/ticket-note.md): always there, ""
+	// and [] for none; the parts link its https addresses.
+	vars["TicketNote"], vars["TicketNoteParts"] = event.TicketNoteParts(ev)
 	return vars
 }
 
@@ -499,10 +507,10 @@ func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]string {
 // #179): the Event's and TicketUrl, the ticket page where the holder may
 // leave the list (empty without TICKET_PAGE_URL). No QR and no code: a
 // waitlisted Ticket opens no door (its QR answers 410).
-func waitlistedVars(vars map[string]string) map[string]string {
-	out := make(map[string]string, 8)
+func waitlistedVars(vars map[string]any) map[string]any {
+	out := make(map[string]any, 8)
 	for _, name := range []string{"EventId", "EventName", "EventDate", "OwnerTeam", "Venue", "TicketUrl", "Theme", "EventBannerUrl"} {
-		out[name] = vars[name]
+		out[name] = textOr(vars[name])
 	}
 	return out
 }
@@ -511,10 +519,10 @@ func waitlistedVars(vars map[string]string) map[string]string {
 // #179): the Event's, CancelledBy (holder or operator) and Reason, the
 // operator's reason (empty for the holder, or when none was given), all of
 // them always. No link, QR or code: a cancelled Ticket opens nothing.
-func cancelledVars(vars map[string]string, t ticket.Ticket) map[string]string {
-	out := make(map[string]string, 8)
+func cancelledVars(vars map[string]any, t ticket.Ticket) map[string]any {
+	out := make(map[string]any, 8)
 	for _, name := range []string{"EventId", "EventName", "EventDate", "OwnerTeam", "Theme", "EventBannerUrl"} {
-		out[name] = vars[name]
+		out[name] = textOr(vars[name])
 	}
 	out["CancelledBy"] = string(t.CancelledBy)
 	out["Reason"] = ""
@@ -522,6 +530,15 @@ func cancelledVars(vars map[string]string, t ticket.Ticket) map[string]string {
 		out["Reason"] = t.CancelReason
 	}
 	return out
+}
+
+// textOr is v, or "" for a variable vars lacks: the waiting list's and the
+// cancellation's mails carry every name always, as text.
+func textOr(v any) any {
+	if v == nil {
+		return ""
+	}
+	return v
 }
 
 func joinName(first, last string) string {

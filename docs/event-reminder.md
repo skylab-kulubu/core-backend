@@ -79,6 +79,8 @@ pass (every 15 s, every replica)
   `TicketUrl`, `TicketQrUrl` and `TicketCode` while `TICKET_PAGE_URL` is set
   (the ticket created mail's rule; `TicketQrUrl` also needs
   `PUBLIC_API_ORIGIN`); `MapUrl` is the ticket page's `directionsUrl`.
+  `TicketNote` and `TicketNoteParts` are the organizer's announcement
+  ([ticket-note.md](ticket-note.md)).
   Every variable is always sent, empty without a value: SkyNotify renders with
   `missingkey=error`. `EventId` fills the inbox item's link.
 
