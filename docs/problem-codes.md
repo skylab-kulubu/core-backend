@@ -58,6 +58,7 @@ attendee import and the forms service's report.
 | 400 | `phone_invalid` | | a Walk-in's phone number is neither a Turkish number nor `+` and 8 to 15 digits |
 | 400 | `grade_invalid` | | a Walk-in's `grade` is not one of `prep`, `1`–`4`, `masters`, `phd`, `graduate`, `other` |
 | 400 | `guest_name_too_long` | `max`: 100 | a Walk-in's first or last name is longer than 100 characters |
+| 400 | `guest_field_invalid` | `fields`: the ones of `firstName`, `lastName`, `university`, `department` holding a control character | a Walk-in's name or text field holds a tab, a line break or another control character |
 | 400 | `university_too_long`, `department_too_long` | `max`: 200 | a Walk-in's university or department is longer than 200 characters |
 | 429 | `walk_in_rate_limited` | `retryAfterSeconds` | more Walk-ins than the subject's budget (60 in ten minutes, 300 a day) |
 | 404 | `guest_ticket_not_found` | `registrationUrl` while the Event takes registrations | the guest's check-in: no Ticket for this e-mail or key on the Session's Event |

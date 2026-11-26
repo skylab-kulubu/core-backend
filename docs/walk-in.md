@@ -25,12 +25,13 @@ after as the door's scans.
 ```
 
 - `firstName`, `lastName`, `email` are required (`400 guest_fields_required`
-  with `fields`), names up to 100 characters (`guest_name_too_long`). The
+  with `fields`), names up to 100 characters (`guest_name_too_long`). A
+  control character (a tab, a line break) in a name, the university or the
+  department is `400 guest_field_invalid` with `fields`. The
   e-mail is trimmed and lower-cased, and must look like a mailbox: one `@`,
   a domain with a dot, no spaces (`email_invalid`). Whether it receives
   mail is not asked: the Ticket's mail tells.
-- The rest is optional, for the Event's statistics (KVKK: only what is
-  asked for, nothing required):
+- The rest is optional, for the Event's statistics; none is required:
   - `phoneNumber`: spaces, dashes, dots and parentheses are dropped. A
     Turkish number, `+90`, `90` or `0` and its ten digits, or the ten digits
     alone, is stored `+90XXXXXXXXXX`; another country's, `+` (or `00`) and 8
@@ -101,7 +102,9 @@ the rest of what the guest gave is answered.
   (migration `20261127220000`). The row is opened before anything is
   written; if it cannot be, `503 audit_unavailable` and nothing is written.
   A Walk-in that found the Ticket writes no row (the entry carries
-  `by_user_id`, as every door write).
+  `by_user_id`, as every door write). One that lost a double submit to
+  another request (the Ticket written meanwhile, answered `existing`)
+  closes its row `failed` with the code `existing` and no Ticket.
 - One log line per written Ticket, `{"event":"walk_in","actorId":…,"eventId":…,"ticketId":…}`,
   naming nobody else.
 - Budget per signed-in subject: 60 requests in ten minutes, 300 answered a

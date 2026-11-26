@@ -30,6 +30,7 @@ type walkInDoor struct {
 	events   *event.MemoryStore
 	users    user.Store
 	audit    *teamaudit.Memory
+	dir      *identity.Memory
 	weblab   identity.Group
 	svc      ticket.Service
 	ev       event.Event
@@ -43,9 +44,9 @@ func newWalkInDoor(t *testing.T, e event.Event) *walkInDoor {
 	t.Helper()
 	ctx := context.Background()
 	d := &walkInDoor{tickets: ticket.NewMemoryStore(), events: event.NewMemoryStore(), users: user.NewMemoryStore(), audit: teamaudit.NewMemory()}
-	dir := identity.NewMemory()
+	d.dir = identity.NewMemory()
 	d.weblab = identity.Group{ID: uuid.NewString(), Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"}
-	dir.PutGroup(d.weblab)
+	d.dir.PutGroup(d.weblab)
 	staff := uuid.New()
 	d.staff = authz.Principal{ID: staff.String(), Groups: []string{"/UYELER/ARGE/GAMELAB"}}
 	if e.Name == "" {
@@ -80,8 +81,50 @@ func newWalkInDoor(t *testing.T, e event.Event) *walkInDoor {
 		t.Fatal(err)
 	}
 	d.tickets.UseEvents(d.events)
-	d.svc = ticket.NewService(mailingStore{d.tickets}, d.events, authz.NewAuthorizer(authz.DefaultPolicy()), d.users, dir, d.audit, log.New(io.Discard, "", 0))
+	d.svc = ticket.NewService(mailingStore{d.tickets}, d.events, authz.NewAuthorizer(authz.DefaultPolicy()), d.users, d.dir, d.audit, log.New(io.Discard, "", 0))
 	return d
+}
+
+// racingStore misses the guest Ticket of one e-mail at the first read, as a
+// Walk-in does whose double submit wrote it just after.
+type racingStore struct {
+	mailingStore
+	email  string
+	missed bool
+}
+
+func (r *racingStore) GetByGuestEvent(ctx context.Context, email string, eventID uuid.UUID) (ticket.Ticket, error) {
+	if email == r.email && !r.missed {
+		r.missed = true
+		return ticket.Ticket{}, ticket.ErrNotFound
+	}
+	return r.MemoryStore.GetByGuestEvent(ctx, email, eventID)
+}
+
+// A Walk-in that lost a double submit (the Ticket written between its read
+// and its write) answers existing, writes no second Ticket and closes its
+// audit row failed, existing, without the other request's Ticket.
+func TestWalkInDoubleSubmitIsNotRecordedAsItsWrite(t *testing.T) {
+	t.Parallel()
+	d := newWalkInDoor(t, event.Event{})
+	svc := ticket.NewService(&racingStore{mailingStore: mailingStore{d.tickets}, email: "ada@example.com"}, d.events,
+		authz.NewAuthorizer(authz.DefaultPolicy()), d.users, d.dir, d.audit, log.New(io.Discard, "", 0))
+	before := d.count(t)
+	out, err := svc.WalkIn(as(d.staff), d.staff, d.ev.ID, ticket.WalkIn{FirstName: "Ada", LastName: "L", Email: "ada@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Result != ticket.WalkInExisting || out.TicketMail || out.Entry == nil || out.Entry.Source != ticket.EntryDesk {
+		t.Fatalf("answer %+v %+v", out, out.Entry)
+	}
+	if d.count(t) != before {
+		t.Fatal("a second Ticket was written")
+	}
+	rows := d.audit.Rows()
+	if len(rows) != 1 || rows[0].Outcome != teamaudit.OutcomeFailed || rows[0].ErrorCode != "existing" ||
+		rows[0].After == nil || rows[0].After.TicketID != "" {
+		t.Fatalf("audit rows %+v", rows)
+	}
 }
 
 // as is ctx carrying p as the audit row's actor, as auditContext does.
@@ -349,6 +392,9 @@ func TestWalkInFields(t *testing.T) {
 		{"university", func(w *ticket.WalkIn) { w.University = longText(201) }, ticket.CodeUniversityTooLong, ""},
 		{"department", func(w *ticket.WalkIn) { w.Department = longText(201) }, ticket.CodeDepartmentTooLong, ""},
 		{"first name", func(w *ticket.WalkIn) { w.FirstName = longText(101) }, ticket.CodeGuestNameTooLong, ""},
+		{"a line break in the name", func(w *ticket.WalkIn) { w.LastName = "Yıl\nmaz" }, ticket.CodeGuestFieldInvalid, ""},
+		{"a tab in the department", func(w *ticket.WalkIn) { w.Department = "Bilgisayar\tMüh." }, ticket.CodeGuestFieldInvalid, ""},
+		{"a NUL in the university", func(w *ticket.WalkIn) { w.University = "YTÜ\x00" }, ticket.CodeGuestFieldInvalid, ""},
 		{"+90", func(w *ticket.WalkIn) { w.PhoneNumber = "+90 (532) 123-45-67" }, "", "+905321234567"},
 		{"90", func(w *ticket.WalkIn) { w.PhoneNumber = "905321234567" }, "", "+905321234567"},
 		{"ten digits", func(w *ticket.WalkIn) { w.PhoneNumber = "532.123.45.67" }, "", "+905321234567"},

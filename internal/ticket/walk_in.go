@@ -70,6 +70,7 @@ const (
 // The codes of a Walk-in's refusals (docs/problem-codes.md).
 const (
 	CodeEmailInvalid        = "email_invalid"
+	CodeGuestFieldInvalid   = "guest_field_invalid"
 	CodePhoneInvalid        = "phone_invalid"
 	CodeGradeInvalid        = "grade_invalid"
 	CodeGuestNameTooLong    = "guest_name_too_long"
@@ -79,6 +80,7 @@ const (
 	walkInAuditNotFound     = "not_found"
 	walkInAuditFailed       = "failed"
 	walkInAuditInvalidState = "ticket_inactive"
+	walkInAuditExisting     = "existing"
 )
 
 // normalizeWalkIn trims w, lowers its e-mail, puts its phone number in one
@@ -96,6 +98,20 @@ func normalizeWalkIn(w WalkIn) (WalkIn, error) {
 	}
 	if utf8.RuneCountInString(w.FirstName) > MaxWalkInName || utf8.RuneCountInString(w.LastName) > MaxWalkInName {
 		return WalkIn{}, invalidWith(CodeGuestNameTooLong, map[string]any{"max": MaxWalkInName})
+	}
+	// A control character (a tab, a line break, a NUL) in a name or a
+	// free text field is refused: it would break the mail, the PDF and the
+	// door's list.
+	controlled := []string{}
+	for _, f := range []struct{ name, value string }{
+		{"firstName", w.FirstName}, {"lastName", w.LastName}, {"university", w.University}, {"department", w.Department},
+	} {
+		if strings.ContainsFunc(f.value, unicode.IsControl) {
+			controlled = append(controlled, f.name)
+		}
+	}
+	if len(controlled) > 0 {
+		return WalkIn{}, invalidWith(CodeGuestFieldInvalid, map[string]any{"fields": controlled})
 	}
 	if !plainEmail(w.Email) {
 		return WalkIn{}, invalid(CodeEmailInvalid)
@@ -246,7 +262,7 @@ func (s *service) WalkIn(ctx context.Context, p authz.Principal, eventID uuid.UU
 		return WalkInOutcome{}, err
 	}
 	written, result, err := s.writeWalkIn(ctx, ev, w, found, ok)
-	s.finishWalkInAudit(ctx, record, written.ID, err)
+	s.finishWalkInAudit(ctx, record, written.ID, result, err)
 	if err != nil {
 		return WalkInOutcome{}, err
 	}
@@ -421,8 +437,10 @@ func (s *service) beginWalkInAudit(ctx context.Context, p authz.Principal, ev ev
 }
 
 // finishWalkInAudit writes the row's outcome: ok with the Ticket written, or
-// failed with a code naming nobody.
-func (s *service) finishWalkInAudit(ctx context.Context, record *auditRecord, ticketID uuid.UUID, err error) {
+// failed with a code naming nobody. A Ticket another request wrote since
+// the read (a double submit, result existing) is not this Walk-in's: the
+// row is closed failed, existing, without it.
+func (s *service) finishWalkInAudit(ctx context.Context, record *auditRecord, ticketID uuid.UUID, result WalkInResult, err error) {
 	if record == nil {
 		return
 	}
@@ -441,6 +459,8 @@ func (s *service) finishWalkInAudit(ctx context.Context, record *auditRecord, ti
 		default:
 			code = walkInAuditFailed
 		}
+	case result == WalkInExisting:
+		outcome, code = teamaudit.OutcomeFailed, walkInAuditExisting
 	case ticketID != uuid.Nil:
 		after.TicketID = ticketID.String()
 	}
