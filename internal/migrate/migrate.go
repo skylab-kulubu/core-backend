@@ -1820,6 +1820,12 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.certificate_batches') AND conname = 'certificate_batches_reason_check'
 			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%rescan%'
 		  )`,
+	// "Sertifikaları otomatik gönder" (docs/certificate-rule.md): the
+	// Event's switch is off by default.
+	20261127201000: `
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'attendance_auto_finalize'
+		  AND column_default = 'false'`,
 	// A certificate's attendance snapshot (docs/certificate-rule.md): the
 	// three columns' check, which names them.
 	20261124020000: `

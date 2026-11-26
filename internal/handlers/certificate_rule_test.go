@@ -55,7 +55,7 @@ func TestCertificateRuleHTTP(t *testing.T) {
 	path := "/v1/events/" + eventID + "/certificate-rule"
 	status, rule := sendEventJSON(t, app, fiber.MethodGet, path, "")
 	if status != fiber.StatusOK || rule["rule"] != "count" || rule["minCount"] != nil || rule["countedTotal"] != float64(2) || rule["effectiveMin"] != float64(2) ||
-		rule["autoFinalize"] != true {
+		rule["autoFinalize"] != false {
 		t.Fatalf("read %d %v", status, rule)
 	}
 	if _, present := rule["minCount"]; !present {
@@ -71,24 +71,29 @@ func TestCertificateRuleHTTP(t *testing.T) {
 	if status != fiber.StatusOK || rule["minCount"] != float64(3) || rule["countedTotal"] != float64(3) || rule["effectiveMin"] != float64(3) {
 		t.Fatalf("write %d %v", status, rule)
 	}
-	if rule["autoFinalize"] != true {
+	if rule["autoFinalize"] != false {
 		t.Fatalf("a write without autoFinalize changed it: %v", rule)
 	}
 	_, read := sendEventJSON(t, app, fiber.MethodGet, "/v1/events/"+eventID, "")
 	if read["attendanceRule"] != "count" || read["attendanceMinCount"] != float64(3) {
 		t.Fatalf("event %v", read)
 	}
-	// The automatic finalization switch (ticket 03): off, then the Event
-	// says so; on again.
-	status, rule = sendEventJSON(t, app, fiber.MethodPut, path, `{"rule":"count","minCount":3,"sessions":[],"autoFinalize":false}`)
-	if status != fiber.StatusOK || rule["autoFinalize"] != false || rule["minCount"] != float64(3) {
-		t.Fatalf("switch off %d %v", status, rule)
+	// The automatic finalization switch (ticket 03; "Sertifikaları
+	// otomatik gönder"): off on a new Event; on, then the Event says so;
+	// off again.
+	status, rule = sendEventJSON(t, app, fiber.MethodPut, path, `{"rule":"count","minCount":3,"sessions":[],"autoFinalize":true}`)
+	if status != fiber.StatusOK || rule["autoFinalize"] != true || rule["minCount"] != float64(3) {
+		t.Fatalf("switch on %d %v", status, rule)
 	}
-	if _, read := sendEventJSON(t, app, fiber.MethodGet, "/v1/events/"+eventID, ""); read["attendanceAutoFinalize"] != false {
+	if _, read := sendEventJSON(t, app, fiber.MethodGet, "/v1/events/"+eventID, ""); read["attendanceAutoFinalize"] != true {
 		t.Fatalf("event after the switch %v", read)
 	}
-	if status, rule = sendEventJSON(t, app, fiber.MethodPut, path, `{"rule":"count","minCount":3,"sessions":[],"autoFinalize":true}`); status != fiber.StatusOK || rule["autoFinalize"] != true {
-		t.Fatalf("switch on %d %v", status, rule)
+	if status, rule = sendEventJSON(t, app, fiber.MethodPut, path, `{"rule":"count","minCount":3,"sessions":[],"autoFinalize":false}`); status != fiber.StatusOK || rule["autoFinalize"] != false {
+		t.Fatalf("switch off %d %v", status, rule)
+	}
+	// An Event created with the switch on keeps it.
+	if status, on := sendEventJSON(t, app, fiber.MethodPost, "/v1/events", `{"name":"ARTLAB 2","location":"YTÜ","ownerTeam":"WEBLAB","attendanceRule":"once","attendanceAutoFinalize":true}`); status != fiber.StatusCreated || on["attendanceAutoFinalize"] != true {
+		t.Fatalf("created on %d %v", status, on)
 	}
 
 	for name, refused := range map[string]string{

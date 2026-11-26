@@ -73,7 +73,8 @@ type eventBody struct {
 	// AttendanceMinCount is the count rule's threshold, none for the
 	// default (docs/certificate-rule.md).
 	AttendanceMinCount *int `json:"attendanceMinCount"`
-	// AttendanceAutoFinalize on create; none is on
+	// AttendanceAutoFinalize on create; none is off: certificates are
+	// sent by hand unless the organizer turns it on
 	// (docs/certificate-rule.md).
 	AttendanceAutoFinalize *bool        `json:"attendanceAutoFinalize"`
 	DoorStaffIDs           *[]uuid.UUID `json:"doorStaffIds"`
@@ -172,7 +173,7 @@ func (b eventBody) asEvent() event.Event {
 		AttendanceRatio:         b.AttendanceRatio,
 
 		AttendanceMinCount:     b.AttendanceMinCount,
-		AttendanceAutoFinalize: b.AttendanceAutoFinalize == nil || *b.AttendanceAutoFinalize,
+		AttendanceAutoFinalize: b.AttendanceAutoFinalize != nil && *b.AttendanceAutoFinalize,
 
 		RegistrationClosed:   b.RegistrationClosed,
 		RegistrationClosesAt: b.RegistrationClosesAt,
