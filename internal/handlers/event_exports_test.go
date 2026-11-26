@@ -99,7 +99,8 @@ func newExportFixture(t *testing.T) exportFixture {
 			t.Fatal(err)
 		}
 	}
-	if _, err := store.AddVenueEntry(ctx, ticket.VenueEntry{TicketID: tickets["ada"].ID, EntryDate: "2026-11-27", Source: ticket.EntryScan}); err != nil {
+	scannedAt := time.Date(2026, 11, 27, 6, 58, 0, 0, time.UTC)
+	if _, err := store.AddVenueEntry(ctx, ticket.VenueEntry{TicketID: tickets["ada"].ID, EntryDate: "2026-11-27", Source: ticket.EntryScan, ScannedAt: &scannedAt}); err != nil {
 		t.Fatal(err)
 	}
 	az := authz.NewAuthorizer(authz.DefaultPolicy())
@@ -357,7 +358,7 @@ func TestAttendeeExportReportsAndRefusals(t *testing.T) {
 	a := f.app(f.leader())
 	got := f.call(t, a, map[string]any{"report": "entries", "format": "csv"})
 	if got.status != fiber.StatusOK || !strings.Contains(string(got.body), "27.11.2026;Ada;Lovelace;ada@example.com;Misafir;'+905551112233;Yıldız Teknik Üniversitesi;Matematik;Yüksek lisans;") ||
-		!strings.Contains(string(got.body), "QR okutma") {
+		!strings.Contains(string(got.body), ";27.11.2026 09:58;QR okutma") {
 		t.Fatalf("entries %d %s", got.status, got.body)
 	}
 	got = f.call(t, a, map[string]any{"report": "certificates", "format": "csv"})

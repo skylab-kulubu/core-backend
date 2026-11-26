@@ -44,7 +44,10 @@ no-store`, `X-Content-Type-Options: nosniff`.
 - XLSX: one sheet, Turkish headers, the header row frozen and an auto
   filter on it; dates and times are date cells (Istanbul's wall clock,
   `dd.mm.yyyy hh:mm`); every text is a text cell, never a formula. Made with
-  [excelize](https://github.com/xuri/excelize) (BSD-3-Clause).
+  [excelize](https://github.com/xuri/excelize) (BSD-3-Clause) v2.10.1;
+  v2.11.0 would also raise `golang.org/x/image` (0.34 → 0.38, which the
+  ticket page, QR and certificate code draw with) and `mscfb`, so it waits
+  for a release of its own.
 - CSV: UTF-8 with a byte order mark, semicolon-separated, CRLF (how Excel
   opens it on a Turkish system); dates as `26.11.2026 14:05`; a text that
   starts with `= + - @`, a tab or a carriage return gets a leading
@@ -62,8 +65,9 @@ member's university and department from their account, no phone (the
 account's phone is not shown to organizers). The grade is written as the
 panel shows it (Hazırlık, 1.–4. sınıf, Yüksek lisans, Doktora, Mezun, Diğer). The
 phone is a text cell in the XLSX; in the CSV a leading `+` gets the
-apostrophe below, so Excel keeps it as text (Yusuf, 2026-11-26: the phone is
-exported).
+apostrophe below, so Excel keeps it as text, and the apostrophe shows in
+the cell (`'+905551112233`): the XLSX is the format to read phones in
+(Yusuf, 2026-11-26: the phone is exported).
 
 | Report | Rows | Columns after the person |
 | --- | --- | --- |
