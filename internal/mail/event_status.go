@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// The SkyMail templates of the Event status mails (ticket 14): a cancelled
+// The SkyNotify templates of the Event status mails (ticket 14): a cancelled
 // Event's Ticket holders are told of it, and of the cancellation undone.
 const (
 	DefaultEventCancelledTemplateKey  = "core.event-cancelled"
@@ -21,7 +21,7 @@ const (
 )
 
 // EventStatusTemplateKey is kind's template key, empty when it is off.
-func (s *SkyMail) EventStatusTemplateKey(kind EventStatusKind) string {
+func (s *SkyNotify) EventStatusTemplateKey(kind EventStatusKind) string {
 	if s == nil {
 		return ""
 	}
@@ -36,16 +36,16 @@ func (s *SkyMail) EventStatusTemplateKey(kind EventStatusKind) string {
 }
 
 // EventStatusConfigured reports whether kind's mail has a template key.
-func (s *SkyMail) EventStatusConfigured(kind EventStatusKind) bool {
+func (s *SkyNotify) EventStatusConfigured(kind EventStatusKind) bool {
 	return s.EventStatusTemplateKey(kind) != ""
 }
 
-// EventStatus posts kind's mail by template key and reports what SkyMail
+// EventStatus posts kind's mail by template key and reports what SkyNotify
 // answered, as Membership does: the mail waits in core's queue until
-// SkyMail has taken it (internal/eventstatusmail). A refusal is warned
+// SkyNotify has taken it (internal/eventstatusmail). A refusal is warned
 // about in the log with the kind event_cancelled or event_reinstated and
 // no recipient.
-func (s *SkyMail) EventStatus(ctx context.Context, kind EventStatusKind, recipient, fullName string, vars map[string]string) error {
+func (s *SkyNotify) EventStatus(ctx context.Context, kind EventStatusKind, recipient, fullName string, vars map[string]string) error {
 	key := s.EventStatusTemplateKey(kind)
 	if key == "" || s.noBaseURL() {
 		return ErrTemplateUnconfigured

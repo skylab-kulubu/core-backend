@@ -479,7 +479,7 @@ func privilegedRole(role ClientRole) bool {
 
 // privilegedTarget reports whether the person is privileged: in a
 // Privileged root (ADMIN, YK, DK, or a Group under one), or holding in
-// effect a role privilegedRole counts (FORMS-ALL, SkyMail's sending,
+// effect a role privilegedRole counts (FORMS-ALL, SkyNotify's sending,
 // approving and reading roles, place:admin, a Java era realm role or the
 // admin role it holds as a composite, a role nobody has classified …).
 // Keycloak resolves the roles: Groups above the person's, realm and client

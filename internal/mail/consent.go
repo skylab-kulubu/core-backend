@@ -12,9 +12,9 @@ const kindConsentConfirmation = "consent_confirmation"
 // ConsentConfirmation sends the confirmation mail of a pending contact
 // consent by template key. It carries no name: whoever typed the address may
 // have typed any name with it. Like every send it tells its caller nothing:
-// a mail SkyMail refuses leaves the consent pending and is warned about in
+// a mail SkyNotify refuses leaves the consent pending and is warned about in
 // the log, never with the address.
-func (s *SkyMail) ConsentConfirmation(ctx context.Context, templateKey, recipient string, vars map[string]string) {
+func (s *SkyNotify) ConsentConfirmation(ctx context.Context, templateKey, recipient string, vars map[string]string) {
 	templateKey = strings.TrimSpace(templateKey)
 	if strings.TrimSpace(recipient) == "" || templateKey == "" {
 		return
