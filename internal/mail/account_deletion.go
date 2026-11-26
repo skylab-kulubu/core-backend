@@ -10,10 +10,10 @@ import (
 	"strings"
 )
 
-// The SkyMail templates of the two account deletion notices
+// The SkyNotify templates of the two account deletion notices
 // (docs/account-lifecycle.md, "Deletion notices"): the person's request was
 // received, and their account and data were deleted. Both are System account
-// templates seeded from skymail-frontend.
+// templates seeded from skynotify-frontend.
 const (
 	DefaultAccountDeletionReceivedTemplateKey  = "account.deletion-requested"
 	DefaultAccountDeletionCompletedTemplateKey = "account.deletion-completed"
@@ -21,31 +21,31 @@ const (
 
 const (
 	kindAccountDeletionNotice = "account_deletion_notice"
-	// reasonEraseAfterSendUnconfirmed: SkyMail took the notice but did not
+	// reasonEraseAfterSendUnconfirmed: SkyNotify took the notice but did not
 	// say it keeps no record of it, an image from before erase_after_send.
 	reasonEraseAfterSendUnconfirmed = "erase_after_send_unconfirmed"
 )
 
-// ErrEraseAfterSendUnconfirmed is a notice SkyMail took without saying it
+// ErrEraseAfterSendUnconfirmed is a notice SkyNotify took without saying it
 // keeps no record of its recipient: an image from before erase_after_send
 // keeps the row, with the address, until someone erases it.
-var ErrEraseAfterSendUnconfirmed = errors.New("mail: SkyMail took the notice without erase_after_send")
+var ErrEraseAfterSendUnconfirmed = errors.New("mail: SkyNotify took the notice without erase_after_send")
 
-// maxCreatedBody caps what is read of SkyMail's answer to a notice.
+// maxCreatedBody caps what is read of SkyNotify's answer to a notice.
 const maxCreatedBody = 4 << 10
 
 // AccountDeletionNotice posts one account deletion notice to one address,
 // by template key, with no recipient name and with erase_after_send:
-// SkyMail sends it untracked and erases its row once it is sent or failed
-// (skymail-backend README, "Kayıt bırakmayan posta"), since the person's
+// SkyNotify sends it untracked and erases its row once it is sent or failed
+// (skynotify-backend README, "Kayıt bırakmayan posta"), since the person's
 // Erasure command has run already and nothing would erase it later.
 //
-// It reports what SkyMail answered: nil when it took the mail and said it
+// It reports what SkyNotify answered: nil when it took the mail and said it
 // keeps no record, ErrEraseAfterSendUnconfirmed when it took the mail
 // without saying so, ErrMaybeDelivered when the request went out and no
 // answer came, a *SendError when it surely took nothing. The line it writes
-// on a refusal carries no recipient, as every SkyMail line.
-func (s *SkyMail) AccountDeletionNotice(ctx context.Context, templateKey, recipient string, vars map[string]string) error {
+// on a refusal carries no recipient, as every SkyNotify line.
+func (s *SkyNotify) AccountDeletionNotice(ctx context.Context, templateKey, recipient string, vars map[string]string) error {
 	templateKey = strings.TrimSpace(templateKey)
 	if s == nil || templateKey == "" || s.noBaseURL() {
 		return ErrTemplateUnconfigured

@@ -18,8 +18,8 @@ import (
 type attendanceMailConfig struct {
 	// On is ATTENDANCE_MAIL: unset or off is off, on is on.
 	On bool
-	// WelcomeType is SKYMAIL_ATTENDANCE_WELCOME_TEMPLATE_KEY and
-	// RecordedType SKYMAIL_ATTENDANCE_RECORDED_TEMPLATE_KEY: unset is the
+	// WelcomeType is SKYNOTIFY_ATTENDANCE_WELCOME_TEMPLATE_KEY and
+	// RecordedType SKYNOTIFY_ATTENDANCE_RECORDED_TEMPLATE_KEY: unset is the
 	// type's own key, empty queues none of that kind.
 	WelcomeType, RecordedType string
 	// PerMinute is ATTENDANCE_MAIL_PER_MINUTE: unset is
@@ -36,8 +36,8 @@ func attendanceMailFromEnv(getenv func(string) string, lookup func(string) (stri
 	}
 	cfg := attendanceMailConfig{
 		On:           on,
-		WelcomeType:  templateKey(lookup, "SKYMAIL_ATTENDANCE_WELCOME_TEMPLATE_KEY", mail.AttendanceWelcomeType),
-		RecordedType: templateKey(lookup, "SKYMAIL_ATTENDANCE_RECORDED_TEMPLATE_KEY", mail.AttendanceRecordedType),
+		WelcomeType:  templateKey(lookup, "SKYNOTIFY_ATTENDANCE_WELCOME_TEMPLATE_KEY", mail.AttendanceWelcomeType),
+		RecordedType: templateKey(lookup, "SKYNOTIFY_ATTENDANCE_RECORDED_TEMPLATE_KEY", mail.AttendanceRecordedType),
 		PerMinute:    attendancemail.DefaultPerMinute,
 	}
 	if raw := strings.TrimSpace(getenv("ATTENDANCE_MAIL_PER_MINUTE")); raw != "" {
@@ -52,9 +52,9 @@ func attendanceMailFromEnv(getenv func(string) string, lookup func(string) (stri
 
 // startAttendanceMail starts the worker that sends the door's mails until
 // ctx is cancelled, and answers a channel that closes once it has stopped.
-// Off, without SkyMail, or with both template keys empty, no scan queues
+// Off, without SkyNotify, or with both template keys empty, no scan queues
 // anything: turned on later, it does not tell the scans of meanwhile.
-func startAttendanceMail(ctx context.Context, cfg attendanceMailConfig, store *ticket.PostgresStore, queue attendancemail.Queue, events *event.PostgresStore, users user.Store, sky *mail.SkyMail, logf func(string, ...any)) <-chan struct{} {
+func startAttendanceMail(ctx context.Context, cfg attendanceMailConfig, store *ticket.PostgresStore, queue attendancemail.Queue, events *event.PostgresStore, users user.Store, sky *mail.SkyNotify, logf func(string, ...any)) <-chan struct{} {
 	off := make(chan struct{})
 	close(off)
 	store.NotifyAttendance(false, false)
@@ -63,7 +63,7 @@ func startAttendanceMail(ctx context.Context, cfg attendanceMailConfig, store *t
 		logf("attendance mail: off (ATTENDANCE_MAIL is not on)")
 		return off
 	case sky == nil:
-		logf("attendance mail: off (SkyMail is not configured)")
+		logf("attendance mail: off (SkyNotify is not configured)")
 		return off
 	case cfg.WelcomeType == "" && cfg.RecordedType == "":
 		logf("attendance mail: off (both template keys are empty)")

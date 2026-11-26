@@ -68,12 +68,12 @@ func TestPostgresCertificateMailQueue(t *testing.T) {
 	if err := store.FinishMail(ctx, m.ID, uuid.New(), certificate.MailSent, "", time.Now()); !errors.Is(err, certificate.ErrLeaseLost) {
 		t.Fatalf("a stranger settled the mail: %v", err)
 	}
-	// SkyMail down: back in the queue at retryAt, then the lease is free.
-	if err := store.FinishMail(ctx, m.ID, m.ClaimToken, certificate.MailQueued, "skymail_503", time.Now().Add(-time.Second)); err != nil {
+	// SkyNotify down: back in the queue at retryAt, then the lease is free.
+	if err := store.FinishMail(ctx, m.ID, m.ClaimToken, certificate.MailQueued, "skynotify_503", time.Now().Add(-time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	states, err := store.MailStates(ctx, ev.ID)
-	if err != nil || states[cert.Serial].Status != certificate.MailQueued || states[cert.Serial].ErrorCode != "skymail_503" {
+	if err != nil || states[cert.Serial].Status != certificate.MailQueued || states[cert.Serial].ErrorCode != "skynotify_503" {
 		t.Fatalf("states %v %+v", err, states)
 	}
 	claimed, err = store.ClaimMails(ctx, 10, time.Minute)
@@ -126,7 +126,7 @@ func TestPostgresCertificateMailQueue(t *testing.T) {
 
 	// Bulk resend: one statement, the waiting one skipped; "all" once per
 	// cooldown, "failed" takes the failed alone.
-	if err := store.FinishMail(ctx, reclaimed[0].ID, reclaimed[0].ClaimToken, certificate.MailFailed, "skymail_400", time.Now()); err != nil {
+	if err := store.FinishMail(ctx, reclaimed[0].ID, reclaimed[0].ClaimToken, certificate.MailFailed, "skynotify_400", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	got, err := store.ResendEventMails(ctx, ev.ID, certificate.ResendFailed, nil, time.Minute)

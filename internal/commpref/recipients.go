@@ -17,7 +17,7 @@ import (
 
 // The recipient question (ADR 0072 karar 3; sky_lab_genel
 // .scratch/abonelik-cikisi bilet 01; docs/news-audience.md, "Recipients"):
-// SkyMail names the recipients a sender chose (a list, a Keycloak Group, a
+// SkyNotify names the recipients a sender chose (a list, a Keycloak Group, a
 // form's respondents) and asks, for one category, which of them are a
 // person, whether the mail may go to each, and each one's unsubscribe link.
 // Unlike the News audience, core picks nobody here: the sender chose the
@@ -116,7 +116,7 @@ const (
 type RecipientDecision struct {
 	// Matched is whether the recipient is a person core knows: a verified
 	// address of an account, or the subject of one. A recipient that is not
-	// is left to SkyMail's own record and link.
+	// is left to SkyNotify's own record and link.
 	Matched bool
 	// Sub is the person's; uuid.Nil when not matched or ambiguous.
 	Sub     uuid.UUID

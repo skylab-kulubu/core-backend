@@ -18,13 +18,13 @@ import (
 const MailPDFTimeout = 10 * time.Second
 
 // CertificateAttachmentMailer is a CertificateMailer that can send files
-// with the mail (*mail.SkyMail). The PDF goes along only with one.
+// with the mail (*mail.SkyNotify). The PDF goes along only with one.
 type CertificateAttachmentMailer interface {
 	CertificateMailAttachments(ctx context.Context, idempotencyKey, recipientEmail, fullName string, vars map[string]string, attachments []mail.Attachment) error
 }
 
 // Why a mail went without its PDF while the PDF is on: the file is over
-// SkyMail's bound, it could not be read, or SkyMail refused the mail with
+// SkyNotify's bound, it could not be read, or SkyNotify refused the mail with
 // it.
 const (
 	pdfSkipTooLarge = "too_large"
@@ -63,10 +63,10 @@ func (m *mailPDFMetrics) prometheus() string {
 
 // mailAttachments is c's PDF as its mail's attachment, or nil when the mail
 // goes without it: the PDF is off, the sender takes no files, the PDF could
-// not be read within MailPDFTimeout, or it is over SkyMail's
+// not be read within MailPDFTimeout, or it is over SkyNotify's
 // mail.MaxAttachmentBytes (512 KB decoded; base64 makes it about 683 KB of
 // the request, far under Graph's 4 MB). Each try reads it again from
-// storage, the same bytes; SkyMail keeps files out of the Idempotency-Key's
+// storage, the same bytes; SkyNotify keeps files out of the Idempotency-Key's
 // digest, so a try without it is the same mail. The log names the mail's
 // row, never the person.
 func (s *service) mailAttachments(ctx context.Context, sender CertificateMailer, m Mail) []mail.Attachment {
@@ -91,14 +91,14 @@ func (s *service) mailAttachments(ctx context.Context, sender CertificateMailer,
 		return nil
 	case len(data) > mail.MaxAttachmentBytes:
 		s.mailPDF.skip(pdfSkipTooLarge)
-		log.Printf("WARN certificate mail %s: the PDF is %d KB, over SkyMail's %d KB; the mail goes with its link only", m.ID, (len(data)+1023)/1024, mail.MaxAttachmentBytes/1024)
+		log.Printf("WARN certificate mail %s: the PDF is %d KB, over SkyNotify's %d KB; the mail goes with its link only", m.ID, (len(data)+1023)/1024, mail.MaxAttachmentBytes/1024)
 		return nil
 	}
 	return []mail.Attachment{mail.PDFAttachment(CertificatePDFFilename(m.Certificate.Serial), data)}
 }
 
 // postMail sends m with attachments: through CertificateMailAttachments
-// when there are any, else CertificateMail as before. A send that SkyMail
+// when there are any, else CertificateMail as before. A send that SkyNotify
 // took counts the PDF.
 func (s *service) postMail(ctx context.Context, sender CertificateMailer, m Mail, attachments []mail.Attachment) error {
 	c := m.Certificate
@@ -115,7 +115,7 @@ func (s *service) postMail(ctx context.Context, sender CertificateMailer, m Mail
 
 // CertificatePDFFilename is the name the PDF goes under:
 // SKY-LAB-sertifika-<serial>.pdf, ASCII letters, digits and '-' only (never
-// the person's name; SkyMail would reduce anything else).
+// the person's name; SkyNotify would reduce anything else).
 func CertificatePDFFilename(serial string) string {
 	clean := strings.Map(func(r rune) rune {
 		switch {

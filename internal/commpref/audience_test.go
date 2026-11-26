@@ -190,7 +190,7 @@ func newAudienceFixture(t *testing.T, private bool) *audienceFixture {
 	f.edit("disabled", func(p *identity.AudiencePerson) { p.Enabled = false })
 	f.edit("unverified", func(p *identity.AudiencePerson) { p.EmailVerified = false })
 	f.edit("noEmail", func(p *identity.AudiencePerson) { p.Email = " " })
-	f.edit("service", func(p *identity.AudiencePerson) { p.ServiceAccount = true; p.Username = "service-account-skymail" })
+	f.edit("service", func(p *identity.AudiencePerson) { p.ServiceAccount = true; p.Username = "service-account-skynotify" })
 	f.edit("dup", func(p *identity.AudiencePerson) { p.Email = "FRONT@example.test" })
 	f.accounts.blocked[f.p["erased"]] = true
 	f.accounts.names[f.p["front"]] = [2]string{"Ön", "Uç"}
@@ -289,7 +289,7 @@ func TestAudienceMembers(t *testing.T) {
 		t.Fatalf("a person core has no row for is named by Keycloak: %+v", back)
 	}
 	// Every recipient passed the e-mail preference (masterOff and clubOff
-	// are left out): the channels SkyMail may use are e-mail (ticket 06).
+	// are left out): the channels SkyNotify may use are e-mail (ticket 06).
 	for _, r := range page.Items {
 		if !slices.Equal(r.AllowedChannels, []Channel{ChannelEmail}) {
 			t.Fatalf("%s allowedChannels = %v, want [email]", r.UserID, r.AllowedChannels)

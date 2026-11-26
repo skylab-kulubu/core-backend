@@ -44,7 +44,7 @@ func coOrganizersWriteOn(getenv func(string) string) (bool, error) {
 // docs/ticket-status-mail.md): on, the waiting list's mails go ("Bekleme
 // listesindesin", "Yer açıldı") and the cancellation's ("Biletin iptal
 // edildi"); unset or off, none does, and a Ticket promoted off the list
-// gets the new Ticket's mail while that is on. It needs SkyMail's templates
+// gets the new Ticket's mail while that is on. It needs SkyNotify's templates
 // (event.waitlist-joined, event.waitlist-promoted, event.ticket-cancelled)
 // seeded first.
 func ticketStatusMailOn(getenv func(string) string) (bool, error) {
@@ -66,14 +66,14 @@ func onOff(getenv func(string) string, name string) (bool, error) {
 
 // startTicketCreatedNotification starts the worker that tells a new Ticket's
 // holder (iletişim-servisi 06) until ctx is cancelled, and answers a channel
-// that closes once it has stopped. Off, or without SkyMail, a new Ticket
+// that closes once it has stopped. Off, or without SkyNotify, a new Ticket
 // queues nothing: turning it on later does not tell the Tickets written
 // meanwhile. pdf, when not nil (TICKET_PDF_ATTACHMENT=on), draws each
 // Ticket's PDF for its mail.
 //
 // statusOn (TICKET_STATUS_MAIL) adds the waiting list's mails to the same
 // queue and worker: the worker runs while either is on.
-func startTicketCreatedNotification(ctx context.Context, on, statusOn bool, store *ticket.PostgresStore, queue ticketnotify.Queue, events *event.PostgresStore, users user.Store, sky *mail.SkyMail, page ticket.PageConfig, apiOrigin string, pdf ticketnotify.PDFs, logf func(string, ...any)) <-chan struct{} {
+func startTicketCreatedNotification(ctx context.Context, on, statusOn bool, store *ticket.PostgresStore, queue ticketnotify.Queue, events *event.PostgresStore, users user.Store, sky *mail.SkyNotify, page ticket.PageConfig, apiOrigin string, pdf ticketnotify.PDFs, logf func(string, ...any)) <-chan struct{} {
 	off := make(chan struct{})
 	close(off)
 	store.NotifyCreated(false)
@@ -86,7 +86,7 @@ func startTicketCreatedNotification(ctx context.Context, on, statusOn bool, stor
 		logf("ticket status mail: off (TICKET_STATUS_MAIL is not on)")
 		return off
 	case sky == nil:
-		logf("ticket notification: off (SkyMail is not configured)")
+		logf("ticket notification: off (SkyNotify is not configured)")
 		return off
 	}
 	svc, err := ticketnotify.NewService(ticketnotify.Config{Queue: queue, Tickets: store, Events: events, Users: users, Mail: sky, Page: page, APIOrigin: apiOrigin, PDF: pdf})

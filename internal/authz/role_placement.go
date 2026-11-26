@@ -16,7 +16,7 @@ import (
 //   - a top Team itself (/UYELER/<area>/<team>), an app role only
 //     (ClassifyRole; ekip-yetkileri ticket 04, ADR 0065 addendum): what
 //     every member of the Team and its Sub-teams gets, Forms' seat and
-//     SkyMail's access. An admin role, or one nobody has classified, would
+//     SkyNotify's access. An admin role, or one nobody has classified, would
 //     make the Team a Protected group, so it is refused there
 //     (RolePlacementOf);
 //   - a role group, a leaf right under RolesRoot (/ROLLER/<APP>-<ROLE>,
@@ -56,7 +56,7 @@ var placementDetails = map[string]string{
 	PlacementRolesGroupNotLeaf:  "A role group with Groups under it takes no role: its roles would flow down to them.",
 	PlacementRolesNested:        "A role group sits right under /ROLLER: /ROLLER/<APP>-<ROLE>.",
 	PlacementOutside:            "Roles are mapped only to a Privileged root, a top Team (an app role), a top Team's Leader group or a role group under /ROLLER.",
-	PlacementTopTeamAdminRole:   "A top Team takes app roles only (such as Forms' seat or SkyMail's access): an admin role, or one nobody has classified, would make the Team Protected. Map it to the Team's Leader group or a role group under /ROLLER.",
+	PlacementTopTeamAdminRole:   "A top Team takes app roles only (such as Forms' seat or SkyNotify's access): an admin role, or one nobody has classified, would make the Team Protected. Map it to the Team's Leader group or a role group under /ROLLER.",
 	// App assignments (app_assignments.go).
 	PlacementAdminRole:      "Only an app role is assigned from the panel; an admin role, or one nobody has classified, is mapped in code (a Privileged root or a role group under /ROLLER).",
 	PlacementCodeArea:       "A Privileged root, /ROLLER and the Groups under them are mapped in code (Keycloak's reconciler), not from the panel.",

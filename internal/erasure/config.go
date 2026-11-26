@@ -54,7 +54,7 @@ type Service struct {
 }
 
 var registry = []Service{
-	{Name: "skymail", Step: user.DeletionStepEraseSkyMail, URLVar: "ACCOUNT_ERASURE_SKYMAIL_URL", Scope: "account-erase-skymail"},
+	{Name: "skynotify", Step: user.DeletionStepEraseSkyNotify, URLVar: "ACCOUNT_ERASURE_SKYNOTIFY_URL", Scope: "account-erase-skynotify"},
 	// The CMS is inscribed (ADR-0056), which keeps no accounts and has no
 	// access gate; it holds the person's sub in its editor columns only.
 	{Name: "cms", Step: user.DeletionStepEraseCMS, URLVar: "ACCOUNT_ERASURE_CMS_URL", Scope: "account-erase-cms", WaitAfterIdentityClosed: UngatedServiceWait},
@@ -68,7 +68,7 @@ func Registry() []Service {
 	return append([]Service(nil), registry...)
 }
 
-// ServiceNamed returns the registry entry with that name: skymail, cms or
+// ServiceNamed returns the registry entry with that name: skynotify, cms or
 // forms.
 func ServiceNamed(name string) (Service, bool) {
 	for _, service := range registry {
