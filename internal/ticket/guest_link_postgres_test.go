@@ -2,6 +2,7 @@ package ticket_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -62,13 +63,13 @@ func TestInsertReadsTheSwitch(t *testing.T) {
 		if _, err := pool.Exec(ctx, `UPDATE guest_account_link_settings SET enabled_at = NULL`); err != nil {
 			t.Fatal(err)
 		}
-		if owner, source := written(svc, "off-"+path+"@kisisel.org"); owner != nil || source != nil {
+		if owner, source := written(svc, "off-"+strings.ToLower(path)+"@kisisel.org"); owner != nil || source != nil {
 			t.Fatalf("%s while off: owner %v source %v", path, owner, source)
 		}
 		if _, err := pool.Exec(ctx, `UPDATE guest_account_link_settings SET enabled_at = now()`); err != nil {
 			t.Fatal(err)
 		}
-		if owner, source := written(svc, "on-"+path+"@kisisel.org"); owner == nil || *owner != ada || source == nil || *source != "write" {
+		if owner, source := written(svc, "on-"+strings.ToLower(path)+"@kisisel.org"); owner == nil || *owner != ada || source == nil || *source != "write" {
 			t.Fatalf("%s while on: owner %v source %v", path, owner, source)
 		}
 	}
