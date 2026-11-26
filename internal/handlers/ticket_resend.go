@@ -45,7 +45,7 @@ func (h *TicketHandler) ResendTicket(c fiber.Ctx) error {
 	}
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "id")
 	}
 	sent, err := h.svc.ResendTicket(auditContext(c, p), p, id, c.Get("Idempotency-Key"))
 	if err != nil {
@@ -83,7 +83,7 @@ func (h *TicketHandler) RenewTicketLink(c fiber.Ctx) error {
 	}
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "id")
 	}
 	notify := true
 	switch c.Query("notify") {
@@ -91,7 +91,7 @@ func (h *TicketHandler) RenewTicketLink(c fiber.Ctx) error {
 	case "false", "0":
 		notify = false
 	default:
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badQuery(c, "notify")
 	}
 	renewed, sent, err := h.svc.RenewTicketLink(auditContext(c, p), p, id, notify, c.Get("Idempotency-Key"))
 	if err != nil {
