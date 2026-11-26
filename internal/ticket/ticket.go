@@ -247,6 +247,46 @@ type Ticket struct {
 	Feedback  []feedback.TicketLink `json:"feedback,omitempty"`
 	CreatedAt time.Time             `json:"createdAt"`
 	UpdatedAt time.Time             `json:"updatedAt"`
+	// ownerLink is set on a new guest Ticket written with the owner its
+	// address is (GuestOwners): the store writes the link's mark with it
+	// (docs/guest-account-links.md). Never read back.
+	ownerLink LinkSource
+}
+
+// LinkSource is how core linked a guest Ticket, or a certificate, to the
+// account its address is (docs/guest-account-links.md): the tickets'
+// owner_link_source.
+type LinkSource string
+
+const (
+	// LinkWrite: the Ticket was written linked.
+	LinkWrite LinkSource = "write"
+	// LinkSync: the user sync's pass linked it.
+	LinkSync LinkSource = "sync"
+	// LinkBulk: the one-time command linked it.
+	LinkBulk LinkSource = "bulk"
+)
+
+// linkedInsert is what a new Ticket's insert writes for its owner and its
+// link mark, owner and link being its query parameters: a Ticket written
+// linked (its mark set) keeps the owner only while linking is on, as the
+// insert reads the switch; turned off since the lookup, it is written
+// unlinked. guestlink's writes read the same switch.
+func linkedInsert(owner, link string) (ownerValue, sourceValue, atValue string) {
+	on := `EXISTS (SELECT 1 FROM guest_account_link_settings gs WHERE gs.id AND gs.enabled_at IS NOT NULL)`
+	linked := link + `::text IS NOT NULL AND ` + on
+	return `CASE WHEN ` + link + `::text IS NULL OR ` + on + ` THEN ` + owner + `::uuid END`,
+		`CASE WHEN ` + linked + ` THEN ` + link + `::text END`,
+		`CASE WHEN ` + linked + ` THEN now() END`
+}
+
+// linkParam is the link's mark as a query parameter: NULL for none.
+func (t Ticket) linkParam() *string {
+	if t.ownerLink == "" {
+		return nil
+	}
+	v := string(t.ownerLink)
+	return &v
 }
 
 type GuestInfo struct {

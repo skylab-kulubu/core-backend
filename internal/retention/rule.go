@@ -7,7 +7,7 @@ import (
 
 // RuleSetVersion changes whenever a rule is added, removed or changes its
 // version. A run records it.
-const RuleSetVersion = 13
+const RuleSetVersion = 14
 
 // Kind is what a rule does.
 type Kind string

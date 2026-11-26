@@ -161,8 +161,8 @@ func TestRulePeriodsAreThePolicy(t *testing.T) {
 		related string
 		version int
 	}{
-		"guest_phone":              {90 * day, ActionScrub, "tickets", "", 1},
-		"guest_identity":           {730 * day, ActionScrub, "tickets", "certificates", 4},
+		"guest_phone":              {90 * day, ActionScrub, "tickets", "", 2},
+		"guest_identity":           {730 * day, ActionScrub, "tickets", "certificates", 5},
 		"door_staff":               {90 * day, ActionDelete, "event_door_staff", "", 1},
 		"url_hits_scrub":           {365 * day, ActionScrub, "url_hits", "", 3},
 		"read_link_ip":             {365 * day, ActionScrub, "media_read_link_opens", "", 1},
@@ -175,6 +175,7 @@ func TestRulePeriodsAreThePolicy(t *testing.T) {
 		"event_change_notices_age": {3 * 365 * day, ActionDelete, "event_change_notice_choices", "", 1},
 		"co_organizer_people":      {90 * day, ActionDelete, "event_co_organizers", "", 1},
 		"form_respondents":         {2 * 365 * day, ActionDelete, "event_form_respondents", "", 1},
+		"linked_guest_details":     {2 * 365 * day, ActionScrub, "tickets", "", 1},
 	}
 	sweeps := 0
 	for _, rule := range Rules(Config{Mode: ModeApply, Period: 90 * day, MediaRecoveryWindow: 30 * day}, Schema{}) {
@@ -187,7 +188,7 @@ func TestRulePeriodsAreThePolicy(t *testing.T) {
 			t.Fatalf("%s: %s %s %s %s v%d", rule.Name, rule.Period, rule.Action, rule.Table, rule.RelatedTable, rule.Version)
 		}
 	}
-	if sweeps != len(want) || RuleSetVersion != 13 {
+	if sweeps != len(want) || RuleSetVersion != 14 {
 		t.Fatalf("%d sweep rules, set v%d", sweeps, RuleSetVersion)
 	}
 }
@@ -347,7 +348,7 @@ func TestConsentRulesFollowTheConsentLifecycle(t *testing.T) {
 		t.Fatalf("%d consent rules", found)
 	}
 	names := RuleNames(config)
-	if len(names) != 23 || names[5] != "consent_pending" || names[8] != "team_audit_age" || names[9] != "feedback_invites_age" || names[10] != "feedback_mails_age" || names[11] != "tracking_changes_age" || names[12] != "subject_requests_age" || names[13] != "management_terms_age" || names[14] != "event_change_notices_age" || names[15] != "co_organizer_people" || names[16] != "form_respondents" {
+	if len(names) != 24 || names[17] != "linked_guest_details" || names[5] != "consent_pending" || names[8] != "team_audit_age" || names[9] != "feedback_invites_age" || names[10] != "feedback_mails_age" || names[11] != "tracking_changes_age" || names[12] != "subject_requests_age" || names[13] != "management_terms_age" || names[14] != "event_change_notices_age" || names[15] != "co_organizer_people" || names[16] != "form_respondents" {
 		t.Fatalf("names %v", names)
 	}
 }
