@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -242,5 +243,32 @@ func TestPostgresRaffle(t *testing.T) {
 	}
 	if v2, err := svc.Verification(ctx, lead, ev.ID, r.ID); err != nil || raffle.Verify(v2) != nil {
 		t.Fatalf("verification after erasure: %v", err)
+	}
+
+	// A guest's forfeit reason goes with their address: erasing the account
+	// of that address clears it on the guest Ticket's place.
+	g, err := svc.Draw(ctx, lead, ev.ID, raffle.Request{Criteria: raffle.Criteria{TicketType: raffle.TypeGuest}, Winners: 1, Alternates: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Forfeit(ctx, lead, ev.ID, g.ID, 1, "Salonda değildi"); err != nil {
+		t.Fatal(err)
+	}
+	var guestEmail string
+	if err := pool.QueryRow(ctx, `SELECT guest_email FROM tickets WHERE id = $1`, g.Entries[0].TicketID).Scan(&guestEmail); err != nil {
+		t.Fatal(err)
+	}
+	guestAccount := uuid.New()
+	if _, _, err := users.Upsert(ctx, user.User{ID: guestAccount, Email: strings.ToLower(guestEmail), FirstName: "Misafir", LastName: "Hesap"}); err != nil {
+		t.Fatal(err)
+	}
+	erase(guestAccount)
+	var guestReason *string
+	if err := pool.QueryRow(ctx, `SELECT forfeit_reason FROM event_raffle_entries WHERE raffle_id = $1 AND position = 1`, g.ID).Scan(&guestReason); err != nil || guestReason != nil {
+		t.Fatalf("guest reason kept after erasure: %v %v", err, guestReason)
+	}
+	var other *string
+	if err := pool.QueryRow(ctx, `SELECT forfeit_reason FROM event_raffle_entries WHERE raffle_id = $1 AND position = 2`, g.ID).Scan(&other); err != nil || other != nil {
+		t.Fatalf("the alternate's place: %v %v", err, other)
 	}
 }

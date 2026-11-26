@@ -1225,7 +1225,12 @@ func main() {
 	// (they read no Forms).
 	// An Event's raffles (docs/raffle.md): attendance as the certificate
 	// rule counts it, the Team audit rows on the ticket operators' basis.
-	raffleAudit, _ := ticketSvc.(ticket.EventAuditor)
+	// Without the ticket service's audit rows a raffle would draw
+	// unrecorded: core does not start.
+	raffleAudit, ok := ticketSvc.(ticket.EventAuditor)
+	if !ok {
+		log.Fatal("raffles: the ticket service opens no event audit rows")
+	}
 	raffles := &raffle.Service{
 		Store: raffle.NewPostgres(pool), Events: events, Authz: az, Attendance: certs, Audit: raffleAudit,
 		Teams: raffle.DirectoryTeams{Dir: dir}, People: users.Accounts,

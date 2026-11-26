@@ -143,14 +143,17 @@ func (s *Service) Draw(ctx context.Context, p authz.Principal, eventID uuid.UUID
 		return Raffle{}, err
 	}
 	at := s.now().UTC()
+	// Who may win is read before the lock; under it, only who won since.
+	f, err := s.field(ctx, ev, req.Criteria)
+	if err != nil {
+		record.Finish(ctx, err, nil)
+		return Raffle{}, err
+	}
 	drawn, err := s.Store.Draw(ctx, eventID, func(pastWinners map[uuid.UUID]bool) (Raffle, error) {
 		if !req.Criteria.ExcludePastWinners {
 			pastWinners = map[uuid.UUID]bool{}
 		}
-		eligible, _, err := s.eligible(ctx, ev, req.Criteria, pastWinners)
-		if err != nil {
-			return Raffle{}, err
-		}
+		eligible, _ := f.pick(pastWinners)
 		if len(eligible) < req.Winners {
 			return Raffle{}, &TooFewError{Eligible: len(eligible)}
 		}
@@ -393,19 +396,40 @@ func (s *Service) team(ctx context.Context, x excluder, code string) error {
 	return nil
 }
 
+// field is what the criteria are decided on: the Event's candidates,
+// their attendance and who the exclusions leave out. It is read before a
+// draw takes the Event's raffle lock (Keycloak's answers among it); only
+// the past winners are read under the lock.
+type field struct {
+	c                                   Criteria
+	candidates                          []Candidate
+	attended                            map[uuid.UUID]int
+	certified                           map[uuid.UUID]bool
+	organizers, doorStaff, coOrganizers excluder
+}
+
 // eligible are the Event's candidates c lets win, past winners and the
 // excluded left out, with the excluded counted.
 func (s *Service) eligible(ctx context.Context, ev event.Event, c Criteria, past map[uuid.UUID]bool) ([]Candidate, Excluded, error) {
-	candidates, err := s.Store.Candidates(ctx, ev.ID)
+	f, err := s.field(ctx, ev, c)
 	if err != nil {
 		return nil, Excluded{}, err
+	}
+	out, excluded := f.pick(past)
+	return out, excluded, nil
+}
+
+func (s *Service) field(ctx context.Context, ev event.Event, c Criteria) (field, error) {
+	candidates, err := s.Store.Candidates(ctx, ev.ID)
+	if err != nil {
+		return field{}, err
 	}
 	var attended map[uuid.UUID]int
 	var certified map[uuid.UUID]bool
 	if c.MinCounted != nil || c.CertificateEligible {
 		a, err := s.Attendance.EventAttendance(ctx, ev.ID)
 		if err != nil {
-			return nil, Excluded{}, err
+			return field{}, err
 		}
 		// The one count of who attended how much: the certificate list's
 		// and the attendee exports' (certificate.StandingsOf).
@@ -420,44 +444,52 @@ func (s *Service) eligible(ctx context.Context, ev event.Event, c Criteria, past
 	organizers, doorStaff, coOrganizers := newExcluder(), newExcluder(), newExcluder()
 	if c.ExcludeOrganizers {
 		if err := s.team(ctx, organizers, ev.OwnerTeam); err != nil {
-			return nil, Excluded{}, err
+			return field{}, err
 		}
 	}
 	if c.ExcludeDoorStaff {
 		if err := s.people(ctx, doorStaff, ev.DoorStaffIDs); err != nil {
-			return nil, Excluded{}, err
+			return field{}, err
 		}
 	}
 	if c.ExcludeCoOrganizers {
 		for _, team := range ev.CoOrganizers {
 			if err := s.team(ctx, coOrganizers, team.Code); err != nil {
-				return nil, Excluded{}, err
+				return field{}, err
 			}
 		}
 		if err := s.people(ctx, coOrganizers, ev.CoOrganizerIDs); err != nil {
-			return nil, Excluded{}, err
+			return field{}, err
 		}
 	}
+	return field{c: c, candidates: candidates, attended: attended, certified: certified,
+		organizers: organizers, doorStaff: doorStaff, coOrganizers: coOrganizers}, nil
+}
+
+// pick are the candidates f's criteria let win, past winners and the
+// excluded left out, with the excluded counted.
+func (f field) pick(past map[uuid.UUID]bool) ([]Candidate, Excluded) {
+	c := f.c
 	var out []Candidate
 	var excluded Excluded
-	for _, cand := range candidates {
-		if !c.holds(cand, attended, certified) {
+	for _, cand := range f.candidates {
+		if !c.holds(cand, f.attended, f.certified) {
 			continue
 		}
 		switch {
 		case c.ExcludePastWinners && past[cand.TicketID]:
 			excluded.PastWinners++
-		case c.ExcludeOrganizers && organizers.matches(cand):
+		case c.ExcludeOrganizers && f.organizers.matches(cand):
 			excluded.Organizers++
-		case c.ExcludeDoorStaff && doorStaff.matches(cand):
+		case c.ExcludeDoorStaff && f.doorStaff.matches(cand):
 			excluded.DoorStaff++
-		case c.ExcludeCoOrganizers && coOrganizers.matches(cand):
+		case c.ExcludeCoOrganizers && f.coOrganizers.matches(cand):
 			excluded.CoOrganizers++
 		default:
 			out = append(out, cand)
 		}
 	}
-	return out, excluded, nil
+	return out, excluded
 }
 
 // holds reports whether cand meets c's conditions (its exclusions aside).

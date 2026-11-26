@@ -804,6 +804,16 @@ func clearGuestData(ctx context.Context, tx pgx.Tx, addresses []string, at time.
 			return err
 		}
 	}
+	// A raffle keeps the guest Tickets' places (ids, docs/raffle.md); a
+	// forfeit's reason may name the guest, so it goes before the Tickets
+	// lose their address.
+	if _, err := tx.Exec(ctx, `
+		UPDATE event_raffle_entries SET forfeit_reason = NULL
+		WHERE forfeit_reason IS NOT NULL AND ticket_id IN (
+			SELECT id FROM tickets WHERE owner_id IS NULL AND guest_email <> '' AND lower(btrim(guest_email)) = ANY($1))
+	`, emails); err != nil {
+		return err
+	}
 	// A guest's place on a waiting list goes with the guest, as a
 	// member's (eraseAccount).
 	if _, err := tx.Exec(ctx, `
