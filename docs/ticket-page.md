@@ -248,9 +248,8 @@ tarifi QR kodu"), the code real text.
      tarifi", `directionsUrl`, only with a point or an address). With a
      `directionsUrl` the name, the address, the map and the QR with its
      caption are links to it, the caption underlined in the theme's
-     accent. With a ticket note ([ticket-note.md](ticket-note.md#in-the-pdf-ticket))
-     the place shares its row with the note's section, "Duyuru", on its
-     left (Yusuf, 2026-11-26): Chromium keeps an
+     accent. A ticket note ([ticket-note.md](ticket-note.md#in-the-pdf-ticket))
+     comes before it, in its own section, "Duyuru" (Yusuf, 2026-11-26): Chromium keeps an
      `<a href>` as a PDF link annotation, so a tap on the PDF opens the
      directions too;
   6. the footnote, two plain lines: "Bu bilet kişiye özeldir. Düzenlenme:

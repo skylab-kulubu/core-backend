@@ -53,10 +53,10 @@ type Document struct {
 	QRToken     string
 	Description string
 	// TicketNote is the organizer's announcement (docs/ticket-note.md), as
-	// the ticket mails carry it: a section beside the place's, last, with
-	// its text and for its first WhatsApp (else https) address a QR with a
-	// link under it, as the place's directions (beside, not above: the
-	// ticket keeps to one page). "" draws no section.
+	// the ticket mails carry it: a compact section before the place's (the
+	// note before the map, Yusuf 2026-11-26), never split, with its text and
+	// for its first WhatsApp (else https) address a small QR with a link
+	// under it, as the place's directions. "" draws no section.
 	TicketNote string
 	// Days is the programme, in order; a day without Sessions is left out.
 	Days []ProgramDay
@@ -529,15 +529,15 @@ td.kisi{color:#444;text-align:right;white-space:nowrap}
 .yer figure img{width:24mm;height:24mm;display:block;margin-bottom:1mm}
 .yer a.git,.duyuru a.git{display:block;color:inherit;text-decoration:none}
 .yer figure a.git span,.duyuru figure a.git span{display:block;color:var(--accent);font-size:8.5pt;font-weight:700;line-height:1.25;text-decoration:underline;text-underline-offset:.5mm}
-.alt{display:grid;grid-template-columns:1fr 1fr;gap:0 7mm;break-inside:avoid}
-.duyuru{break-inside:avoid}
+section.duyuru{margin-top:4mm;break-inside:avoid}
+.duyuru>h2{margin-bottom:1.5mm}
 .duyuru .satir{display:flex;gap:5mm;align-items:center}
 .duyuru .kutu{flex:1;min-width:0}
-.duyuru .metin{font-size:10pt;line-height:1.5;white-space:pre-line;overflow-wrap:anywhere}
+.duyuru .metin{font-size:9.5pt;line-height:1.45;white-space:pre-line;overflow-wrap:anywhere}
 .duyuru .metin a{color:inherit;text-decoration:underline}
 .duyuru figure{flex:none;text-align:center}
-.duyuru figure img{width:20mm;height:20mm;display:block;margin:0 auto 1mm}
-.duyuru figure a.git span{white-space:nowrap}
+.duyuru figure img{width:13mm;height:13mm;display:block;margin:0 auto .6mm}
+.duyuru figure a.git span{white-space:nowrap;font-size:8pt}
 .atif{font-size:6.5pt;color:var(--muted);margin-top:1mm}
 .dip{margin-top:5.5mm;padding-top:2mm;border-top:.5pt solid var(--ink);font-size:7.3pt;line-height:1.55;color:#333;break-inside:avoid}
 {{if .Notes}}td.otr .not{display:block;font-size:7.6pt;font-weight:400;color:var(--muted);margin-top:.3mm}
@@ -552,10 +552,10 @@ td.kisi{color:#444;text-align:right;white-space:nowrap}
 {{end}}</div>
 {{if .Days}}<section class="program"><h2>Program</h2><div class="gunler" style="--sutun:{{.Columns}}">{{range .Days}}<div class="gun">{{if gt (len $.Days) 1}}<h3>{{.Heading}}{{if .Date}} <span>· {{.Date}}</span>{{end}}</h3>{{end}}<table{{if $.Single}} class="tek"{{end}}>{{range .Rows}}<tr><td class="saat">{{.Time}}</td><td class="otr">{{.Title}}{{if .Note}}<span class="not">{{.Note}}</span>{{end}}</td><td class="kisi">{{.Speaker}}</td></tr>{{end}}</table></div>{{end}}</div></section>
 {{end}}{{if .Description}}<section class="hakkinda"><h2>Etkinlik hakkında</h2><p class="aciklama">{{.Description}}</p></section>
-{{end}}{{if .NoteParts}}<div class="alt"><section class="duyuru"><h2>Duyuru</h2><div class="satir"><div class="kutu"><p class="metin">{{range .NoteParts}}{{if .URL}}<a href="{{.URL}}">{{.Text}}</a>{{else}}{{.Text}}{{end}}{{end}}</p></div>{{if .NoteQR}}<figure><a class="git" href="{{.NoteLink}}"><img alt="Duyuru bağlantısı QR kodu" src="{{.NoteQR}}"><span>{{if .NoteWhatsApp}}WhatsApp grubuna katıl{{else}}Bağlantıyı aç{{end}}</span></a></figure>{{end}}</div></section>{{end}}<section class="yer"><h2>Etkinlik yeri</h2><div class="satir"><div class="kutu">{{if .D.DirectionsURL}}<a class="git" href="{{.D.DirectionsURL}}">{{end}}<div class="ad">{{.D.Venue}}</div>{{if .D.VenueAddress}}<div class="adres">{{.D.VenueAddress}}</div>{{end}}{{if .D.DirectionsURL}}</a>{{end}}{{if .MapImage}}{{if .D.DirectionsURL}}<a class="git" href="{{.D.DirectionsURL}}">{{end}}<img class="harita" src="{{.MapImage}}" alt="Etkinlik yeri haritası">{{if .D.DirectionsURL}}</a>{{end}}{{end}}</div>{{if .Directions}}<figure><a class="git" href="{{.D.DirectionsURL}}"><img alt="Yol tarifi QR kodu" src="{{.Directions}}"><span>Yol tarifi</span></a></figure>{{end}}</div>
+{{end}}{{if .NoteParts}}<section class="duyuru"><h2>Duyuru</h2><div class="satir"><div class="kutu"><p class="metin">{{range .NoteParts}}{{if .URL}}<a href="{{.URL}}">{{.Text}}</a>{{else}}{{.Text}}{{end}}{{end}}</p></div>{{if .NoteQR}}<figure><a class="git" href="{{.NoteLink}}"><img alt="Duyuru bağlantısı QR kodu" src="{{.NoteQR}}"><span>{{if .NoteWhatsApp}}WhatsApp grubuna katıl{{else}}Bağlantıyı aç{{end}}</span></a></figure>{{end}}</div></section>
+{{end}}<section class="yer"><h2>Etkinlik yeri</h2><div class="satir"><div class="kutu">{{if .D.DirectionsURL}}<a class="git" href="{{.D.DirectionsURL}}">{{end}}<div class="ad">{{.D.Venue}}</div>{{if .D.VenueAddress}}<div class="adres">{{.D.VenueAddress}}</div>{{end}}{{if .D.DirectionsURL}}</a>{{end}}{{if .MapImage}}{{if .D.DirectionsURL}}<a class="git" href="{{.D.DirectionsURL}}">{{end}}<img class="harita" src="{{.MapImage}}" alt="Etkinlik yeri haritası">{{if .D.DirectionsURL}}</a>{{end}}{{end}}</div>{{if .Directions}}<figure><a class="git" href="{{.D.DirectionsURL}}"><img alt="Yol tarifi QR kodu" src="{{.Directions}}"><span>Yol tarifi</span></a></figure>{{end}}</div>
 {{if .MapImage}}{{if .D.MapAttribution}}<p class="atif">{{.D.MapAttribution}}</p>{{end}}{{end}}</section>
-{{if .NoteParts}}</div>
-{{end}}<footer class="dip"><p>Bu bilet kişiye özeldir. Düzenlenme: {{.Issued}}</p><p>Etkinlikte fotoğraf ve video çekilir, Kulübün kanallarında paylaşılabilir. Kişisel veriler KVKK Metni&#39;ne göre işlenir: {{.KVKK}}</p></footer>
+<footer class="dip"><p>Bu bilet kişiye özeldir. Düzenlenme: {{.Issued}}</p><p>Etkinlikte fotoğraf ve video çekilir, Kulübün kanallarında paylaşılabilir. Kişisel veriler KVKK Metni&#39;ne göre işlenir: {{.KVKK}}</p></footer>
 </body>
 </html>
 `))

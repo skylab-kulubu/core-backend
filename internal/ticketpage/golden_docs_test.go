@@ -34,9 +34,9 @@ func kurumsalGoldenDocuments() []ticketpage.Document {
 func TestKurumsalTicketUnchanged(t *testing.T) {
 	t.Parallel()
 	want := []string{
-		"59f4c7793a8f414005a146d6a1d553fe9790c3b2bfe5772512b4ea470d3c55ef",
-		"ef13fe18b44996c479f1009106e46d6ec91fb4f0aaa8a5717c02207239557a08",
-		"8fd4fff354ae6bc43d6ce011ec6f77425a5795f355beedcde1a87b94ef9a7328",
+		"b10f22c4b05cfc0c725fb7f7b75140625d455d99992cfbdeb6348051ae131ef4",
+		"d6c985b0c84b4079d5a7324a147e2b9fa699ad72214169298b7fa5f33d8878e0",
+		"bf77d057a1d16fef7cd0f274e3877d9586a2608803e904e4748c35b43dc54af1",
 	}
 	const head = "b07f3efc14b8a14eb95d29cda14a6ed494e1edd33c906f82cf9e1fb85463da60"
 	for _, look := range []theme.Theme{{}, theme.Lookup(""), theme.Lookup("kurumsal"), theme.Lookup("bilinmeyen")} {

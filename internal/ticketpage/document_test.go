@@ -399,7 +399,7 @@ func TestPlaceLinksToDirections(t *testing.T) {
 	}
 }
 
-// The ticket note: its text in a section beside the place, and for its
+// The ticket note: its text in a section before the place, and for its
 // WhatsApp address a QR with "WhatsApp grubuna katıl" under it, both links
 // to it; another address reads "Bağlantıyı aç"; no address, no QR; no note,
 // no section.
@@ -414,8 +414,9 @@ func TestTicketNoteSection(t *testing.T) {
 		!strings.Contains(html, `Duyurular WhatsApp grubunda: <a href="https://chat.whatsapp.com/Ab1">https://chat.whatsapp.com/Ab1</a>`) {
 		t.Fatalf("note section:\n%s", html)
 	}
-	if !strings.Contains(html, `<div class="alt"><section class="duyuru">`) || strings.Index(html, `class="duyuru"`) > strings.Index(html, `class="yer"`) {
-		t.Fatal("the note is not beside the place")
+	if !strings.Contains(html, "</section>\n"+`<section class="yer">`) || strings.Index(html, `<section class="duyuru">`) > strings.Index(html, `<section class="yer">`) ||
+		strings.Index(html, `<section class="duyuru">`) < strings.Index(html, `<section class="hakkinda">`) {
+		t.Fatal("the note is not between the description and the place")
 	}
 	d.TicketNote = "Program: https://artlab.example/x"
 	if html, _ = render(t, d); !strings.Contains(html, `<span>Bağlantıyı aç</span>`) || strings.Contains(html, "WhatsApp grubuna katıl") {

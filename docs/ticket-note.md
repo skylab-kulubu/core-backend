@@ -51,11 +51,12 @@ ticket page does not show it (yet).
 
 ## In the PDF ticket
 
-The PDF ticket (ticket-page.md) shows it in a section "Duyuru" beside
-"Etkinlik yeri", last on the page (beside, not above: the ticket keeps to
-one page): the note's text, its https addresses links, and for the
-button's address (`TicketNoteLink`'s rule) a QR on white with "WhatsApp
-grubuna katıl" ("Bağlantıyı aç" for another address) under it, underlined
-in the theme's accent; the QR and the line are links. No address, no QR;
+The PDF ticket (ticket-page.md) shows it in a compact section "Duyuru"
+before "Etkinlik yeri" (the note before the map, Yusuf 2026-11-26), never
+split: the note's text, its https addresses links, and for the button's
+address (`TicketNoteLink`'s rule) a small QR on white with "WhatsApp grubuna
+katıl" ("Bağlantıyı aç" for another address) under it, underlined in the
+theme's accent; the QR and the line are links. When it does not fit on the
+first page it moves to the next, before the place. No address, no QR;
 no note, no section. Its emoji are left out, as from every text the PDF
 prints.
