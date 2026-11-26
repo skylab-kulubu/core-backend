@@ -86,6 +86,12 @@ const (
 	// ActionTicketImportPreview is the import's preview, recorded as
 	// ActionTicketImport: what the list would do, nothing written.
 	ActionTicketImportPreview Action = "ticket.import.preview"
+	// ActionTicketWalkIn is the door registering a person with no Ticket
+	// ("Kapıda kayıt", docs/walk-in.md), recorded as ActionTicketCancel:
+	// the Event's team, the Ticket and the Event, never a name, an e-mail
+	// or a phone number. A Walk-in that found the person's Ticket already
+	// there writes no row.
+	ActionTicketWalkIn Action = "ticket.walk_in"
 	// ActionCoOrganizerAdd, ActionCoOrganizerRemove and
 	// ActionCoOrganizerChange are an Event's Co-organizer list changed
 	// (docs/co-organizers.md): a team or a person added or removed, or a
@@ -145,7 +151,7 @@ var Actions = []Action{
 	ActionGroupRoles, ActionGroupAttributes, ActionAppAssign, ActionAppUnassign,
 	ActionTermExtend, ActionTermHandover, ActionTermExpired,
 	ActionTicketResend, ActionTicketLinkRenew, ActionTicketCancel, ActionTicketRestore, ActionTicketPromote,
-	ActionTicketImport, ActionTicketImportPreview,
+	ActionTicketImport, ActionTicketImportPreview, ActionTicketWalkIn,
 	ActionCoOrganizerAdd, ActionCoOrganizerRemove, ActionCoOrganizerChange,
 	ActionUserEnable, ActionUserDisable, ActionUserPasswordSet, ActionUserPasswordMail,
 	ActionUserEmailChange, ActionUserEmailVerify, ActionUserEmailMail, ActionUserEmailPrimary,
@@ -237,6 +243,12 @@ const (
 	// (docs/console-audit.md): the actor is whoever Keycloak names, in the
 	// master realm or the club's; the row's via is console.
 	BasisConsole Basis = "console"
+	// BasisDoorStaff: the actor may take check-ins at the Event's door
+	// (CONTEXT "Door staff": the Event's door staff, a Team door scan
+	// member) without being Privileged or a Leader of the Event's team or a
+	// Team above it. Only a Walk-in (ticket.walk_in) carries it;
+	// Actor.ViaGroupID names the Event's team.
+	BasisDoorStaff Basis = "door_staff"
 )
 
 // SystemTermExpiry is the Client of the rows the management term job
@@ -580,6 +592,10 @@ func (r Record) normalize() (Record, string) {
 		}
 	case BasisConsole:
 		if r.Actor.ViaGroupID != "" || r.Via != ViaConsole {
+			return r, "invalid_basis"
+		}
+	case BasisDoorStaff:
+		if _, err := uuid.Parse(r.Actor.ViaGroupID); err != nil || r.Action != ActionTicketWalkIn {
 			return r, "invalid_basis"
 		}
 	default:
