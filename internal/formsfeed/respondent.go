@@ -49,7 +49,8 @@ const (
 //
 //   - a userId: that person;
 //   - else Forms' named guest: that guest, as Forms sent it (the Ticket rule
-//     checks it, as before);
+//     checks it, as before), with the details the mappings' answers give
+//     (MappedDetails);
 //   - else, with mappings (those of the Events listing the form, for an
 //     accepted answer): a guest built from each mapping's answers, the
 //     Events of the same guest together;
@@ -63,7 +64,8 @@ func ResolveRespondents(userID *uuid.UUID, guest *Guest, answers map[string]stri
 	case userID != nil:
 		return []Respondent{{Source: RespondentUser, UserID: userID}}, ""
 	case guest != nil:
-		return []Respondent{{Source: RespondentFormsGuest, Guest: &ticket.GuestInfo{FirstName: guest.FirstName, LastName: guest.LastName, Email: guest.Email}}}, ""
+		g := withDetails(ticket.GuestInfo{FirstName: guest.FirstName, LastName: guest.LastName, Email: guest.Email}, detailsOf(mappings, answers))
+		return []Respondent{{Source: RespondentFormsGuest, Guest: &g}}, ""
 	case len(mappings) == 0:
 		return []Respondent{{Source: RespondentNobody}}, ""
 	}
@@ -97,7 +99,9 @@ func ResolveRespondents(userID *uuid.UUID, guest *Guest, answers map[string]stri
 //     dotted domain, no guest;
 //   - the first and last name questions' answers, trimmed; a full name
 //     question fills only what they leave empty (splitFullName);
-//   - without a first and a last name, no guest.
+//   - without a first and a last name, no guest;
+//   - the details of the mapping's questions (MappedDetails), each
+//     optional.
 //
 // K4 (Yusuf, 2026-11-25, as proposed): an e-mail that is a member's account's
 // is still a guest, as every guest Ticket is; matching it to the member is
@@ -127,7 +131,7 @@ func MappedGuest(m Mapping, answers map[string]string) (ticket.GuestInfo, bool) 
 	if first == "" || last == "" || utf8.RuneCountInString(first) > maxMappedName || utf8.RuneCountInString(last) > maxMappedName {
 		return ticket.GuestInfo{}, false
 	}
-	return ticket.GuestInfo{FirstName: first, LastName: last, Email: email}, true
+	return withDetails(ticket.GuestInfo{FirstName: first, LastName: last, Email: email}, MappedDetails(m, answers)), true
 }
 
 // Why a mapped answer gives no guest (MappedGuestProblem): the panel's
@@ -285,6 +289,26 @@ func (m *MappedGuests) Mappings(ctx context.Context, formID uuid.UUID) ([]Mappin
 	return out, nil
 }
 
+// mappedFields are the question ids an answer needs read: every mapped
+// question for an answer that names nobody (MappedFields), only the
+// details' for one Forms names a guest of (named).
+func mappedFields(mappings []Mapping, named bool) []string {
+	if !named {
+		return MappedFields(mappings)
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range mappings {
+		for _, id := range m.DetailFields() {
+			if !seen[id] {
+				seen[id] = true
+				out = append(out, id)
+			}
+		}
+	}
+	return out
+}
+
 // MappedFields are the question ids the mappings ask for, each once.
 func MappedFields(mappings []Mapping) []string {
 	seen := map[string]bool{}
@@ -303,25 +327,27 @@ func MappedFields(mappings []Mapping) []string {
 // RecordReport is the HTTP report's way through the mappings: an accepted
 // answer that names nobody, to a form an Event maps, is read from Forms'
 // single answer endpoint with the mapped questions (fields), and its
-// respondents are resolved and written as an event's or a pull's are. Any
-// other report goes to the Ticket rule as it came. A read that finds
-// nothing (404) is OutcomeGone, a 2xx; another failed read is an error
-// (the report answers 5xx, Forms sends it again).
+// respondents are resolved and written as an event's or a pull's are; one
+// Forms names a guest of is read for the mappings' details alone, when they
+// name any. Any other report goes to the Ticket rule as it came. A read
+// that finds nothing (404) is OutcomeGone, a 2xx; another failed read is an
+// error (the report answers 5xx, Forms sends it again).
 func (m *MappedGuests) RecordReport(ctx context.Context, record RecordFunc, r ticket.FormResponse) (ticket.FormResponseResult, error) {
 	if m != nil && m.Respondents != nil {
 		return m.routeReport(ctx, record, r)
 	}
-	if m == nil || m.Forms == nil || r.Status != ticket.FormResponseAccepted || r.UserID != nil || r.Guest != nil || r.ResponseID == uuid.Nil {
+	if m == nil || m.Forms == nil || r.Status != ticket.FormResponseAccepted || r.UserID != nil || r.ResponseID == uuid.Nil {
 		return record(ctx, r)
 	}
 	mappings, err := m.Mappings(ctx, r.FormID)
 	if err != nil {
 		return ticket.FormResponseResult{}, err
 	}
-	if len(mappings) == 0 {
+	fields := mappedFields(mappings, r.Guest != nil)
+	if len(fields) == 0 {
 		return record(ctx, r)
 	}
-	got, err := m.Forms.Response(ctx, r.FormID, r.ResponseID, MappedFields(mappings)...)
+	got, err := m.Forms.Response(ctx, r.FormID, r.ResponseID, fields...)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return ticket.FormResponseResult{Outcome: ticket.FormResponseOutcome(OutcomeGone)}, nil
@@ -332,7 +358,12 @@ func (m *MappedGuests) RecordReport(ctx context.Context, record RecordFunc, r ti
 		// Forms' answer moved on since the report; its own report follows.
 		return record(ctx, r)
 	}
-	respondents, outcome := ResolveRespondents(got.UserID, got.Guest, got.Answers, mappings)
+	userID, guest := got.UserID, got.Guest
+	if r.Guest != nil {
+		// The report's guest, as before; the read gave the details.
+		userID, guest = nil, &Guest{FirstName: r.Guest.FirstName, LastName: r.Guest.LastName, Email: r.Guest.Email}
+	}
+	respondents, outcome := ResolveRespondents(userID, guest, got.Answers, mappings)
 	if outcome != "" {
 		return ticket.FormResponseResult{Outcome: outcome}, nil
 	}
@@ -340,10 +371,11 @@ func (m *MappedGuests) RecordReport(ctx context.Context, record RecordFunc, r ti
 }
 
 // routeReport is RecordReport with the Unticketed respondents on: who the
-// report names (a person, Forms' named guest, or for an accepted or pending
-// answer that names nobody the guest the mappings build from Forms' single
-// read), then Respondents.Route. A report the rule refuses or that has no
-// answer id goes to the rule as it came.
+// report names (a person, Forms' named guest with the details the mappings
+// read, or for an accepted or pending answer that names nobody the guest
+// the mappings build from Forms' single read), then Respondents.Route. A
+// report the rule refuses or that has no answer id goes to the rule as it
+// came.
 func (m *MappedGuests) routeReport(ctx context.Context, record RecordFunc, r ticket.FormResponse) (ticket.FormResponseResult, error) {
 	if r.ResponseID == uuid.Nil {
 		return record(ctx, r)
@@ -354,14 +386,14 @@ func (m *MappedGuests) routeReport(ctx context.Context, record RecordFunc, r tic
 	}
 	var answers map[string]string
 	var mappings []Mapping
-	if r.UserID == nil && r.Guest == nil && m.Forms != nil &&
+	if r.UserID == nil && m.Forms != nil &&
 		(r.Status == ticket.FormResponseAccepted || r.Status == ticket.FormResponsePending) {
 		var err error
 		if mappings, err = m.Mappings(ctx, r.FormID); err != nil {
 			return ticket.FormResponseResult{}, err
 		}
-		if len(mappings) > 0 {
-			got, err := m.Forms.Response(ctx, r.FormID, r.ResponseID, MappedFields(mappings)...)
+		if fields := mappedFields(mappings, r.Guest != nil); len(fields) > 0 {
+			got, err := m.Forms.Response(ctx, r.FormID, r.ResponseID, fields...)
 			switch {
 			case errors.Is(err, ErrNotFound):
 				return ticket.FormResponseResult{Outcome: ticket.FormResponseOutcome(OutcomeGone)}, nil

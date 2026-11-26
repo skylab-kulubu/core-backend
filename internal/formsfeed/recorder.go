@@ -207,12 +207,13 @@ func (r *Recorder) Response(ctx context.Context, tx pgx.Tx, origin Origin, in Re
 	}
 	// An accepted answer to an application form that names nobody takes the
 	// mappings of the Events that list the form (docs/form-mappings.md); a
-	// pending one too once the Unticketed respondents keep it.
+	// pending one too once the Unticketed respondents keep it. A guest's
+	// that Forms names takes their details.
 	wantsPerson := func(status string) bool {
 		return status == StatusAccepted || (r.Respondents != nil && status == StatusPending)
 	}
 	var mappings []Mapping
-	if role == roleApplication && wantsPerson(in.Status) && in.UserID == nil && !in.HasGuest {
+	if role == roleApplication && wantsPerson(in.Status) && in.UserID == nil {
 		mappings = origin.mappings
 		if !origin.mapped {
 			if mappings, err = r.Mapped.Mappings(ctx, in.FormID); err != nil {
@@ -220,7 +221,8 @@ func (r *Recorder) Response(ctx context.Context, tx pgx.Tx, origin Origin, in Re
 			}
 		}
 	}
-	fields := MappedFields(mappings)
+	named := in.HasGuest
+	fields := mappedFields(mappings, named)
 	if role == roleApplication && wantsPerson(in.Status) && (!complete || (in.UserID == nil && in.HasGuest) || (len(fields) > 0 && in.Answers == nil)) {
 		got, err := r.read(ctx, in, fields)
 		if errors.Is(err, ErrNotFound) {
@@ -243,9 +245,11 @@ func (r *Recorder) Response(ctx context.Context, tx pgx.Tx, origin Origin, in Re
 		FormID: in.FormID, ResponseID: in.ResponseID, Status: ticket.FormResponseStatus(in.Status),
 		SubmittedAt: in.SubmittedAt, Invite: in.Invite(),
 	}
-	if !wantsPerson(in.Status) || in.UserID != nil || in.Guest != nil {
-		// The read found someone after all, or the answer is no longer
-		// accepted (nor pending, kept): no mapping.
+	if !wantsPerson(in.Status) || in.UserID != nil || (named && in.Guest == nil) {
+		// The read found a signed-in person after all, or the answer is no
+		// longer accepted (nor pending, kept), or Forms' guest went (only
+		// the details were asked for): no mapping. Forms' named guest keeps
+		// them for the details alone (ResolveRespondents).
 		mappings = nil
 	}
 	respondents, unresolved := ResolveRespondents(in.UserID, in.Guest, in.Answers, mappings)

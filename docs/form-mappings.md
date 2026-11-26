@@ -1,7 +1,8 @@
 # Form mappings
 
 **An organizer tells core which questions of an Event's form hold a guest's
-name and e-mail; core asks Forms for those answers only.** A form without
+name and e-mail, and optionally their phone number, university, department
+and grade; core asks Forms for those answers only.** A form without
 identity fields (props.identity firstName/lastName/email) makes Forms
 report an answer with no `userId` and no `guest`: the Ticket rule finds
 nobody (`no_respondent`). With a mapping, core builds the guest from the
@@ -18,10 +19,15 @@ Code: `internal/formsfeed` (`Mapping`, `Mappings`, `PostgresMappings`),
 | `lastName` | the last name |
 | `fullName` | first and last name in one ("ad soyad") |
 | `email` | the e-mail (required) |
+| `phone` | the phone number (optional, [the details](#the-details)) |
+| `university` | the university (optional) |
+| `department` | the department (optional) |
+| `grade` | the grade, year of study (optional) |
 
 Each is a question id of the form (Forms' schema item id, at most 100
 characters, no comma), or `null`. The rule: `email`, and either
-`firstName` and `lastName`, or `fullName`; no question twice. One mapping
+`firstName` and `lastName`, or `fullName`; no question twice (the details'
+included). One mapping
 per Event and form, for a form the Event lists as its application
 (`formUrl`) or an extra form (`extraFormUrls`); a feedback form has none.
 
@@ -40,9 +46,9 @@ sends no `collaborators` lets nobody in.
 
 | Route | Answer |
 | --- | --- |
-| `GET …/questions` | `200 {formId, title, questions: [{id, type, question, inputType, identity}], suggestion: {firstName, lastName, fullName, email}}` |
-| `GET …/mapping` | `200 {firstName, lastName, fullName, email, updatedAt}`; `404 mapping_not_found` without one |
-| `PUT …/mapping` | body `{firstName, lastName, fullName, email}`; `201` the first time, `200` when it replaced one, with the mapping. The first save (with `EVENTS_FORMS_ENABLED=true`) queues the form's gathering, so answers that named nobody before are kept with the guests it builds ([form-respondents.md](form-respondents.md#gathering-a-linked-form)) |
+| `GET …/questions` | `200 {formId, title, questions: [{id, type, question, inputType, identity}], suggestion: {firstName, lastName, fullName, email, phone, university, department, grade}}` (the details are never suggested: `null`) |
+| `GET …/mapping` | `200 {firstName, lastName, fullName, email, phone, university, department, grade, updatedAt}`; `404 mapping_not_found` without one |
+| `PUT …/mapping` | body `{firstName, lastName, fullName, email, phone, university, department, grade}` (a detail left out is none); `201` the first time, `200` when it replaced one, with the mapping. The first save (with `EVENTS_FORMS_ENABLED=true`) queues the form's gathering, so answers that named nobody before are kept with the guests it builds ([form-respondents.md](form-respondents.md#gathering-a-linked-form)) |
 | `DELETE …/mapping` | `204`; `404 mapping_not_found` without one |
 
 `questions` comes from Forms' form read (`GET {FORMS_INTERNAL_URL}/internal/v1/forms/{formId}`,
@@ -90,10 +96,11 @@ GET {FORMS_INTERNAL_URL}/internal/v1/forms/{formId}/responses/{responseId}?field
 ```
 
 Each item then carries `answers: {questionId: text}`, only the questions
-asked for (`null` without `fields`): an answer nobody mapped (a phone
-number, an id number, free text) never leaves Forms. Core keeps the
-answers in memory for the length of one answer; it never logs or stores
-them.
+asked for (`null` without `fields`): an answer nobody mapped (an id
+number, free text, a phone number no mapping names) never leaves Forms.
+Core keeps the answers in memory for the length of one answer; it never
+logs them, and stores only the details it reads from them, on the guest's
+Ticket ([the details](#the-details)).
 
 ## Tickets from a mapping
 
@@ -154,6 +161,76 @@ the line nor the metric names anybody.
 With `EVENTS_FORMS_ENABLED` off none of this runs: an answer that names
 nobody is `no_respondent`, as before.
 
+## The details
+
+The optional `phone`, `university`, `department` and `grade` questions
+(Yusuf, 2026-11-26) fill the guest Ticket's columns a Walk-in fills
+([walk-in.md](walk-in.md)): `guest_phone_number`, `guest_university`,
+`guest_department`, `guest_grade`, for the Event's statistics and the
+attendee exports. Only a **guest's** Ticket takes them, whoever names the
+guest: a mapped guest, and Forms' named guest (the form's identity fields)
+too. A signed-in person's answer takes none: a member's details live in
+their account.
+
+- A mapped guest's answer is read with every mapped question, as before;
+  an answer Forms names a guest of is read with the details' questions
+  only, and only when a mapping names any (otherwise nothing changes: no
+  `fields`, or no read for the HTTP report).
+- Read in `formsfeed.MappedDetails`, each detail on its own (an answer is a
+  stranger's text: a detail that does not read is left out, never the
+  guest):
+  - the phone in the Walk-in's one form (`ticket.NormalizePhone`: `+90` and
+    ten digits, or `+` and 8 to 15 digits); not a number, none;
+  - the university and the department trimmed, inner spaces folded; over
+    200 characters or with a control character, none;
+  - the grade as one of the Walk-in's keys (`ticket.Grades`) by
+    `formsfeed.GradeOf`: `prep` (hazırlık), `1` to `4` (the one year it
+    names, in digits or words: "3. Sınıf", "Üçüncü"), `masters` (yüksek
+    lisans, master, YL), `phd` (doktora), `graduate` (mezun); anything
+    else answered, a year past 4, or more than one of them (a multiple
+    choice's "1. Sınıf, 2. Sınıf"), `other`. Forms keeps a choice
+    question's answer as the option's text, so a choice question reads.
+    The answer itself is not kept (Yusuf, 2026-11-26): the column holds
+    the key alone; nothing reads a free text, and it would be a stranger's.
+- A new guest Ticket takes the details; one already there takes only those
+  it has none of (as its phone number always did): a value it has is never
+  replaced. An Unticketed respondent's row keeps them until its Ticket is
+  sent ([form-respondents.md](form-respondents.md#data)).
+- Panel: the four boxes are optional ("Telefon", "Üniversite", "Bölüm",
+  "Sınıf"); a choice question may be chosen for them. The Ticket's detail
+  shows them to who may see the Event's Tickets, the grade in Turkish.
+
+## Filling in earlier guests
+
+Answers that came before a mapping named the details left the guests'
+Tickets without them. A one-time command fills them, inside the core
+container (it reads the server's environment):
+
+```
+core-backend backfill-form-guest-details -event <id> [-apply]
+```
+
+- It reads the Event's saved mappings that name a detail (of forms the
+  Event lists); none: `no_details_mapping: 1`, exit 3 (the organizer
+  saves the questions first, panel "Soru eşleme").
+- For each such form it reads every answer that is not archived from Forms
+  (the list, `fields` the details' questions only, a page of 100 at a time)
+  and puts each answer's details (`MappedDetails`) on the guest Ticket of
+  the Event that answer wrote (`tickets.form_response_id`; not a cancelled
+  Ticket, nor one whose identity retention cleared) and on its Unticketed
+  respondent's guest row, only where the row has none: a run again finds
+  nothing to do. Never a signed-in person's Ticket.
+- Without `-apply` it only counts. It prints counts only (`tickets`,
+  `tickets_fill`, `respondents_fill`, `fill_<detail>`, `kept_<detail>` for
+  a Ticket keeping another value of its own, `dropped_<detail>` for an
+  answer that did not read, `grade_<key>`), never a person, an answer or a
+  value. Exit 0; 1 a failure (Forms, the database, no such Event); 2 its
+  usage or environment.
+- The write is one short batch of row updates a page; the door neither
+  waits for it nor reads what it writes (no check-in locks a Ticket's row
+  for update). ARTLAB's run waits for the Event's end all the same
+  (2026-11-26).
+
 ## Table
 
 Migration `20261127100000`: `event_form_mappings` (`event_id`, `form_id`,
@@ -163,6 +240,14 @@ the rule as checks, an index on `form_id`. The Event's deletion takes its
 rows. A row whose form the Event no longer lists is not read, nor
 answered (`404 form_not_listed`); linking the form again reads it again.
 Ids and times only; `updated_by` is the subject who saved it last.
+
+Migration `20261128010000` adds the details' questions
+(`phone_question`, `university_question`, `department_question`,
+`grade_question`, nullable, the ids' check
+`event_form_mappings_details_check`) and a respondent row's details
+([form-respondents.md](form-respondents.md#data)). Its down keeps the
+columns and their values: the release before neither reads nor writes
+them.
 
 ## Against the standard
 

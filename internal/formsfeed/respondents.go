@@ -145,6 +145,7 @@ func respondentRow(r Respondent, eventID, formID, responseID uuid.UUID, submitte
 			return RespondentRow{}, false
 		}
 		row.FirstName, row.LastName, row.Email = first, last, email
+		row.Phone, row.University, row.Department, row.Grade = r.Guest.PhoneNumber, r.Guest.University, r.Guest.Department, r.Guest.Grade
 		return row, true
 	}
 	return RespondentRow{}, false
@@ -259,7 +260,8 @@ func (s *Respondents) Route(ctx context.Context, record RecordFunc, report ticke
 func rowRespondent(row RespondentRow) ticket.FormRespondent {
 	r := ticket.FormRespondent{FormID: row.FormID, ResponseID: row.ResponseID, UserID: row.UserID}
 	if row.UserID == nil {
-		r.Guest = &ticket.GuestInfo{FirstName: row.FirstName, LastName: row.LastName, Email: row.Email}
+		r.Guest = &ticket.GuestInfo{FirstName: row.FirstName, LastName: row.LastName, Email: row.Email,
+			PhoneNumber: row.Phone, University: row.University, Department: row.Department, Grade: row.Grade}
 	}
 	return r
 }

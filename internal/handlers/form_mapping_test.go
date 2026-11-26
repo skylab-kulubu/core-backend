@@ -82,7 +82,8 @@ func TestFormMappingAnswers(t *testing.T) {
 		t.Fatalf("questions: %d %v", status, body)
 	}
 	status, body = mappingCall(t, app, "GET", base+"/mapping", "")
-	if status != 200 || body["fullName"] != "q2" || body["email"] != "q1" || body["firstName"] != nil || body["updatedAt"] != "2026-11-25T12:00:00Z" {
+	if status != 200 || body["fullName"] != "q2" || body["email"] != "q1" || body["firstName"] != nil || body["updatedAt"] != "2026-11-25T12:00:00Z" ||
+		body["phone"] != nil || body["grade"] != nil {
 		t.Fatalf("get: %d %v", status, body)
 	}
 	stub.created = true
@@ -91,8 +92,14 @@ func TestFormMappingAnswers(t *testing.T) {
 		t.Fatalf("put: %d %v %+v", status, body, stub.put)
 	}
 	stub.created = false
-	if status, _ := mappingCall(t, app, "PUT", base+"/mapping", `{"fullName":"q2","email":"q1"}`); status != 200 {
-		t.Fatalf("replace: %d", status)
+	if status, _ := mappingCall(t, app, "PUT", base+"/mapping", `{"fullName":"q2","email":"q1"}`); status != 200 || stub.put.Phone != "" || stub.put.Grade != "" {
+		t.Fatalf("replace: %d %+v", status, stub.put)
+	}
+	// The details' questions, each optional (docs/form-mappings.md#the-details).
+	status, body = mappingCall(t, app, "PUT", base+"/mapping", `{"fullName":"q2","email":"q1","phone":"q4","university":"q5","department":null,"grade":"q7"}`)
+	if status != 200 || body["phone"] != "q4" || body["university"] != "q5" || body["department"] != nil || body["grade"] != "q7" ||
+		stub.put.Phone != "q4" || stub.put.University != "q5" || stub.put.Department != "" || stub.put.Grade != "q7" {
+		t.Fatalf("details: %d %v %+v", status, body, stub.put)
 	}
 	if status, _ := mappingCall(t, app, "PUT", base+"/mapping", `{"email":`); status != 400 {
 		t.Fatalf("broken body: %d", status)

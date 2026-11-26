@@ -2312,6 +2312,29 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
 			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%door_staff%'
 		)`,
+	// A form mapping's details (docs/form-mappings.md#the-details): the four
+	// question columns and their check, a respondent's four detail columns
+	// and theirs.
+	20261128010000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'event_form_mappings'
+			  AND column_name IN ('phone_question', 'university_question', 'department_question', 'grade_question')
+		) = 4
+		AND (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'event_form_respondents'
+			  AND column_name IN ('phone_number', 'university', 'department', 'grade')
+		) = 4
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.event_form_mappings') AND conname = 'event_form_mappings_details_check' AND convalidated
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.event_form_respondents') AND conname = 'event_form_respondents_details_check' AND convalidated
+		)`,
 	// A certificate's snapshot of its Event's Co-organizer teams
 	// (docs/co-organizers.md).
 	20261127120000: `

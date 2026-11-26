@@ -254,6 +254,12 @@ type GuestInfo struct {
 	LastName    string
 	Email       string
 	PhoneNumber string
+	// University, Department and Grade (one of Grades) are a guest's
+	// optional details, as a Walk-in's: a form mapping's answers fill them
+	// (docs/form-mappings.md). Empty for none.
+	University string
+	Department string
+	Grade      string
 }
 
 // GuestApplyResult is what a Guest apply did to the guest Ticket.

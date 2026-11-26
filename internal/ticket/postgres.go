@@ -478,10 +478,14 @@ func (s *PostgresStore) Update(ctx context.Context, t Ticket) (Ticket, error) {
 			guest_last_name = $2,
 			guest_email = $3,
 			guest_phone_number = $4,
+			guest_university = $6,
+			guest_department = $7,
+			guest_grade = $8,
 			updated_at = now()
 		WHERE id = $5
 		RETURNING `+ticketCols,
-		t.GuestFirstName, t.GuestLastName, t.GuestEmail, t.GuestPhoneNumber, t.ID)
+		t.GuestFirstName, t.GuestLastName, t.GuestEmail, t.GuestPhoneNumber, t.ID,
+		t.GuestUniversity, t.GuestDepartment, t.GuestGrade)
 	got, err := scanTicket(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Ticket{}, ErrNotFound
