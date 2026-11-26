@@ -19,7 +19,7 @@ only attendance there is, and the certificate rule counts it
 |---|---|---|
 | `null` (automatic, every Event before this) | `venue` without a live Session, else `per_session` | as the effective mode |
 | `"per_session"` | `per_session` with a live Session, else `venue` | the Check-in to that Session, and the day's Venue entry if none yet |
-| `"venue"` | `venue` | the day's Venue entry alone; the Sessions take their attendance by the attendance QR |
+| `"venue"` | `venue` | the day's Venue entry alone; the Sessions take their attendance by the attendance QR (or a scan that asks for it, below) |
 
 A live Session is one that is not archived or cancelled, on a day that is
 not archived. An Event with none can only work as `venue`: its door is the
@@ -60,6 +60,7 @@ the night's. The summary counts by the stored day: a night is one row.
 | Way in | `per_session` | `venue` |
 |---|---|---|
 | Door scan at a Session, `POST /v1/sessions/{id}/check-in/scan` (and `/skypass`): Ticket QR, SkyPass, Wallet, card | Check-in + the day's entry if none (`scan`) | the day's entry alone (`scan`), `201 {…, "kind":"entry"}`; a second that day `409 already_entered` |
+| The same scan with `"checkIn": true` (the panel's door at a Session its staff chose) | as without it | Check-in + the day's entry if none (`scan`), `201 {…, "kind":"check_in"}`; the Session again `409 already_checked_in` |
 | Event door scan, `POST /v1/events/{id}/entries/scan` | the day's entry (`scan`) | the same |
 | Attendance QR, `check-in/me`, `check-in/guest` | Check-in + the day's entry if none (`attendance`) | the same |
 | Session desk, `check-in/resolve`, and `POST /v1/tickets/{t}/sessions/{s}/check-in` | Check-in + the day's entry if none (`desk`) | the same |
@@ -146,6 +147,12 @@ Ticket already in answers `200 {"duplicate": true, …}` instead of `409`
 (`kind: "check_in"`). In the venue mode it lists the day's Venue entries
 too (`kind: "entry"`, `sessionId` the Session asked for), newest first,
 `total` counting both: the door shows who came in today.
+
+`?kind=check_in` lists the Session's Check-ins alone in either mode, and
+`total` counts them alone: the panel's door counts a Session's attendance
+by it, apart from the day's entries (`GET /v1/events/{id}/entries`).
+Another `kind` is `400 invalid_query` (`param: "kind"`). Without it the
+answer is as above (sky-app reads it).
 
 ## sky-app (kapi-postalari ticket 09)
 
