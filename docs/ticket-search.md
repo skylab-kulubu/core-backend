@@ -3,7 +3,8 @@
 `POST /v1/tickets/search` with `{"email": "...", "userId": "..."}` (either or
 both) answers what `GET /v1/tickets?email=…&userId=…` answers: the same rules
 (the holder's own query, `ticket` read rights, drafts left out), the same
-`400` when both are empty or `userId` is not a UUID.
+`400` when both are empty (`ticket_query_required`) or `userId` is not a
+UUID (`user_id_invalid`); a body that is not JSON is `400 invalid_body`.
 
 The e-mail goes in the body because a query string is written to access
 logs (Traefik's among them) and browser history (OWASP REST Security

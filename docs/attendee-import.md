@@ -40,7 +40,9 @@ their own and do not read core's Events, 2026-11-25.)
 Body: `{"text": "...", "sendMail": true, "pastCapacity": false}`. `text` is
 the list: the panel reads a CSV file the operator picks (in the browser)
 and sends its text, or the rows the operator pasted. `sendMail` is on when
-left out; `pastCapacity` off.
+left out; `pastCapacity` off. An Event id that is not a UUID is `400
+invalid_id` (`param: "eventId"`), a body that is not this JSON `400
+invalid_body` ([problem-codes.md](problem-codes.md)).
 
 **Who:** an operator of the Event, as Guest apply and "Katılımcı ekle"
 ([guest-apply.md](guest-apply.md)): who may update the Event or assign its
