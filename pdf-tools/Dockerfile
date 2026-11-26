@@ -27,7 +27,7 @@ CMD ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"]
 
 FROM base
 LABEL org.opencontainers.image.source="https://github.com/skylab-kulubu/core-backend" \
-      org.opencontainers.image.description="core-backend PDF tools (inspect, strip-text, place, render); internal network only"
+      org.opencontainers.image.description="core-backend PDF tools (inspect, strip-text, place, render, font sanitize); internal network only"
 RUN pip uninstall -y pip
 USER 10001:10001
 ENV PORT=8080 TMPDIR=/tmp
