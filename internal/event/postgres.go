@@ -75,7 +75,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 var eventCols = `e.id, e.name, e.description, e.location, e.location_lat, e.location_lng, e.location_address, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, ` + activeSQL + `, e.status, e.published_at, e.published_by, e.cancelled_at, e.cancelled_by, e.cancel_reason, e.cancel_notified_at, e.copied_from_event_id, e.ranked, e.prize_info, e.feedback_mode, e.feedback_form_url, e.feedback_form_alias, e.feedback_auto_send, e.registration_closed, e.registration_closes_at, e.registration_closed_at, ` + registrationOpenSQL + `, e.season_id, e.cover_image_id, ` + media.ServedKeySQL("m") + `, ` + media.LinkedImageSQL("m") + `, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.attendance_min_count, e.attendance_auto_finalize, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at, ` +
 	servableCountSQL(Files) + `, ` + servableCountSQL(Videos) + `, e.map_media_id, ` + media.ServableKeySQL("mm") + `, ` +
 	`e.waitlist_enabled, ` + ticketCountSQL("active") + `, ` + ticketCountSQL("waitlisted") + `, ` +
-	`e.entry_mode, ` + liveSessionsSQL + `, e.external_registration_url, e.attendance_welcome_mail, e.attendance_recorded_mail, e.attendee_note, e.form_responses_auto_ticket`
+	`e.entry_mode, ` + liveSessionsSQL + `, e.external_registration_url, e.attendance_welcome_mail, e.attendance_recorded_mail, e.attendee_note, e.form_responses_auto_ticket, e.ticket_note`
 
 // ticketCountSQL counts the Event's Tickets of status: a subquery on the
 // index of the Event's Tickets by status (docs/event-capacity.md).
@@ -325,7 +325,8 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 			feedback_mode, feedback_form_url, feedback_form_alias, feedback_auto_send,
 			location_lat, location_lng, location_address, map_retry_at, attendance_min_count,
 			attendance_auto_finalize, waitlist_enabled, entry_mode, external_registration_url,
-			attendance_welcome_mail, attendance_recorded_mail, attendee_note, form_responses_auto_ticket
+			attendance_welcome_mail, attendance_recorded_mail, attendee_note, form_responses_auto_ticket,
+			ticket_note
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
 			$18,
 			CASE WHEN $18 = 'published' THEN now() END,
@@ -334,14 +335,14 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 			$22, $23, $24, $25,
 			$26, $27, $28, CASE WHEN $26::double precision IS NOT NULL THEN now() + `+mapSettleSQL+` END, $29,
 			$30, COALESCE($31::boolean, true), $32, $33,
-			COALESCE($34::boolean, true), COALESCE($35::boolean, true), COALESCE($36::text, ''), COALESCE($37::boolean, true))`,
+			COALESCE($34::boolean, true), COALESCE($35::boolean, true), COALESCE($36::text, ''), COALESCE($37::boolean, true), COALESCE($38::text, ''))`,
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
 		e.StartDate, e.EndDate, e.Linkedin, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
 		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e),
 		string(e.Status), e.PublishedBy, e.RegistrationClosed, e.RegistrationClosesAt,
 		string(feedbackMode(e.FeedbackMode)), e.FeedbackFormURL, e.FeedbackFormAlias, e.FeedbackAutoSend,
 		e.LocationLat, e.LocationLng, e.LocationAddress, e.AttendanceMinCount, e.AttendanceAutoFinalize, e.WaitlistEnabled,
-		e.EntryMode, e.ExternalRegistrationURL, e.AttendanceWelcomeMail, e.AttendanceRecordedMail, e.AttendeeNote, e.FormResponsesAutoTicket)
+		e.EntryMode, e.ExternalRegistrationURL, e.AttendanceWelcomeMail, e.AttendanceRecordedMail, e.AttendeeNote, e.FormResponsesAutoTicket, e.TicketNote)
 	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
 		return Event{}, refusal
 	}
@@ -403,6 +404,7 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 			attendance_recorded_mail = COALESCE($34::boolean, attendance_recorded_mail),
 			attendee_note = COALESCE($35::text, attendee_note),
 			form_responses_auto_ticket = COALESCE($36::boolean, form_responses_auto_ticket),
+			ticket_note = COALESCE($37::text, ticket_note),
 			-- A new point clears the map drawn of the old one and its tries;
 			-- the worker draws another once the point has settled
 			-- (docs/event-map.md). The right-hand columns are the row's
@@ -421,7 +423,7 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 		e.RegistrationClosed, e.RegistrationClosesAt, sentCancelReason(e),
 		string(feedbackMode(e.FeedbackMode)), e.FeedbackFormURL, e.FeedbackFormAlias, e.FeedbackAutoSend,
 		e.LocationLat, e.LocationLng, e.LocationAddress, e.AttendanceMinCount, e.AttendanceAutoFinalize, e.WaitlistEnabled,
-		e.EntryMode, e.ExternalRegistrationURL, e.AttendanceWelcomeMail, e.AttendanceRecordedMail, e.AttendeeNote, e.FormResponsesAutoTicket)
+		e.EntryMode, e.ExternalRegistrationURL, e.AttendanceWelcomeMail, e.AttendanceRecordedMail, e.AttendeeNote, e.FormResponsesAutoTicket, e.TicketNote)
 	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
 		return Event{}, refusal
 	}
@@ -1190,7 +1192,7 @@ func scanEvent(row rowScanner) (Event, error) {
 	var coverURL, mapURL *string
 	var extraRaw []byte
 	var waitlist, liveSessions, welcomeMail, recordedMail, autoTicket bool
-	var attendeeNote string
+	var attendeeNote, ticketNote string
 	err := row.Scan(
 		&e.ID, &e.Name, &e.Description, &e.Location, &e.LocationLat, &e.LocationLng, &e.LocationAddress, &e.OwnerTeam, &e.FormURL, &e.Capacity,
 		&e.StartDate, &e.EndDate, &e.Linkedin, &e.Active, &e.Status, &e.PublishedAt, &e.PublishedBy,
@@ -1200,10 +1202,11 @@ func scanEvent(row rowScanner) (Event, error) {
 		&e.CoverImageID, &coverURL, &e.coverImage, &e.CoverColors, &e.AttendanceRule, &e.AttendanceRatio, &e.AttendanceMinCount, &e.AttendanceAutoFinalize, &extraRaw, &e.MailListID, &e.ArchivedAt, &e.ArchivedBy, &e.CreatedAt, &e.UpdatedAt,
 		&e.FileCount, &e.VideoCount, &e.MapImageID, &mapURL,
 		&waitlist, &e.ticketCount, &e.waitlistCount,
-		&e.EntryMode, &liveSessions, &e.ExternalRegistrationURL, &welcomeMail, &recordedMail, &attendeeNote, &autoTicket,
+		&e.EntryMode, &liveSessions, &e.ExternalRegistrationURL, &welcomeMail, &recordedMail, &attendeeNote, &autoTicket, &ticketNote,
 	)
 	e.FormResponsesAutoTicket = &autoTicket
 	e.AttendeeNote = &attendeeNote
+	e.TicketNote = &ticketNote
 	e.WaitlistEnabled = &waitlist
 	e.AttendanceWelcomeMail, e.AttendanceRecordedMail = &welcomeMail, &recordedMail
 	e.EffectiveEntryMode = EffectiveEntryMode(e.EntryMode, liveSessions)

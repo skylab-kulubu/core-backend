@@ -68,6 +68,16 @@ type Event struct {
 	// the Event, so a public answer cannot carry it by mistake.
 	AttendeeNote     *string `json:"-"`
 	AttendeeNoteView *string `json:"attendeeNote,omitempty"`
+	// TicketNote is the organizer's announcement for the Ticket holders
+	// (the event's WhatsApp group, say; docs/ticket-note.md): plain text,
+	// at most TicketNoteMax characters, "" for none, its https addresses
+	// links in the mail. The ticket mails carry it (event.ticket-created,
+	// event.waitlist-promoted, event.reminder). Nil on a write keeps the
+	// stored one; the store always answers it. Like the attendee note it
+	// is never in a JSON answer by itself: ProjectFor copies it to
+	// TicketNoteView for who reads the attendee note.
+	TicketNote     *string `json:"-"`
+	TicketNoteView *string `json:"ticketNote,omitempty"`
 	// Full is derived by the store: Capacity > 0 and the active Tickets
 	// fill it. Anyone who sees the Event sees it.
 	Full bool `json:"full"`

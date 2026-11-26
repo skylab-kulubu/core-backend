@@ -222,6 +222,16 @@ func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
 		}
 		in.AttendeeNoteView = &note
 	}
+	// The ticket note goes to the Ticket holders by mail; in an answer, to
+	// the same readers as the attendee note.
+	in.TicketNoteView = nil
+	if p != nil && s.readsAttendeeNote(*p, in) {
+		note := ""
+		if in.TicketNote != nil {
+			note = *in.TicketNote
+		}
+		in.TicketNoteView = &note
+	}
 	if p == nil || !s.authz.Allow(*p, s.eventResource(in, authz.TypeEvent), authz.Update) {
 		in.Files = servableItems(in.Files)
 		in.Videos = servableItems(in.Videos)
@@ -402,6 +412,9 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (_ Ev
 	if in, err = normalizeAttendeeNote(in); err != nil {
 		return Event{}, err
 	}
+	if in, err = normalizeTicketNote(in); err != nil {
+		return Event{}, err
+	}
 	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() || !validEntryMode(in.EntryMode) {
 		return Event{}, ErrInvalid
 	}
@@ -497,6 +510,9 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 		return Event{}, err
 	}
 	if in, err = normalizeAttendeeNote(in); err != nil {
+		return Event{}, err
+	}
+	if in, err = normalizeTicketNote(in); err != nil {
 		return Event{}, err
 	}
 	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() || !validEntryMode(in.EntryMode) {

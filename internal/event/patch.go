@@ -47,6 +47,9 @@ type Patch struct {
 	FormResponsesAutoTicket optional.Field[bool] `json:"formResponsesAutoTicket"`
 	// AttendeeNote writes the organizer's note; null or "" clears it.
 	AttendeeNote optional.Field[string] `json:"attendeeNote"`
+	// TicketNote writes the announcement the ticket mails carry; null or ""
+	// clears it (docs/ticket-note.md).
+	TicketNote optional.Field[string] `json:"ticketNote"`
 	// EntryMode sets the door's mode: per_session or venue, null for
 	// automatic (docs/venue-entry.md); any other value is ErrInvalid.
 	EntryMode       optional.Field[*EntryMode] `json:"entryMode"`
@@ -158,6 +161,10 @@ func (p Patch) apply(existing Event) (Event, error) {
 	if p.AttendeeNote.Set || p.AttendeeNote.Null {
 		note := p.AttendeeNote.Value
 		e.AttendeeNote = &note
+	}
+	if p.TicketNote.Set || p.TicketNote.Null {
+		note := p.TicketNote.Value
+		e.TicketNote = &note
 	}
 	e.StartDate = p.StartDate.Or(existing.StartDate)
 	e.EndDate = p.EndDate.Or(existing.EndDate)

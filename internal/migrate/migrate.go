@@ -2011,6 +2011,10 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		AND to_regclass('public.attendance_mails_recorded_key') IS NOT NULL
 		AND to_regclass('public.attendance_mails_due_idx') IS NOT NULL
 		AND to_regclass('public.attendance_mails_done_idx') IS NOT NULL`,
+	// An Event's ticket note with its check (docs/ticket-note.md).
+	20261127210000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.events') AND conname = 'events_ticket_note_check' AND convalidated`,
 	// SkyNotify's names (ADR 0091): the step CHECK takes erase_skynotify and
 	// not erase_skymail. The file renames the rows in the same transaction.
 	// After a rollback (db/tasima/skynotify-geri.sql) the CHECK names

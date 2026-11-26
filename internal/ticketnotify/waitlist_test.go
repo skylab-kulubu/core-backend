@@ -18,6 +18,7 @@ type statusCall struct {
 	typ, key string
 	holder   mail.TicketHolder
 	vars     map[string]string
+	raw      map[string]any
 }
 
 // statusMail is fakeMail that also sends the waiting list's mails.
@@ -26,8 +27,8 @@ type statusMail struct {
 	status []statusCall
 }
 
-func (m *statusMail) TicketStatus(_ context.Context, typ, key string, holder mail.TicketHolder, vars map[string]string, _ mail.NotificationSource, _ *time.Time, _ []mail.Attachment) error {
-	m.status = append(m.status, statusCall{typ, key, holder, vars})
+func (m *statusMail) TicketStatus(_ context.Context, typ, key string, holder mail.TicketHolder, vars map[string]any, _ mail.NotificationSource, _ *time.Time, _ []mail.Attachment) error {
+	m.status = append(m.status, statusCall{typ, key, holder, textVars(vars), vars})
 	return nil
 }
 

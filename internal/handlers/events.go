@@ -54,6 +54,9 @@ type eventBody struct {
 	// AttendeeNote: the organizer's note for whoever enters; none keeps it
 	// (docs/attendance-mail.md).
 	AttendeeNote *string `json:"attendeeNote"`
+	// TicketNote: the announcement the ticket mails carry; none keeps it
+	// (docs/ticket-note.md).
+	TicketNote *string `json:"ticketNote"`
 	// EntryMode on create: per_session, venue, or none for automatic
 	// (docs/venue-entry.md).
 	EntryMode *event.EntryMode `json:"entryMode"`
@@ -115,6 +118,8 @@ func eventError(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusConflict, "Conflict", eventStatusCode(err))
 	case errors.Is(err, event.ErrAttendeeNoteInvalid):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "event_attendee_note_invalid")
+	case errors.Is(err, event.ErrTicketNoteInvalid):
+		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "event_ticket_note_invalid")
 	case errors.Is(err, event.ErrLocationInvalid):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "event_location_invalid")
 	case errors.Is(err, event.ErrExternalRegistrationURLInvalid):
@@ -161,6 +166,7 @@ func (b eventBody) asEvent() event.Event {
 		AttendanceRecordedMail:  b.AttendanceRecordedMail,
 		FormResponsesAutoTicket: b.FormResponsesAutoTicket,
 		AttendeeNote:            b.AttendeeNote,
+		TicketNote:              b.TicketNote,
 		StartDate:               b.StartDate,
 		EndDate:                 b.EndDate,
 		Linkedin:                b.Linkedin,

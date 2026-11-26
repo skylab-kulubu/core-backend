@@ -236,6 +236,10 @@ func (s *MemoryStore) Create(ctx context.Context, e Event) (Event, error) {
 		e.AttendeeNote = new(string)
 	}
 	e.AttendeeNoteView = nil
+	if e.TicketNote == nil {
+		e.TicketNote = new(string)
+	}
+	e.TicketNoteView = nil
 	e.CoOrganizers, e.CoOrganizerIDs = nil, nil
 	e.FeedbackMode = feedbackMode(e.FeedbackMode)
 	now := time.Now().UTC()
@@ -284,6 +288,10 @@ func (s *MemoryStore) Update(ctx context.Context, e Event) (Event, error) {
 		e.AttendeeNote = existing.AttendeeNote
 	}
 	e.AttendeeNoteView = nil
+	if e.TicketNote == nil {
+		e.TicketNote = existing.TicketNote
+	}
+	e.TicketNoteView = nil
 	// An update writes neither the status nor what goes with it.
 	e.Status, e.PublishedAt, e.PublishedBy = existing.Status, existing.PublishedAt, existing.PublishedBy
 	reason := existing.CancelReason
@@ -953,6 +961,9 @@ func (s *MemoryStore) Copy(_ context.Context, plan CopyPlan) (Event, []string, e
 	}
 	if e.AttendeeNote == nil {
 		e.AttendeeNote = new(string)
+	}
+	if e.TicketNote == nil {
+		e.TicketNote = new(string)
 	}
 	switch plan.DoorStaff {
 	case CopyRefused:
