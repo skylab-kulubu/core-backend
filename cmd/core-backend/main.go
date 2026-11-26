@@ -84,6 +84,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == healthcheckCommandName {
 		os.Exit(runHealthcheck(os.Args[2:], os.Getenv, os.Stderr))
 	}
+	if len(os.Args) > 1 && os.Args[1] == formDetailsBackfillCommandName {
+		os.Exit(runFormDetailsBackfill(os.Args[2:], os.Getenv, os.Stdout))
+	}
 	if len(os.Args) > 1 && os.Args[1] == ytuBackfillCommandName {
 		os.Exit(runYTUBackfill(os.Args[2:], os.Getenv, os.Stdout))
 	}

@@ -33,14 +33,22 @@ const (
 // answered an Event's form and holds no Ticket on it. A signed-in answer
 // keeps UserID only; a guest's the name and e-mail. Never an answer's text.
 type RespondentRow struct {
-	ID          uuid.UUID
-	EventID     uuid.UUID
-	FormID      uuid.UUID
-	ResponseID  uuid.UUID
-	UserID      *uuid.UUID
-	FirstName   string
-	LastName    string
-	Email       string
+	ID         uuid.UUID
+	EventID    uuid.UUID
+	FormID     uuid.UUID
+	ResponseID uuid.UUID
+	UserID     *uuid.UUID
+	FirstName  string
+	LastName   string
+	Email      string
+	// Phone, University, Department and Grade are a guest's optional
+	// details (docs/form-mappings.md#the-details), "" for none; a
+	// signed-in person's row has none. They go on the guest's Ticket when
+	// it is sent.
+	Phone       string
+	University  string
+	Department  string
+	Grade       string
 	SubmittedAt *time.Time
 	FormsStatus string
 	Source      string
@@ -118,12 +126,14 @@ func NewPostgresRespondents(pool *pgxpool.Pool) *PostgresRespondents {
 }
 
 const respondentColumns = `r.id, r.event_id, r.form_id, r.form_response_id, r.user_id, COALESCE(r.first_name, ''), COALESCE(r.last_name, ''),
-	COALESCE(r.email, ''), r.submitted_at, r.forms_status, r.source, r.created_at`
+	COALESCE(r.email, ''), r.submitted_at, r.forms_status, r.source, r.created_at,
+	r.phone_number, r.university, r.department, r.grade`
 
 func scanRespondent(row pgx.Row) (RespondentRow, error) {
 	var r RespondentRow
 	err := row.Scan(&r.ID, &r.EventID, &r.FormID, &r.ResponseID, &r.UserID, &r.FirstName, &r.LastName, &r.Email,
-		&r.SubmittedAt, &r.FormsStatus, &r.Source, &r.CreatedAt)
+		&r.SubmittedAt, &r.FormsStatus, &r.Source, &r.CreatedAt,
+		&r.Phone, &r.University, &r.Department, &r.Grade)
 	return r, err
 }
 
@@ -144,11 +154,13 @@ func (s *PostgresRespondents) Keep(ctx context.Context, row RespondentRow) (bool
 	}
 	var userID *uuid.UUID
 	var first, last, email *string
+	var phone, university, department, grade string
 	if row.UserID != nil {
 		userID = row.UserID
 	} else {
 		f, l, e := strings.TrimSpace(row.FirstName), strings.TrimSpace(row.LastName), strings.ToLower(strings.TrimSpace(row.Email))
 		first, last, email = &f, &l, &e
+		phone, university, department, grade = row.Phone, row.University, row.Department, row.Grade
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -169,12 +181,16 @@ func (s *PostgresRespondents) Keep(ctx context.Context, row RespondentRow) (bool
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO event_form_respondents AS r
-			(id, event_id, form_id, form_response_id, user_id, first_name, last_name, email, submitted_at, forms_status, source)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			(id, event_id, form_id, form_response_id, user_id, first_name, last_name, email, submitted_at, forms_status, source,
+			 phone_number, university, department, grade)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		ON CONFLICT (event_id, form_response_id) DO UPDATE SET
 			user_id = EXCLUDED.user_id, first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name, email = EXCLUDED.email,
-			submitted_at = COALESCE(EXCLUDED.submitted_at, r.submitted_at), forms_status = EXCLUDED.forms_status`,
-		row.ID, row.EventID, row.FormID, row.ResponseID, userID, first, last, email, row.SubmittedAt, row.FormsStatus, row.Source); err != nil {
+			submitted_at = COALESCE(EXCLUDED.submitted_at, r.submitted_at), forms_status = EXCLUDED.forms_status,
+			phone_number = EXCLUDED.phone_number, university = EXCLUDED.university,
+			department = EXCLUDED.department, grade = EXCLUDED.grade`,
+		row.ID, row.EventID, row.FormID, row.ResponseID, userID, first, last, email, row.SubmittedAt, row.FormsStatus, row.Source,
+		phone, university, department, grade); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)

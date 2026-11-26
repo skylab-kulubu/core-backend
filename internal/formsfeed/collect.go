@@ -177,7 +177,7 @@ func (p *Puller) collect(ctx context.Context, job PullJob, res *pullResult) erro
 
 // keepCollected keeps one gathered answer: a declined one's row goes; a
 // guest's answer is read from the single answer endpoint for the guest's
-// name and e-mail; the person (ResolveRespondents with the Event's mapping)
+// name and e-mail (the page's answers give the details); the person (ResolveRespondents with the Event's mapping)
 // is kept as an Unticketed respondent unless they hold a Ticket on the
 // Event (RespondentStore.Keep). Its outcome is kept, ticketed, declined, or
 // why nobody was kept (no_respondent, mapping_incomplete, gone).
@@ -211,9 +211,10 @@ func (p *Puller) keepCollected(ctx context.Context, rs *Respondents, eventID uui
 			item.Answers = got.Answers
 		}
 	}
-	if item.UserID != nil || guest != nil {
+	if item.UserID != nil {
 		mappings = nil
 	}
+	// Forms' named guest keeps the mappings for the details alone.
 	respondents, unresolved := ResolveRespondents(item.UserID, guest, item.Answers, mappings)
 	if unresolved != "" {
 		// K3: why the mapping gives no guest, for the panel's counts.

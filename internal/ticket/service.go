@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -847,6 +848,20 @@ func normalizeGuest(g GuestInfo) GuestInfo {
 	g.LastName = strings.TrimSpace(g.LastName)
 	g.Email = strings.ToLower(strings.TrimSpace(g.Email))
 	g.PhoneNumber = strings.TrimSpace(g.PhoneNumber)
+	g.University = strings.TrimSpace(g.University)
+	g.Department = strings.TrimSpace(g.Department)
+	g.Grade = strings.TrimSpace(g.Grade)
+	// The details are optional: one the columns would refuse is left out,
+	// never the guest (a form's answer is a stranger's text).
+	if utf8.RuneCountInString(g.University) > MaxWalkInText {
+		g.University = ""
+	}
+	if utf8.RuneCountInString(g.Department) > MaxWalkInText {
+		g.Department = ""
+	}
+	if g.Grade != "" && !slices.Contains(Grades, g.Grade) {
+		g.Grade = ""
+	}
 	return g
 }
 
@@ -969,6 +984,9 @@ func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo
 			GuestLastName:    g.LastName,
 			GuestEmail:       g.Email,
 			GuestPhoneNumber: g.PhoneNumber,
+			GuestUniversity:  g.University,
+			GuestDepartment:  g.Department,
+			GuestGrade:       g.Grade,
 		}, func(t Ticket) (Ticket, error) { return s.create(ctx, t, a) })
 		if createErr == nil {
 			return GuestApplication{Ticket: created, Result: GuestCreated}, nil
@@ -1003,6 +1021,18 @@ func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo
 		if g.PhoneNumber != "" {
 			existing.GuestPhoneNumber = g.PhoneNumber
 		}
+		for _, field := range []struct {
+			stored *string
+			sent   string
+		}{
+			{&existing.GuestUniversity, g.University},
+			{&existing.GuestDepartment, g.Department},
+			{&existing.GuestGrade, g.Grade},
+		} {
+			if field.sent != "" {
+				*field.stored = field.sent
+			}
+		}
 		updated, err := s.tickets.Update(ctx, existing)
 		if err != nil {
 			return GuestApplication{}, err
@@ -1021,6 +1051,9 @@ func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo
 		{&existing.GuestFirstName, g.FirstName},
 		{&existing.GuestLastName, g.LastName},
 		{&existing.GuestPhoneNumber, g.PhoneNumber},
+		{&existing.GuestUniversity, g.University},
+		{&existing.GuestDepartment, g.Department},
+		{&existing.GuestGrade, g.Grade},
 	} {
 		switch {
 		case field.sent == "" || field.sent == *field.stored:

@@ -175,7 +175,7 @@ The Unticketed respondents ([`form-respondents.md`](form-respondents.md#data); r
 
 | Rule | Selects | Period | Action |
 |---|---|---|---|
-| `form_respondents` | an `event_form_respondents` row | `FormRespondentPeriod`, the Event end + 2 years (as `guest_identity`); an Event with no date counts from the row's `created_at`, so every row is dated | row deleted (it holds nothing but who answered) |
+| `form_respondents` | an `event_form_respondents` row | `FormRespondentPeriod`, the Event end + 2 years (as `guest_identity`); an Event with no date counts from the row's `created_at`, so every row is dated | row deleted (it holds nothing but who answered, with a guest's optional details) |
 
 ## Schedule, lock and periods
 
