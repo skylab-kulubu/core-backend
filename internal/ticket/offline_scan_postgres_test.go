@@ -79,6 +79,11 @@ func TestOfflineScanOnPostgres(t *testing.T) {
 	if err != nil || entryOn.ScannedAt == nil || !entryOn.ScannedAt.Equal(lateAt) {
 		t.Fatalf("entry on its day %+v %v", entryOn, err)
 	}
+	// The day's list (the door's, the attendee export's) carries it too.
+	listed, err := store.VenueEntriesOn(ctx, ev.ID, ticket.IstanbulDate(start))
+	if err != nil || len(listed) != 1 || listed[0].ScannedAt == nil || !listed[0].ScannedAt.Equal(lateAt) {
+		t.Fatalf("day's entries %+v %v", listed, err)
+	}
 
 	recentAt := time.Now().Add(-10 * time.Minute).UTC()
 	if _, err := svc.CheckIn(ticket.WithScannedAt(ctx, recentAt), staff, recent.ID, open.ID); err != nil {

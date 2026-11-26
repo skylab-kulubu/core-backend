@@ -503,7 +503,7 @@ func (s *MemoryStore) VenueEntriesOn(_ context.Context, eventID uuid.UUID, date 
 		}
 		out = append(out, DoorEntry{
 			ID: e.ID, Kind: KindEntry, TicketID: e.TicketID, EntryDate: e.EntryDate,
-			EventDayID: e.EventDayID, Source: e.Source, Name: name, CreatedAt: e.CreatedAt,
+			EventDayID: e.EventDayID, Source: e.Source, Name: name, CreatedAt: e.CreatedAt, ScannedAt: e.ScannedAt,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
