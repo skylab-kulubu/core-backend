@@ -2022,6 +2022,21 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 	20261127210000: `
 		SELECT 1 FROM pg_constraint
 		WHERE conrelid = to_regclass('public.events') AND conname = 'events_ticket_note_check' AND convalidated`,
+	// An attendee export in the Team audit record (docs/attendee-export.md):
+	// the action check takes ticket.export, and the event editor's basis
+	// with it. Rolling back keeps the action check wide.
+	20261127223000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.export%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.export%'
+		)`,
 	// SkyNotify's names (ADR 0091): the step CHECK takes erase_skynotify and
 	// not erase_skymail. The file renames the rows in the same transaction.
 	// After a rollback (db/tasima/skynotify-geri.sql) the CHECK names

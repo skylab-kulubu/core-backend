@@ -86,6 +86,12 @@ const (
 	// ActionTicketImportPreview is the import's preview, recorded as
 	// ActionTicketImport: what the list would do, nothing written.
 	ActionTicketImportPreview Action = "ticket.import.preview"
+	// ActionTicketExport is a download of an Event's attendees
+	// (docs/attendee-export.md), recorded as ActionTicketImport: the
+	// Event's team, the Event and what was downloaded (State.Export: the
+	// report, the format and the row count), never a row's content. It is
+	// written whole (ok or failed) when the file is made.
+	ActionTicketExport Action = "ticket.export"
 	// ActionCoOrganizerAdd, ActionCoOrganizerRemove and
 	// ActionCoOrganizerChange are an Event's Co-organizer list changed
 	// (docs/co-organizers.md): a team or a person added or removed, or a
@@ -145,7 +151,7 @@ var Actions = []Action{
 	ActionGroupRoles, ActionGroupAttributes, ActionAppAssign, ActionAppUnassign,
 	ActionTermExtend, ActionTermHandover, ActionTermExpired,
 	ActionTicketResend, ActionTicketLinkRenew, ActionTicketCancel, ActionTicketRestore, ActionTicketPromote,
-	ActionTicketImport, ActionTicketImportPreview,
+	ActionTicketImport, ActionTicketImportPreview, ActionTicketExport,
 	ActionCoOrganizerAdd, ActionCoOrganizerRemove, ActionCoOrganizerChange,
 	ActionUserEnable, ActionUserDisable, ActionUserPasswordSet, ActionUserPasswordMail,
 	ActionUserEmailChange, ActionUserEmailVerify, ActionUserEmailMail, ActionUserEmailPrimary,
@@ -401,6 +407,8 @@ type State struct {
 	Reason  string `json:"reason,omitempty"`
 	// Import is a ticket.import row's counts; absent on every other row.
 	Import *ImportCounts `json:"import,omitempty"`
+	// Export is a ticket.export row's download; absent on every other row.
+	Export *ExportInfo `json:"export,omitempty"`
 	// Operation and ResourceType are Keycloak's names of a console change
 	// (CREATE, UPDATE, DELETE, ACTION; GROUP, CLIENT, CLIENT_ROLE …), on a
 	// via console row; Composites the roles a role's composites gained or
@@ -441,6 +449,18 @@ type ImportCounts struct {
 	Source  string `json:"source,omitempty"`
 	JobID   string `json:"jobId,omitempty"`
 	Skipped int    `json:"skipped,omitempty"`
+}
+
+// ExportInfo is what an attendee export downloaded
+// (docs/attendee-export.md): the report, the file format, whether it was
+// the rows the panel showed (Selected) and how many rows the file has.
+// Never a row's content.
+type ExportInfo struct {
+	Report    string `json:"report"`
+	Format    string `json:"format"`
+	Selected  bool   `json:"selected,omitempty"`
+	SessionID string `json:"sessionId,omitempty"`
+	Rows      int    `json:"rows"`
 }
 
 // SourceFormRespondents is ImportCounts.Source of a form respondents'
@@ -574,7 +594,7 @@ func (r Record) normalize() (Record, string) {
 	case BasisEventEditor:
 		if _, err := uuid.Parse(r.Actor.ViaGroupID); err != nil ||
 			(r.Action != ActionTicketCancel && r.Action != ActionTicketRestore && r.Action != ActionTicketPromote &&
-				r.Action != ActionTicketImport && r.Action != ActionTicketImportPreview &&
+				r.Action != ActionTicketImport && r.Action != ActionTicketImportPreview && r.Action != ActionTicketExport &&
 				r.Action != ActionTicketResend && r.Action != ActionTicketLinkRenew && r.Action != ActionCoOrganizerAdd) {
 			return r, "invalid_basis"
 		}
@@ -715,6 +735,16 @@ func (s *State) normalize() *State {
 	if s.Import != nil {
 		counts := *s.Import
 		out.Import = &counts
+	}
+	if s.Export != nil {
+		export := ExportInfo{
+			Report: cut(s.Export.Report, MaxIdentifier), Format: cut(s.Export.Format, MaxIdentifier),
+			Selected: s.Export.Selected, Rows: max(s.Export.Rows, 0),
+		}
+		if _, err := uuid.Parse(s.Export.SessionID); err == nil {
+			export.SessionID = s.Export.SessionID
+		}
+		out.Export = &export
 	}
 	for _, name := range RecordedAttributes {
 		if v, ok := s.Attributes[name]; ok {
