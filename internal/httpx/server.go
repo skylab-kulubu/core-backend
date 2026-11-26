@@ -81,6 +81,9 @@ type Deps struct {
 	// /v1/events/{id}/respondents (docs/form-respondents.md); nil leaves
 	// them out.
 	FormRespondents handlers.FormRespondents
+	// Raffles serves an Event's raffles under /v1/events/{id}/raffles
+	// (docs/raffle.md); nil leaves them out.
+	Raffles handlers.Raffles
 	// FormResponseMapper runs the forms report through the form mappings
 	// (docs/form-mappings.md); nil takes it as before.
 	FormResponseMapper     handlers.FormResponseMapper
@@ -790,6 +793,15 @@ func New(deps Deps) *fiber.App {
 		app.Put("/v1/events/:id/forms/:formId/mapping", formMappings.Put)
 		app.Delete("/v1/events/:id/forms/:formId/mapping", formMappings.Delete)
 	}
+	if deps.Raffles != nil {
+		raffles := handlers.NewRaffleHandler(deps.Raffles)
+		app.Post("/v1/events/:id/raffles/preview", raffles.Preview)
+		app.Get("/v1/events/:id/raffles", raffles.List)
+		app.Post("/v1/events/:id/raffles", raffles.Draw)
+		app.Get("/v1/events/:id/raffles/:raffleId", raffles.Get)
+		app.Get("/v1/events/:id/raffles/:raffleId/verification", raffles.Verification)
+		app.Post("/v1/events/:id/raffles/:raffleId/forfeits", raffles.Forfeit)
+	}
 	if deps.FormRespondents != nil {
 		respondents := handlers.NewFormRespondentHandler(deps.FormRespondents)
 		app.Get("/v1/events/:id/respondents", respondents.List)
@@ -907,6 +919,13 @@ func New(deps Deps) *fiber.App {
 	// turned into Tickets, previewed first (docs/attendee-import.md).
 	app.Post("/v1/events/:eventId/attendee-imports/preview", tickets.PreviewImport)
 	app.Post("/v1/events/:eventId/attendee-imports", tickets.ImportAttendees)
+	// The attendee export: a report of the Event's attendees as an XLSX or
+	// CSV file, for a reader of its Tickets (docs/attendee-export.md).
+	var standings handlers.StandingsReader
+	if deps.Certificates != nil {
+		standings = deps.Certificates
+	}
+	app.Post("/v1/events/:eventId/exports", handlers.NewExportHandler(deps.Tickets, standings).Export)
 	app.Get("/v1/tickets", tickets.List)
 	app.Post(handlers.TicketSearchPath, tickets.Search)
 	// The forms service's account with ticket:forms reports each answer to its
@@ -934,6 +953,10 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/events/:eventId/entries/summary", tickets.EntrySummary)
 	app.Get("/v1/events/:eventId/entries", tickets.ListEntries)
 	app.Delete("/v1/events/:eventId/entries/:entryId", tickets.UndoEntry)
+	// Walk-in at the door (docs/walk-in.md): a person with no Ticket
+	// registered by who may take check-ins there, budgeted per subject.
+	walkInLimits := handlers.DefaultWalkInLimits().Handlers()
+	app.Post(handlers.WalkInPath, walkInLimits[0], append(walkInLimits[1:], tickets.WalkIn)...)
 	if pass != nil {
 		// One route for whatever the door scanned (docs/ticket-qr.md):
 		// check-in/scan is its name, check-in/skypass the old one the

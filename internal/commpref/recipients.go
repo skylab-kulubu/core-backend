@@ -134,24 +134,56 @@ type addressIndex struct {
 	// case) belongs to: a set, each account once, so a page read twice
 	// does not make an address ambiguous.
 	byAddress map[string][]uuid.UUID
+	// kinds is how the first account of each address holds it, the
+	// strongest when it holds it twice (AddressKind's order).
+	kinds map[string]AddressKind
 	// enabled is every account read but the service accounts, with
 	// Keycloak's enabled flag.
 	enabled map[uuid.UUID]bool
+}
+
+// AddressKind is which of an account's verified identifiers an address is
+// (ADR-0044): the Primary e-mail, the YTÜ-linked School e-mail or the proven
+// Personal e-mail. Counts name it; nothing else branches on it.
+type AddressKind string
+
+const (
+	AddressPrimary  AddressKind = "primary"
+	AddressSchool   AddressKind = "school"
+	AddressPersonal AddressKind = "personal"
+)
+
+// rank orders the kinds: an account holding an address twice is counted by
+// the stronger.
+func (k AddressKind) rank() int {
+	switch k {
+	case AddressPrimary:
+		return 0
+	case AddressSchool:
+		return 1
+	}
+	return 2
 }
 
 // normalizeAddress is how an address is compared: trimmed and lower case,
 // as the login form compares it (LoginIdentifiers).
 func normalizeAddress(raw string) string { return strings.ToLower(strings.TrimSpace(raw)) }
 
-func (x *addressIndex) add(raw string, id uuid.UUID) {
+func (x *addressIndex) add(raw string, id uuid.UUID, kind AddressKind) {
 	address := normalizeAddress(raw)
 	if address == "" {
 		return
 	}
-	for _, held := range x.byAddress[address] {
+	for i, held := range x.byAddress[address] {
 		if held == id {
+			if i == 0 && kind.rank() < x.kinds[address].rank() {
+				x.kinds[address] = kind
+			}
 			return
 		}
+	}
+	if len(x.byAddress[address]) == 0 {
+		x.kinds[address] = kind
 	}
 	x.byAddress[address] = append(x.byAddress[address], id)
 }
@@ -318,30 +350,36 @@ func (r *Recipients) logRead(c addressDirectoryCounts, took time.Duration, err e
 // identity provider, then every account page by page. Either read failing
 // fails it.
 func (r *Recipients) readIndex(ctx context.Context) (*addressIndex, addressDirectoryCounts, error) {
+	return readAddressIndex(ctx, r.dir, r.ytuAlias, r.pageSize)
+}
+
+// readAddressIndex reads the whole directory from dir, the School e-mail's
+// link from the identity provider ytuAlias, pageSize accounts a read.
+func readAddressIndex(ctx context.Context, dir AddressDirectory, ytuAlias string, pageSize int) (*addressIndex, addressDirectoryCounts, error) {
 	var counts addressDirectoryCounts
 	linked := map[uuid.UUID]bool{}
-	for first := 0; ; first += r.pageSize {
+	for first := 0; ; first += pageSize {
 		if first > maxAddressDirectoryRows {
 			return nil, counts, errors.New("identity provider link read does not end")
 		}
-		page, err := r.dir.IdentityProviderLinkedPage(ctx, r.ytuAlias, first, r.pageSize)
+		page, err := dir.IdentityProviderLinkedPage(ctx, ytuAlias, first, pageSize)
 		if err != nil {
 			return nil, counts, err
 		}
 		for _, id := range page.IDs {
 			linked[id] = true
 		}
-		if page.Rows < r.pageSize {
+		if page.Rows < pageSize {
 			break
 		}
 	}
 	counts.linked = len(linked)
-	index := &addressIndex{byAddress: map[string][]uuid.UUID{}, enabled: map[uuid.UUID]bool{}}
-	for first := 0; ; first += r.pageSize {
+	index := &addressIndex{byAddress: map[string][]uuid.UUID{}, kinds: map[string]AddressKind{}, enabled: map[uuid.UUID]bool{}}
+	for first := 0; ; first += pageSize {
 		if first > maxAddressDirectoryRows {
 			return nil, counts, errors.New("address directory read does not end")
 		}
-		page, err := r.dir.AddressHoldersPage(ctx, first, r.pageSize)
+		page, err := dir.AddressHoldersPage(ctx, first, pageSize)
 		if err != nil {
 			return nil, counts, err
 		}
@@ -361,18 +399,18 @@ func (r *Recipients) readIndex(ctx context.Context) (*addressIndex, addressDirec
 			// matched here), the School e-mail of an account linked to
 			// YTÜ, the Personal e-mail with its proof stamp.
 			if h.EmailVerified {
-				index.add(h.Email, h.ID)
+				index.add(h.Email, h.ID, AddressPrimary)
 			} else if normalizeAddress(h.Email) != "" {
 				counts.primaryUnverified++
 			}
 			if linked[h.ID] {
-				index.add(h.SchoolEmail, h.ID)
+				index.add(h.SchoolEmail, h.ID, AddressSchool)
 			}
 			if personalEmailProven(h.PersonalEmailVerifiedAt) {
-				index.add(h.PersonalEmail, h.ID)
+				index.add(h.PersonalEmail, h.ID, AddressPersonal)
 			}
 		}
-		if page.Rows < r.pageSize {
+		if page.Rows < pageSize {
 			return index, counts, nil
 		}
 	}

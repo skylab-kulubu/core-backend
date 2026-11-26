@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -123,7 +124,17 @@ type EventDoor interface {
 	ResolveEntry(ctx context.Context, p authz.Principal, eventID uuid.UUID, target DoorCheckInTarget) (DoorEntry, error)
 	UndoEntry(ctx context.Context, p authz.Principal, eventID, entryID uuid.UUID) error
 	EntrySummary(ctx context.Context, p authz.Principal, eventID uuid.UUID) (EntrySummary, error)
+	// BeginExport reads what an attendee export of the Event needs for a
+	// reader of its Tickets, and opens its Team audit row; FinishExport
+	// closes the row with the file's row count (docs/attendee-export.md).
+	BeginExport(ctx context.Context, p authz.Principal, eventID uuid.UUID, req ExportRequest) (*ExportData, error)
+	FinishExport(ctx context.Context, data *ExportData, rows int, err error)
 	ListEntries(ctx context.Context, p authz.Principal, eventID uuid.UUID, date string) ([]DoorEntry, error)
+	// WalkIn is the door registering a person with no Ticket ("Kapıda
+	// kayıt", docs/walk-in.md): their guest Ticket, and in the venue Entry
+	// mode the day's entry. The ctx carries the caller for the Team audit
+	// row (teamaudit.WithActor).
+	WalkIn(ctx context.Context, p authz.Principal, eventID uuid.UUID, w WalkIn) (WalkInOutcome, error)
 }
 
 type TeamReader interface {
@@ -176,6 +187,17 @@ type service struct {
 	// audit records the ticket actions in the Team audit record (a
 	// teamaudit.Writer extra); nil records none.
 	audit teamaudit.Writer
+	// guestOwners finds the account a new guest Ticket's address is (a
+	// GuestOwners extra); nil links none (docs/guest-account-links.md).
+	guestOwners GuestOwners
+}
+
+// GuestOwners finds the account a new guest Ticket on the Event is linked
+// to (docs/guest-account-links.md): the one active account that holds the
+// address verified and has no Ticket on the Event, while linking is on.
+// false links nothing; it never fails a write.
+type GuestOwners interface {
+	GuestOwner(ctx context.Context, eventID uuid.UUID, email string) (uuid.UUID, bool)
 }
 
 func NewService(tickets Store, events event.Store, az authz.Authorizer, extras ...any) Service {
@@ -221,6 +243,9 @@ func NewService(tickets Store, events event.Store, az authz.Authorizer, extras .
 		}
 		if v, ok := extra.(teamaudit.Writer); ok && v != nil {
 			s.audit = v
+		}
+		if v, ok := extra.(GuestOwners); ok && v != nil {
+			s.guestOwners = v
 		}
 	}
 	// The in-memory store reads its Events' capacity as the database does.
@@ -345,8 +370,13 @@ func personSummaryMatches(summary PersonSummary, query string) bool {
 	return false
 }
 
+// withEvent gives t its Event and, for a member's Ticket, its owner's
+// summary. A guest Ticket linked to an account (docs/guest-account-links.md)
+// keeps its ownerId but gets no summary: it is the guest's name and e-mail
+// that the Ticket was written for, and the account's own name and
+// addresses are not the reader's to learn from it.
 func (s *service) withEvent(ctx context.Context, t Ticket) Ticket {
-	if t.OwnerID != nil {
+	if t.OwnerID != nil && t.TicketType != Guest {
 		if s.users != nil {
 			if shadow, err := s.users.Get(ctx, *t.OwnerID); err == nil {
 				summary := ownerSummary(shadow)
@@ -764,6 +794,39 @@ func (s *service) create(ctx context.Context, t Ticket, a Admission) (Ticket, er
 	return s.tickets.Create(ctx, t)
 }
 
+// withGuestOwner is t, a new guest Ticket, with the account its address is
+// as its owner (GuestOwners), when there is one: the Ticket stays GUEST with
+// its name and e-mail (docs/guest-account-links.md).
+func (s *service) withGuestOwner(ctx context.Context, t Ticket) Ticket {
+	if s.guestOwners == nil || t.TicketType != Guest || t.OwnerID != nil || strings.TrimSpace(t.GuestEmail) == "" {
+		return t
+	}
+	owner, ok := s.guestOwners.GuestOwner(ctx, t.EventID, t.GuestEmail)
+	if !ok {
+		return t
+	}
+	t.OwnerID = &owner
+	t.ownerLink = LinkWrite
+	return t
+}
+
+// createGuest writes the new guest Ticket t with write, linked to the
+// account its address is when there is one. A link the database refuses
+// (the account took a Ticket on the Event or stopped being active since it
+// was looked up) writes it unlinked, as before linking existed: linking
+// never fails a write.
+func (s *service) createGuest(ctx context.Context, t Ticket, write func(Ticket) (Ticket, error)) (Ticket, error) {
+	linked := s.withGuestOwner(ctx, t)
+	if linked.OwnerID == nil {
+		return write(t)
+	}
+	created, err := write(linked)
+	if errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) {
+		return write(t)
+	}
+	return created, err
+}
+
 // missingGuestFields names the fields of a normalized g a guest
 // application needs and lacks, in the body's order.
 func missingGuestFields(g GuestInfo) []string {
@@ -785,6 +848,20 @@ func normalizeGuest(g GuestInfo) GuestInfo {
 	g.LastName = strings.TrimSpace(g.LastName)
 	g.Email = strings.ToLower(strings.TrimSpace(g.Email))
 	g.PhoneNumber = strings.TrimSpace(g.PhoneNumber)
+	g.University = strings.TrimSpace(g.University)
+	g.Department = strings.TrimSpace(g.Department)
+	g.Grade = strings.TrimSpace(g.Grade)
+	// The details are optional: one the columns would refuse is left out,
+	// never the guest (a form's answer is a stranger's text).
+	if utf8.RuneCountInString(g.University) > MaxWalkInText {
+		g.University = ""
+	}
+	if utf8.RuneCountInString(g.Department) > MaxWalkInText {
+		g.Department = ""
+	}
+	if g.Grade != "" && !slices.Contains(Grades, g.Grade) {
+		g.Grade = ""
+	}
 	return g
 }
 
@@ -900,14 +977,17 @@ func (s *service) guestApplyTrusted(p authz.Principal, ev event.Event) bool {
 func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo, trusted bool, a Admission) (GuestApplication, error) {
 	existing, err := s.tickets.GetByGuestEvent(ctx, g.Email, eventID)
 	if errors.Is(err, ErrNotFound) {
-		created, createErr := s.create(ctx, Ticket{
+		created, createErr := s.createGuest(ctx, Ticket{
 			EventID:          eventID,
 			TicketType:       Guest,
 			GuestFirstName:   g.FirstName,
 			GuestLastName:    g.LastName,
 			GuestEmail:       g.Email,
 			GuestPhoneNumber: g.PhoneNumber,
-		}, a)
+			GuestUniversity:  g.University,
+			GuestDepartment:  g.Department,
+			GuestGrade:       g.Grade,
+		}, func(t Ticket) (Ticket, error) { return s.create(ctx, t, a) })
 		if createErr == nil {
 			return GuestApplication{Ticket: created, Result: GuestCreated}, nil
 		}
@@ -941,6 +1021,18 @@ func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo
 		if g.PhoneNumber != "" {
 			existing.GuestPhoneNumber = g.PhoneNumber
 		}
+		for _, field := range []struct {
+			stored *string
+			sent   string
+		}{
+			{&existing.GuestUniversity, g.University},
+			{&existing.GuestDepartment, g.Department},
+			{&existing.GuestGrade, g.Grade},
+		} {
+			if field.sent != "" {
+				*field.stored = field.sent
+			}
+		}
 		updated, err := s.tickets.Update(ctx, existing)
 		if err != nil {
 			return GuestApplication{}, err
@@ -959,6 +1051,9 @@ func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo
 		{&existing.GuestFirstName, g.FirstName},
 		{&existing.GuestLastName, g.LastName},
 		{&existing.GuestPhoneNumber, g.PhoneNumber},
+		{&existing.GuestUniversity, g.University},
+		{&existing.GuestDepartment, g.Department},
+		{&existing.GuestGrade, g.Grade},
 	} {
 		switch {
 		case field.sent == "" || field.sent == *field.stored:

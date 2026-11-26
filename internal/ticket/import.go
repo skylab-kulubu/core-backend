@@ -231,7 +231,15 @@ func (s *service) ImportAttendees(ctx context.Context, p authz.Principal, eventI
 			t.TicketType = Guest
 			t.GuestFirstName, t.GuestLastName, t.GuestEmail = row.FirstName, row.LastName, row.Email
 		}
-		created, err := store.CreateAdmitted(ctx, t, admission)
+		write := func(t Ticket) (Ticket, error) { return store.CreateAdmitted(ctx, t, admission) }
+		var created Ticket
+		if t.TicketType == Guest {
+			// A guest row whose address an account holds verified is
+			// linked to it (docs/guest-account-links.md).
+			created, err = s.createGuest(ctx, t, write)
+		} else {
+			created, err = write(t)
+		}
 		row.OverCapacity = false
 		switch {
 		case err == nil:

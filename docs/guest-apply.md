@@ -9,6 +9,12 @@ last name and e-mail are required. While the Event's applying is not open
 from the panel (who may update the Event or assign its Tickets)
 ([event-registration-closure.md](event-registration-closure.md)).
 
+A new guest Ticket whose address one active account holds verified, on an
+Event that account holds no Ticket on, is written linked to it while guest
+account links are on: still `GUEST` with the name and e-mail given, the
+account its owner ([guest-account-links.md](guest-account-links.md)). The
+answer does not change.
+
 `consents` carries the boxes the guest ticked
 ([contact-consents.md](contact-consents.md)): `["event_invitations"]`, or
 `[{"purpose":"event_invitations","textVersion":"davet-v2"}]` to
