@@ -46,12 +46,19 @@ type ExportRequest struct {
 }
 
 // ExportPerson is who a Ticket names, as the export writes them: a
-// member's account name and e-mail, a guest's own; an erased account
-// writes user.DeletedDisplayName and no e-mail.
+// member's account name, e-mail, university and department, a guest's
+// own (with the phone, university, department and grade a Walk-in or a
+// form gave, docs/walk-in.md); an erased account writes
+// user.DeletedDisplayName and nothing else.
 type ExportPerson struct {
-	FirstName string
-	LastName  string
-	Email     string
+	FirstName  string
+	LastName   string
+	Email      string
+	Phone      string
+	University string
+	Department string
+	// Grade is one of Grades, or empty.
+	Grade string
 }
 
 // Name is the person's full name.
@@ -192,7 +199,10 @@ func (s *service) exportPeople(ctx context.Context, out *ExportData) error {
 	}
 	for _, t := range out.Tickets {
 		if t.OwnerID == nil {
-			out.People[t.ID] = ExportPerson{FirstName: t.GuestFirstName, LastName: t.GuestLastName, Email: t.GuestEmail}
+			out.People[t.ID] = ExportPerson{
+				FirstName: t.GuestFirstName, LastName: t.GuestLastName, Email: t.GuestEmail, Phone: t.GuestPhoneNumber,
+				University: t.GuestUniversity, Department: t.GuestDepartment, Grade: t.GuestGrade,
+			}
 			continue
 		}
 		a, ok := accounts[*t.OwnerID]
@@ -203,7 +213,10 @@ func (s *service) exportPeople(ctx context.Context, out *ExportData) error {
 		case !ok || a.Blocked || !a.Stored:
 			out.People[t.ID] = ExportPerson{FirstName: user.DeletedDisplayName}
 		default:
-			out.People[t.ID] = ExportPerson{FirstName: a.User.FirstName, LastName: a.User.LastName, Email: a.User.Email}
+			out.People[t.ID] = ExportPerson{
+				FirstName: a.User.FirstName, LastName: a.User.LastName, Email: a.User.Email,
+				University: a.User.University, Department: a.User.Department,
+			}
 		}
 	}
 	return nil

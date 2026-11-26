@@ -120,6 +120,7 @@ const guestTicketSQL = `t.owner_id IS NULL`
 // guestIdentityHeldSQL: the Ticket still holds the guest's identity, or one
 // of its certificates without an owner still holds their address.
 const guestIdentityHeldSQL = `(t.guest_first_name <> '' OR t.guest_last_name <> '' OR t.guest_email <> '' OR t.guest_phone_number <> ''
+	OR t.guest_university <> '' OR t.guest_department <> '' OR t.guest_grade <> ''
 	OR EXISTS (SELECT 1 FROM certificates gc WHERE gc.ticket_id = t.id AND gc.owner_id IS NULL AND gc.recipient_email <> ''))`
 
 // guestPersonSQL is a guest Ticket's person: its normalized address. Guest
@@ -231,13 +232,16 @@ func sweepRules(s Schema) []Rule {
 			// v2: a member's own Events date their earlier guest Tickets.
 			// v3: an Event without a date counts from the Ticket's
 			// registration, so the rule dates every row (no anchorless).
+			// v4: a Walk-in's university, department and grade go with the
+			// identity (docs/walk-in.md).
 			// guest_phone and door_staff still count such rows and leave
 			// them: a phone 90 days after registration could go before an
 			// undated Event even took place, and door staff have no date.
-			Name: "guest_identity", Version: 3, Kind: KindSweep, Action: ActionScrub,
+			Name: "guest_identity", Version: 4, Kind: KindSweep, Action: ActionScrub,
 			Table: "tickets", RelatedTable: "certificates", alias: "t", key: "id", Period: GuestIdentityPeriod,
 			where: guestIdentityDue,
-			set:   `guest_first_name = '', guest_last_name = '', guest_email = '', guest_phone_number = '', updated_at = now()`,
+			set: `guest_first_name = '', guest_last_name = '', guest_email = '', guest_phone_number = '',
+				guest_university = '', guest_department = '', guest_grade = '', updated_at = now()`,
 			// The certificate keeps its recipient name, serial and PDF: the
 			// verification record (ADR-0062). Only its address goes.
 			related: `UPDATE certificates gc SET recipient_email = '' FROM batch

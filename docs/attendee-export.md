@@ -54,15 +54,23 @@ no-store`, `X-Content-Type-Options: nosniff`.
 
 The person columns open every report: Ad, Soyad, E-posta, Üye/Misafir. A
 member's name and address are their account's; an erased account writes
-"Silinmiş kullanıcı" and no address. A phone number is never written (data
-minimization: no report needs it).
+"Silinmiş kullanıcı" and nothing else. The reports about the people
+themselves (`attendees`, `session`, `entries`) follow them with Telefon,
+Üniversite, Bölüm and Sınıf: a guest's phone, university, department and
+grade as the Ticket holds them (a Walk-in's, [walk-in.md](walk-in.md)); a
+member's university and department from their account, no phone (the
+account's phone is not shown to organizers). The grade is written as the
+panel shows it (Hazırlık, 1–4, Yüksek lisans, Doktora, Mezun, Diğer). The
+phone is a text cell in the XLSX; in the CSV a leading `+` gets the
+apostrophe below, so Excel keeps it as text (Yusuf, 2026-11-26: the phone is
+exported).
 
 | Report | Rows | Columns after the person |
 | --- | --- | --- |
-| `attendees` (Katılımcılar) | every Ticket, cancelled and waitlisted included, by registration | Bilet kodu, Bilet durumu (Aktif / Bekleme listesi / İptal), Kayıt kaynağı (Form / Doğrudan), Kayıt tarihi, Alana giriş (gün), Alana giriş zamanları, Katıldığı oturum sayısı, then the counts |
-| `session` (Oturum katılımı) | the Tickets with a Check-in on the Session, by name | Bilet durumu, Katılım zamanı, Oturum |
+| `attendees` (Katılımcılar) | every Ticket, cancelled and waitlisted included, by registration | Telefon, Üniversite, Bölüm, Sınıf, Bilet kodu, Bilet durumu (Aktif / Bekleme listesi / İptal), Kayıt kaynağı (Form / Kapıda kayıt / Doğrudan), Kayıt tarihi, Alana giriş (gün), Alana giriş zamanları, Katıldığı oturum sayısı, then the counts |
+| `session` (Oturum katılımı) | the Tickets with a Check-in on the Session, by name | Telefon, Üniversite, Bölüm, Sınıf, Bilet durumu, Katılım zamanı, Oturum |
 | `matrix` (Katılım matrisi) | the active Tickets, by name | one column per live Session in the program's order ("(sayılır)" when counted), ✓ where checked in; Toplam katıldığı oturum, then the counts |
-| `entries` (Alana giriş) | every Venue entry, day by day | Gün first; Giriş zamanı, Cihazda okutma zamanı (an offline scan's), Yol (QR okutma / Kapı listesi (elle) / Oturum katılımıyla) |
+| `entries` (Alana giriş) | every Venue entry, day by day | Gün first; Telefon, Üniversite, Bölüm, Sınıf, Giriş zamanı, Cihazda okutma zamanı (an offline scan's), Yol (QR okutma / Kapı listesi (elle) / Oturum katılımıyla / Kapıda kayıt) |
 | `certificates` (Sertifikalar) | the active Tickets, by name | Sayılan oturumlardan katıldığı, Sayılan oturum sayısı, Sertifika durumu, Seri no, Veriliş, İptal |
 
 The counts are the certificate rule's ([certificate-rule.md](certificate-rule.md)),

@@ -65,7 +65,7 @@ func TestVenueEntriesMigration(t *testing.T) {
 	if _, err := pool.Exec(ctx, insert, ticketID, eventID, "2026-12-12", nil, "scan", nil); err == nil {
 		t.Error("a second entry the same day was taken")
 	}
-	if _, err := pool.Exec(ctx, insert, ticketID, eventID, "2026-12-13", nil, "walk_in", nil); err == nil {
+	if _, err := pool.Exec(ctx, insert, ticketID, eventID, "2026-12-13", nil, "kiosk", nil); err == nil {
 		t.Error("an unknown source was taken")
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO venue_entries (id, ticket_id, event_id, entry_date, source, by_user_id)

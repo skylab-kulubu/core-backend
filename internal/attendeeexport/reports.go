@@ -117,6 +117,35 @@ func (b *builder) person(t ticket.Ticket) []any {
 	return []any{p.FirstName, p.LastName, p.Email, typeLabel(t)}
 }
 
+// contactColumns follow the person in the reports about the people
+// themselves (Katılımcılar, Oturum katılımı, Alana giriş): a guest's phone
+// (a text cell, never a number or a formula), and the university,
+// department and grade a guest gave or a member's account holds.
+var contactColumns = []Column{
+	{Header: "Telefon", Width: 16}, {Header: "Üniversite", Width: 24}, {Header: "Bölüm", Width: 24}, {Header: "Sınıf", Width: 12},
+}
+
+func (b *builder) contact(t ticket.Ticket) []any {
+	p := b.d.People[t.ID]
+	return []any{p.Phone, p.University, p.Department, gradeLabels[p.Grade]}
+}
+
+// gradeLabels are the grade keys as the panel's Kapıda kayıt shows them.
+var gradeLabels = map[string]string{
+	"prep": "Hazırlık", "1": "1", "2": "2", "3": "3", "4": "4",
+	"masters": "Yüksek lisans", "phd": "Doktora", "graduate": "Mezun", "other": "Diğer",
+}
+
+// withContact is the person's cells and their contact.
+func (b *builder) withContact(t ticket.Ticket) []any {
+	return append(b.person(t), b.contact(t)...)
+}
+
+// personAndContact are the person's columns and their contact's.
+func personAndContact() []Column {
+	return append(slices.Clone(personColumns), contactColumns...)
+}
+
 func typeLabel(t ticket.Ticket) string {
 	if t.TicketType == ticket.Registered {
 		return "Üye"
@@ -136,11 +165,17 @@ func statusLabel(t ticket.Ticket) string {
 }
 
 // sourceLabel is where the registration came from, as core knows it: an
-// accepted Forms answer, or directly (the person's own application, the
-// panel's Katılımcı ekle or an import).
-func sourceLabel(t ticket.Ticket) string {
+// accepted Forms answer, the door (a Walk-in, which entered with it), or
+// directly (the person's own application, the panel's Katılımcı ekle or an
+// import).
+func (b *builder) sourceLabel(t ticket.Ticket) string {
 	if t.FormsStatus != "" {
 		return "Form"
+	}
+	for _, e := range b.entered[t.ID] {
+		if e.Source == ticket.EntryWalkIn {
+			return "Kapıda kayıt"
+		}
 	}
 	return "Doğrudan"
 }
@@ -264,7 +299,7 @@ func active(t ticket.Ticket) bool { return t.Active() }
 // attendees is the ticket list: each Ticket, its status and registration,
 // its Venue entries and its attendance.
 func (b *builder) attendees() Table {
-	cols := append(slices.Clone(personColumns),
+	cols := append(personAndContact(),
 		Column{Header: "Bilet kodu", Width: 12},
 		Column{Header: "Bilet durumu", Width: 14},
 		Column{Header: "Kayıt kaynağı", Width: 12},
@@ -282,7 +317,7 @@ func (b *builder) attendees() Table {
 			times[i] = FormatTime(e.CreatedAt)
 		}
 		created := t.CreatedAt
-		row := append(b.person(t), t.Code, statusLabel(t), sourceLabel(t), &created, len(entered), strings.Join(times, ", "), b.attended(t))
+		row := append(b.withContact(t), t.Code, statusLabel(t), b.sourceLabel(t), &created, len(entered), strings.Join(times, ", "), b.attended(t))
 		rows = append(rows, append(row, b.countCells(t)...))
 	}
 	return Table{Sheet: reportNames[ticket.ExportAttendees], Columns: cols, Rows: rows}
@@ -309,7 +344,7 @@ func (b *builder) sessionLabel(s event.Session) string {
 func (b *builder) session() Table {
 	id := b.d.Request.SessionID
 	sess := b.byID[id]
-	cols := append(slices.Clone(personColumns),
+	cols := append(personAndContact(),
 		Column{Header: "Bilet durumu", Width: 14},
 		Column{Header: "Katılım zamanı", Kind: DateTime, Width: 17},
 		Column{Header: "Oturum", Width: 36},
@@ -328,7 +363,7 @@ func (b *builder) session() Table {
 	rows := [][]any{}
 	for _, t := range b.ordered(keep, false) {
 		at := when[t.ID]
-		rows = append(rows, append(b.person(t), statusLabel(t), &at, label))
+		rows = append(rows, append(b.withContact(t), statusLabel(t), &at, label))
 	}
 	return Table{Sheet: sheetName(reportNames[ticket.ExportSession]), Columns: cols, Rows: rows}
 }
@@ -373,12 +408,13 @@ var entrySourceLabels = map[ticket.EntrySource]string{
 	ticket.EntryScan:       "QR okutma",
 	ticket.EntryDesk:       "Kapı listesi (elle)",
 	ticket.EntryAttendance: "Oturum katılımıyla",
+	ticket.EntryWalkIn:     "Kapıda kayıt",
 }
 
 // entries is the Venue entries, day by day.
 func (b *builder) entries() Table {
 	cols := []Column{{Header: "Gün", Width: 11}}
-	cols = append(cols, personColumns...)
+	cols = append(cols, personAndContact()...)
 	cols = append(cols,
 		Column{Header: "Giriş zamanı", Kind: DateTime, Width: 17},
 		Column{Header: "Cihazda okutma zamanı", Kind: DateTime, Width: 17},
@@ -408,7 +444,7 @@ func (b *builder) entries() Table {
 		}
 		created := e.CreatedAt
 		row := []any{day}
-		row = append(row, b.person(t)...)
+		row = append(row, b.withContact(t)...)
 		row = append(row, &created, e.ScannedAt, entrySourceLabels[e.Source])
 		rows = append(rows, row)
 	}

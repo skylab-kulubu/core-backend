@@ -34,6 +34,7 @@ type exportFixture struct {
 	logs     *bytes.Buffer
 	lead     uuid.UUID
 	staff    uuid.UUID
+	store    *ticket.MemoryStore
 }
 
 // newExportFixture is an Event of WEBLAB with two counted Sessions and
@@ -83,7 +84,8 @@ func newExportFixture(t *testing.T) exportFixture {
 		tickets[key] = made
 	}
 	add("member", ticket.Ticket{TicketType: ticket.Registered, OwnerID: &memberID})
-	add("ada", ticket.Ticket{TicketType: ticket.Guest, GuestFirstName: "Ada", GuestLastName: "Lovelace", GuestEmail: "ada@example.com", GuestPhoneNumber: "+905551112233"})
+	add("ada", ticket.Ticket{TicketType: ticket.Guest, GuestFirstName: "Ada", GuestLastName: "Lovelace", GuestEmail: "ada@example.com", GuestPhoneNumber: "+905551112233",
+		GuestUniversity: "Yıldız Teknik Üniversitesi", GuestDepartment: "Matematik", GuestGrade: "masters"})
 	add("formula", ticket.Ticket{TicketType: ticket.Guest, GuestFirstName: "=HYPERLINK(\"x\")", GuestLastName: "Çelik", GuestEmail: "c@example.com"})
 	add("gone", ticket.Ticket{TicketType: ticket.Guest, GuestFirstName: "Can", GuestLastName: "İptal", GuestEmail: "can@example.com"})
 	if _, _, err := store.Cancel(ctx, tickets["gone"].ID, ticket.CancelledByOperator, ""); err != nil {
@@ -104,7 +106,7 @@ func newExportFixture(t *testing.T) exportFixture {
 	svc := ticket.NewService(store, events, az, users, dir, audit)
 	certs := certificate.NewService(certificate.NewMemoryStore(), store, events, users, az, nil, nil, "https://api.example.test")
 	logs := &bytes.Buffer{}
-	f := exportFixture{ev: ev, sessions: sessions, tickets: tickets, audit: audit, logs: logs, lead: uuid.New(), staff: staff}
+	f := exportFixture{ev: ev, sessions: sessions, tickets: tickets, audit: audit, logs: logs, lead: uuid.New(), staff: staff, store: store}
 	f.app = func(ident authn.Identity) *fiber.App {
 		h := NewExportHandler(svc, certs)
 		h.logger = log.New(logs, "", 0)
@@ -225,8 +227,8 @@ func TestAttendeeExportAudit(t *testing.T) {
 }
 
 // The CSV: BOM, semicolons, Turkish headers, Istanbul's clock, the
-// formula-looking name as text, no phone; the answer is an attachment kept
-// by no cache.
+// formula-looking name and the phone as text, the grade in Turkish; the
+// answer is an attachment kept by no cache.
 func TestAttendeeExportCSV(t *testing.T) {
 	t.Parallel()
 	f := newExportFixture(t)
@@ -240,17 +242,15 @@ func TestAttendeeExportCSV(t *testing.T) {
 		t.Fatalf("headers %v", got.header)
 	}
 	text := string(got.body)
-	if !strings.HasPrefix(text, attendeeexport.BOM+"Ad;Soyad;E-posta;Üye/Misafir;Bilet kodu;Bilet durumu;Kayıt kaynağı;Kayıt tarihi;") {
+	if !strings.HasPrefix(text, attendeeexport.BOM+"Ad;Soyad;E-posta;Üye/Misafir;Telefon;Üniversite;Bölüm;Sınıf;Bilet kodu;Bilet durumu;Kayıt kaynağı;Kayıt tarihi;") {
 		t.Fatalf("head %.200q", text)
 	}
-	for _, want := range []string{"İlke;Şahin;ilke@example.com;Üye", "Ada;Lovelace;ada@example.com;Misafir", `'=HYPERLINK`, "Can;İptal;can@example.com;Misafir;", ";İptal;Doğrudan;",
+	for _, want := range []string{"İlke;Şahin;ilke@example.com;Üye", "Ada;Lovelace;ada@example.com;Misafir;'+905551112233;Yıldız Teknik Üniversitesi;Matematik;Yüksek lisans;",
+		`'=HYPERLINK`, "Can;İptal;can@example.com;Misafir;", ";İptal;Doğrudan;",
 		"Sertifika eşiğini geçiyor", "Sertifika durumu"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("no %q in\n%s", want, text)
 		}
-	}
-	if strings.Contains(text, "5551112233") {
-		t.Error("the phone was written")
 	}
 	lines := strings.Split(strings.TrimSpace(text), "\r\n")
 	if len(lines) != 5 {
@@ -261,13 +261,13 @@ func TestAttendeeExportCSV(t *testing.T) {
 	for _, line := range lines {
 		if strings.HasPrefix(line, "Ada;") {
 			cells := strings.Split(line, ";")
-			if cells[8] != "1" || cells[10] != "2" || cells[11] != "1" || cells[12] != "2" || cells[13] != "Hayır" || cells[14] != "Eşik altı" {
+			if cells[12] != "1" || cells[14] != "2" || cells[15] != "1" || cells[16] != "2" || cells[17] != "Hayır" || cells[18] != "Eşik altı" {
 				t.Errorf("Ada %q", cells)
 			}
 		}
 		if strings.HasPrefix(line, "İlke;") {
 			cells := strings.Split(line, ";")
-			if cells[11] != "2" || cells[13] != "Evet" || cells[14] != "Uygun, verilmedi" {
+			if cells[15] != "2" || cells[17] != "Evet" || cells[18] != "Uygun, verilmedi" {
 				t.Errorf("İlke %q", cells)
 			}
 		}
@@ -339,8 +339,9 @@ func TestAttendeeExportXLSX(t *testing.T) {
 	if len(rows) != 3 || rows[1][0] != "İlke" || rows[2][0] != "Ada" {
 		t.Fatalf("selected %q", rows)
 	}
-	if rows[2][7] != "27.11.2026 03:00" && !strings.Contains(rows[2][7], "2026") {
-		t.Fatalf("registered %q", rows[2][7])
+	// The phone is a text cell, as given; the registration a date cell.
+	if rows[2][4] != "+905551112233" || rows[2][7] != "Yüksek lisans" || !strings.Contains(rows[2][11], "2026") {
+		t.Fatalf("Ada %q", rows[2])
 	}
 	last := f.audit.Rows()
 	if x := last[len(last)-1].After.Export; !x.Selected || x.Rows != 2 {
@@ -355,7 +356,7 @@ func TestAttendeeExportReportsAndRefusals(t *testing.T) {
 	f := newExportFixture(t)
 	a := f.app(f.leader())
 	got := f.call(t, a, map[string]any{"report": "entries", "format": "csv"})
-	if got.status != fiber.StatusOK || !strings.Contains(string(got.body), "27.11.2026;Ada;Lovelace;ada@example.com;Misafir;") ||
+	if got.status != fiber.StatusOK || !strings.Contains(string(got.body), "27.11.2026;Ada;Lovelace;ada@example.com;Misafir;'+905551112233;Yıldız Teknik Üniversitesi;Matematik;Yüksek lisans;") ||
 		!strings.Contains(string(got.body), "QR okutma") {
 		t.Fatalf("entries %d %s", got.status, got.body)
 	}
@@ -449,4 +450,30 @@ func TestAttendeeExportLargeEvent(t *testing.T) {
 		t.Fatalf("%d rows; %q", len(rows), rows[1])
 	}
 	t.Logf("2000 tickets: %d bytes in %s", len(got.body), time.Since(start))
+}
+
+// A Walk-in's Ticket says so: its registration came from the door, and its
+// Venue entry's way is Kapıda kayıt.
+func TestAttendeeExportWalkIn(t *testing.T) {
+	t.Parallel()
+	f := newExportFixture(t)
+	ctx := t.Context()
+	walked, err := f.store.Create(ctx, ticket.Ticket{EventID: f.ev.ID, TicketType: ticket.Guest, GuestFirstName: "Deniz", GuestLastName: "Kapı",
+		GuestEmail: "deniz@example.com", GuestGrade: "prep"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.AddVenueEntry(ctx, ticket.VenueEntry{TicketID: walked.ID, EntryDate: "2026-11-27", Source: ticket.EntryWalkIn}); err != nil {
+		t.Fatal(err)
+	}
+	a := f.app(f.leader())
+	got := f.call(t, a, map[string]any{"report": "attendees", "format": "csv"})
+	if got.status != fiber.StatusOK || !strings.Contains(string(got.body), "Deniz;Kapı;deniz@example.com;Misafir;;;;Hazırlık;") ||
+		!strings.Contains(string(got.body), ";Aktif;Kapıda kayıt;") {
+		t.Fatalf("attendees %d %s", got.status, got.body)
+	}
+	got = f.call(t, a, map[string]any{"report": "entries", "format": "csv"})
+	if got.status != fiber.StatusOK || !strings.Contains(string(got.body), ";Kapıda kayıt\r\n") {
+		t.Fatalf("entries %d %s", got.status, got.body)
+	}
 }

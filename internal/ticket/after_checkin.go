@@ -239,6 +239,10 @@ func (a *afterCheckIn) EnterUser(ctx context.Context, p authz.Principal, eventID
 	return a.inner.EnterUser(ctx, p, eventID, userID)
 }
 
+func (a *afterCheckIn) WalkIn(ctx context.Context, p authz.Principal, eventID uuid.UUID, w WalkIn) (WalkInOutcome, error) {
+	return a.inner.WalkIn(ctx, p, eventID, w)
+}
+
 func (a *afterCheckIn) ResolveEntry(ctx context.Context, p authz.Principal, eventID uuid.UUID, target DoorCheckInTarget) (DoorEntry, error) {
 	return a.inner.ResolveEntry(ctx, p, eventID, target)
 }

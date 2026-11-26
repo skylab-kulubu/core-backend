@@ -134,13 +134,15 @@ func (s *PostgresStore) insertTicket(ctx context.Context, tx pgx.Tx, t Ticket, s
 			INSERT INTO tickets (
 				id, event_id, ticket_type, owner_id,
 				guest_first_name, guest_last_name, guest_email, guest_phone_number,
-				access_key, code, status, status_changed_at, waitlisted_at
+				access_key, code, status, status_changed_at, waitlisted_at,
+				guest_university, guest_department, guest_grade
 			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
-				CASE WHEN $11 = 'waitlisted' THEN now() END, CASE WHEN $11 = 'waitlisted' THEN now() END)
+				CASE WHEN $11 = 'waitlisted' THEN now() END, CASE WHEN $11 = 'waitlisted' THEN now() END,
+				$12,$13,$14)
 			RETURNING `+ticketCols,
 			t.ID, t.EventID, t.TicketType, t.OwnerID,
 			t.GuestFirstName, t.GuestLastName, t.GuestEmail, t.GuestPhoneNumber,
-			accessKey, storedCode(code), string(status)))
+			accessKey, storedCode(code), string(status), t.GuestUniversity, t.GuestDepartment, t.GuestGrade))
 		if err != nil {
 			_ = sp.Rollback(ctx)
 			switch {

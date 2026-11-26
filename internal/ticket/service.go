@@ -129,6 +129,11 @@ type EventDoor interface {
 	BeginExport(ctx context.Context, p authz.Principal, eventID uuid.UUID, req ExportRequest) (*ExportData, error)
 	FinishExport(ctx context.Context, data *ExportData, rows int, err error)
 	ListEntries(ctx context.Context, p authz.Principal, eventID uuid.UUID, date string) ([]DoorEntry, error)
+	// WalkIn is the door registering a person with no Ticket ("Kapıda
+	// kayıt", docs/walk-in.md): their guest Ticket, and in the venue Entry
+	// mode the day's entry. The ctx carries the caller for the Team audit
+	// row (teamaudit.WithActor).
+	WalkIn(ctx context.Context, p authz.Principal, eventID uuid.UUID, w WalkIn) (WalkInOutcome, error)
 }
 
 type TeamReader interface {

@@ -13,6 +13,7 @@ no ticket mail went at all; it is off until `TICKET_CREATED_NOTIFICATION=on`.
 | Member apply (`POST /v1/events/{id}/applications/me`) | the person, by subject |
 | Apply-for-other from the panel | the person added, by subject |
 | Guest apply (the panel's "Katılımcı ekle", the internal hop) | the guest, by address |
+| Walk-in at the door ([walk-in.md](walk-in.md)) | the guest, by address |
 | Guest apply that finds the Ticket already there, a Ticket updated | nobody: no new Ticket |
 | A Ticket written on a full Event's waiting list | not this mail: "Bekleme listesindesin" while `TICKET_STATUS_MAIL` is on ([event-capacity.md](event-capacity.md)) |
 | A Ticket promoted off the waiting list | "Yer açıldı" (`event.waitlist-promoted`) while `TICKET_STATUS_MAIL` is on; else this mail, under the next resend number |
@@ -23,9 +24,10 @@ added from the panel, or applications from a form linked to the draft), a cancel
 archived Event's and a past Event's (over at its end date, else a day after
 its start, as everywhere in core: an Event without an end date is over too)
 are dropped. A draft's Tickets are told of later only if the organizer asks
-when publishing it (below). Walk-in
-(CONTEXT.md) writes no Ticket in core today; when it does, it must not queue
-one ("no ticket mail").
+when publishing it (below). A Walk-in at the door
+([walk-in.md](walk-in.md)) writes a guest Ticket and is told as Guest apply
+is: the person needs the Ticket for the Sessions' attendance QR and their
+certificate (Yusuf, 2026-11-26; ADR 0093).
 
 ## Publishing a draft
 

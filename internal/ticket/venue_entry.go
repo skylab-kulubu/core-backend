@@ -26,11 +26,14 @@ const (
 	// EntryAttendance: a Session Check-in (attendance QR, check-in/me, a
 	// guest's own) wrote it, the person not scanned at the door that day.
 	EntryAttendance EntrySource = "attendance"
+	// EntryWalkIn: the door registered the person, who had no Ticket, and
+	// let them in with the Ticket it wrote (docs/walk-in.md).
+	EntryWalkIn EntrySource = "walk_in"
 )
 
 // entrySources are the sources in the order the metric and the summary
 // list them.
-var entrySources = []EntrySource{EntryScan, EntryDesk, EntryAttendance}
+var entrySources = []EntrySource{EntryScan, EntryDesk, EntryAttendance, EntryWalkIn}
 
 // Kinds of what a door answer names: a Session Check-in or a Venue entry.
 const (

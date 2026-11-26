@@ -1,6 +1,6 @@
 SET LOCAL lock_timeout = '5s';
 
--- Puts back 20261127115000's basis check, without an event editor's
+-- Puts back 20261127220000's basis check, without an event editor's
 -- ticket.export, NOT VALID so that the rows already written stay (the
 -- record is kept three years); a new one is refused. The action check
 -- stays wide, as the earlier migrations' downs leave it.
@@ -15,4 +15,5 @@ ALTER TABLE team_audit_records ADD CONSTRAINT team_audit_records_actor_basis_che
     OR (actor_basis = 'event_editor' AND actor_via_group_id IS NOT NULL
         AND action IN ('ticket.cancel', 'ticket.restore', 'ticket.promote', 'ticket.import', 'ticket.import.preview',
             'ticket.resend', 'ticket.link.renew', 'co_organizer.add'))
+    OR (actor_basis = 'door_staff' AND actor_via_group_id IS NOT NULL AND action = 'ticket.walk_in')
     OR (actor_basis = 'console' AND actor_via_group_id IS NULL AND via = 'console' AND outcome = 'ok')) NOT VALID;
