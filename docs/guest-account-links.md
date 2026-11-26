@@ -6,8 +6,8 @@ Unticketed respondent's Ticket, an attendee import's guest row. Until this,
 such a Ticket stayed a guest's even when the address was a member's, and the
 person never saw it under their own Tickets (`GET /v1/tickets/me`) nor its
 certificate under theirs. Now core **links** it: the Ticket's owner becomes
-the account that holds the address verified (ADR in `skylab-kulubu/e-skylab`,
-"Misafir biletleri ve sertifikaları doğrulanmış e-postanın hesabına bağlanır").
+the account that holds the address verified (ADR-0094 in
+`skylab-kulubu/e-skylab`).
 
 Code: `internal/guestlink`, the verified-address directory
 (`internal/commpref/verified_addresses.go`), the ticket service's
