@@ -704,6 +704,8 @@ func (s *PostgresStore) TeamsUsingMedia(ctx context.Context, mediaID, except uui
 			SELECT 1 FROM event_files ef WHERE ef.event_id = e.id AND ef.media_id = $1
 		  ) OR EXISTS (
 			SELECT 1 FROM event_videos ev WHERE ev.event_id = e.id AND (ev.media_id = $1 OR ev.poster_media_id = $1)
+		  ) OR EXISTS (
+			SELECT 1 FROM event_ticket_images eti WHERE eti.event_id = e.id AND eti.media_id = $1
 		  ))
 	`, mediaID, except)
 	if err != nil {

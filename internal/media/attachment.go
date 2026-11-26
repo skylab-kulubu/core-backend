@@ -40,6 +40,11 @@ const (
 	// (events.map_media_id, migration 20261122160000). Copies of an Event
 	// with the same point share it.
 	RoleEventMap Role = "event_map"
+	// RoleEventTicketImage is the image an Event's PDF ticket shows in its
+	// band instead of its cover (event_ticket_images.media_id, migration
+	// 20261127190000; docs/ticket-image.md): an Event image, as a video's
+	// poster. The Event owns the link.
+	RoleEventTicketImage Role = "event_ticket_image"
 	// RoleCertificateFont is the checked file of a team's or the club's
 	// certificate font (certificate_fonts.media_id, migration
 	// 20261127183000; docs/certificate-fonts.md). The font owns the link;
@@ -88,6 +93,7 @@ var rolePurposes = map[authz.Product]map[Role][]string{
 		RoleEventVideoPoster: {PurposeEventCover, PurposeEventGallery},
 		RoleEventVideoFrame:  {PurposeVideoFrame},
 		RoleEventMap:         {PurposeEventMap},
+		RoleEventTicketImage: {PurposeEventCover, PurposeEventGallery},
 		RoleCertificateFont:  {PurposeCertificateFont},
 	},
 	authz.ProductForms: {RoleFormsAnswer: {PurposeAnswerFile, PurposeAnswerFileLarge, PurposeAnswerFileGuest}},
@@ -98,13 +104,14 @@ var rolePurposes = map[authz.Product]map[Role][]string{
 // Media does not fit them. They were made after Media purpose, so no Media
 // was ever linked in them without one: an Event's files and videos, whose
 // purposes are sent by Direct upload (club files also scanned), which a
-// legacy upload never was, a video's poster, a video's frame and an Event's
-// map (which core makes itself), and a certificate font (checked by
-// pdf-tools first). The database keeps a copy (media_roles_without_legacy,
-// migrations 20260928160000, 20260929140000, 20260929160000, 20261122160000
-// and 20261127183000); a test keeps the two equal.
+// legacy upload never was, a video's poster, a video's frame, an Event's
+// map (which core makes itself), its ticket image and a certificate font
+// (checked by pdf-tools first). The database keeps a copy
+// (media_roles_without_legacy, migrations 20260928160000, 20260929140000,
+// 20260929160000, 20261122160000, 20261127183000 and 20261127190000); a
+// test keeps the two equal.
 var rolesWithoutLegacy = map[authz.Product][]Role{
-	authz.ProductCore: {RoleEventFile, RoleEventVideo, RoleEventVideoPoster, RoleEventVideoFrame, RoleEventMap, RoleCertificateFont},
+	authz.ProductCore: {RoleEventFile, RoleEventVideo, RoleEventVideoPoster, RoleEventVideoFrame, RoleEventMap, RoleEventTicketImage, RoleCertificateFont},
 }
 
 // fits reports whether a Media of the purpose may play the product's role.

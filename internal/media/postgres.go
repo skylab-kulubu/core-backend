@@ -448,7 +448,7 @@ type postgresMediaTx interface {
 }
 
 func lockMediaReferenceWriters(ctx context.Context, tx postgresMediaTx) error {
-	_, err := tx.Exec(ctx, `LOCK TABLE events, event_images, event_files, event_videos, users, certificate_templates, certificate_template_versions, certificate_fonts, media_attachments IN SHARE MODE`)
+	_, err := tx.Exec(ctx, `LOCK TABLE events, event_images, event_files, event_videos, event_ticket_images, users, certificate_templates, certificate_template_versions, certificate_fonts, media_attachments IN SHARE MODE`)
 	return err
 }
 
@@ -497,6 +497,7 @@ var coreLinkSources = []struct {
 	{table: "event_videos", ownerType: "event", role: RoleEventVideoPoster, owner: "event_id", media: "poster_media_id"},
 	{table: "event_videos", ownerType: "event", role: RoleEventVideoFrame, owner: "event_id", media: "frame_media_id"},
 	{table: "events", ownerType: "event", role: RoleEventMap, owner: "id", media: "map_media_id"},
+	{table: "event_ticket_images", ownerType: "event", role: RoleEventTicketImage, owner: "event_id", media: "media_id"},
 	{table: "users", ownerType: "user", role: RoleProfilePicture, owner: "id", media: "profile_picture_id"},
 	{table: "certificate_templates", ownerType: "certificate_template", role: RoleCertificateAsset, owner: "id", media: "draft_layout", layout: true},
 	{table: "certificate_template_versions", ownerType: "certificate_template_version", role: RoleCertificateAsset, owner: "id", media: "layout", manifest: "asset_manifest", layout: true},

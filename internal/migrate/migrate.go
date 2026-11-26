@@ -1716,6 +1716,46 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE proname = 'media_roles_without_legacy'
 			  AND prosrc LIKE '%(''core'', ''event_map'')%'
 		)`,
+	// An Event's ticket image (docs/ticket-image.md): its table with the
+	// check, the index the purge reads, the statement triggers that write
+	// its Media attachments, and the role tables that know its role. (Kept
+	// beside the map's, the ticket's other picture.)
+	20261127190000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.event_ticket_images')
+			  AND conname = 'event_ticket_images_check'
+			  AND contype = 'c'
+			  AND pg_get_constraintdef(oid) LIKE '%crop_y + crop_h%'
+		)
+		AND to_regclass('public.event_ticket_images_media_id_idx') IS NOT NULL
+		AND (
+			SELECT count(*) FROM (VALUES
+				('event_ticket_images_attachments_insert', 4),
+				('event_ticket_images_attachments_update', 16),
+				('event_ticket_images_attachments_delete', 8)
+			) expected(trigger_name, trigger_type)
+			JOIN pg_trigger actual
+			  ON actual.tgrelid = to_regclass('public.event_ticket_images')
+			 AND actual.tgname = expected.trigger_name
+			 AND actual.tgtype = expected.trigger_type
+			 AND actual.tgenabled = 'O'
+			 AND NOT actual.tgisinternal
+			 AND actual.tgfoid = to_regprocedure('public.sync_core_media_attachments()')
+			 AND strpos(encode(actual.tgargs, 'escape'), 'event_ticket_image') > 0
+		) = 3
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'media_role_purposes'
+			  AND prosrc LIKE '%(''core'', ''event_ticket_image'', ''event_cover'')%'
+			  AND prosrc LIKE '%(''core'', ''event_ticket_image'', ''event_gallery'')%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'media_roles_without_legacy'
+			  AND prosrc LIKE '%(''core'', ''event_ticket_image'')%'
+		)`,
 	// The map regions (docs/event-map.md): the table with its check and its
 	// two indexes.
 	20261122170000: `
