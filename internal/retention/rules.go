@@ -361,16 +361,13 @@ func coOrganizerPeopleRules() []Rule {
 	}}
 }
 
-// formRespondentRules delete an Unticketed respondent two years after its
-// Event's end, as guest_identity scrubs a guest Ticket; an Event without a
-// date counts from the row's created_at, so every row is dated. The row
-// goes whole: it is nothing but who answered.
 // linkedGuestRules: a guest Ticket linked to an account
 // (docs/guest-account-links.md) keeps its name and e-mail as the account's,
-// but a Walk-in's university, department and grade were asked for the
-// Event: they go two years after it, as an unlinked guest's go with its
-// identity (GuestIdentityPeriod). An Event without a date counts from the
-// Ticket's registration, as guest_identity v3.
+// but the university, department and grade a Walk-in or a form's mapping
+// gave were asked for the Event: they go two years after it, as an
+// unlinked guest's go with its identity (GuestIdentityPeriod). An Event
+// without a date counts from the Ticket's registration, as guest_identity
+// v3.
 func linkedGuestRules() []Rule {
 	return []Rule{{
 		Name: "linked_guest_details", Version: 1, Kind: KindSweep, Action: ActionScrub,
@@ -382,6 +379,10 @@ func linkedGuestRules() []Rule {
 	}}
 }
 
+// formRespondentRules delete an Unticketed respondent two years after its
+// Event's end, as guest_identity scrubs a guest Ticket; an Event without a
+// date counts from the row's created_at, so every row is dated. The row
+// goes whole: it is nothing but who answered.
 func formRespondentRules() []Rule {
 	return []Rule{{
 		Name: "form_respondents", Version: 1, Kind: KindSweep, Action: ActionDelete,
