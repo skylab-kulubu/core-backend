@@ -1,5 +1,8 @@
--- Rolling back drops the ticket note: the release before reads none.
 SET LOCAL lock_timeout = '5s';
 
-ALTER TABLE events DROP CONSTRAINT IF EXISTS events_ticket_note_check;
-ALTER TABLE events DROP COLUMN IF EXISTS ticket_note;
+-- Rolling back keeps events.ticket_note with its values and check: the
+-- release before neither reads nor writes it (it has a default), and the
+-- next release reads it again (the up migration finds it, ADD COLUMN IF NOT
+-- EXISTS). To remove it for good, by hand: ALTER TABLE events DROP
+-- CONSTRAINT events_ticket_note_check, DROP COLUMN ticket_note;
+SELECT 1;

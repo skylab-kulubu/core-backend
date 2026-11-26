@@ -343,7 +343,7 @@ func TestEachAddressGetsOneReminderAndOnlyActiveTicketsCount(t *testing.T) {
 		"EventId": f.ev.ID.String(), "EventName": "Gece Kodu", "StartsAt": "25.11.2026 10:00", "Venue": "Kongre Merkezi",
 		"OwnerTeam": first.vars["OwnerTeam"], "TicketUrl": "https://yildizskylab.com/bilet/7Q2MK4XRWZ3HN5TJVB6PDYCGEA",
 		"TicketQrUrl": "https://api.example.test/v1/public/tickets/7Q2MK4XRWZ3HN5TJVB6PDYCGEA/qr.png", "TicketCode": "K7M2-QX9F",
-		"MapUrl": first.vars["MapUrl"], "CoOrganizers": "", "TicketNote": "",
+		"MapUrl": first.vars["MapUrl"], "CoOrganizers": "", "TicketNote": "", "Theme": "", "EventBannerUrl": "",
 	}
 	if len(first.vars) != len(want) || first.vars["OwnerTeam"] == "" || !strings.HasPrefix(first.vars["MapUrl"], "https://") {
 		t.Fatalf("vars %v", first.vars)

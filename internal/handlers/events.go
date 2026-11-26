@@ -57,6 +57,11 @@ type eventBody struct {
 	// TicketNote: the announcement the ticket mails carry; none keeps it
 	// (docs/ticket-note.md).
 	TicketNote *string `json:"ticketNote"`
+	// Theme and TicketAccentColor on create: a key of the catalogue (none,
+	// "" or "kurumsal" for Kurumsal) and #RRGGBB, none for none
+	// (docs/event-theme.md).
+	Theme             *string `json:"theme"`
+	TicketAccentColor *string `json:"ticketAccentColor"`
 	// EntryMode on create: per_session, venue, or none for automatic
 	// (docs/venue-entry.md).
 	EntryMode *event.EntryMode `json:"entryMode"`
@@ -76,7 +81,8 @@ type eventBody struct {
 	// AttendanceMinCount is the count rule's threshold, none for the
 	// default (docs/certificate-rule.md).
 	AttendanceMinCount *int `json:"attendanceMinCount"`
-	// AttendanceAutoFinalize on create; none is on
+	// AttendanceAutoFinalize on create; none is off: certificates are
+	// sent by hand unless the organizer turns it on
 	// (docs/certificate-rule.md).
 	AttendanceAutoFinalize *bool        `json:"attendanceAutoFinalize"`
 	DoorStaffIDs           *[]uuid.UUID `json:"doorStaffIds"`
@@ -103,6 +109,11 @@ func eventError(c fiber.Ctx, err error) error {
 			fiber.Map{"missing": incomplete.Missing})
 	case errors.As(err, &inUse):
 		return problemWithFields(c, fiber.StatusConflict, "Conflict", "Conflict", "form_in_use", formInUseFields(inUse))
+	case errors.Is(err, event.ErrFormsAccessDenied):
+		// A form the caller is not on the team of in Forms: nothing written.
+		return problemCode(c, fiber.StatusForbidden, "Forbidden", "forms_access_denied")
+	case errors.Is(err, event.ErrFormsUnavailable):
+		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", "forms_unavailable")
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
 	case errors.Is(err, teamaudit.ErrUnavailable):
@@ -124,6 +135,10 @@ func eventError(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "event_location_invalid")
 	case errors.Is(err, event.ErrExternalRegistrationURLInvalid):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "external_registration_url_invalid")
+	case errors.Is(err, event.ErrThemeUnknown):
+		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "event_theme_unknown")
+	case errors.Is(err, event.ErrTicketAccentColorInvalid):
+		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "event_ticket_accent_color_invalid")
 	case errors.Is(err, event.ErrInvalid):
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	default:
@@ -167,6 +182,8 @@ func (b eventBody) asEvent() event.Event {
 		FormResponsesAutoTicket: b.FormResponsesAutoTicket,
 		AttendeeNote:            b.AttendeeNote,
 		TicketNote:              b.TicketNote,
+		Theme:                   b.Theme,
+		TicketAccentColor:       b.TicketAccentColor,
 		StartDate:               b.StartDate,
 		EndDate:                 b.EndDate,
 		Linkedin:                b.Linkedin,
@@ -178,7 +195,7 @@ func (b eventBody) asEvent() event.Event {
 		AttendanceRatio:         b.AttendanceRatio,
 
 		AttendanceMinCount:     b.AttendanceMinCount,
-		AttendanceAutoFinalize: b.AttendanceAutoFinalize == nil || *b.AttendanceAutoFinalize,
+		AttendanceAutoFinalize: b.AttendanceAutoFinalize != nil && *b.AttendanceAutoFinalize,
 
 		RegistrationClosed:   b.RegistrationClosed,
 		RegistrationClosesAt: b.RegistrationClosesAt,

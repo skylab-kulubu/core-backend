@@ -60,7 +60,8 @@ func TestTicketVariablesFollowTheTicketPage(t *testing.T) {
 		if len(e.mail.calls) != 2 {
 			t.Fatalf("%d calls", len(e.mail.calls))
 		}
-		base := map[string]string{"EventId": e.ev.ID.String(), "EventName": "Kodlama Gecesi", "Venue": "D-Blok", "OwnerTeam": "WEBLAB", "EventDate": "10.11.2026 18:30", "CoOrganizers": "", "TicketNote": ""}
+		base := map[string]string{"EventId": e.ev.ID.String(), "EventName": "Kodlama Gecesi", "Venue": "D-Blok", "OwnerTeam": "WEBLAB", "EventDate": "10.11.2026 18:30", "CoOrganizers": "", "TicketNote": "",
+			"Theme": "", "EventBannerUrl": ""}
 		for _, c := range e.mail.calls {
 			want := maps.Clone(base)
 			if pageURL != "" {
@@ -123,6 +124,7 @@ func TestTicketCreatedBodiesSnapshot(t *testing.T) {
 		"variables": map[string]any{
 			"EventId": e.ev.ID.String(), "EventName": "Kodlama Gecesi", "EventDate": "10.11.2026 18:30", "Venue": "D-Blok", "OwnerTeam": "WEBLAB", "CoOrganizers": "",
 			"TicketNote": "", "TicketNoteParts": []any{},
+			"Theme": "", "EventBannerUrl": "",
 			"TicketUrl":   "https://yildizskylab.com/bilet/" + memberKey,
 			"TicketQrUrl": "https://api.yildizskylab.com/v1/public/tickets/" + memberKey + "/qr.png",
 			"TicketCode":  "K7M2-QX9F",
@@ -138,6 +140,7 @@ func TestTicketCreatedBodiesSnapshot(t *testing.T) {
 	wantVars, _ := json.Marshal(map[string]any{
 		"EventId": e.ev.ID.String(), "EventName": "Kodlama Gecesi", "EventDate": "10.11.2026 18:30", "Venue": "D-Blok", "OwnerTeam": "WEBLAB", "CoOrganizers": "",
 		"TicketNote": "", "TicketNoteParts": []any{},
+		"Theme": "", "EventBannerUrl": "",
 		"TicketUrl":   "https://yildizskylab.com/bilet/" + guestKey,
 		"TicketQrUrl": "https://api.yildizskylab.com/v1/public/tickets/" + guestKey + "/qr.png",
 		"TicketCode":  "AB12-CD34",

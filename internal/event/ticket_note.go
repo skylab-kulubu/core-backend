@@ -38,10 +38,10 @@ type NotePart struct {
 	URL  string `json:"Url"`
 }
 
-// httpsAddress is an https address in plain text, up to the next space or
-// quote; trailing punctuation is not part of it. An http address stays
-// text: a mail links https alone.
-var httpsAddress = regexp.MustCompile(`https://[^\s<>"']+`)
+// httpsAddress is an https address in plain text, up to the next space
+// (a Unicode one too, U+00A0 say) or quote; trailing punctuation is not
+// part of it. An http address stays text: a mail links https alone.
+var httpsAddress = regexp.MustCompile(`https://[^\s\p{Z}<>"']+`)
 
 // TicketNoteParts cuts e's ticket note at its https addresses for the
 // ticket mails (docs/ticket-note.md): the note and its parts, "" and []

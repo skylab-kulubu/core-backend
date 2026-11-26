@@ -1820,6 +1820,12 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.certificate_batches') AND conname = 'certificate_batches_reason_check'
 			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%rescan%'
 		  )`,
+	// "Sertifikaları otomatik gönder" (docs/certificate-rule.md): the
+	// Event's switch is off by default.
+	20261127201000: `
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'attendance_auto_finalize'
+		  AND column_default = 'false'`,
 	// A certificate's attendance snapshot (docs/certificate-rule.md): the
 	// three columns' check, which names them.
 	20261124020000: `
@@ -2011,7 +2017,8 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		AND to_regclass('public.attendance_mails_recorded_key') IS NOT NULL
 		AND to_regclass('public.attendance_mails_due_idx') IS NOT NULL
 		AND to_regclass('public.attendance_mails_done_idx') IS NOT NULL`,
-	// An Event's ticket note with its check (docs/ticket-note.md).
+	// An Event's ticket note with its check (docs/ticket-note.md); rolling
+	// back keeps both, so the fingerprint still finds them after a down.
 	20261127210000: `
 		SELECT 1 FROM pg_constraint
 		WHERE conrelid = to_regclass('public.events') AND conname = 'events_ticket_note_check' AND convalidated`,
@@ -2201,6 +2208,20 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM pg_constraint
 			WHERE conrelid = to_regclass('public.tickets') AND conname = 'tickets_form_response_status_check'
 		)`,
+	// An Event's theme and ticket colour (docs/event-theme.md): both
+	// columns and both checks (NOT VALID: not convalidated).
+	20261127200000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events'
+			  AND column_name IN ('theme', 'ticket_accent_color')
+		) = 2
+		AND (
+			SELECT count(*) FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events')
+			  AND conname IN ('events_theme_check', 'events_ticket_accent_color_check')
+		) = 2`,
 	// Unticketed respondents (docs/form-respondents.md): the two tables, the
 	// Event's setting and form_pulls' collect kind, with no collect job parked
 	// by a rollback (the up migration runs again and puts it back).

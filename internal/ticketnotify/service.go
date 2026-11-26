@@ -484,6 +484,11 @@ func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]any {
 	if ev.StartDate != nil {
 		vars["EventDate"] = ev.StartDate.In(s.location).Format(dateLayout)
 	}
+	// The Event's theme and poster, for the template's look
+	// (docs/event-theme.md#mails); every status mail keeps them.
+	for k, v := range event.MailLook(ev) {
+		vars[k] = v
+	}
 	if link := s.config.Page.Link(t.AccessKey); link != "" {
 		vars["TicketUrl"] = link
 		vars["TicketCode"] = t.Code
@@ -503,9 +508,9 @@ func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]any {
 // leave the list (empty without TICKET_PAGE_URL). No QR and no code: a
 // waitlisted Ticket opens no door (its QR answers 410).
 func waitlistedVars(vars map[string]any) map[string]any {
-	out := make(map[string]any, 6)
-	for _, name := range []string{"EventId", "EventName", "EventDate", "OwnerTeam", "Venue", "TicketUrl"} {
-		out[name] = vars[name]
+	out := make(map[string]any, 8)
+	for _, name := range []string{"EventId", "EventName", "EventDate", "OwnerTeam", "Venue", "TicketUrl", "Theme", "EventBannerUrl"} {
+		out[name] = textOr(vars[name])
 	}
 	return out
 }
@@ -515,9 +520,9 @@ func waitlistedVars(vars map[string]any) map[string]any {
 // operator's reason (empty for the holder, or when none was given), all of
 // them always. No link, QR or code: a cancelled Ticket opens nothing.
 func cancelledVars(vars map[string]any, t ticket.Ticket) map[string]any {
-	out := make(map[string]any, 6)
-	for _, name := range []string{"EventId", "EventName", "EventDate", "OwnerTeam"} {
-		out[name] = vars[name]
+	out := make(map[string]any, 8)
+	for _, name := range []string{"EventId", "EventName", "EventDate", "OwnerTeam", "Theme", "EventBannerUrl"} {
+		out[name] = textOr(vars[name])
 	}
 	out["CancelledBy"] = string(t.CancelledBy)
 	out["Reason"] = ""
@@ -525,6 +530,15 @@ func cancelledVars(vars map[string]any, t ticket.Ticket) map[string]any {
 		out["Reason"] = t.CancelReason
 	}
 	return out
+}
+
+// textOr is v, or "" for a variable vars lacks: the waiting list's and the
+// cancellation's mails carry every name always, as text.
+func textOr(v any) any {
+	if v == nil {
+		return ""
+	}
+	return v
 }
 
 func joinName(first, last string) string {

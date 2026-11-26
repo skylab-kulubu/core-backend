@@ -26,7 +26,7 @@ func feedbackNotificationOn(getenv func(string) string) (bool, error) {
 // notify (FEEDBACK_NOTIFICATION=on, ticket 13) sends a member's mail as a
 // Notification of the template's type, so it lands in their inbox too; it
 // waits for SkyNotify's type and Keycloak's skynotify:notifications:send.
-func startFeedbackMail(ctx context.Context, notify bool, queue *feedback.PostgresStore, tickets ticket.Store, users user.Store, sky *mail.SkyNotify, logf func(string, ...any)) <-chan struct{} {
+func startFeedbackMail(ctx context.Context, notify bool, queue *feedback.PostgresStore, tickets ticket.Store, users user.Store, events feedbackmail.Events, sky *mail.SkyNotify, logf func(string, ...any)) <-chan struct{} {
 	off := make(chan struct{})
 	close(off)
 	if sky == nil {
@@ -34,7 +34,7 @@ func startFeedbackMail(ctx context.Context, notify bool, queue *feedback.Postgre
 		return off
 	}
 	sky.FeedbackNotification = notify
-	svc, err := feedbackmail.NewService(feedbackmail.Config{Queue: queue, Tickets: tickets, Users: users, Mail: sky})
+	svc, err := feedbackmail.NewService(feedbackmail.Config{Queue: queue, Tickets: tickets, Users: users, Events: events, Mail: sky})
 	if err != nil {
 		logf("feedback mail: OFF, %v", err)
 		return off

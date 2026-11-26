@@ -240,6 +240,7 @@ func TestAChangeTellsEachHolderOnceAndIsDoneWith(t *testing.T) {
 	want := map[string]string{
 		"EventId": f.ev.ID.String(), "EventName": "Gece Kodu", "ChangeSummary": "Etkinliğin saati ve yeri değişti.",
 		"NewStartsAt": "20.11.2026 18:30", "NewEndsAt": "20.11.2026 21:00", "NewVenue": "Kongre Merkezi",
+		"Theme": "", "EventBannerUrl": "",
 	}
 	for name, value := range want {
 		if member.vars[name] != value {
@@ -366,6 +367,7 @@ func TestToldDetailsGoAsEventChanged(t *testing.T) {
 	want := map[string]string{
 		"EventId": f.ev.ID.String(), "EventName": "Gece Kodu", "ChangedFields": "adı, açıklaması ve kontenjanı",
 		"ChangeSummary": "Etkinliğin adı, açıklaması ve kontenjanı değişti.", "StartsAt": "20.11.2026 18:30", "Venue": "Kongre Merkezi",
+		"Theme": "", "EventBannerUrl": "",
 	}
 	if len(c.vars) != len(want) {
 		t.Fatalf("vars %v, want %v", c.vars, want)
@@ -558,13 +560,13 @@ func TestTheMailCarriesTheHoldersTicketPage(t *testing.T) {
 		member, guest := f.mail.calls[0], f.mail.calls[1]
 		if pageURL == "" {
 			for _, c := range f.mail.calls {
-				if _, ok := c.vars["TicketUrl"]; ok || len(c.vars) != 6 {
+				if _, ok := c.vars["TicketUrl"]; ok || len(c.vars) != 8 {
 					t.Fatalf("unset: vars %v", c.vars)
 				}
 			}
 			continue
 		}
-		if member.vars["TicketUrl"] != "https://yildizskylab.com/bilet/"+keys[0] || member.vars["TicketCode"] != codes[0] || len(member.vars) != 8 {
+		if member.vars["TicketUrl"] != "https://yildizskylab.com/bilet/"+keys[0] || member.vars["TicketCode"] != codes[0] || len(member.vars) != 10 {
 			t.Fatalf("member vars %v", member.vars)
 		}
 		if guest.vars["TicketUrl"] != "https://yildizskylab.com/bilet/"+keys[1] || guest.vars["TicketCode"] != codes[1] {

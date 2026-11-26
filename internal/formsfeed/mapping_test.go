@@ -82,9 +82,16 @@ func TestClientReadsAFormsQuestions(t *testing.T) {
 		got.Questions[0] != (Question{ID: "q1", Type: "short_text", Question: "Adınız", InputType: "name"}) || got.Questions[1].Identity != "email" {
 		t.Fatalf("%s %+v", path, got)
 	}
-	// The owner edits; a viewer does not; nobody else does.
-	if !got.AccessListed || !got.Edits(personID.String()) || got.Edits(responseID.String()) || got.Edits(uuid.NewString()) || got.Edits("not-a-uuid") {
+	// The owner and a viewer are on the team; nobody else is (Yusuf,
+	// 2026-11-26: a viewer too).
+	if !got.AccessListed || !got.Sees(personID.String()) || !got.Sees(responseID.String()) || got.Sees(uuid.NewString()) || got.Sees("not-a-uuid") {
 		t.Fatalf("team %+v", got.Collaborators)
+	}
+	for role, sees := range map[string]bool{RoleOwner: true, RoleEditor: true, RoleViewer: true, "commenter": false, "": false} {
+		f := Form{AccessListed: true, Collaborators: []Collaborator{{UserID: personID, Role: role}}}
+		if f.Sees(personID.String()) != sees {
+			t.Fatalf("role %q sees %t", role, !sees)
+		}
 	}
 	if _, err := (&Client{BaseURL: srv.URL, Tokens: &fakeTokens{}}).Form(context.Background(), uuid.New()); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("another form: %v", err)
@@ -95,7 +102,7 @@ func TestClientReadsAFormsQuestions(t *testing.T) {
 	}))
 	defer old.Close()
 	got, err = (&Client{BaseURL: old.URL, Tokens: &fakeTokens{}}).Form(context.Background(), applicationForm)
-	if err != nil || got.AccessListed || got.Edits(personID.String()) {
+	if err != nil || got.AccessListed || got.Sees(personID.String()) {
 		t.Fatalf("no team field: %+v %v", got, err)
 	}
 }
@@ -277,7 +284,6 @@ func TestMappingRoutesRules(t *testing.T) {
 		{name: "no Forms client", p: editor, ev: open.ID, form: form, on: true, want: ErrFormsUnavailable},
 		{name: "Forms down", p: editor, ev: open.ID, form: form, on: true, forms: stubForm{err: errors.New("formsfeed: Forms answered 503")}, want: ErrFormsUnavailable},
 		{name: "the form gone", p: editor, ev: open.ID, form: form, on: true, forms: stubForm{err: ErrNotFound}, want: ErrFormGone},
-		{name: "a viewer in Forms", p: editor, ev: open.ID, form: form, on: true, forms: stubForm{form: withTeam(team(RoleViewer), true)}, want: ErrFormsAccessDenied},
 		{name: "not on the form's team", p: editor, ev: open.ID, form: form, on: true, forms: stubForm{form: withTeam([]Collaborator{{UserID: uuid.New(), Role: RoleOwner}}, true)}, want: ErrFormsAccessDenied},
 		{name: "a Forms without the team", p: editor, ev: open.ID, form: form, on: true, forms: stubForm{form: withTeam(nil, false)}, want: ErrFormsAccessDenied},
 		{name: "off", p: editor, ev: open.ID, form: form, on: false, forms: stubForm{form: questions}, want: ErrFormsPullOff},
@@ -320,17 +326,31 @@ func TestMappingRoutesRules(t *testing.T) {
 	if err := m.Delete(ctx, editor, open.ID, form); !errors.Is(err, ErrFormsPullOff) || len(store.rows) != 1 {
 		t.Fatalf("delete off: %v", err)
 	}
-	// A viewer reads neither the questions nor the mapping, nor deletes it.
+	// A viewer in Forms reads the questions, maps, reads and deletes the
+	// mapping (Yusuf, 2026-11-26); someone not on the team does none of it.
 	m, store = build(true, stubForm{form: withTeam(team(RoleViewer), true)})
+	if got, err := m.Questions(ctx, editor, open.ID, form); err != nil || len(got.Questions) != 3 {
+		t.Fatalf("questions, viewer: %+v %v", got, err)
+	}
+	if _, created, err := m.Put(ctx, editor, valid); err != nil || !created {
+		t.Fatalf("put, viewer: %t %v", created, err)
+	}
+	if got, err := m.Get(ctx, editor, open.ID, form); err != nil || got.Email != "q1" {
+		t.Fatalf("get, viewer: %+v %v", got, err)
+	}
+	if err := m.Delete(ctx, editor, open.ID, form); err != nil || len(store.rows) != 0 {
+		t.Fatalf("delete, viewer: %v", err)
+	}
+	m, store = build(true, stubForm{form: withTeam([]Collaborator{{UserID: uuid.New(), Role: RoleViewer}}, true)})
 	store.rows = map[[2]uuid.UUID]Mapping{{open.ID, form}: valid}
 	if _, err := m.Questions(ctx, editor, open.ID, form); !errors.Is(err, ErrFormsAccessDenied) {
-		t.Fatalf("questions, viewer: %v", err)
+		t.Fatalf("questions, not on the team: %v", err)
 	}
 	if _, err := m.Get(ctx, editor, open.ID, form); !errors.Is(err, ErrFormsAccessDenied) {
-		t.Fatalf("get, viewer: %v", err)
+		t.Fatalf("get, not on the team: %v", err)
 	}
 	if err := m.Delete(ctx, editor, open.ID, form); !errors.Is(err, ErrFormsAccessDenied) || len(store.rows) != 1 {
-		t.Fatalf("delete, viewer: %v", err)
+		t.Fatalf("delete, not on the team: %v", err)
 	}
 	// A form Forms no longer has may lose its mapping.
 	m, store = build(true, stubForm{err: ErrNotFound})

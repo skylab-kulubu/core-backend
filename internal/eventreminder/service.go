@@ -426,6 +426,10 @@ func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]any {
 		}
 	}
 	vars["TicketNote"], vars["TicketNoteParts"] = event.TicketNoteParts(ev)
+	// The Event's theme and poster (docs/event-theme.md#mails).
+	for k, v := range event.MailLook(ev) {
+		vars[k] = v
+	}
 	return vars
 }
 

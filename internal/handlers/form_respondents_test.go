@@ -17,6 +17,10 @@ type stubRespondents struct {
 	sel   formsfeed.Selection
 	query formsfeed.RespondentQuery
 	job   uuid.UUID
+	// actor is the Team audit actor Send's ctx carried; actorOK whether it
+	// carried one.
+	actor   teamaudit.Actor
+	actorOK bool
 }
 
 func (s *stubRespondents) List(_ context.Context, _ authz.Principal, _ uuid.UUID, q formsfeed.RespondentQuery) (formsfeed.RespondentPage, bool, error) {
@@ -30,8 +34,9 @@ func (s *stubRespondents) Preview(_ context.Context, _ authz.Principal, _ uuid.U
 	return formsfeed.Preview{Tickets: 2, Waitlisted: 1}, s.err
 }
 
-func (s *stubRespondents) Send(_ context.Context, _ authz.Principal, _ uuid.UUID, sel formsfeed.Selection) (formsfeed.SendResult, *uuid.UUID, error) {
+func (s *stubRespondents) Send(ctx context.Context, _ authz.Principal, _ uuid.UUID, sel formsfeed.Selection) (formsfeed.SendResult, *uuid.UUID, error) {
 	s.sel = sel
+	s.actor, s.actorOK = teamaudit.ActorFrom(ctx)
 	if sel.All {
 		return formsfeed.SendResult{}, &s.job, s.err
 	}
@@ -43,9 +48,13 @@ func (s *stubRespondents) Job(_ context.Context, _ authz.Principal, _, jobID uui
 }
 
 func respondentApp(stub *stubRespondents) *fiber.App {
+	return respondentAppAs(stub, uuid.New())
+}
+
+func respondentAppAs(stub *stubRespondents, caller uuid.UUID) *fiber.App {
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
-		c.Locals(authn.LocalsIdentity, authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/YK"}})
+		c.Locals(authn.LocalsIdentity, authn.Identity{ID: caller, Groups: []string{"/UYELER/YK"}})
 		return c.Next()
 	})
 	h := NewFormRespondentHandler(stub)
@@ -116,6 +125,24 @@ func TestRespondentRoutesAnswerTheContract(t *testing.T) {
 		status, body := mappingCall(t, app, "POST", base+"/tickets", `{"ids":["`+id+`"]}`)
 		if status != want[0] || body["code"] != want[1] {
 			t.Errorf("%v: %d %v", err, status, body)
+		}
+	}
+}
+
+// The sending opens a Team audit row (ticket.import), whose actor is the
+// caller: the route hands the service a ctx that carries them, as every
+// audited write. Without one the service refuses it 503 audit_unavailable
+// before anything is written.
+func TestRespondentSendCarriesTheAuditActor(t *testing.T) {
+	caller := uuid.New()
+	base := "/v1/events/" + uuid.NewString() + "/respondents/tickets"
+	for _, body := range []string{`{"ids":["` + uuid.NewString() + `"]}`, `{"all":true}`} {
+		stub := &stubRespondents{job: uuid.New()}
+		if status, got := mappingCall(t, respondentAppAs(stub, caller), "POST", base, body); status >= 300 {
+			t.Fatalf("%s: %d %v", body, status, got)
+		}
+		if !stub.actorOK || stub.actor.ID != caller {
+			t.Fatalf("%s: actor %+v (carried %v), want %s", body, stub.actor, stub.actorOK, caller)
 		}
 	}
 }

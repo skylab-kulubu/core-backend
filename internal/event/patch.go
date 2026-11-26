@@ -50,6 +50,11 @@ type Patch struct {
 	// TicketNote writes the announcement the ticket mails carry; null or ""
 	// clears it (docs/ticket-note.md).
 	TicketNote optional.Field[string] `json:"ticketNote"`
+	// Theme picks the Event's theme, a key of the catalogue; null, "" or
+	// "kurumsal" is Kurumsal. TicketAccentColor sets the ticket page's
+	// colour, #RRGGBB; null or "" clears it (docs/event-theme.md).
+	Theme             optional.Field[string] `json:"theme"`
+	TicketAccentColor optional.Field[string] `json:"ticketAccentColor"`
 	// EntryMode sets the door's mode: per_session or venue, null for
 	// automatic (docs/venue-entry.md); any other value is ErrInvalid.
 	EntryMode       optional.Field[*EntryMode] `json:"entryMode"`
@@ -165,6 +170,14 @@ func (p Patch) apply(existing Event) (Event, error) {
 	if p.TicketNote.Set || p.TicketNote.Null {
 		note := p.TicketNote.Value
 		e.TicketNote = &note
+	}
+	if p.Theme.Set {
+		key := p.Theme.Value
+		e.Theme = &key
+	}
+	if p.TicketAccentColor.Set {
+		color := p.TicketAccentColor.Value
+		e.TicketAccentColor = &color
 	}
 	e.StartDate = p.StartDate.Or(existing.StartDate)
 	e.EndDate = p.EndDate.Or(existing.EndDate)

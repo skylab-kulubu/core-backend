@@ -145,8 +145,21 @@ type Event struct {
 	// the Media JSON's sizes.
 	CoverImageSizes map[string]media.ImageAddress `json:"coverImageSizes,omitempty"`
 	CoverColors     []string                      `json:"coverColors"`
-	AttendanceRule  string                        `json:"attendanceRule"`
-	AttendanceRatio *float64                      `json:"attendanceRatio,omitempty"`
+	// Theme is the key of the Event's theme (docs/event-theme.md): the look
+	// of its PDF ticket, its participants' mails and its ticket page; nil
+	// for Kurumsal, and for a key the catalogue no longer has. A write takes
+	// a key of the catalogue (ErrThemeUnknown otherwise); nil, "" or
+	// "kurumsal" is Kurumsal. TicketAccentColor is the ticket page's colour
+	// it gives, #RRGGBB in capitals, nil for none. Anyone who sees the
+	// Event sees both.
+	Theme             *string `json:"theme"`
+	TicketAccentColor *string `json:"ticketAccentColor"`
+	// bannerImage is the Media of the Event's own ticket image (its
+	// poster, docs/ticket-image.md source upload) as the store read it:
+	// what BannerURL is built from.
+	bannerImage     *media.LinkedImage
+	AttendanceRule  string   `json:"attendanceRule"`
+	AttendanceRatio *float64 `json:"attendanceRatio,omitempty"`
 	// AttendanceMinCount is the count rule's threshold M ("at least M of
 	// the N counted Sessions"); null is the default, ceil(3N/4). Any other
 	// rule has none (docs/certificate-rule.md).

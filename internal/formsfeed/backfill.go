@@ -40,8 +40,12 @@ type Backfills struct {
 	Queue  PullQueue
 	// On is false without Forms' internal address or core's service
 	// account: every request is ErrBackfillOff.
-	On  bool
-	Now func() time.Time
+	On bool
+	// Forms reads the form's team: only who is on it in Forms (owner,
+	// editor or viewer) may have its answers gathered (seesForm). Nil is
+	// ErrFormsUnavailable.
+	Forms FormReader
+	Now   func() time.Time
 }
 
 // Request checks and queues. The caller must be a person who may edit the
@@ -50,8 +54,10 @@ type Backfills struct {
 // the form as its application or an extra form, and no other current Event
 // may list it (the one-place rule, ADR 0069 addendum of 2026-11-22, K4:
 // an old form linked to a new Event must not ticket last year's applicants
-// there through another Event). True when it queued, false when a backfill
-// of the form waits already.
+// there through another Event). The caller must be on the form's team in
+// Forms, read now (ErrFormsAccessDenied, ErrFormsUnavailable): an Event that
+// lists a form does not make its organizer one who may read its answers.
+// True when it queued, false when a backfill of the form waits already.
 func (b *Backfills) Request(ctx context.Context, p authz.Principal, eventID, formID uuid.UUID) (bool, error) {
 	ev, err := b.Events.Get(ctx, eventID)
 	if errors.Is(err, event.ErrNotFound) {
@@ -92,6 +98,9 @@ func (b *Backfills) Request(ctx context.Context, p authz.Principal, eventID, for
 	}
 	if !b.On {
 		return false, ErrBackfillOff
+	}
+	if err := seesForm(ctx, b.Forms, p, formID); err != nil {
+		return false, err
 	}
 	requestedBy, err := uuid.Parse(p.ID)
 	if err != nil {

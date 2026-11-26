@@ -126,8 +126,8 @@ func (s *Service) now() time.Time {
 	return time.Now()
 }
 
-// Theme is the look the JSON tells the site (ticket 16 adds the Event's
-// choice).
+// Theme is the look the JSON tells the site: the Event's theme
+// (docs/event-theme.md), "kurumsal" for none, and the page's accent.
 type Theme struct {
 	Key    string `json:"key"`
 	Accent string `json:"accent"`
@@ -138,10 +138,17 @@ type Theme struct {
 // first colour, then this).
 const SiteAccent = "#8B5CF6"
 
-// Accent is the ticket page's accent for the Event: its cover's first
-// colour, else the club's purple. (The Event's own ticket colour,
-// ticketAccentColor, goes first once Events have one: ticket 16.)
+// Accent is the ticket page's accent for the Event (docs/event-theme.md):
+// its own ticket colour (ticketAccentColor), else its theme's colour (a
+// theme other than Kurumsal), else its cover's first colour, else the
+// club's purple.
 func Accent(ev event.Event) string {
+	if ev.TicketAccentColor != nil && validColor(*ev.TicketAccentColor) {
+		return strings.ToUpper(*ev.TicketAccentColor)
+	}
+	if c := ev.LookTheme().PageAccent; validColor(c) {
+		return strings.ToUpper(c)
+	}
 	for _, c := range ev.CoverColors {
 		if validColor(c) {
 			return strings.ToUpper(c)
@@ -194,6 +201,9 @@ type View struct {
 	// its Event starts, a waitlisted one until it ends.
 	Cancellable bool  `json:"cancellable"`
 	Theme       Theme `json:"theme"`
+	// TicketAccentColor is the Event's own ticket colour, #RRGGBB, null
+	// for none (docs/event-theme.md); Theme.Accent already puts it first.
+	TicketAccentColor *string `json:"ticketAccentColor"`
 }
 
 // opened is a Ticket the key opened, with its Event and holder.
@@ -284,8 +294,8 @@ func (s *Service) Page(ctx context.Context, key string) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	th := theme.Lookup("")
 	ev := o.event
+	th := ev.LookTheme()
 	v := View{
 		EventName: ev.Name, EventStart: ev.StartDate, EventEnd: ev.EndDate,
 		Venue: ev.Location, VenueAddress: ev.LocationAddress, VenueLat: ev.LocationLat, VenueLng: ev.LocationLng,
@@ -295,9 +305,10 @@ func (s *Service) Page(ctx context.Context, key string) (View, error) {
 		OwnerTeam:     ev.OwnerTeam, OrganizerName: organizer.Name(ev.OwnerTeam), EventStatus: string(ev.Status),
 		CoOrganizerTeams: event.PublicCoOrganizerTeams(ev), CoOrganizerNames: organizer.CoNames(event.PublicCoOrganizerTeams(ev)),
 		HolderName: o.holder, Code: o.ticket.Code, State: o.state,
-		Theme:         Theme{Key: th.Key, Accent: Accent(ev)},
-		CoverImageURL: media.ConfiguredAddresses().Object(ev.CoverImageURL),
-		CoverColors:   append([]string{}, ev.CoverColors...),
+		Theme:             Theme{Key: th.Key, Accent: Accent(ev)},
+		TicketAccentColor: ev.TicketAccentColor,
+		CoverImageURL:     media.ConfiguredAddresses().Object(ev.CoverImageURL),
+		CoverColors:       append([]string{}, ev.CoverColors...),
 	}
 	if v.MapImageURL != "" {
 		v.MapAttribution, v.MapAttributionURL = event.MapAttribution, event.MapAttributionURL
@@ -448,7 +459,7 @@ func (s *Service) PDF(ctx context.Context, key string) (string, []byte, error) {
 
 func (s *Service) document(ctx context.Context, o opened, token string) (Document, error) {
 	ev := o.event
-	th := theme.Lookup("")
+	th := ev.LookTheme()
 	doc := Document{
 		EventName: ev.Name, Start: ev.StartDate, End: ev.EndDate,
 		Venue: ev.Location, VenueAddress: ev.LocationAddress,
@@ -462,10 +473,13 @@ func (s *Service) document(ctx context.Context, o opened, token string) (Documen
 		return Document{}, err
 	}
 	doc.Days = program
-	if len(ev.CoverColors) > 0 {
+	switch {
+	case ev.TicketAccentColor != nil:
+		doc.BandColor = *ev.TicketAccentColor
+	case len(ev.CoverColors) > 0:
 		doc.BandColor = ev.CoverColors[0]
 	}
-	doc.BandJPEG = s.ticketBand(ctx, ev)
+	doc.BandJPEG, doc.BandPoster = s.picture(ctx, ev, th)
 	if ev.MapImageID != nil && s.images != nil {
 		if data, contentType, ok := s.images.Image(ctx, *ev.MapImageID, ""); ok {
 			doc.Map, doc.MapType = data, contentType
@@ -503,7 +517,7 @@ func (s *Service) program(ctx context.Context, ev event.Event) ([]ProgramDay, er
 			if pd.Date == nil {
 				pd.Date = sess.StartTime
 			}
-			pd.Sessions = append(pd.Sessions, ProgramSession{Start: sess.StartTime, End: sess.EndTime, Title: sess.Title, Speaker: sess.SpeakerName})
+			pd.Sessions = append(pd.Sessions, ProgramSession{Start: sess.StartTime, End: sess.EndTime, Title: sess.Title, Speaker: sess.SpeakerName, Note: sess.Description})
 		}
 		if len(pd.Sessions) > 0 {
 			out = append(out, pd)
@@ -526,16 +540,79 @@ func compareTimes(a, b *time.Time) int {
 	}
 }
 
-// ticketBand is the band's picture for the Event: the image and region
-// its ticket image choice names, else the cover's middle; nil when there is
-// no picture to cut (the band is then the cover's colour).
-func (s *Service) ticketBand(ctx context.Context, ev event.Event) []byte {
+// setting is the Event's ticket image choice; SourceAuto without a store
+// or when it cannot be read.
+func (s *Service) setting(ctx context.Context, ev event.Event) ticketimage.Setting {
 	setting := ticketimage.Setting{Source: ticketimage.SourceAuto}
 	if s.TicketImages != nil {
 		if got, err := s.TicketImages.Get(ctx, ev.ID); err == nil {
 			setting = got
 		}
 	}
+	return setting
+}
+
+// picture is the PDF's picture at its top for the Event in theme th, and
+// whether it is the theme's poster: Kurumsal's band (ticketBand). A theme
+// with its own band or a poster (theme.Look) draws the Event's own choice
+// alone: its ticket image whole as the poster (PosterAspect), else as the
+// band it chose; a cover region as the band; no choice, or one that cannot
+// be read, draws the theme's band (nil), never the cover's middle.
+func (s *Service) picture(ctx context.Context, ev event.Event, th theme.Theme) ([]byte, bool) {
+	look := th.Look
+	if look == nil || (look.Band == "" && look.PosterAspect <= 0) {
+		return s.ticketBand(ctx, ev), false
+	}
+	setting := s.setting(ctx, ev)
+	img, crop := setting.Band(ev.CoverImageID)
+	switch {
+	case img == nil || crop == nil:
+		return nil, false
+	case setting.Source == ticketimage.SourceUpload && look.PosterAspect > 0:
+		if poster := s.poster(ctx, *img, look.PosterAspect); poster != nil {
+			return poster, true
+		}
+		return nil, false
+	}
+	return s.band(ctx, *img, crop), false
+}
+
+// poster is the image cut to a theme's poster (Poster) and kept a while,
+// as a band is; nil when the image cannot be read.
+func (s *Service) poster(ctx context.Context, id uuid.UUID, aspect float64) []byte {
+	if s.images == nil {
+		return nil
+	}
+	now := s.now()
+	key := fmt.Sprintf("poster/%s/%.3f", id, aspect)
+	if data, ok := s.bands.get(key, now); ok {
+		return data
+	}
+	var cut []byte
+	var ok bool
+	if src, has := s.images.(BandSources); has {
+		if data, read := src.BandSource(ctx, id); read {
+			cut, ok = Poster(data, aspect)
+		}
+	}
+	if !ok {
+		data, _, read := s.images.Image(ctx, id, media.SizePage)
+		if !read {
+			return nil
+		}
+		if cut, ok = Poster(data, aspect); !ok {
+			return nil
+		}
+	}
+	s.bands.put(key, cut, now)
+	return cut
+}
+
+// ticketBand is the band's picture for the Event: the image and region
+// its ticket image choice names, else the cover's middle; nil when there is
+// no picture to cut (the band is then the cover's colour).
+func (s *Service) ticketBand(ctx context.Context, ev event.Event) []byte {
+	setting := s.setting(ctx, ev)
 	img, crop := setting.Band(ev.CoverImageID)
 	if img == nil {
 		return nil

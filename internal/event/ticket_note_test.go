@@ -106,10 +106,12 @@ func TestTicketNoteParts(t *testing.T) {
 		"two": {"https://a.example/x\n(https://b.example/y)", []event.NotePart{
 			{Text: "https://a.example/x", URL: "https://a.example/x"}, {Text: "\n("}, {Text: "https://b.example/y", URL: "https://b.example/y"}, {Text: ")"},
 		}},
-		"http":         {"http://example.test/x", []event.NotePart{{Text: "http://example.test/x"}}},
-		"bare scheme":  {"https://.", []event.NotePart{{Text: "https://"}, {Text: "."}}},
-		"javascript":   {"javascript:alert(1)", []event.NotePart{{Text: "javascript:alert(1)"}}},
-		"quote breaks": {`https://x.example/"onmouseover=`, []event.NotePart{{Text: "https://x.example/", URL: "https://x.example/"}, {Text: `"onmouseover=`}}},
+		"http":              {"http://example.test/x", []event.NotePart{{Text: "http://example.test/x"}}},
+		"bare scheme":       {"https://.", []event.NotePart{{Text: "https://"}, {Text: "."}}},
+		"javascript":        {"javascript:alert(1)", []event.NotePart{{Text: "javascript:alert(1)"}}},
+		"quote breaks":      {`https://x.example/"onmouseover=`, []event.NotePart{{Text: "https://x.example/", URL: "https://x.example/"}, {Text: `"onmouseover=`}}},
+		"no-break space":    {"https://a.example/x\u00a0Grup", []event.NotePart{{Text: "https://a.example/x", URL: "https://a.example/x"}, {Text: "\u00a0Grup"}}},
+		"ideographic space": {"https://a.example/x\u3000y", []event.NotePart{{Text: "https://a.example/x", URL: "https://a.example/x"}, {Text: "\u3000y"}}},
 	} {
 		note := tc.note
 		got, parts := event.TicketNoteParts(event.Event{TicketNote: &note})

@@ -104,9 +104,9 @@ func (s *service) postMail(ctx context.Context, sender CertificateMailer, m Mail
 	c := m.Certificate
 	key := MailIdempotencyKeyPrefix + m.ID.String()
 	if len(attachments) == 0 {
-		return sender.CertificateMail(ctx, key, c.RecipientEmail, c.RecipientName, certificateMailVars(c))
+		return sender.CertificateMail(ctx, key, c.RecipientEmail, c.RecipientName, s.mailVars(ctx, c))
 	}
-	err := sender.(CertificateAttachmentMailer).CertificateMailAttachments(ctx, key, c.RecipientEmail, c.RecipientName, certificateMailVars(c), attachments)
+	err := sender.(CertificateAttachmentMailer).CertificateMailAttachments(ctx, key, c.RecipientEmail, c.RecipientName, s.mailVars(ctx, c), attachments)
 	if err == nil {
 		s.mailPDF.attached.Add(1)
 	}
