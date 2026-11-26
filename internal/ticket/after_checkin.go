@@ -258,3 +258,11 @@ func (a *afterCheckIn) EntrySummary(ctx context.Context, p authz.Principal, even
 func (a *afterCheckIn) ListEntries(ctx context.Context, p authz.Principal, eventID uuid.UUID, date string) ([]DoorEntry, error) {
 	return a.inner.ListEntries(ctx, p, eventID, date)
 }
+
+func (a *afterCheckIn) BeginExport(ctx context.Context, p authz.Principal, eventID uuid.UUID, req ExportRequest) (*ExportData, error) {
+	return a.inner.BeginExport(ctx, p, eventID, req)
+}
+
+func (a *afterCheckIn) FinishExport(ctx context.Context, data *ExportData, rows int, err error) {
+	a.inner.FinishExport(ctx, data, rows, err)
+}

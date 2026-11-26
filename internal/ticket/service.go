@@ -123,6 +123,11 @@ type EventDoor interface {
 	ResolveEntry(ctx context.Context, p authz.Principal, eventID uuid.UUID, target DoorCheckInTarget) (DoorEntry, error)
 	UndoEntry(ctx context.Context, p authz.Principal, eventID, entryID uuid.UUID) error
 	EntrySummary(ctx context.Context, p authz.Principal, eventID uuid.UUID) (EntrySummary, error)
+	// BeginExport reads what an attendee export of the Event needs for a
+	// reader of its Tickets, and opens its Team audit row; FinishExport
+	// closes the row with the file's row count (docs/attendee-export.md).
+	BeginExport(ctx context.Context, p authz.Principal, eventID uuid.UUID, req ExportRequest) (*ExportData, error)
+	FinishExport(ctx context.Context, data *ExportData, rows int, err error)
 	ListEntries(ctx context.Context, p authz.Principal, eventID uuid.UUID, date string) ([]DoorEntry, error)
 	// WalkIn is the door registering a person with no Ticket ("Kapıda
 	// kayıt", docs/walk-in.md): their guest Ticket, and in the venue Entry
