@@ -192,7 +192,9 @@ func (g *GuestApply) caller(c fiber.Ctx) guestCaller {
 func (g *GuestApply) Observe(c fiber.Ctx) error {
 	if err := c.Next(); err != nil {
 		if handlerErr := c.App().ErrorHandler(c, err); handlerErr != nil {
-			_ = c.SendStatus(fiber.StatusInternalServerError)
+			if problemCode(c, fiber.StatusInternalServerError, "Internal Server Error", "internal_error") != nil {
+				_ = c.SendStatus(fiber.StatusInternalServerError)
+			}
 		}
 	}
 	caller := g.caller(c)

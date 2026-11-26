@@ -95,10 +95,19 @@ func ticketError(c fiber.Ctx, err error) error {
 			fields = fiber.Map{"name": entered.Name}
 		}
 		return problemWithFields(c, fiber.StatusConflict, "Conflict", "Bugün zaten girdi.", "already_entered", fields)
+	case errors.Is(err, ticket.ErrAlreadyCheckedIn):
+		// The Ticket already has this Session's Check-in.
+		return problemCode(c, fiber.StatusConflict, "Conflict", "already_checked_in")
 	case errors.Is(err, ticket.ErrConflict):
 		return problemCode(c, fiber.StatusConflict, "Conflict", eventStatusCode(err))
 	case errors.Is(err, ticket.ErrAmbiguous):
-		return problem(c, fiber.StatusConflict, "Ambiguous Match")
+		return problemCode(c, fiber.StatusConflict, "Ambiguous Match", "ambiguous_match")
+	case errors.As(err, new(*ticket.InvalidError)):
+		// A field of the request core cannot use, and which
+		// (docs/problem-codes.md).
+		var refused *ticket.InvalidError
+		errors.As(err, &refused)
+		return problemWithFields(c, fiber.StatusBadRequest, "Bad Request", "Bad Request", refused.Code, fiber.Map(refused.Fields))
 	case errors.Is(err, ticket.ErrInvalid):
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	case errors.Is(err, ticket.ErrDoorQRRequired):
@@ -129,12 +138,12 @@ func (h *TicketHandler) Apply(c fiber.Ctx) error {
 	}
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "eventId")
 	}
 	var body applyBody
 	if raw := c.Body(); len(bytes.TrimSpace(raw)) > 0 {
 		if err := json.Unmarshal(raw, &body); err != nil {
-			return problem(c, fiber.StatusBadRequest, "Bad Request")
+			return badBody(c)
 		}
 	}
 	created, err := h.svc.ApplyJoining(c.Context(), p, eventID, body.JoinWaitlist)
@@ -151,11 +160,11 @@ func (h *TicketHandler) ApplyForOther(c fiber.Ctx) error {
 	}
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "eventId")
 	}
 	userID, err := uuid.Parse(c.Params("userId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "userId")
 	}
 	created, err := h.svc.ApplyForOther(c.Context(), p, eventID, userID)
 	if err != nil {
@@ -171,7 +180,7 @@ func (h *TicketHandler) ListAssignableUsers(c fiber.Ctx) error {
 	}
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "eventId")
 	}
 	people, err := h.svc.ListAssignableUsers(c.Context(), p, eventID, c.Query("q"))
 	if err != nil {
@@ -199,7 +208,7 @@ func (h *TicketHandler) SearchDoorAttendees(c fiber.Ctx) error {
 	}
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "eventId")
 	}
 	attendees, err := h.svc.SearchDoorAttendees(c.Context(), p, eventID, c.Query("q"))
 	if err != nil {
@@ -222,11 +231,11 @@ type guestApplied struct {
 func (h *TicketHandler) ApplyGuest(c fiber.Ctx) error {
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "eventId")
 	}
 	var body guestBody
 	if err := c.Bind().Body(&body); err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badBody(c)
 	}
 	applied, err := h.svc.ApplyGuestJoining(c.Context(), optionalCaller(c), eventID, ticket.GuestInfo{
 		FirstName: body.FirstName, LastName: body.LastName, Email: body.Email, PhoneNumber: body.PhoneNumber,
@@ -286,11 +295,11 @@ func (h *TicketHandler) RecordFormResponse(c fiber.Ctx) error {
 	}
 	formID, err := uuid.Parse(c.Params("formId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "formId")
 	}
 	var body formResponseBody
 	if err := c.Bind().Body(&body); err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badBody(c)
 	}
 	r := ticket.FormResponse{
 		FormID:      formID,
@@ -403,7 +412,7 @@ func (h *TicketHandler) Mine(c fiber.Ctx) error {
 	}
 	include, ok := statusList(c.Query("include"))
 	if !ok {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badQuery(c, "include")
 	}
 	tickets, err := h.svc.MineIncluding(c.Context(), p, include)
 	if err != nil {
@@ -419,7 +428,7 @@ func (h *TicketHandler) ListByEvent(c fiber.Ctx) error {
 	}
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "eventId")
 	}
 	// ?status=active (the default), waitlisted, cancelled or all.
 	var statuses []ticket.Status
@@ -429,7 +438,7 @@ func (h *TicketHandler) ListByEvent(c fiber.Ctx) error {
 	case "all":
 	default:
 		if !ticket.ValidStatus(ticket.Status(raw)) {
-			return problem(c, fiber.StatusBadRequest, "Bad Request")
+			return badQuery(c, "status")
 		}
 		statuses = []ticket.Status{ticket.Status(raw)}
 	}
@@ -447,11 +456,11 @@ func (h *TicketHandler) CheckIn(c fiber.Ctx) error {
 	}
 	ticketID, err := uuid.Parse(c.Params("ticketId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "ticketId")
 	}
 	sessionID, err := uuid.Parse(c.Params("sessionId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "sessionId")
 	}
 	ci, err := h.svc.CheckIn(c.Context(), p, ticketID, sessionID)
 	if err != nil {
@@ -470,11 +479,11 @@ func (h *TicketHandler) UndoCheckIn(c fiber.Ctx) error {
 	}
 	ticketID, err := uuid.Parse(c.Params("ticketId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "ticketId")
 	}
 	sessionID, err := uuid.Parse(c.Params("sessionId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "sessionId")
 	}
 	if err := h.svc.UndoCheckIn(c.Context(), p, ticketID, sessionID); err != nil {
 		return ticketError(c, err)
@@ -492,11 +501,11 @@ func (h *TicketHandler) UndoCheckInByID(c fiber.Ctx) error {
 	}
 	sessionID, err := uuid.Parse(c.Params("sessionId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "sessionId")
 	}
 	checkInID, err := uuid.Parse(c.Params("checkInId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "checkInId")
 	}
 	if err := h.svc.UndoCheckInByID(c.Context(), p, sessionID, checkInID); err != nil {
 		return ticketError(c, err)
@@ -528,12 +537,12 @@ func (h *TicketHandler) CheckInMe(c fiber.Ctx) error {
 	}
 	sessionID, err := uuid.Parse(c.Params("sessionId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "sessionId")
 	}
 	var body selfCheckInBody
 	if raw := bytes.TrimSpace(c.Body()); len(raw) > 0 {
 		if err := json.Unmarshal(raw, &body); err != nil {
-			return problem(c, fiber.StatusBadRequest, "Bad Request")
+			return badBody(c)
 		}
 	}
 	ci, err := h.svc.CheckInMe(c.Context(), p, sessionID, body.DoorToken)
@@ -546,17 +555,22 @@ func (h *TicketHandler) CheckInMe(c fiber.Ctx) error {
 func (h *TicketHandler) CheckInGuest(c fiber.Ctx) error {
 	sessionID, err := uuid.Parse(c.Params("sessionId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "sessionId")
 	}
 	var body guestCheckInBody
 	if err := c.Bind().Body(&body); err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badBody(c)
 	}
 	ci, err := h.svc.CheckInGuest(c.Context(), sessionID, ticket.GuestCheckIn{Email: body.Email, TicketKey: body.TicketKey, DoorToken: body.DoorToken})
 	var missing *ticket.GuestNotFoundError
-	if errors.As(err, &missing) && missing.RegistrationURL != "" {
-		// No Ticket: where to register, while the Event takes them.
-		return problemWithFields(c, fiber.StatusNotFound, "Not Found", "Not Found", "", fiber.Map{"registrationUrl": missing.RegistrationURL})
+	if errors.As(err, &missing) {
+		// No Ticket for the e-mail or key: where to register, while the
+		// Event takes them.
+		var fields fiber.Map
+		if missing.RegistrationURL != "" {
+			fields = fiber.Map{"registrationUrl": missing.RegistrationURL}
+		}
+		return problemWithFields(c, fiber.StatusNotFound, "Not Found", "Not Found", "guest_ticket_not_found", fields)
 	}
 	if err != nil {
 		return ticketError(c, err)
@@ -574,11 +588,11 @@ func (h *TicketHandler) MintDoorQR(c fiber.Ctx) error {
 	}
 	sessionID, err := uuid.Parse(c.Params("sessionId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "sessionId")
 	}
 	class, ok := doorqr.ParseClass(c.Query("use"))
 	if !ok {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badQuery(c, "use")
 	}
 	pass, err := h.svc.MintDoorQR(c.Context(), p, sessionID, class)
 	if err != nil {
@@ -620,17 +634,17 @@ func (h *TicketHandler) ResolveAndCheckIn(c fiber.Ctx) error {
 	}
 	sessionID, err := uuid.Parse(c.Params("sessionId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "sessionId")
 	}
 	var body resolveCheckInBody
 	if err := c.Bind().Body(&body); err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badBody(c)
 	}
 	target := ticket.DoorCheckInTarget{Query: body.Query}
 	if body.PersonID != "" {
 		personID, err := uuid.Parse(body.PersonID)
 		if err != nil {
-			return problem(c, fiber.StatusBadRequest, "Bad Request")
+			return problemCode(c, fiber.StatusBadRequest, "Bad Request", "door_target_invalid")
 		}
 		target.PersonID = &personID
 	}
@@ -648,7 +662,7 @@ func (h *TicketHandler) DoorActivity(c fiber.Ctx) error {
 	}
 	sessionID, err := uuid.Parse(c.Params("sessionId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "sessionId")
 	}
 	activity, err := h.svc.DoorActivity(c.Context(), p, sessionID)
 	if err != nil {
@@ -664,7 +678,7 @@ func (h *TicketHandler) Get(c fiber.Ctx) error {
 	}
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "id")
 	}
 	got, err := h.svc.Get(c.Context(), p, id)
 	if err != nil {
@@ -680,11 +694,11 @@ func (h *TicketHandler) ByUserEvent(c fiber.Ctx) error {
 	}
 	userID, err := uuid.Parse(c.Params("userId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "userId")
 	}
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "eventId")
 	}
 	got, err := h.svc.GetByUserEvent(c.Context(), p, userID, eventID)
 	if err != nil {
@@ -724,7 +738,7 @@ type ticketSearchBody struct {
 func (h *TicketHandler) Search(c fiber.Ctx) error {
 	var body ticketSearchBody
 	if err := c.Bind().Body(&body); err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badBody(c)
 	}
 	return h.listQuery(c, body.Email, body.UserID)
 }
@@ -738,7 +752,7 @@ func (h *TicketHandler) listQuery(c fiber.Ctx, email, rawUserID string) error {
 	if rawUserID != "" {
 		id, err := uuid.Parse(rawUserID)
 		if err != nil {
-			return problem(c, fiber.StatusBadRequest, "Bad Request")
+			return problemCode(c, fiber.StatusBadRequest, "Bad Request", ticket.CodeUserIDInvalid)
 		}
 		userID = &id
 	}

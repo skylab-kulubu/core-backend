@@ -1398,6 +1398,7 @@ func main() {
 		Authz:                     az,
 		EditableSites:             editableSites,
 		ManagedTeams:              delegation,
+		AttendanceMail:            tickets,
 		AppAssignments:            appAssignments,
 		AuthzRoleMetrics:          authzRoleMetrics,
 		GuestCheckInMetrics:       doorQR,

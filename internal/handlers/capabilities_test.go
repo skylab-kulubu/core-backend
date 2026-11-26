@@ -232,3 +232,39 @@ func TestCapabilitiesManagedTeams(t *testing.T) {
 		}
 	}
 }
+
+type attendanceMailFake struct{ welcome, recorded bool }
+
+func (f attendanceMailFake) AttendanceMailOn() (bool, bool) { return f.welcome, f.recorded }
+
+// features says whether a scan queues the door's mails now, for every
+// caller; without a source both are off.
+func TestCapabilitiesFeaturesAttendanceMail(t *testing.T) {
+	t.Parallel()
+	ident := authn.Identity{ID: uuid.New()}
+	for _, tc := range []struct {
+		name   string
+		source AttendanceMailSource
+		want   string
+	}{
+		{"no source", nil, `{"attendanceWelcomeMail":false,"attendanceRecordedMail":false}`},
+		{"off", attendanceMailFake{}, `{"attendanceWelcomeMail":false,"attendanceRecordedMail":false}`},
+		{"welcome only", attendanceMailFake{welcome: true}, `{"attendanceWelcomeMail":true,"attendanceRecordedMail":false}`},
+		{"on", attendanceMailFake{welcome: true, recorded: true}, `{"attendanceWelcomeMail":true,"attendanceRecordedMail":true}`},
+	} {
+		h := NewCapabilitiesHandler(authz.NewAuthorizer(authz.DefaultPolicy()), nil)
+		if tc.source != nil {
+			h.WithAttendanceMail(tc.source)
+		}
+		h.logger = log.New(io.Discard, "", 0)
+		app := fiber.New(fiber.Config{ErrorHandler: ErrorHandler})
+		app.Use(func(c fiber.Ctx) error {
+			c.Locals(authn.LocalsIdentity, ident)
+			return c.Next()
+		})
+		app.Get("/v1/users/me/capabilities", h.Get)
+		if got := string(getCapabilities(t, app)["features"]); got != tc.want {
+			t.Errorf("%s: features %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
