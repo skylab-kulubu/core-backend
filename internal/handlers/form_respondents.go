@@ -145,7 +145,8 @@ func (h *FormRespondentHandler) Preview(c fiber.Ctx) error {
 }
 
 // Send is POST /v1/events/{id}/respondents/tickets: ids → 200 {recorded,
-// waitlisted, full, skipped}; all → 202 {jobId}.
+// waitlisted, full, skipped}; all → 202 {jobId}. The sending's Team audit
+// row names the caller (auditContext): without them it is refused 503.
 func (h *FormRespondentHandler) Send(c fiber.Ctx) error {
 	p, eventID, err := h.event(c)
 	if err != nil {
@@ -155,7 +156,7 @@ func (h *FormRespondentHandler) Send(c fiber.Ctx) error {
 	if !ok {
 		return invalidRespondents(c)
 	}
-	res, jobID, err := h.respondents.Send(c.Context(), p, eventID, sel)
+	res, jobID, err := h.respondents.Send(auditContext(c, p), p, eventID, sel)
 	if err != nil {
 		return h.error(c, err)
 	}
