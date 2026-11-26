@@ -78,6 +78,10 @@ var routesBehindBearerSample = []string{
 	"GET /v1/events/:id/forms/:formId/mapping",
 	"PUT /v1/events/:id/forms/:formId/mapping",
 	"DELETE /v1/events/:id/forms/:formId/mapping",
+	"GET /v1/events/:id/respondents",
+	"POST /v1/events/:id/respondents/tickets/preview",
+	"POST /v1/events/:id/respondents/tickets",
+	"GET /v1/events/:id/respondents/ticket-jobs/:jobId",
 	"GET /v1/events/:id/certificate-rule",
 	"PUT /v1/events/:id/certificate-rule",
 	"GET /v1/events/:id/organizers",
@@ -133,6 +137,7 @@ type (
 	unusedEventMail        struct{ eventmail.Service }
 	unusedFormBackfills    struct{ handlers.FormBackfills }
 	unusedFormMappings     struct{ handlers.FormMappings }
+	unusedFormRespondents  struct{ handlers.FormRespondents }
 )
 
 var segmentParam = regexp.MustCompile(`/:[A-Za-z0-9_]+`)
@@ -159,6 +164,7 @@ func TestEveryRouteButThePublicOnesReadsTheBearer(t *testing.T) {
 	deps.EventMail = unusedEventMail{}
 	deps.FormBackfills = unusedFormBackfills{}
 	deps.FormMappings = unusedFormMappings{}
+	deps.FormRespondents = unusedFormRespondents{}
 	deps.AppAssignments = true
 	clients, err := apppref.ParseClients("forms:skyforms")
 	if err != nil {

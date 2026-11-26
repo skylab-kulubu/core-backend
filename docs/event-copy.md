@@ -53,6 +53,7 @@ Who: whoever may see the source (a draft: who may edit it, ADR 0066) and create 
 | External registration link (`externalRegistrationUrl`; [attendee-import.md](attendee-import.md)) | only with `includeExternalRegistration` (the panel asks; an older client sends neither and copies neither) | |
 | Attendee note | only with `includeAttendeeNote` | left out (`attendeeNote`) when the caller may not read it on the source (who may edit the Event, or read its Tickets) |
 | The door's mail switches (`attendanceWelcomeMail`, `attendanceRecordedMail`) and entry mode | yes | |
+| "Otomatik bilet gönder" (`formResponsesAutoTicket`; [form-respondents.md](form-respondents.md)) | yes | |
 | LinkedIn link, gallery, files, videos, mail list | no | |
 | Application and extra forms, their short links | no | |
 | Feedback mode (`feedbackMode`), `feedbackAutoSend` | yes | the feedback form and its alias are not copied (one place per form; [event-feedback.md](event-feedback.md)) |

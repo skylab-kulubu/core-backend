@@ -68,7 +68,7 @@ type Puller struct {
 func (p *Puller) init() {
 	p.once.Do(func() {
 		p.counts = map[[2]string]int64{}
-		for _, kind := range []string{PullBackfill, PullCatchup} {
+		for _, kind := range []string{PullCollect, PullCatchup} {
 			for _, outcome := range []string{"done", "retry", "abandoned"} {
 				p.counts[[2]string{kind, outcome}] = 0
 			}
@@ -191,7 +191,14 @@ func (p *Puller) RunOne(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	res := pullResult{outcomes: map[string]int{}}
-	watermark, err := p.run(ctx, job, &res)
+	var watermark *time.Time
+	if job.Kind == PullCollect || job.Kind == PullBackfill {
+		// A gathering writes rows, never a Ticket, and leaves the form's
+		// watermark where it is (docs/form-respondents.md).
+		err = p.collect(ctx, job, &res)
+	} else {
+		watermark, err = p.run(ctx, job, &res)
+	}
 	if ctx.Err() != nil {
 		// Shutting down: the lease returns the job later.
 		return true, nil
@@ -236,6 +243,9 @@ func (p *Puller) run(ctx context.Context, job PullJob, res *pullResult) (*time.T
 	if job.Kind == PullCatchup {
 		q.ChangedSince = job.ChangedSince
 	}
+	// With the Unticketed respondents on, the daily pass catches pending
+	// and declined answers too (docs/form-respondents.md).
+	q.AllStatuses = p.Recorder.Respondents != nil
 	// The form's role is read once for the job: the Events do not change
 	// what an answer is between two of its pages that matters here, and
 	// the Ticket rule reads them again for each answer.
@@ -294,7 +304,7 @@ func (p *Puller) run(ctx context.Context, job PullJob, res *pullResult) (*time.T
 		if res.pages >= maxPagesPerRun {
 			return nil, invalid("Forms' list goes on past %d pages", maxPagesPerRun)
 		}
-		if err := p.Queue.SaveCursor(ctx, job.ID, page.NextCursor, p.now()); err != nil {
+		if err := p.Queue.SaveCursor(ctx, job, page.NextCursor, p.now()); err != nil {
 			return nil, err
 		}
 		q.After = page.NextCursor
@@ -349,6 +359,10 @@ func levelOf(outcome string) string {
 }
 
 func (p *Puller) count(kind, outcome string) {
+	if kind == PullBackfill {
+		// A job the release before queued runs as a gathering.
+		kind = PullCollect
+	}
 	p.mu.Lock()
 	p.counts[[2]string{kind, outcome}]++
 	p.mu.Unlock()
@@ -361,7 +375,7 @@ func (p *Puller) Prometheus() string {
 	defer p.mu.Unlock()
 	var b strings.Builder
 	b.WriteString("# TYPE skylab_form_pulls_total counter\n")
-	for _, kind := range []string{PullBackfill, PullCatchup} {
+	for _, kind := range []string{PullCollect, PullCatchup} {
 		for _, outcome := range []string{"done", "retry", "abandoned"} {
 			fmt.Fprintf(&b, "skylab_form_pulls_total{kind=%q,outcome=%q} %d\n", kind, outcome, p.counts[[2]string{kind, outcome}])
 		}

@@ -70,10 +70,15 @@ type Recorder struct {
 	// Mapped nil leaves an answer that names nobody as before
 	// (no_respondent); set, such an accepted answer to a form an Event maps
 	// gets the guest the mapping builds (docs/form-mappings.md).
-	Mapped   *MappedGuests
-	Versions Versions
-	Now      func() time.Time
-	Logf     func(string, ...any)
+	Mapped *MappedGuests
+	// Respondents nil writes Tickets by the rule alone, as before; set, an
+	// answer goes between the rule and the Unticketed respondents
+	// (Respondents.Route, docs/form-respondents.md), and a pending answer's
+	// person is read too.
+	Respondents *Respondents
+	Versions    Versions
+	Now         func() time.Time
+	Logf        func(string, ...any)
 
 	once    sync.Once
 	metrics *metrics
@@ -201,9 +206,13 @@ func (r *Recorder) Response(ctx context.Context, tx pgx.Tx, origin Origin, in Re
 		return r.done(origin, in, OutcomeStale, ticket.FormResponseResult{}, nil)
 	}
 	// An accepted answer to an application form that names nobody takes the
-	// mappings of the Events that list the form (docs/form-mappings.md).
+	// mappings of the Events that list the form (docs/form-mappings.md); a
+	// pending one too once the Unticketed respondents keep it.
+	wantsPerson := func(status string) bool {
+		return status == StatusAccepted || (r.Respondents != nil && status == StatusPending)
+	}
 	var mappings []Mapping
-	if role == roleApplication && in.Status == StatusAccepted && in.UserID == nil && !in.HasGuest {
+	if role == roleApplication && wantsPerson(in.Status) && in.UserID == nil && !in.HasGuest {
 		mappings = origin.mappings
 		if !origin.mapped {
 			if mappings, err = r.Mapped.Mappings(ctx, in.FormID); err != nil {
@@ -212,7 +221,7 @@ func (r *Recorder) Response(ctx context.Context, tx pgx.Tx, origin Origin, in Re
 		}
 	}
 	fields := MappedFields(mappings)
-	if role == roleApplication && in.Status == StatusAccepted && (!complete || (in.UserID == nil && in.HasGuest) || (len(fields) > 0 && in.Answers == nil)) {
+	if role == roleApplication && wantsPerson(in.Status) && (!complete || (in.UserID == nil && in.HasGuest) || (len(fields) > 0 && in.Answers == nil)) {
 		got, err := r.read(ctx, in, fields)
 		if errors.Is(err, ErrNotFound) {
 			return r.done(origin, in, OutcomeGone, ticket.FormResponseResult{}, events.Permanent(err))
@@ -234,16 +243,21 @@ func (r *Recorder) Response(ctx context.Context, tx pgx.Tx, origin Origin, in Re
 		FormID: in.FormID, ResponseID: in.ResponseID, Status: ticket.FormResponseStatus(in.Status),
 		SubmittedAt: in.SubmittedAt, Invite: in.Invite(),
 	}
-	if in.Status != StatusAccepted || in.UserID != nil || in.Guest != nil {
+	if !wantsPerson(in.Status) || in.UserID != nil || in.Guest != nil {
 		// The read found someone after all, or the answer is no longer
-		// accepted: no mapping.
+		// accepted (nor pending, kept): no mapping.
 		mappings = nil
 	}
 	respondents, unresolved := ResolveRespondents(in.UserID, in.Guest, in.Answers, mappings)
 	if unresolved != "" {
-		return r.done(origin, in, string(unresolved), ticket.FormResponseResult{}, nil)
+		if in.Status != StatusPending || r.Respondents == nil {
+			return r.done(origin, in, string(unresolved), ticket.FormResponseResult{}, nil)
+		}
+		// A pending answer whose mapping gives no guest still marks the
+		// Tickets it wrote; nobody is kept.
+		respondents = []Respondent{{Source: RespondentNobody}}
 	}
-	result, err := RecordRespondents(ctx, r.Record, report, respondents)
+	result, err := r.Respondents.Route(ctx, r.Record, report, respondents)
 	switch {
 	case errors.Is(err, ticket.ErrInvalid), errors.Is(err, ticket.ErrForbidden):
 		return r.done(origin, in, OutcomeInvalid, result, events.Permanent(fmt.Errorf("the Ticket rule refused the answer: %w", err)))

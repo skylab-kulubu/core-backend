@@ -151,8 +151,55 @@ func TestImportPreviewThenImportThenAgain(t *testing.T) {
 	if first.Action != teamaudit.ActionTicketImport || first.Outcome != teamaudit.OutcomeOK || first.After == nil ||
 		first.After.EventID != e.ev.ID.String() || first.After.TicketID != "" || first.After.Import == nil ||
 		first.After.Import.Created != 3 || first.After.Import.Members != 1 || !first.After.Import.Mail ||
-		first.Actor.Basis != teamaudit.BasisLeader {
+		first.Actor.Basis != teamaudit.BasisLeader || first.After.Import.Source != "" || first.After.Import.JobID != "" {
 		t.Fatalf("audit row %+v %+v", first, first.After)
+	}
+}
+
+// A form respondents' sending's row says so (source form_respondents); a
+// send-all job's row stays pending until the job ended, then holds the
+// job's id and its own counts (docs/form-respondents.md).
+func TestFormRespondentSendAuditRows(t *testing.T) {
+	t.Parallel()
+	e := newImportEnv(t, 0, true)
+	ctx := importAs(importLead)
+
+	now, err := e.svc.BeginFormRespondentSend(ctx, importLead, e.ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now.Finish(ctx, ticket.FormRespondentSummary{Rows: 2, Recorded: 1, Existing: 1, Members: 1, Guests: 1}, nil)
+
+	job, err := e.svc.BeginFormRespondentSend(ctx, importLead, e.ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.ID() == uuid.Nil {
+		t.Fatal("no row id for the job")
+	}
+	rows := e.audit.Rows()
+	if len(rows) != 2 || rows[1].Outcome != teamaudit.OutcomePending {
+		t.Fatalf("the job's row before its end: %+v", rows)
+	}
+	e.svc.FinishFormRespondentJob(context.Background(), e.ev.ID, job.ID(), ticket.FormRespondentSummary{Rows: 7, Recorded: 3, Waitlisted: 2, Full: 1, Skipped: 1}, nil)
+	// A job with no pending row (the record was off, or another request
+	// queued it) writes nothing.
+	e.svc.FinishFormRespondentJob(context.Background(), e.ev.ID, uuid.New(), ticket.FormRespondentSummary{}, nil)
+
+	rows = e.audit.Rows()
+	if len(rows) != 2 {
+		t.Fatalf("%d audit rows", len(rows))
+	}
+	sent, done := rows[0], rows[1]
+	if sent.Action != teamaudit.ActionTicketImport || sent.Outcome != teamaudit.OutcomeOK || sent.After.Import == nil ||
+		sent.After.Import.Source != teamaudit.SourceFormRespondents || sent.After.Import.JobID != "" || sent.After.Import.Created != 1 {
+		t.Fatalf("sending row %+v %+v", sent, sent.After)
+	}
+	if done.Outcome != teamaudit.OutcomeOK || done.After == nil || done.After.EventID != e.ev.ID.String() || done.After.Import == nil ||
+		done.After.Import.Source != teamaudit.SourceFormRespondents || done.After.Import.JobID != job.ID().String() ||
+		done.After.Import.Rows != 7 || done.After.Import.Created != 3 || done.After.Import.Waitlisted != 2 ||
+		done.After.Import.Full != 1 || done.After.Import.Skipped != 1 {
+		t.Fatalf("job row %+v %+v", done, done.After)
 	}
 }
 

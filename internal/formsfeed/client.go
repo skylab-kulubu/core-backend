@@ -174,6 +174,11 @@ type ListQuery struct {
 	// Fields are the questions whose answers core asks for with each item
 	// (an Event's form mapping); none asks for no answer.
 	Fields []string
+	// AllStatuses asks for every answer that is not archived, pending and
+	// declined too (no status filter): the Unticketed respondents'
+	// gathering, and the daily pass once they are on
+	// (docs/form-respondents.md). False asks for the accepted ones.
+	AllStatuses bool
 }
 
 // Page is a page of the list. Items are the answers that read; Skipped
@@ -202,7 +207,9 @@ type pageJSON struct {
 // Forms has no such route yet.
 func (c *Client) List(ctx context.Context, formID uuid.UUID, q ListQuery) (Page, error) {
 	query := url.Values{}
-	query.Set("status", StatusAccepted)
+	if !q.AllStatuses {
+		query.Set("status", StatusAccepted)
+	}
 	if q.ChangedSince != nil {
 		query.Set("changedSince", q.ChangedSince.UTC().Format(time.RFC3339))
 	}

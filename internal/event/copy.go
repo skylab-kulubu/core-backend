@@ -287,6 +287,9 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 			// copy keeps them (docs/attendance-mail.md).
 			AttendanceWelcomeMail:  source.AttendanceWelcomeMail,
 			AttendanceRecordedMail: source.AttendanceRecordedMail,
+			// "Otomatik bilet gönder" is how the Event is run: the copy keeps
+			// it (docs/form-respondents.md).
+			FormResponsesAutoTicket: source.FormResponsesAutoTicket,
 			// The door's mode is how the Event is run: the copy keeps it
 			// (CONTEXT: Entry mode).
 			EntryMode:            source.EntryMode,

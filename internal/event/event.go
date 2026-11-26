@@ -54,6 +54,12 @@ type Event struct {
 	// the store always answers them.
 	AttendanceWelcomeMail  *bool `json:"attendanceWelcomeMail"`
 	AttendanceRecordedMail *bool `json:"attendanceRecordedMail"`
+	// FormResponsesAutoTicket is the organizer's "Otomatik bilet gönder"
+	// (docs/form-respondents.md): on, an accepted answer to the Event's form
+	// writes its Ticket as before; off, it is kept as an Unticketed
+	// respondent for the organizer to send. Nil on a write keeps the stored
+	// one (on for a new Event); the store always answers it.
+	FormResponsesAutoTicket *bool `json:"formResponsesAutoTicket"`
 	// AttendeeNote is the organizer's note for whoever enters (Wi-Fi, the
 	// way to the room; docs/attendance-mail.md): plain text, at most
 	// AttendeeNoteMax characters, "" for none. Nil on a write keeps the

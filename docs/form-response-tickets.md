@@ -20,8 +20,11 @@ events (`forms.response.created` and `forms.response.status_changed`, with
 `EVENTS_FORMS_ENABLED=true`; [integration-events.md](integration-events.md#coreforms-forms-events)),
 which carry no guest's name or e-mail (core reads them from Forms) and the
 invite code as the `davet` hidden field. A third, the pull from Forms'
-list (an organizer's backfill and the daily catch-up,
-[form-pulls.md](form-pulls.md)), takes the same rule. All end in
+list (the daily catch-up, [form-pulls.md](form-pulls.md)), takes the same
+rule. With `EVENTS_FORMS_ENABLED=true` every way in also keeps the answers
+that earn no Ticket now as Unticketed respondents (pending in Forms, or the
+Event's "Otomatik bilet gönder" off), for the organizer to send
+([form-respondents.md](form-respondents.md)); off, the rule alone, as below. All end in
 `ticket.Service.RecordFormResponse`; what this page says of an answer holds
 for each. An accepted answer that names nobody (no `userId`, no `guest`) to
 a form an Event maps gets the guest its mapped answers give, by every way
@@ -103,9 +106,11 @@ replaces it fills only a detail the guest Ticket lacks and never renames a
 guest; an operator corrects names from the Event hub.
 
 A pending answer writes nothing until Forms reports it accepted, so a form
-that needs review tickets on approval. A declined answer writes nothing; it
-cancels the Tickets **the same answer** earned (kontenjan-iptal-hatirlatma
-ticket 05):
+that needs review tickets on approval. A declined answer writes nothing and
+**cancels nothing** (Yusuf, K6 2026-11-25; before it, kontenjan-iptal-hatirlatma
+ticket 05 cancelled): it marks the Tickets **the same answer** earned, and
+the panel shows "Forms'ta reddedildi" with a one-click cancel (the
+operator's cancellation, [ticket-cancellation.md](ticket-cancellation.md)).
 
 - A Ticket keeps the answer that wrote or reopened it
   (`tickets.form_response_id`, Forms' `responseId`; migration
@@ -113,20 +118,46 @@ ticket 05):
   apply) has none, and an accepted answer that finds a Ticket already there
   does not claim it. A Ticket reopened another way (the panel's restore,
   registering again) loses it. Tickets written before the column have none
-  and are never declined.
-- `declined` cancels, on the Events that list the form and have not ended,
-  each active or waitlisted Ticket whose answer is the report's,
-  without a check-in and not of a Competition's Entrant: `cancelledBy:
-  form`, no mail from core (Forms sends its own), an active Ticket's place
-  to the waiting list. The answer is still `204`; the log's `outcome` is
-  `cancelled` with `tickets_cancelled`, else `not_accepted`.
-- A later `accepted` report of the same answer reopens the Ticket (new link
-  and QR, "Biletin hazır" again), as registering again does.
-- Forms sends `Returned` (correction asked) as `declined` today
-  (`CoreResponseFeed.cs`): such a Ticket is cancelled and reopened when the
-  corrected answer is approved. Forms may send it as `pending` instead
-  (Fatih's call, kontenjan-iptal-hatirlatma 16).
-- Account erasure clears the column with the person's other data.
+  and are never marked.
+- Core keeps the form of the Ticket's answer and where Forms has it
+  (`form_response_form_id`, `form_response_status`: `accepted`, `pending`,
+  `declined`; migration `20261127110000`). An accepted answer that finds the
+  Ticket takes it over (`form_response_id` becomes the new answer, the mark
+  is cleared) only when it is of **the same form**, by **the same holder**
+  (the signed-in owner; a guest Ticket for a guest's answer), and the
+  Ticket's answer is **no longer accepted** (declined, a correction asked,
+  pending again). So when Forms asks for a correction (`Returned`, sent as
+  `declined` today, `CoreResponseFeed.cs`) and the corrected answer is
+  approved, the Ticket follows the corrected answer and loses its mark. An
+  extra form's answer never takes over the application's Ticket (the
+  application's decline still marks it, the extra form's does not), and
+  someone typing the holder's e-mail into the form while the holder's
+  answer stands gets nothing of the Ticket. The Ticket's own answer
+  accepted again clears its mark. A Ticket whose answer was kept before the
+  migration (no form) is not taken over until its answer's decline names
+  the form (the decline fills it in).
+- Known limit: when the corrected answer's acceptance (R2) is handled
+  before the first answer's decline (R1), R2 does not take the Ticket over
+  (R1 still stands then), and R1's decline arriving afterwards marks the
+  Ticket. Forms sends `Returned` before the person can answer again, so
+  this needs reports out of order (a retry); the mark is a warning the
+  organizer clears by hand, never a cancellation.
+- A `pending` report of the Ticket's answer (Forms' review opened again)
+  sets it `pending` and clears the mark; nothing else changes.
+- `declined` marks, on the Events that list the form and have not ended,
+  each active or waitlisted Ticket whose answer is the report's, with a
+  check-in too: `formsRejectedAt` (migration `20261127110000`), in every
+  Ticket answer the panel reads (the Event's Tickets). No status change, no
+  mail from core (Forms sends its own). The answer is still `204`; the
+  log's `outcome` is `forms_rejected`, else `not_accepted`.
+- A later `accepted` report of the same answer clears the mark.
+- Ticket answers carry `formsStatus` (`accepted`, `pending`, `declined`;
+  none for a Ticket no answer wrote), read from `form_response_status`, for
+  the panel's badge ([form-respondents.md](form-respondents.md#the-tickets-forms-status)).
+- A Ticket Forms' decline cancelled before K6 (`cancelledBy: form`) is
+  reopened by its answer's acceptance, as below.
+- Account erasure clears `form_response_id` with the person's other data;
+  the mark is a time only.
 
 An operator cancels a Ticket
 from the panel ([ticket-cancellation.md](ticket-cancellation.md)). **A report
@@ -154,12 +185,12 @@ as a report without a respondent and writes nothing.
 Core writes one JSON line per report it reads (`"event":"form_response"`):
 `correlation_id`, `form_id`, `response_id`, `status` (`unknown` for a value
 other than the three), `outcome`, `tickets_written` (new Tickets only),
-`tickets_cancelled` (a declined answer's) and
+`tickets_marked` (the Tickets a declined answer marked, K6) and
 `listing_events`: how many current Events list the form, whatever their
 status (`0` when the report ended before they were read). More than one is a
 form shared before the one-place rule; such a form is left as it is and the
 line is how it shows.
-`outcome` is `recorded`, `not_accepted`, `cancelled`, `no_respondent`, `not_listed`,
+`outcome` is `recorded`, `not_accepted`, `forms_rejected`, `respondent_kept` ([form-respondents.md](form-respondents.md)), `cancelled` (before K6), `no_respondent`, `not_listed`,
 `event_cancelled`, `event_ended`, `registration_closed`, `waitlisted`, `event_full`, `person_unavailable`, `invalid` or `failed`. The line never carries the
 `userId`, a name or an e-mail.
 

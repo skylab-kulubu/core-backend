@@ -45,7 +45,7 @@ click list and a form's channel statistics keep looking 90 days back
 clicks turn 90 days old. Until apply it is the clicks of the last 90 days;
 from apply on it only grows, counting every click since then.
 
-## Rules (rule set v11)
+## Rules (rule set v12)
 
 "Event end" is the Event's `end_date`, else its last day's `end_date`, else
 its `start_date` (ADR-0062). For `guest_identity`, an Event with none of them
@@ -162,6 +162,12 @@ An Event's Co-organizer people ([`co-organizers.md`](co-organizers.md#data); rul
 | Rule | Selects | Period | Action |
 |---|---|---|---|
 | `co_organizer_people` | an `event_co_organizers` person row (`user_id` set) | `CoOrganizerPeoplePeriod`, 90 days after the Event end, as `door_staff`; an Event with no date is counted as `anchorless`, never changed | row deleted (a relationship row). The person's rights end 30 days after the Event, before the row goes; a team row lives with the Event |
+
+The Unticketed respondents ([`form-respondents.md`](form-respondents.md#data); rule set v12, hub SPEC form-alan-eslestirme §7.6, 2026-11-25; v11 is taken by the Co-organizer people rule of a parallel change):
+
+| Rule | Selects | Period | Action |
+|---|---|---|---|
+| `form_respondents` | an `event_form_respondents` row | `FormRespondentPeriod`, the Event end + 2 years (as `guest_identity`); an Event with no date counts from the row's `created_at`, so every row is dated | row deleted (it holds nothing but who answered) |
 
 ## Schedule, lock and periods
 

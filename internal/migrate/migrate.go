@@ -2129,6 +2129,37 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND conname IN ('event_form_mappings_names_check', 'event_form_mappings_ids_check')
 		) = 2
 		AND to_regclass('public.event_form_mappings_form_idx') IS NOT NULL`,
+	// Forms' decline of a Ticket's answer kept as a mark, with the
+	// answer's form and status (K6, docs/form-response-tickets.md).
+	20261127110000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'tickets'
+			  AND column_name IN ('forms_rejected_at', 'form_response_form_id', 'form_response_status')
+		) = 3
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.tickets') AND conname = 'tickets_form_response_status_check'
+		)`,
+	// Unticketed respondents (docs/form-respondents.md): the two tables, the
+	// Event's setting and form_pulls' collect kind, with no collect job parked
+	// by a rollback (the up migration runs again and puts it back).
+	20261127170000: `
+		SELECT 1
+		WHERE to_regclass('public.event_form_respondents_response_idx') IS NOT NULL
+		AND to_regclass('public.respondent_ticket_jobs_open_idx') IS NOT NULL
+		AND to_regclass('public.event_form_collect_counts') IS NOT NULL
+		AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'event_form_respondents_require_active_subject')
+		AND (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'form_responses_auto_ticket'
+		) = 1
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.form_pulls') AND conname = 'form_pulls_kind_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%collect%')
+		AND NOT EXISTS (SELECT 1 FROM form_pulls WHERE kind = 'collect' AND next_attempt_at = 'infinity')`,
 	// A Ticket's resend and link renewal by an event editor (a
 	// Co-organizer's, docs/co-organizers.md): the basis check names them.
 	20261126190000: `

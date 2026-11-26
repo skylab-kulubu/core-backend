@@ -1182,8 +1182,33 @@ func main() {
 		mappedGuests = &formsfeed.MappedGuests{Store: formMappingStore, Events: events, Forms: formsClient}
 		formsRecorder.Mapped = mappedGuests
 	}
-	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, keycloakEventHandling, formsEvents)
 	formPulls := formsfeed.NewPostgresPulls(pool)
+	// The Unticketed respondents (docs/form-respondents.md): with
+	// EVENTS_FORMS_ENABLED=true every answer goes between the Ticket rule
+	// and them (pending answers, "Otomatik bilet gönder" off) and a linked
+	// form's answers are gathered; off, answers take the rule alone as
+	// before. The list and the sending answer whatever the switch says
+	// (they read no Forms).
+	formRespondents := &formsfeed.Respondents{
+		Store: formsfeed.NewPostgresRespondents(pool), Events: events, Authz: az, Tickets: ticketSvc,
+		Jobs: formsfeed.NewPostgresTicketJobs(pool),
+		Capacity: func(ctx context.Context, id uuid.UUID) (event.Capacity, error) {
+			return event.ReadCapacity(ctx, pool, id)
+		},
+		People: users.Accounts, Logf: log.Printf,
+	}
+	if formsEvents != nil {
+		formsRecorder.Respondents = formRespondents
+		mappedGuests.Respondents = formRespondents
+		// Gatherings run only with the switch on: off, a job left in
+		// form_pulls must not hold the list's "collecting" nor a send-all
+		// job.
+		formRespondents.Pulls = formPulls
+	}
+	worker("respondent ticket jobs", (&formsfeed.TicketJobs{
+		Queue: formRespondents.Jobs, Respondents: formRespondents, Logf: log.Printf,
+	}).Run(workers))
+	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, keycloakEventHandling, formsEvents)
 	// The pulls share core.forms' switch (EVENTS_FORMS_ENABLED, the one
 	// switch of Forms' integration), whether or not the broker is on.
 	var formPuller *formsfeed.Puller
@@ -1194,7 +1219,8 @@ func main() {
 	formBackfills := &formsfeed.Backfills{Events: events, Authz: az, Queue: formPulls, On: formPuller != nil}
 	// The form mappings (docs/form-mappings.md): saved whatever the switch
 	// says; the questions are read with it on.
-	formMappings := &formsfeed.Mappings{Events: events, Authz: az, Store: formMappingStore, On: formsEvents != nil}
+	formCollects := &formsfeed.Collects{Queue: formPulls, Events: events, On: formPuller != nil, Logf: log.Printf}
+	formMappings := &formsfeed.Mappings{Events: events, Authz: az, Store: formMappingStore, On: formsEvents != nil, Collects: formCollects}
 	if formsClient != nil {
 		formMappings.Forms = formsClient
 	}
@@ -1314,6 +1340,7 @@ func main() {
 			Teams:            teamTree,
 
 			CoOrganizersWrite: coOrganizersWrite,
+			FormsLinked:       formCollects,
 			Audit:             teamAudit,
 			Groups:            dir,
 		}),
@@ -1339,6 +1366,7 @@ func main() {
 		FeedbackReminders:      feedbackInvites,
 		FormBackfills:          formBackfills,
 		FormMappings:           formMappings,
+		FormRespondents:        formRespondents,
 		FormResponseMapper:     formResponseMapper(mappedGuests),
 		Certificates:           certSvc,
 		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),
