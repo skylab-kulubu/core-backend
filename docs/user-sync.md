@@ -39,6 +39,11 @@ Every `USER_SYNC_INTERVAL` (5 minutes), and soon after a wake, one core replica:
    step.)
 5. sends the Welcome mail to a person who is owed one (below). At most 25 mails
    per pass.
+6. while guest account links are on, reads the verified-address directory
+   anew and links the guest Tickets and certificates of the addresses an
+   account now holds verified ([guest-account-links.md](guest-account-links.md)).
+   A failure there is logged and left to the next pass; the pass itself does
+   not fail.
 
 What a pass could not do (a Keycloak page that failed, a person whose row could
 not be written, the per-pass limits) is the next pass's: nothing is lost by

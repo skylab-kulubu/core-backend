@@ -123,8 +123,8 @@ func (s *PostgresStore) Create(ctx context.Context, t Ticket) (Ticket, error) {
 		INSERT INTO tickets (
 			id, event_id, ticket_type, owner_id,
 			guest_first_name, guest_last_name, guest_email, guest_phone_number,
-			access_key, code
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			access_key, code, owner_link_source, owner_linked_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::text, CASE WHEN $11::text IS NULL THEN NULL ELSE now() END)
 		RETURNING ` + ticketCols
 	if s.notifyCreated.Load() {
 		// One statement writes the Ticket and queues its Notification:
@@ -145,7 +145,7 @@ func (s *PostgresStore) Create(ctx context.Context, t Ticket) (Ticket, error) {
 		row := s.pool.QueryRow(ctx, insert,
 			t.ID, t.EventID, t.TicketType, t.OwnerID,
 			t.GuestFirstName, t.GuestLastName, t.GuestEmail, t.GuestPhoneNumber,
-			accessKey, storedCode(code))
+			accessKey, storedCode(code), t.linkParam())
 		got, err := scanTicket(row)
 		if subjectlock.IsInactiveAccountReference(err) {
 			return Ticket{}, ErrNotFound

@@ -241,6 +241,33 @@ type Ticket struct {
 	Feedback  []feedback.TicketLink `json:"feedback,omitempty"`
 	CreatedAt time.Time             `json:"createdAt"`
 	UpdatedAt time.Time             `json:"updatedAt"`
+	// ownerLink is set on a new guest Ticket written with the owner its
+	// address is (GuestOwners): the store writes the link's mark with it
+	// (docs/guest-account-links.md). Never read back.
+	ownerLink LinkSource
+}
+
+// LinkSource is how core linked a guest Ticket, or a certificate, to the
+// account its address is (docs/guest-account-links.md): the tickets'
+// owner_link_source.
+type LinkSource string
+
+const (
+	// LinkWrite: the Ticket was written linked.
+	LinkWrite LinkSource = "write"
+	// LinkSync: the user sync's pass linked it.
+	LinkSync LinkSource = "sync"
+	// LinkBulk: the one-time command linked it.
+	LinkBulk LinkSource = "bulk"
+)
+
+// linkParam is the link's mark as a query parameter: NULL for none.
+func (t Ticket) linkParam() *string {
+	if t.ownerLink == "" {
+		return nil
+	}
+	v := string(t.ownerLink)
+	return &v
 }
 
 type GuestInfo struct {

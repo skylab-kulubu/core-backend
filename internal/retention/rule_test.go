@@ -161,7 +161,7 @@ func TestRulePeriodsAreThePolicy(t *testing.T) {
 		related string
 		version int
 	}{
-		"guest_phone":              {90 * day, ActionScrub, "tickets", "", 1},
+		"guest_phone":              {90 * day, ActionScrub, "tickets", "", 2},
 		"guest_identity":           {730 * day, ActionScrub, "tickets", "certificates", 3},
 		"door_staff":               {90 * day, ActionDelete, "event_door_staff", "", 1},
 		"url_hits_scrub":           {365 * day, ActionScrub, "url_hits", "", 3},
@@ -187,7 +187,7 @@ func TestRulePeriodsAreThePolicy(t *testing.T) {
 			t.Fatalf("%s: %s %s %s %s v%d", rule.Name, rule.Period, rule.Action, rule.Table, rule.RelatedTable, rule.Version)
 		}
 	}
-	if sweeps != len(want) || RuleSetVersion != 12 {
+	if sweeps != len(want) || RuleSetVersion != 13 {
 		t.Fatalf("%d sweep rules, set v%d", sweeps, RuleSetVersion)
 	}
 }

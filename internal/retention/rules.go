@@ -117,6 +117,13 @@ var ticketEventEndSQL = `(SELECT ` + eventEndSQL("te") + ` FROM events te WHERE 
 // owner holds, the rule account erasure follows too.
 const guestTicketSQL = `t.owner_id IS NULL`
 
+// guestPhoneTicketSQL: a Ticket that holds a guest's phone: a GUEST Ticket,
+// with an owner or not. A guest Ticket linked to the account its address is
+// (docs/guest-account-links.md) keeps its name and e-mail as the account's
+// data, but its phone was asked for the Event alone and goes on the same
+// day as an unlinked guest's (guest_phone v2).
+const guestPhoneTicketSQL = `t.ticket_type = 'GUEST'`
+
 // guestIdentityHeldSQL: the Ticket still holds the guest's identity, or one
 // of its certificates without an owner still holds their address.
 const guestIdentityHeldSQL = `(t.guest_first_name <> '' OR t.guest_last_name <> '' OR t.guest_email <> '' OR t.guest_phone_number <> ''
@@ -221,11 +228,12 @@ func sweepRules(s Schema) []Rule {
 	}
 	return []Rule{
 		{
-			Name: "guest_phone", Version: 1, Kind: KindSweep, Action: ActionScrub,
+			// v2: a guest Ticket linked to an account too (guestPhoneTicketSQL).
+			Name: "guest_phone", Version: 2, Kind: KindSweep, Action: ActionScrub,
 			Table: "tickets", alias: "t", key: "id", Period: GuestPhonePeriod,
-			where:      guestTicketSQL + ` AND t.guest_phone_number <> '' AND ` + ticketEventEndSQL + ` < $1`,
+			where:      guestPhoneTicketSQL + ` AND t.guest_phone_number <> '' AND ` + ticketEventEndSQL + ` < $1`,
 			set:        `guest_phone_number = '', updated_at = now()`,
-			anchorless: guestTicketSQL + ` AND t.guest_phone_number <> '' AND ` + ticketEventEndSQL + ` IS NULL`,
+			anchorless: guestPhoneTicketSQL + ` AND t.guest_phone_number <> '' AND ` + ticketEventEndSQL + ` IS NULL`,
 		},
 		{
 			// v2: a member's own Events date their earlier guest Tickets.

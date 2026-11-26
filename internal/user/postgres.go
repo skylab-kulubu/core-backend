@@ -638,8 +638,14 @@ func (s *PostgresStore) anonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		// (no access key, a new QR version; docs/ticket-access-key-and-code.md).
 		// The operator's cancellation reason may name the person: it goes too,
 		// as does the forms answer the Ticket came from (Forms' id of it).
-		`UPDATE tickets SET owner_id = NULL, access_key = NULL, qr_version = qr_version + 1, cancel_reason = NULL, form_response_id = NULL WHERE owner_id = $1`,
-		`UPDATE certificates SET owner_id = NULL, recipient_email = '' WHERE owner_id = $1`,
+		// A guest Ticket linked to the account (docs/guest-account-links.md)
+		// loses its guest name, e-mail and phone as well, whichever address
+		// linked it: the person's guest data is the account's once linked.
+		`UPDATE tickets SET owner_id = NULL, access_key = NULL, qr_version = qr_version + 1, cancel_reason = NULL, form_response_id = NULL,
+			guest_first_name = '', guest_last_name = '', guest_email = '', guest_phone_number = '',
+			owner_linked_at = NULL, owner_link_source = NULL
+		WHERE owner_id = $1`,
+		`UPDATE certificates SET owner_id = NULL, recipient_email = '', owner_linked_at = NULL, owner_link_source = NULL WHERE owner_id = $1`,
 		`DELETE FROM event_door_staff WHERE user_id = $1`,
 		// An Event's Co-organizer person goes with the account; who added a
 		// row is forgotten, the row stays (docs/co-organizers.md).

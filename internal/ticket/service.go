@@ -176,6 +176,17 @@ type service struct {
 	// audit records the ticket actions in the Team audit record (a
 	// teamaudit.Writer extra); nil records none.
 	audit teamaudit.Writer
+	// guestOwners finds the account a new guest Ticket's address is (a
+	// GuestOwners extra); nil links none (docs/guest-account-links.md).
+	guestOwners GuestOwners
+}
+
+// GuestOwners finds the account a new guest Ticket on the Event is linked
+// to (docs/guest-account-links.md): the one active account that holds the
+// address verified and has no Ticket on the Event, while linking is on.
+// false links nothing; it never fails a write.
+type GuestOwners interface {
+	GuestOwner(ctx context.Context, eventID uuid.UUID, email string) (uuid.UUID, bool)
 }
 
 func NewService(tickets Store, events event.Store, az authz.Authorizer, extras ...any) Service {
@@ -221,6 +232,9 @@ func NewService(tickets Store, events event.Store, az authz.Authorizer, extras .
 		}
 		if v, ok := extra.(teamaudit.Writer); ok && v != nil {
 			s.audit = v
+		}
+		if v, ok := extra.(GuestOwners); ok && v != nil {
+			s.guestOwners = v
 		}
 	}
 	// The in-memory store reads its Events' capacity as the database does.
@@ -764,6 +778,39 @@ func (s *service) create(ctx context.Context, t Ticket, a Admission) (Ticket, er
 	return s.tickets.Create(ctx, t)
 }
 
+// withGuestOwner is t, a new guest Ticket, with the account its address is
+// as its owner (GuestOwners), when there is one: the Ticket stays GUEST with
+// its name and e-mail (docs/guest-account-links.md).
+func (s *service) withGuestOwner(ctx context.Context, t Ticket) Ticket {
+	if s.guestOwners == nil || t.TicketType != Guest || t.OwnerID != nil || strings.TrimSpace(t.GuestEmail) == "" {
+		return t
+	}
+	owner, ok := s.guestOwners.GuestOwner(ctx, t.EventID, t.GuestEmail)
+	if !ok {
+		return t
+	}
+	t.OwnerID = &owner
+	t.ownerLink = LinkWrite
+	return t
+}
+
+// createGuest writes the new guest Ticket t with write, linked to the
+// account its address is when there is one. A link the database refuses
+// (the account took a Ticket on the Event or stopped being active since it
+// was looked up) writes it unlinked, as before linking existed: linking
+// never fails a write.
+func (s *service) createGuest(ctx context.Context, t Ticket, write func(Ticket) (Ticket, error)) (Ticket, error) {
+	linked := s.withGuestOwner(ctx, t)
+	if linked.OwnerID == nil {
+		return write(t)
+	}
+	created, err := write(linked)
+	if errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) {
+		return write(t)
+	}
+	return created, err
+}
+
 // missingGuestFields names the fields of a normalized g a guest
 // application needs and lacks, in the body's order.
 func missingGuestFields(g GuestInfo) []string {
@@ -900,14 +947,14 @@ func (s *service) guestApplyTrusted(p authz.Principal, ev event.Event) bool {
 func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo, trusted bool, a Admission) (GuestApplication, error) {
 	existing, err := s.tickets.GetByGuestEvent(ctx, g.Email, eventID)
 	if errors.Is(err, ErrNotFound) {
-		created, createErr := s.create(ctx, Ticket{
+		created, createErr := s.createGuest(ctx, Ticket{
 			EventID:          eventID,
 			TicketType:       Guest,
 			GuestFirstName:   g.FirstName,
 			GuestLastName:    g.LastName,
 			GuestEmail:       g.Email,
 			GuestPhoneNumber: g.PhoneNumber,
-		}, a)
+		}, func(t Ticket) (Ticket, error) { return s.create(ctx, t, a) })
 		if createErr == nil {
 			return GuestApplication{Ticket: created, Result: GuestCreated}, nil
 		}
