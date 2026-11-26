@@ -71,7 +71,7 @@ gets to see or use another person's Ticket.
 
 | Way | What |
 |---|---|
-| A guest Ticket is written | `writeGuest` (Guest apply, Katılımcı ekle, a Forms answer, an Unticketed respondent's Ticket) and an import's guest row write it linked when the address is one account's and that account holds no Ticket on the Event. The directory is the one in memory (at most 5 minutes old, 15 while Keycloak does not answer); a lookup waits at most 2 seconds. Any failure writes the Ticket unlinked, as before; a later pass links it. A database refusal of the link (the account took a Ticket meanwhile, or stopped being active) writes it unlinked. |
+| A guest Ticket is written | `writeGuest` (Guest apply, Katılımcı ekle, a Forms answer, an Unticketed respondent's Ticket), a Walk-in ([walk-in.md](walk-in.md)) and an import's guest row write it linked when the address is one account's and that account holds no Ticket on the Event. The directory is the one in memory (at most 5 minutes old, 15 while Keycloak does not answer); a lookup waits at most 2 seconds. Any failure writes the Ticket unlinked, as before; a later pass links it. A database refusal of the link (the account took a Ticket meanwhile, or stopped being active) writes it unlinked. |
 | An account is opened or an address verified | Keycloak's `REGISTER`, `UPDATE_EMAIL`, `UPDATE_PROFILE` (sky-account's Personal e-mail confirmation) and admin `USER` events wake the user sync ([user-sync.md](user-sync.md)); its pass ends by reading the directory anew and linking (`sync`). A verification without such an event waits for the 5-minute pass. |
 | Once | `core-backend guest-account-link -apply` turns linking on and links what there is (`bulk`). |
 
@@ -114,8 +114,9 @@ which do not change.
 
 ## What else knows a linked Ticket
 
-- **Account erasure** clears the guest name, e-mail, phone and link mark of
-  every Ticket the account owns, whichever address linked it, and the linked
+- **Account erasure** clears the guest name, e-mail, phone, a Walk-in's
+  university, department and grade, and the link mark of every Ticket the
+  account owns, whichever address linked it, and the linked
   certificates' owner and address ([account-lifecycle.md](account-lifecycle.md)).
 - **Retention**: `guest_phone` v2 takes a linked Ticket's phone 90 days after
   its Event, as an unlinked guest's; its name and e-mail are the account's

@@ -33,8 +33,9 @@ func TestPostgresAnonymizationClearsALinkedGuestTicket(t *testing.T) {
 		args []any
 	}{
 		{`INSERT INTO events (id, name, location, owner_team) VALUES ($1, 'Tarih', 'YTÜ', 'WEBLAB')`, []any{eventID}},
-		{`INSERT INTO tickets (id, event_id, ticket_type, owner_id, guest_first_name, guest_last_name, guest_email, guest_phone_number, owner_link_source, owner_linked_at)
-			VALUES ($1, $2, 'GUEST', $3, 'Ada', 'Byron', 'eski.adres@example.org', '+905551112233', 'sync', now())`, []any{ticketID, eventID, subjectID}},
+		{`INSERT INTO tickets (id, event_id, ticket_type, owner_id, guest_first_name, guest_last_name, guest_email, guest_phone_number,
+				guest_university, guest_department, guest_grade, owner_link_source, owner_linked_at)
+			VALUES ($1, $2, 'GUEST', $3, 'Ada', 'Byron', 'eski.adres@example.org', '+905551112233', 'YTÜ', 'Matematik', '2', 'sync', now())`, []any{ticketID, eventID, subjectID}},
 		{`INSERT INTO certificates (id, event_id, ticket_id, owner_id, serial, recipient_name, recipient_email, event_name, owner_team, verify_url, owner_link_source, owner_linked_at)
 			VALUES ($1, $2, $3, $4, 'LINKED-CERT', 'Ada Byron', 'eski.adres@example.org', 'Tarih', 'WEBLAB', 'https://example.test/c/LINKED-CERT', 'sync', now())`, []any{certificateID, eventID, ticketID, subjectID}},
 	} {
@@ -49,14 +50,15 @@ func TestPostgresAnonymizationClearsALinkedGuestTicket(t *testing.T) {
 		t.Fatal(err)
 	}
 	var owner *uuid.UUID
-	var first, last, email, phone string
+	var first, last, email, phone, university, department, grade string
 	var source *string
-	if err := pool.QueryRow(ctx, `SELECT owner_id, guest_first_name, guest_last_name, guest_email, guest_phone_number, owner_link_source FROM tickets WHERE id = $1`,
-		ticketID).Scan(&owner, &first, &last, &email, &phone, &source); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT owner_id, guest_first_name, guest_last_name, guest_email, guest_phone_number,
+			guest_university, guest_department, guest_grade, owner_link_source FROM tickets WHERE id = $1`,
+		ticketID).Scan(&owner, &first, &last, &email, &phone, &university, &department, &grade, &source); err != nil {
 		t.Fatal(err)
 	}
-	if owner != nil || first != "" || last != "" || email != "" || phone != "" || source != nil {
-		t.Fatalf("linked guest Ticket after erasure: owner %v %q %q %q %q source %v", owner, first, last, email, phone, source)
+	if owner != nil || first != "" || last != "" || email != "" || phone != "" || university != "" || department != "" || grade != "" || source != nil {
+		t.Fatalf("linked guest Ticket after erasure: owner %v %q %q %q %q %q %q %q source %v", owner, first, last, email, phone, university, department, grade, source)
 	}
 	var certOwner *uuid.UUID
 	var recipientEmail, recipientName string

@@ -78,13 +78,17 @@ const requeueSQL = `done_at = NULL, outcome = NULL, attempts = 0, claimed_at = N
 // statement, for the worker (internal/ticketnotify) to send.
 func (s *PostgresStore) NotifyCreated(on bool) { s.notifyCreated.Store(on) }
 
+// NotifiesCreated reports whether a Ticket written now queues its
+// Notification (NotifyCreated).
+func (s *PostgresStore) NotifiesCreated() bool { return s.notifyCreated.Load() }
+
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool, newAccessKey: NewAccessKey, newCode: NewCode}
 }
 
 const ticketCols = `id, event_id, ticket_type, owner_id, guest_first_name, guest_last_name, guest_email, guest_phone_number, access_key, code, qr_version, created_at, updated_at,
 	status, status_changed_at, waitlisted_at, cancelled_at, cancelled_by, cancel_reason, forms_rejected_at,
-	form_response_id, form_response_status`
+	form_response_id, form_response_status, guest_university, guest_department, guest_grade`
 
 // doorTicketCols carry the Ticket's status: the door finds a cancelled
 // Ticket to say so (409 ticket_cancelled), its lists leave it out.
@@ -119,13 +123,14 @@ func (s *PostgresStore) Create(ctx context.Context, t Ticket) (Ticket, error) {
 	if t.ID == uuid.Nil {
 		t.ID = uuid.New()
 	}
-	owner, source, at := linkedInsert("$4", "$11")
+	owner, source, at := linkedInsert("$4", "$14")
 	insert := `
 		INSERT INTO tickets (
 			id, event_id, ticket_type, owner_id,
 			guest_first_name, guest_last_name, guest_email, guest_phone_number,
-			access_key, code, owner_link_source, owner_linked_at
-		) VALUES ($1,$2,$3,` + owner + `,$5,$6,$7,$8,$9,$10,` + source + `,` + at + `)
+			access_key, code, guest_university, guest_department, guest_grade,
+			owner_link_source, owner_linked_at
+		) VALUES ($1,$2,$3,` + owner + `,$5,$6,$7,$8,$9,$10,$11,$12,$13,` + source + `,` + at + `)
 		RETURNING ` + ticketCols
 	if s.notifyCreated.Load() {
 		// One statement writes the Ticket and queues its Notification:
@@ -146,7 +151,7 @@ func (s *PostgresStore) Create(ctx context.Context, t Ticket) (Ticket, error) {
 		row := s.pool.QueryRow(ctx, insert,
 			t.ID, t.EventID, t.TicketType, t.OwnerID,
 			t.GuestFirstName, t.GuestLastName, t.GuestEmail, t.GuestPhoneNumber,
-			accessKey, storedCode(code), t.linkParam())
+			accessKey, storedCode(code), t.GuestUniversity, t.GuestDepartment, t.GuestGrade, t.linkParam())
 		got, err := scanTicket(row)
 		if subjectlock.IsInactiveAccountReference(err) {
 			return Ticket{}, ErrNotFound
@@ -723,7 +728,7 @@ func scanTicket(row rowScanner) (Ticket, error) {
 		&accessKey, &code, &t.QRVersion,
 		&created, &updated,
 		&t.Status, &t.StatusChangedAt, &t.WaitlistedAt, &t.CancelledAt, &cancelledBy, &cancelReason, &t.FormsRejectedAt,
-		&formResponse, &formResponseStatus,
+		&formResponse, &formResponseStatus, &t.GuestUniversity, &t.GuestDepartment, &t.GuestGrade,
 	)
 	t.FormsStatus = FormsStatusOf(formResponse != nil, formResponseStatus, t.FormsRejectedAt)
 	if accessKey != nil {

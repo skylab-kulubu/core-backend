@@ -124,6 +124,11 @@ type EventDoor interface {
 	UndoEntry(ctx context.Context, p authz.Principal, eventID, entryID uuid.UUID) error
 	EntrySummary(ctx context.Context, p authz.Principal, eventID uuid.UUID) (EntrySummary, error)
 	ListEntries(ctx context.Context, p authz.Principal, eventID uuid.UUID, date string) ([]DoorEntry, error)
+	// WalkIn is the door registering a person with no Ticket ("Kapıda
+	// kayıt", docs/walk-in.md): their guest Ticket, and in the venue Entry
+	// mode the day's entry. The ctx carries the caller for the Team audit
+	// row (teamaudit.WithActor).
+	WalkIn(ctx context.Context, p authz.Principal, eventID uuid.UUID, w WalkIn) (WalkInOutcome, error)
 }
 
 type TeamReader interface {

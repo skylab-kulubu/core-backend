@@ -338,6 +338,8 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 	want["co_organizer_people"] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
 	// form_respondents has its own test (form_respondents_postgres_test.go).
 	want["form_respondents"] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
+	// linked_guest_details has its own test (guest_phone_linked_postgres_test.go).
+	want["linked_guest_details"] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
 	check(t, "dry run", dry, want)
 
 	apply, err := s.Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerSchedule})
@@ -366,6 +368,7 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 	applied["event_change_notices_age"] = counts{0, 0, 0, 0, 0, retention.RuleOK}
 	applied["co_organizer_people"] = counts{0, 0, 0, 0, 0, retention.RuleOK}
 	applied["form_respondents"] = counts{0, 0, 0, 0, 0, retention.RuleOK}
+	applied["linked_guest_details"] = counts{0, 0, 0, 0, 0, retention.RuleOK}
 	check(t, "apply", apply, applied)
 	for name, r := range results(dry) {
 		if r.Rule.Kind == retention.KindSweep && results(apply)[name].Changed != r.Matched {
@@ -464,7 +467,7 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 	if got := scalar[string](t, pool, `SELECT string_agg(mode || ':' || status || ':' || triggered_by, ',' ORDER BY started_at, mode DESC) FROM retention_runs`); got != "dry-run:ok:schedule,apply:ok:schedule,apply:ok:schedule" {
 		t.Fatalf("runs %q", got)
 	}
-	if !strings.Contains(log.text(), "retention_rule rule=guest_identity version=3 mode=apply status=ok cutoff=2024-10-05T12:00:00Z matched=4 changed=4 related=1 overdue=0 anchorless=0 code=-") {
+	if !strings.Contains(log.text(), "retention_rule rule=guest_identity version=4 mode=apply status=ok cutoff=2024-10-05T12:00:00Z matched=4 changed=4 related=1 overdue=0 anchorless=0 code=-") {
 		t.Fatalf("log:\n%s", log.text())
 	}
 }

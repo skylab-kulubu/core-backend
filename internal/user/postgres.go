@@ -643,6 +643,7 @@ func (s *PostgresStore) anonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		// linked it: the person's guest data is the account's once linked.
 		`UPDATE tickets SET owner_id = NULL, access_key = NULL, qr_version = qr_version + 1, cancel_reason = NULL, form_response_id = NULL,
 			guest_first_name = '', guest_last_name = '', guest_email = '', guest_phone_number = '',
+			guest_university = '', guest_department = '', guest_grade = '',
 			owner_linked_at = NULL, owner_link_source = NULL
 		WHERE owner_id = $1`,
 		`UPDATE certificates SET owner_id = NULL, recipient_email = '', owner_linked_at = NULL, owner_link_source = NULL WHERE owner_id = $1`,
@@ -812,6 +813,7 @@ func clearGuestData(ctx context.Context, tx pgx.Tx, addresses []string, at time.
 	if _, err := tx.Exec(ctx, `
 		UPDATE tickets
 		SET guest_first_name = '', guest_last_name = '', guest_email = '', guest_phone_number = '', updated_at = $2,
+			guest_university = '', guest_department = '', guest_grade = '',
 			access_key = NULL, qr_version = qr_version + 1, cancel_reason = NULL, form_response_id = NULL
 		WHERE owner_id IS NULL AND guest_email <> '' AND lower(btrim(guest_email)) = ANY($1)
 	`, emails, at); err != nil {
