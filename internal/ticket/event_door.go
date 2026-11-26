@@ -40,7 +40,7 @@ func (s *service) eventDoor(ctx context.Context, p authz.Principal, eventID uuid
 	}
 	if !write {
 		if s.canUseDoor(ctx, p, ev) ||
-			s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Read) {
+			s.authz.Allow(p, eventResource(ev, authz.TypeTicket), authz.Read) {
 			return ev, nil
 		}
 		return event.Event{}, ErrForbidden

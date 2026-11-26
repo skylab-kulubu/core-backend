@@ -19,7 +19,7 @@ import (
 // flakyForms fails its first read, as Forms down for a moment.
 type flakyForms struct{ calls int }
 
-func (f *flakyForms) Response(_ context.Context, formID, responseID uuid.UUID) (formsfeed.Response, error) {
+func (f *flakyForms) Response(_ context.Context, formID, responseID uuid.UUID, _ ...string) (formsfeed.Response, error) {
 	f.calls++
 	if f.calls == 1 {
 		return formsfeed.Response{}, errors.New("formsfeed: Forms answered 503")

@@ -167,13 +167,18 @@ type View struct {
 	MapAttributionURL string `json:"mapAttributionUrl,omitempty"`
 	OwnerTeam         string `json:"ownerTeam"`
 	OrganizerName     string `json:"organizerName"` // organizer.Name(OwnerTeam): the club for YK, DK, ADMIN, none
-	EventStatus       string `json:"eventStatus"`
-	HolderName        string `json:"holderName"`
-	Code              string `json:"code"`
-	QRToken           string `json:"qrToken"`
-	QRURL             string `json:"qrUrl"`
-	PDFURL            string `json:"pdfUrl"`
-	State             string `json:"state"`
+	// CoOrganizerTeams and CoOrganizerNames are the Event's Co-organizer
+	// teams shown outside the panel and their names (docs/co-organizers.md);
+	// left out for none, never a helper team or a person.
+	CoOrganizerTeams []string `json:"coOrganizerTeams,omitempty"`
+	CoOrganizerNames string   `json:"coOrganizerNames,omitempty"`
+	EventStatus      string   `json:"eventStatus"`
+	HolderName       string   `json:"holderName"`
+	Code             string   `json:"code"`
+	QRToken          string   `json:"qrToken"`
+	QRURL            string   `json:"qrUrl"`
+	PDFURL           string   `json:"pdfUrl"`
+	State            string   `json:"state"`
 	// Cancellable is whether the holder may cancel the Ticket from the page
 	// now (POST …/cancel, ticket.HolderCancellable): an active Ticket until
 	// its Event starts, a waitlisted one until it ends.
@@ -278,6 +283,7 @@ func (s *Service) Page(ctx context.Context, key string) (View, error) {
 		MapsURL:       MapsURL(ev.Location, ev.LocationAddress, ev.LocationLat, ev.LocationLng),
 		MapImageURL:   media.ConfiguredAddresses().Object(ev.MapImageURL),
 		OwnerTeam:     ev.OwnerTeam, OrganizerName: organizer.Name(ev.OwnerTeam), EventStatus: string(ev.Status),
+		CoOrganizerTeams: event.PublicCoOrganizerTeams(ev), CoOrganizerNames: organizer.CoNames(event.PublicCoOrganizerTeams(ev)),
 		HolderName: o.holder, Code: o.ticket.Code, State: o.state,
 		Theme:         Theme{Key: th.Key, Accent: Accent(ev)},
 		CoverImageURL: media.ConfiguredAddresses().Object(ev.CoverImageURL),
@@ -437,7 +443,8 @@ func (s *Service) document(ctx context.Context, o opened, token string) (Documen
 		EventName: ev.Name, Start: ev.StartDate, End: ev.EndDate,
 		Venue: ev.Location, VenueAddress: ev.LocationAddress,
 		DirectionsURL: DirectionsURL(ev.Location, ev.LocationAddress, ev.LocationLat, ev.LocationLng),
-		OwnerTeam:     ev.OwnerTeam, HolderName: o.holder, Code: o.ticket.Code, QRToken: token,
+		OwnerTeam:     ev.OwnerTeam, CoOrganizers: organizer.CoNames(event.PublicCoOrganizerTeams(ev)),
+		HolderName: o.holder, Code: o.ticket.Code, QRToken: token,
 		Description: ev.Description, Theme: th, IssuedAt: s.now(),
 	}
 	program, err := s.program(ctx, ev)

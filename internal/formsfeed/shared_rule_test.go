@@ -20,7 +20,7 @@ var formsService = authz.Principal{ID: "forms-sa", ServiceAccount: true, Product
 
 type guestReader struct{ guest formsfeed.Guest }
 
-func (g guestReader) Response(_ context.Context, formID, responseID uuid.UUID) (formsfeed.Response, error) {
+func (g guestReader) Response(_ context.Context, formID, responseID uuid.UUID, _ ...string) (formsfeed.Response, error) {
 	guest := g.guest
 	return formsfeed.Response{FormID: formID, ResponseID: responseID, Status: formsfeed.StatusAccepted, HasGuest: true, Version: 1, Guest: &guest}, nil
 }

@@ -356,3 +356,20 @@ func TestDirectionsOnlyForAPlaceOnAMap(t *testing.T) {
 		t.Error("a directions QR for a place known by its name alone")
 	}
 }
+
+// The Co-organizer teams shown outside the panel stand under the organizer
+// (docs/co-organizers.md); none draws no line, as before.
+func TestTicketCoOrganizerLine(t *testing.T) {
+	t.Parallel()
+	d := baseDocument()
+	html, _ := render(t, d)
+	if strings.Contains(html, "Ortak düzenleyen") {
+		t.Fatal("a line without Co-organizers")
+	}
+	d.CoOrganizers = "WEBLAB · Web Geliştirme, ARTLAB"
+	html, _ = render(t, d)
+	want := "<span>Düzenleyen</span><b>AILAB</b></div>\n<div class=\"h genis\"><span>Ortak düzenleyen</span><b>WEBLAB · Web Geliştirme, ARTLAB</b></div>"
+	if !strings.Contains(html, want) {
+		t.Fatalf("no %q", want)
+	}
+}

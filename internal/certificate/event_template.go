@@ -73,20 +73,20 @@ type TemplateChoice struct {
 // it to a team or club template. Co-organizers (ADR-0092) change who may
 // edit an Event; Event templates follow by this decision alone.
 func (s *service) canEditEvent(p authz.Principal, ev event.Event) bool {
-	return s.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: ev.OwnerTeam}, authz.Update)
+	return s.authz.Allow(p, eventResource(ev, authz.TypeEvent), authz.Update)
 }
 
 // canReadEventTemplates is whether p may read ev's Event template and its
 // template choices: who reads its certificate workspace, or edits it.
 func (s *service) canReadEventTemplates(p authz.Principal, ev event.Event) bool {
-	return s.canReadWorkspace(p, ev.OwnerTeam) || s.canEditEvent(p, ev)
+	return s.canReadWorkspace(p, ev) || s.canEditEvent(p, ev)
 }
 
 // canWriteEventTemplate is whether p may take action (Create, Update,
 // Assign) on ev's Event template or ev's binding: who may edit the Event,
-// or whom the template rule of its Owner team allows.
+// or whom the template rule of its organizer teams allows.
 func (s *service) canWriteEventTemplate(p authz.Principal, ev event.Event, action authz.Action) bool {
-	return s.canEditEvent(p, ev) || s.authz.Allow(p, templateResource(ev.OwnerTeam), action)
+	return s.canEditEvent(p, ev) || s.authz.Allow(p, eventResource(ev, authz.TypeCertificateTemplate), action)
 }
 
 func templateResource(ownerTeam string) authz.Resource {

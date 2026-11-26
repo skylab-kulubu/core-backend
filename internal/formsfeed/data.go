@@ -77,6 +77,12 @@ type Response struct {
 	HiddenFields map[string]string
 	Version      int64
 	Guest        *Guest
+	// Answers are the answers to the questions core asked for (fields of
+	// the internal reads, an Event's form mapping), by question id; nil
+	// when it asked for none. A value that is not a string is left out.
+	// They live in memory for the length of one answer, never logged or
+	// kept.
+	Answers map[string]string
 }
 
 // Invite is the feedback invite's code the answer came with, "" without one.
@@ -92,6 +98,7 @@ type responseJSON struct {
 	HiddenFields map[string]json.RawMessage `json:"hiddenFields"`
 	Version      json.RawMessage            `json:"version"`
 	Guest        *Guest                     `json:"guest"`
+	Answers      map[string]json.RawMessage `json:"answers"`
 }
 
 // ErrInvalid is data core cannot read: a missing or malformed id, status or
@@ -140,6 +147,17 @@ func DecodeResponse(raw json.RawMessage) (Response, error) {
 			out.HiddenFields = map[string]string{}
 		}
 		out.HiddenFields[name] = text
+	}
+	if in.Answers != nil {
+		// An object, even an empty one: Forms answered the fields asked.
+		out.Answers = map[string]string{}
+	}
+	for id, value := range in.Answers {
+		var text string
+		if json.Unmarshal(value, &text) != nil {
+			continue
+		}
+		out.Answers[id] = text
 	}
 	return out, nil
 }

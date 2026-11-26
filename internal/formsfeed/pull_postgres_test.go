@@ -31,7 +31,7 @@ func TestPostgresPullsQueueAndPlan(t *testing.T) {
 		t.Fatalf("third backfill: %t %v", ok, err)
 	}
 	job, ok, err := q.Claim(ctx, now)
-	if err != nil || !ok || job.FormID != form || job.Kind != formsfeed.PullBackfill || job.EventID == nil || *job.EventID != eventID {
+	if err != nil || !ok || job.FormID != form || job.Kind != formsfeed.PullCollect || job.EventID == nil || *job.EventID != eventID {
 		t.Fatalf("claim: %+v %t %v", job, ok, err)
 	}
 	// Leased: not due again until the lease ends.
@@ -39,7 +39,7 @@ func TestPostgresPullsQueueAndPlan(t *testing.T) {
 		t.Fatal("a leased job was claimed again")
 	}
 	// Saving a page's cursor renews the lease: still not due 16 minutes on.
-	if err := q.SaveCursor(ctx, job.ID, "p2", now.Add(10*time.Minute)); err != nil {
+	if err := q.SaveCursor(ctx, job, "p2", now.Add(10*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, _ := q.Claim(ctx, now.Add(16*time.Minute)); ok {
@@ -107,5 +107,54 @@ func TestPostgresPullsQueueAndPlan(t *testing.T) {
 	pool.QueryRow(ctx, `SELECT count(*) FROM form_pull_watermarks WHERE form_id = $1`, other).Scan(&n)
 	if n != 0 {
 		t.Fatal("an unlisted form's watermark stayed")
+	}
+}
+
+// A gathering asked again while it runs (a mapping first saved meanwhile)
+// runs again from its first page: the running one's cursor and end are not
+// kept. One waiting out a failure does not count as collecting.
+func TestAGatheringAskedAgainRunsAgain(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	q := formsfeed.NewPostgresPulls(pool)
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	form, eventID := uuid.New(), uuid.New()
+	if queued, err := q.Collect(ctx, form, eventID, now); err != nil || !queued {
+		t.Fatalf("collect %t %v", queued, err)
+	}
+	running, ok, err := q.Claim(ctx, now)
+	if err != nil || !ok {
+		t.Fatalf("claim %t %v", ok, err)
+	}
+	if collecting, err := q.Collecting(ctx, eventID, &form); err != nil || !collecting {
+		t.Fatalf("collecting %t %v", collecting, err)
+	}
+	if queued, err := q.Collect(ctx, form, eventID, now.Add(time.Minute)); err != nil || queued {
+		t.Fatalf("asked again %t %v", queued, err)
+	}
+	// The old run's page and end change nothing.
+	if err := q.SaveCursor(ctx, running, "p2", now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Finish(ctx, running, nil, now.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	again, ok, err := q.Claim(ctx, now.Add(3*time.Minute))
+	if err != nil || !ok || again.ID != running.ID || again.Cursor != "" || !again.RequestedAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("again %+v %t %v", again, ok, err)
+	}
+	// Failing, it waits: not collecting, so a send-all job does not wait on it.
+	if err := q.Retry(ctx, again.ID, 1, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if collecting, err := q.Collecting(ctx, eventID, &form); err != nil || collecting {
+		t.Fatalf("collecting while failing %t %v", collecting, err)
+	}
+	if err := q.Finish(ctx, again, nil, now.Add(2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM form_pulls`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("%d jobs left %v", n, err)
 	}
 }

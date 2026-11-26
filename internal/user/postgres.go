@@ -545,6 +545,26 @@ func (s *PostgresStore) RequestDeletion(ctx context.Context, id uuid.UUID, reque
 // lose the recipient e-mail. The addresses are used for this transaction only
 // and written nowhere.
 func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at time.Time, emails []string) error {
+	_, err := s.AnonymizeAccountCounted(ctx, id, at, emails)
+	return err
+}
+
+// FormRespondentsErasedCount is the anonymize_core proof's count of the
+// person's Unticketed respondent rows deleted (docs/form-respondents.md):
+// their account's and their addresses'.
+const FormRespondentsErasedCount = "form_respondents_deleted"
+
+// AnonymizeAccountCounted is AnonymizeAccount answering the counts the
+// completion proof keeps for anonymize_core (FormRespondentsErasedCount):
+// numbers only, never an address. A person anonymized already answers
+// none.
+func (s *PostgresStore) AnonymizeAccountCounted(ctx context.Context, id uuid.UUID, at time.Time, emails []string) (map[string]int64, error) {
+	counts := map[string]int64{}
+	err := s.anonymizeAccount(ctx, id, at, emails, counts)
+	return counts, err
+}
+
+func (s *PostgresStore) anonymizeAccount(ctx context.Context, id uuid.UUID, at time.Time, emails []string, counts map[string]int64) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -575,9 +595,18 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 	if state != AccountDeletionPending {
 		return ErrInvalid
 	}
-	if err := clearGuestData(ctx, tx, slices.Concat(emails, []string{email, schoolEmail}), at); err != nil {
+	addresses := slices.Concat(emails, []string{email, schoolEmail})
+	if err := clearGuestData(ctx, tx, addresses, at); err != nil {
 		return err
 	}
+	// The person's Unticketed respondent rows (docs/form-respondents.md):
+	// their account's, and a guest's of any of their addresses.
+	respondents, err := tx.Exec(ctx, `
+		DELETE FROM event_form_respondents WHERE user_id = $1 OR email = ANY($2::text[])`, id, normalizedAddresses(addresses))
+	if err != nil {
+		return err
+	}
+	counts[FormRespondentsErasedCount] = respondents.RowsAffected()
 	if _, err := tx.Exec(ctx, `
 		UPDATE competitors
 		SET user_id = NULL, withdrawn_at = COALESCE(withdrawn_at, $2), withdrawn_by = NULL, updated_at = $2
@@ -612,6 +641,14 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		`UPDATE tickets SET owner_id = NULL, access_key = NULL, qr_version = qr_version + 1, cancel_reason = NULL, form_response_id = NULL WHERE owner_id = $1`,
 		`UPDATE certificates SET owner_id = NULL, recipient_email = '' WHERE owner_id = $1`,
 		`DELETE FROM event_door_staff WHERE user_id = $1`,
+		// An Event's Co-organizer person goes with the account; who added a
+		// row is forgotten, the row stays (docs/co-organizers.md).
+		`DELETE FROM event_co_organizers WHERE user_id = $1`,
+		`UPDATE event_co_organizers SET added_by = NULL WHERE added_by = $1`,
+		// Their Co-organizer mails not sent yet go; who made a change is
+		// forgotten (docs/co-organizers.md#mails).
+		`DELETE FROM co_organizer_notifications WHERE user_id = $1`,
+		`UPDATE co_organizer_notifications SET actor_id = NULL WHERE actor_id = $1`,
 		// Venue entries stay with their Tickets (docs/venue-entry.md); the
 		// door staff who wrote one is forgotten.
 		`UPDATE venue_entries SET by_user_id = NULL WHERE by_user_id = $1`,
@@ -634,6 +671,10 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		`UPDATE certificate_template_bindings SET updated_by = NULL WHERE updated_by = $1`,
 		`UPDATE certificate_event_state SET attendance_finalized_by = NULL WHERE attendance_finalized_by = $1`,
 		`UPDATE certificate_batches SET requested_by = NULL WHERE requested_by = $1`,
+		// An organizer's form pulls and send-all jobs (docs/form-respondents.md)
+		// forget who asked.
+		`UPDATE form_pulls SET requested_by = NULL WHERE requested_by = $1`,
+		`UPDATE respondent_ticket_jobs SET requested_by = NULL WHERE requested_by = $1`,
 		`UPDATE account_deletion_requests SET requested_by = NULL WHERE requested_by = $1`,
 		// Competition actors (ADR-0068): the ledger keeps every score and
 		// reason, without who wrote or revoked it. Its append-only trigger
@@ -737,12 +778,7 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 // check-ins and an ownerless certificate its recipient name, serial and PDF,
 // the rule owned certificates already follow.
 func clearGuestData(ctx context.Context, tx pgx.Tx, addresses []string, at time.Time) error {
-	emails := make([]string, 0, len(addresses))
-	for _, address := range addresses {
-		if address = strings.ToLower(strings.TrimSpace(address)); address != "" && !slices.Contains(emails, address) {
-			emails = append(emails, address)
-		}
-	}
+	emails := normalizedAddresses(addresses)
 	if len(emails) == 0 {
 		return nil
 	}
@@ -799,4 +835,16 @@ func (s *PostgresStore) HardPurgeAccount(ctx context.Context, id uuid.UUID) erro
 		return ErrNotFound
 	}
 	return nil
+}
+
+// normalizedAddresses are the addresses trimmed and in lower case, each
+// once, the empty ones left out; never nil.
+func normalizedAddresses(addresses []string) []string {
+	emails := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		if address = strings.ToLower(strings.TrimSpace(address)); address != "" && !slices.Contains(emails, address) {
+			emails = append(emails, address)
+		}
+	}
+	return emails
 }
