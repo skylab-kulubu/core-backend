@@ -123,6 +123,7 @@ func TestFormMappingAnswers(t *testing.T) {
 		{formsfeed.ErrMappingNotFound, 404, "mapping_not_found"},
 		{formsfeed.ErrFormGone, 404, "form_not_found"},
 		{formsfeed.ErrMappingInvalid, 400, "mapping_invalid"},
+		{formsfeed.ErrMappingTooManyQuestions, 400, "mapping_too_many_questions"},
 		{&formsfeed.MappingQuestionMissingError{Missing: []string{"q9"}}, 422, "mapping_question_missing"},
 		{formsfeed.ErrFormsPullOff, 503, "forms_pull_off"},
 		{errors.Join(formsfeed.ErrFormsUnavailable, formsfeed.ErrForbidden), 503, "forms_unavailable"},

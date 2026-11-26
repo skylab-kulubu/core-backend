@@ -70,6 +70,7 @@ questions.
 | `403 forms_access_denied` | the caller is not on the form's team in Forms (owner, editor or viewer), or Forms does not say who is |
 | `404 form_not_listed` | the Event does not list the form as its application or an extra form |
 | `400 mapping_invalid` | the mapping breaks the rule above |
+| `400 mapping_too_many_questions` | with the other Events' mappings of the same form it names more than 20 questions (`max`), more than one read of Forms takes |
 | `422 mapping_question_missing` | the form has no question of some ids: `missing` lists them |
 | `404 form_not_found` | Forms has no such form (deleted, or a Forms without the route yet); `DELETE` still removes the mapping |
 | `503 forms_pull_off` | `EVENTS_FORMS_ENABLED` is not `true` (every route reads Forms) |
@@ -175,14 +176,17 @@ their account.
 - A mapped guest's answer is read with every mapped question, as before;
   an answer Forms names a guest of is read with the details' questions
   only, and only when a mapping names any (otherwise nothing changes: no
-  `fields`, or no read for the HTTP report).
+  `fields`, or no read for the HTTP report). For the HTTP report that read
+  is extra: one that fails (a timeout, 403, 404) or finds the answer moved
+  on leaves the details out, and the guest's Ticket is written as before.
 - Read in `formsfeed.MappedDetails`, each detail on its own (an answer is a
   stranger's text: a detail that does not read is left out, never the
   guest):
   - the phone in the Walk-in's one form (`ticket.NormalizePhone`: `+90` and
     ten digits, or `+` and 8 to 15 digits); not a number, none;
-  - the university and the department trimmed, inner spaces folded; over
-    200 characters or with a control character, none;
+  - the university and the department trimmed, each run of spaces, tabs
+    and line breaks folded into one space; over 200 characters, or with
+    another control character (NUL and the like), none;
   - the grade as one of the Walk-in's keys (`ticket.Grades`) by
     `formsfeed.GradeOf`: `prep` (hazırlık), `1` to `4` (the one year it
     names, in digits or words: "3. Sınıf", "Üçüncü"), `masters` (yüksek
@@ -221,7 +225,8 @@ core-backend backfill-form-guest-details -event <id> [-apply]
   Ticket, nor one whose identity retention cleared) and on its Unticketed
   respondent's guest row, only where the row has none: a run again finds
   nothing to do. Never a signed-in person's Ticket.
-- Without `-apply` it only counts. It prints counts only (`tickets`,
+- Without `-apply` it only counts. It prints counts only (`answers`,
+  `skipped` for an item of Forms' page that did not read, `tickets`,
   `tickets_fill`, `respondents_fill`, `fill_<detail>`, `kept_<detail>` for
   a Ticket keeping another value of its own, `dropped_<detail>` for an
   answer that did not read, `grade_<key>`), never a person, an answer or a

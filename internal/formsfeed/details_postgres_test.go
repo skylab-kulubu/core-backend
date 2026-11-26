@@ -121,7 +121,7 @@ func TestFillingInEarlierGuestsDetails(t *testing.T) {
 		t.Fatal(err)
 	}
 	lister := &detailsLister{pages: map[string]formsfeed.Page{
-		"": {NextCursor: "c1", Items: []formsfeed.Response{
+		"": {NextCursor: "c1", Skipped: 1, Items: []formsfeed.Response{
 			{FormID: w.formID, ResponseID: ada, Status: formsfeed.StatusAccepted, Answers: map[string]string{"p": "0555 111 22 33", "u": "YTÜ", "d": "Fizik", "g": "3. sınıf"}},
 			{FormID: w.formID, ResponseID: grace, Status: formsfeed.StatusAccepted, Answers: map[string]string{"p": "+905559999999", "g": "Doktora"}},
 		}},
@@ -146,7 +146,7 @@ func TestFillingInEarlierGuestsDetails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dry.Forms != 1 || dry.Answers != 5 || dry.Tickets != 3 || dry.TicketsFilled != 3 || dry.Respondents != 1 || dry.RespondentsFilled != 1 {
+	if dry.Forms != 1 || dry.Answers != 5 || dry.Skipped != 1 || dry.Tickets != 3 || dry.TicketsFilled != 3 || dry.Respondents != 1 || dry.RespondentsFilled != 1 {
 		t.Fatalf("dry run %+v", dry)
 	}
 	if dry.Filled[formsfeed.DetailPhone] != 1 || dry.Filled[formsfeed.DetailUniversity] != 1 || dry.Filled[formsfeed.DetailDepartment] != 1 ||
@@ -202,4 +202,31 @@ func TestFillingInEarlierGuestsDetails(t *testing.T) {
 	if got := w.guestDetails(t, "tickets", "form_response_id = $1", linus); got[3] != "" {
 		t.Fatalf("a member's Ticket took %v", got)
 	}
+}
+
+// The HTTP report of Forms' named guest, with the Unticketed respondents
+// on: a failed read of the details leaves them out; the Ticket is written.
+func TestANamedGuestsReportGoesOnWhenTheDetailsReadFails(t *testing.T) {
+	w := newRespondentWorld(t, true, 0, true)
+	ctx := context.Background()
+	if _, _, err := formsfeed.NewPostgresMappings(w.pool).Put(ctx, formsfeed.Mapping{
+		EventID: w.ev.ID, FormID: w.formID, FullName: "n", Email: "e", Phone: "p", Grade: "g",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w.reports.Forms = brokenForms{}
+	answer := uuid.New()
+	w.report(t, answer, ticket.FormResponseAccepted, "ada@example.com")
+	if got := w.guestDetails(t, "tickets", "form_response_id = $1", answer); got != ([4]string{}) {
+		t.Fatalf("ticket %v", got)
+	}
+	if n := w.count(t, `SELECT count(*) FROM tickets WHERE event_id = $1 AND guest_email = 'ada@example.com'`, w.ev.ID); n != 1 {
+		t.Fatalf("%d Tickets", n)
+	}
+}
+
+type brokenForms struct{}
+
+func (brokenForms) Response(context.Context, uuid.UUID, uuid.UUID, ...string) (formsfeed.Response, error) {
+	return formsfeed.Response{}, errors.New("formsfeed: Forms did not answer in time")
 }

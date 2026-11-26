@@ -28,7 +28,7 @@ func (f *fakeDetailsFiller) FillDetails(_ context.Context, eventID uuid.UUID, ap
 func TestFormDetailsBackfillCommand(t *testing.T) {
 	ev := uuid.New()
 	filler := &fakeDetailsFiller{report: formsfeed.DetailsReport{
-		Forms: 1, Answers: 530, Tickets: 514, TicketsFilled: 500, Respondents: 10, RespondentsFilled: 9,
+		Forms: 1, Answers: 530, Skipped: 2, Tickets: 514, TicketsFilled: 500, Respondents: 10, RespondentsFilled: 9,
 		Filled: map[string]int{formsfeed.DetailPhone: 480, formsfeed.DetailGrade: 500}, Kept: map[string]int{formsfeed.DetailPhone: 3},
 		Dropped: map[string]int{formsfeed.DetailPhone: 7}, Grades: map[string]int{"3": 120, "other": 4},
 	}}
@@ -36,7 +36,7 @@ func TestFormDetailsBackfillCommand(t *testing.T) {
 	if code := formDetailsBackfillCommand(context.Background(), []string{"-event", ev.String()}, &out, filler); code != 0 || filler.apply || filler.event != ev {
 		t.Fatalf("dry run: %d %+v\n%s", code, filler, out.String())
 	}
-	for _, want := range []string{"dry run", "\ntickets: 514\n", "\ntickets_fill: 500\n", "\nrespondents_fill: 9\n", "\nfill_phone: 480\n",
+	for _, want := range []string{"dry run", "\nskipped: 2\n", "\ntickets: 514\n", "\ntickets_fill: 500\n", "\nrespondents_fill: 9\n", "\nfill_phone: 480\n",
 		"\nfill_university: 0\n", "\nkept_phone: 3\n", "\ndropped_phone: 7\n", "\ngrade_3: 120\n", "\ngrade_other: 4\n", "\ngrade_prep: 0\n"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())

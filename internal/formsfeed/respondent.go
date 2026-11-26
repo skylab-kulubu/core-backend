@@ -329,9 +329,10 @@ func MappedFields(mappings []Mapping) []string {
 // single answer endpoint with the mapped questions (fields), and its
 // respondents are resolved and written as an event's or a pull's are; one
 // Forms names a guest of is read for the mappings' details alone, when they
-// name any. Any other report goes to the Ticket rule as it came. A read
-// that finds nothing (404) is OutcomeGone, a 2xx; another failed read is an
-// error (the report answers 5xx, Forms sends it again).
+// name any, and a read of them that fails only leaves them out. Any other
+// report goes to the Ticket rule as it came. A read that finds nothing
+// (404) is OutcomeGone, a 2xx; another failed read is an error (the report
+// answers 5xx, Forms sends it again).
 func (m *MappedGuests) RecordReport(ctx context.Context, record RecordFunc, r ticket.FormResponse) (ticket.FormResponseResult, error) {
 	if m != nil && m.Respondents != nil {
 		return m.routeReport(ctx, record, r)
@@ -348,6 +349,17 @@ func (m *MappedGuests) RecordReport(ctx context.Context, record RecordFunc, r ti
 		return record(ctx, r)
 	}
 	got, err := m.Forms.Response(ctx, r.FormID, r.ResponseID, fields...)
+	if r.Guest != nil {
+		// The report's guest, as before; the read gives the details. They
+		// are extra: a read that fails, finds nothing or finds the answer
+		// moved on leaves them out, never holds the Ticket back.
+		var answers map[string]string
+		if err == nil && got.Status == StatusAccepted {
+			answers = got.Answers
+		}
+		respondents, _ := ResolveRespondents(nil, &Guest{FirstName: r.Guest.FirstName, LastName: r.Guest.LastName, Email: r.Guest.Email}, answers, mappings)
+		return RecordRespondents(ctx, record, r, respondents)
+	}
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return ticket.FormResponseResult{Outcome: ticket.FormResponseOutcome(OutcomeGone)}, nil
@@ -358,12 +370,7 @@ func (m *MappedGuests) RecordReport(ctx context.Context, record RecordFunc, r ti
 		// Forms' answer moved on since the report; its own report follows.
 		return record(ctx, r)
 	}
-	userID, guest := got.UserID, got.Guest
-	if r.Guest != nil {
-		// The report's guest, as before; the read gave the details.
-		userID, guest = nil, &Guest{FirstName: r.Guest.FirstName, LastName: r.Guest.LastName, Email: r.Guest.Email}
-	}
-	respondents, outcome := ResolveRespondents(userID, guest, got.Answers, mappings)
+	respondents, outcome := ResolveRespondents(got.UserID, got.Guest, got.Answers, mappings)
 	if outcome != "" {
 		return ticket.FormResponseResult{Outcome: outcome}, nil
 	}
@@ -395,17 +402,24 @@ func (m *MappedGuests) routeReport(ctx context.Context, record RecordFunc, r tic
 		if fields := mappedFields(mappings, r.Guest != nil); len(fields) > 0 {
 			got, err := m.Forms.Response(ctx, r.FormID, r.ResponseID, fields...)
 			switch {
+			case r.Guest != nil:
+				// Forms named the guest; the read is for the details alone.
+				// A read that fails, finds nothing or finds the answer moved
+				// on leaves them out: the report goes on as before.
+				if err == nil && string(r.Status) == got.Status {
+					answers = got.Answers
+				}
 			case errors.Is(err, ErrNotFound):
 				return ticket.FormResponseResult{Outcome: ticket.FormResponseOutcome(OutcomeGone)}, nil
 			case err != nil:
 				return ticket.FormResponseResult{}, err
-			}
-			if string(r.Status) != got.Status {
+			case string(r.Status) != got.Status:
 				// Forms' answer moved on since the report; its own report
 				// follows.
 				return record(ctx, r)
+			default:
+				answers = got.Answers
 			}
-			answers = got.Answers
 		}
 	}
 	respondents, outcome := ResolveRespondents(r.UserID, guest, answers, mappings)

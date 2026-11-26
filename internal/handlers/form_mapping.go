@@ -185,6 +185,9 @@ func (h *FormMappingHandler) error(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusNotFound, "Not Found", "form_not_found")
 	case errors.Is(err, formsfeed.ErrMappingInvalid):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "mapping_invalid")
+	case errors.Is(err, formsfeed.ErrMappingTooManyQuestions):
+		return problemWithFields(c, fiber.StatusBadRequest, "Bad Request", "Bad Request",
+			"mapping_too_many_questions", fiber.Map{"max": formsfeed.MaxFields})
 	case errors.As(err, &missing):
 		// The ids are the caller's own; never an answer.
 		return problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Entity", "Unprocessable Entity",

@@ -42,6 +42,11 @@ type Mapping struct {
 // characters without a comma, none named twice.
 var ErrMappingInvalid = errors.New("formsfeed: the form mapping needs an e-mail question and a first and last name, or a full name, question")
 
+// ErrMappingTooManyQuestions is a mapping whose questions, with those of the
+// other Events' mappings of the same form, are more than one read of Forms
+// takes (MaxFields): core asks for all of them at once (MappedFields).
+var ErrMappingTooManyQuestions = fmt.Errorf("formsfeed: the form's mappings name more than %d questions", MaxFields)
+
 // Normalized trims the question ids.
 func (m Mapping) Normalized() Mapping {
 	m.FirstName = strings.TrimSpace(m.FirstName)

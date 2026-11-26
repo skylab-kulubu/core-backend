@@ -53,6 +53,9 @@ type DetailsReport struct {
 	// answers Forms gave for them.
 	Forms   int
 	Answers int
+	// Skipped are the items of Forms' pages that did not read (another
+	// form's, an id or a version missing): no Ticket of theirs is filled.
+	Skipped int
 	// Tickets are the guest Tickets those answers wrote (ticket type GUEST,
 	// a guest Ticket linked to its account since included; not cancelled,
 	// the guest's identity still kept); TicketsFilled those taking at least
@@ -169,6 +172,7 @@ func (b *DetailsBackfill) fillForm(ctx context.Context, m Mapping, tickets, resp
 		if err != nil {
 			return err
 		}
+		report.Skipped += page.Skipped
 		batch := &pgx.Batch{}
 		for _, item := range page.Items {
 			report.Answers++

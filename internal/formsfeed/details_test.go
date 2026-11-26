@@ -2,6 +2,7 @@ package formsfeed
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -223,5 +224,53 @@ func TestARespondentRowKeepsTheDetails(t *testing.T) {
 	row, _ = respondentRow(Respondent{Source: RespondentUser, UserID: &user}, uuid.New(), applicationForm, responseID, nil, StatusAccepted, SourceCollect)
 	if row.Phone != "" || row.Grade != "" {
 		t.Fatalf("person row %+v", row)
+	}
+}
+
+// failingReader is Forms' single read that fails, or finds the answer
+// moved on.
+type failingReader struct {
+	err   error
+	got   Response
+	calls int
+}
+
+func (f *failingReader) Response(_ context.Context, formID, responseID uuid.UUID, _ ...string) (Response, error) {
+	f.calls++
+	got := f.got
+	got.FormID, got.ResponseID = formID, responseID
+	return got, f.err
+}
+
+// The HTTP report of Forms' named guest: the read of the details is extra.
+// One that fails (a timeout, 403, 404) or finds the answer moved on leaves
+// them out, and the guest's Ticket goes to the rule as before, no error.
+func TestANamedGuestsTicketNeverWaitsForTheDetails(t *testing.T) {
+	evs := newHarness().rec.Events.(fakeEvents)
+	named := ticket.FormResponse{FormID: applicationForm, ResponseID: responseID, Status: ticket.FormResponseAccepted,
+		Guest: &ticket.GuestInfo{FirstName: "Ada", LastName: "Lovelace", Email: "ada@example.com"}}
+	for name, reader := range map[string]*failingReader{
+		"a timeout":       {err: errors.New("formsfeed: Forms did not answer in time")},
+		"403":             {err: ErrForbidden},
+		"404":             {err: ErrNotFound},
+		"moved on":        {got: Response{Status: StatusPending, Answers: map[string]string{"g": "3"}}},
+		"no answers back": {got: Response{Status: StatusAccepted}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var reports []ticket.FormResponse
+			record := func(_ context.Context, r ticket.FormResponse) (ticket.FormResponseResult, error) {
+				reports = append(reports, r)
+				return ticket.FormResponseResult{Outcome: ticket.FormResponseRecorded}, nil
+			}
+			m := &MappedGuests{Store: memMappingStore{rows: []Mapping{{EventID: evs.events[0].ID, FormID: applicationForm, FullName: "n", Email: "e", Grade: "g"}}},
+				Events: evs, Forms: reader}
+			got, err := m.RecordReport(context.Background(), record, named)
+			if err != nil || got.Outcome != ticket.FormResponseRecorded || reader.calls != 1 {
+				t.Fatalf("%+v %v reads %d", got, err, reader.calls)
+			}
+			if len(reports) != 1 || *reports[0].Guest != *named.Guest || reports[0].GuestEvents != nil {
+				t.Fatalf("reports %+v", reports)
+			}
+		})
 	}
 }

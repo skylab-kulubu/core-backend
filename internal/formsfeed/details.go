@@ -26,7 +26,8 @@ const (
 // Details are a guest's optional details as a mapping's answers give them,
 // each "" for none. Dropped names the details answered but left out: a
 // phone that is no number, a university or department over
-// ticket.MaxWalkInText characters or with a control character.
+// ticket.MaxWalkInText characters or with a control character other than a
+// tab or a line break (those fold into a space, as every run of spaces).
 type Details struct {
 	Phone      string
 	University string
@@ -38,7 +39,8 @@ type Details struct {
 // MappedDetails reads the details of m's questions from answers:
 //
 //   - the phone in the Walk-in's one form (ticket.NormalizePhone);
-//   - the university and the department trimmed, inner spaces folded;
+//   - the university and the department trimmed, inner spaces, tabs and line
+//     breaks folded into one space;
 //   - the grade as one of ticket.Grades (GradeOf).
 func MappedDetails(m Mapping, answers map[string]string) Details {
 	var d Details

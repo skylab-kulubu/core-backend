@@ -93,6 +93,7 @@ func formDetailsBackfillCommand(ctx context.Context, args []string, out io.Write
 	line := func(key string, n int) { fmt.Fprintf(out, "%s: %d\n", key, n) }
 	line("forms", report.Forms)
 	line("answers", report.Answers)
+	line("skipped", report.Skipped)
 	line("tickets", report.Tickets)
 	line("tickets_fill", report.TicketsFilled)
 	line("respondents", report.Respondents)
