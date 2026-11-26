@@ -566,6 +566,7 @@ func New(deps Deps) *fiber.App {
 		personTeams = deps.ManagedTeams
 	}
 	app.Get(handlers.PersonTeamsPath, handlers.NewPersonTeamsHandler(personTeams).Get)
+	app.Get("/", handlers.ShortLinkBareRoot)
 	app.Get("/v1/go", handlers.ShortLinkRoot)
 	app.Get("/v1/go/:alias", urls.Redirect)
 	app.Get("/v1/go/:alias/:channel", urls.RedirectChannel)

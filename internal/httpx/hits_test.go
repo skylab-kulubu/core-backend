@@ -246,3 +246,46 @@ func TestGoRootRedirectsToTheSite(t *testing.T) {
 		}
 	}
 }
+
+// skyl.app/ itself reaches Core as / (the proxy adds /v1/go only in front of
+// a path). A browser goes to the club site; every other caller keeps the 404
+// problem JSON it got before, body and all.
+func TestBareRootSendsOnlyABrowserToTheSite(t *testing.T) {
+	t.Parallel()
+	app := memoryApp()
+	browser := "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+	for _, method := range []string{fiber.MethodGet, fiber.MethodHead} {
+		req := httptest.NewRequest(method, "/", nil)
+		req.Header.Set(fiber.HeaderAccept, browser)
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != fiber.StatusFound || resp.Header.Get(fiber.HeaderLocation) != "https://yildizskylab.com" || resp.Header.Get(fiber.HeaderCacheControl) != "no-store" || resp.Header.Get(fiber.HeaderVary) != "Accept" {
+			t.Fatalf("%s browser: %d %v", method, resp.StatusCode, resp.Header)
+		}
+	}
+	const problem = `{"detail":"Not Found","instance":"/","status":404,"title":"Not Found","type":"about:blank"}`
+	for _, accept := range []string{"", "*/*", "application/json", "application/json, text/html"} {
+		for _, method := range []string{fiber.MethodGet, fiber.MethodHead} {
+			req := httptest.NewRequest(method, "/", nil)
+			if accept != "" {
+				req.Header.Set(fiber.HeaderAccept, accept)
+			}
+			resp, err := app.Test(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != fiber.StatusNotFound || resp.Header.Get(fiber.HeaderContentType) != "application/problem+json" || resp.Header.Get(fiber.HeaderLocation) != "" {
+				t.Fatalf("%s accept=%q: %d %v", method, accept, resp.StatusCode, resp.Header)
+			}
+			if method == fiber.MethodGet && strings.TrimSpace(string(body)) != problem {
+				t.Fatalf("accept=%q body %s", accept, body)
+			}
+		}
+	}
+}

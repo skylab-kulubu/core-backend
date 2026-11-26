@@ -21,8 +21,13 @@ when the alias leads nowhere:
 `application/json, text/html` all get the JSON. A live link redirects as
 before, whatever `Accept` says. Both miss answers carry `Vary: Accept`.
 
-`skyl.app/` with no alias (`GET /v1/go`, and `/v1/go/` with it) is `302` to
-`https://yildizskylab.com` with `Cache-Control: no-store`, for everyone.
+`skyl.app/` with no alias reaches Core as `/`, not `/v1/go`: the proxy puts
+`/v1/go` in front of a path only when there is one. `GET`/`HEAD /` with the
+same negotiation is `302` to `https://yildizskylab.com` with
+`Cache-Control: no-store` for a browser; anyone else falls through to the
+`404` problem JSON it got before (`"instance":"/"`). Both carry
+`Vary: Accept`. `GET /v1/go` (and `/v1/go/`) is `302` to the site for
+everyone.
 
 A disabled link is one that was deleted in the panel (`disabled_at`); the
 store answers `AliasDisabled` with the exact spelling, as the redirect does,
