@@ -19,7 +19,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const certCols = `id, event_id, ticket_id, owner_id, serial, recipient_name, recipient_email, event_name, owner_team, verify_url, template_version_id, template_source, pdf_key, pdf_sha256, batch_id, job_id, revoked_at, issued_at, attended_count, counted_total, program_minutes`
+const certCols = `id, event_id, ticket_id, owner_id, serial, recipient_name, recipient_email, event_name, owner_team, verify_url, template_version_id, template_source, pdf_key, pdf_sha256, batch_id, job_id, revoked_at, issued_at, attended_count, counted_total, program_minutes, co_organizer_teams`
 
 // certScan reads certCols into a Certificate: the attendance snapshot's
 // three columns are NULL together for a certificate issued before core kept
@@ -35,7 +35,7 @@ func (r *certScan) dest(extra ...any) []any {
 		&c.ID, &c.EventID, &c.TicketID, &c.OwnerID, &c.Serial, &c.RecipientName, &c.RecipientEmail,
 		&c.EventName, &c.OwnerTeam, &c.VerifyURL, &c.TemplateVersionID, &c.TemplateSource,
 		&c.PDFKey, &c.PDFSHA256, &c.BatchID, &c.JobID, &c.RevokedAt, &c.IssuedAt,
-		&r.attended, &r.total, &r.minutes,
+		&r.attended, &r.total, &r.minutes, &c.CoOrganizerTeams,
 	}, extra...)
 }
 
@@ -62,8 +62,8 @@ const insertCertSQL = `
 			id, event_id, ticket_id, owner_id, serial, recipient_name, recipient_email,
 			event_name, owner_team, verify_url, template_version_id, template_source,
 			pdf_key, pdf_sha256, batch_id, job_id, pdf, issued_at,
-			attended_count, counted_total, program_minutes
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now(),$18,$19,$20)
+			attended_count, counted_total, program_minutes, co_organizer_teams
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now(),$18,$19,$20,$21)
 		RETURNING ` + certCols
 
 func insertCertArgs(c Certificate, pdf []byte) []any {
@@ -71,7 +71,7 @@ func insertCertArgs(c Certificate, pdf []byte) []any {
 	return []any{
 		c.ID, c.EventID, c.TicketID, c.OwnerID, c.Serial, c.RecipientName, c.RecipientEmail,
 		c.EventName, c.OwnerTeam, c.VerifyURL, c.TemplateVersionID, c.TemplateSource,
-		c.PDFKey, c.PDFSHA256, c.BatchID, c.JobID, pdf, attended, total, minutes,
+		c.PDFKey, c.PDFSHA256, c.BatchID, c.JobID, pdf, attended, total, minutes, c.CoOrganizerTeams,
 	}
 }
 

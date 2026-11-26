@@ -25,8 +25,9 @@ Two workflows: **Checks** (`.github/workflows/checks.yml`) tests, **GHCR**
 - **`pdf-tools`**: the PDF service (`pdf-tools/README.md`). Builds its test
   and service images, runs its pytest in the test image under the service's
   limits (read-only root, 0.5 CPU, 512 MiB, no network), then starts the
-  service image the same way and asks `/healthz` and an inspect. In a full
-  run, and in a fast one when `pdf-tools/` or a workflow changed.
+  service image the same way and asks `/healthz`, an inspect and a font
+  sanitize. In a full run, and in a fast one when `pdf-tools/` or a workflow
+  changed.
 - **`test (N)`**: the shards. `testplan plan` splits the packages by the
   last runs' timings (the `test-timings-*` Actions cache; without it, a
   second a test); a package longer than a shard's share is split by its

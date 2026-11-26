@@ -82,7 +82,7 @@ func RequestHash(key string) (string, error) {
 		return "", nil
 	}
 	if len(key) > maxRequestKey {
-		return "", ErrInvalid
+		return "", invalid(CodeRequestKeyTooLong)
 	}
 	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:]), nil
@@ -104,7 +104,7 @@ func (s *service) managedTicket(ctx context.Context, p authz.Principal, id uuid.
 	if err := s.seen(&p, ev); err != nil {
 		return Ticket{}, event.Event{}, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign) {
+	if !s.authz.Allow(p, eventResource(ev, authz.TypeTicket), authz.Assign) {
 		return Ticket{}, event.Event{}, ErrForbidden
 	}
 	if !held(t) {
@@ -234,10 +234,13 @@ func (s *service) beginTicketAuditBasis(ctx context.Context, p authz.Principal, 
 	actor.Basis, actor.ViaGroupID = teamaudit.BasisPrivileged, ""
 	if !privileged {
 		via, err := s.leaderVia(ctx, p, team)
+		if errors.Is(err, ErrForbidden) {
+			via, err = s.coLeaderVia(ctx, p, ev)
+		}
 		switch {
 		case err == nil:
 			actor.Basis, actor.ViaGroupID = teamaudit.BasisLeader, via
-		case editor && errors.Is(err, ErrForbidden):
+		case (editor || s.coOrganizer(p, ev)) && errors.Is(err, ErrForbidden):
 			actor.Basis, actor.ViaGroupID = teamaudit.BasisEventEditor, team.ID
 		default:
 			return nil, teamaudit.ErrUnavailable
@@ -255,6 +258,33 @@ func (s *service) beginTicketAuditBasis(ctx context.Context, p authz.Principal, 
 		return nil, err
 	}
 	return &auditRecord{id: id, after: after}, nil
+}
+
+// coLeaderVia is the id of the Team whose Leader group lets p act for one
+// of ev's Co-organizer teams (docs/co-organizers.md): ErrForbidden when p
+// leads none of them.
+func (s *service) coLeaderVia(ctx context.Context, p authz.Principal, ev event.Event) (string, error) {
+	for _, co := range ev.CoOrganizers {
+		team, err := s.teams.GetGroup(ctx, co.Code)
+		if err != nil {
+			continue
+		}
+		if via, err := s.leaderVia(ctx, p, team); err == nil {
+			return via, nil
+		}
+	}
+	return "", ErrForbidden
+}
+
+// coOrganizer reports whether p's right on ev rests on a Co-organizer seat
+// (a team's or a person's): such a write is recorded as an event editor's
+// through the Event's team.
+func (s *service) coOrganizer(p authz.Principal, ev event.Event) bool {
+	switch s.authz.EventVia(p, eventResource(ev, authz.TypeEvent)) {
+	case authz.ViaCoTeam, authz.ViaCoPerson:
+		return true
+	}
+	return false
 }
 
 // leaderVia is the id of the Team whose Leader group lets p act for team:

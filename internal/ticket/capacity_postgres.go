@@ -196,7 +196,7 @@ func (s *PostgresStore) ReopenAdmitted(ctx context.Context, id uuid.UUID, a Admi
 					cancelled_at = NULL, cancelled_by = NULL, cancel_reason = NULL,
 					access_key = CASE WHEN access_key IS NULL THEN NULL ELSE $2 END,
 					qr_version = qr_version + 1, updated_at = now(),
-					form_response_id = $4
+					form_response_id = $4, form_response_form_id = NULL, form_response_status = NULL
 				WHERE id = $1`, id, key, string(status), formResponse(a)); err != nil {
 				return err
 			}

@@ -264,3 +264,21 @@ func TestTeamTree_ForgetAllDuringInFlightRead(t *testing.T) {
 		t.Errorf("after ForgetAll and the in-flight read, the stale tree is kept for the TTL")
 	}
 }
+
+// Team door scan, as the panel's door hint reads it: only "true" (any case,
+// blanks around) is on; another value, a name that is no one Group's, off.
+func TestTeamTree_TeamDoorScan(t *testing.T) {
+	t.Parallel()
+	groups := treeGroups()
+	groups[2].Attributes = map[string]string{"team_door_scan": " True "} // WEBLAB
+	groups[4].Attributes = map[string]string{"team_door_scan": "yes"}    // MOBIL
+	tree := NewTeamTree(&countingLister{groups: groups}, TeamTreeOptions{})
+	if !tree.TeamDoorScan("WEBLAB") {
+		t.Error("WEBLAB's scan is off")
+	}
+	for _, team := range []string{"MOBIL", "GAMELAB", "NOPE"} {
+		if tree.TeamDoorScan(team) {
+			t.Errorf("%s's scan is on", team)
+		}
+	}
+}

@@ -108,7 +108,10 @@ The form reports ([form-response-tickets.md](form-response-tickets.md)) are
 not trusted either, so a guest who sends the form again with another name
 keeps the first name. An operator can correct it from the Event hub.
 
-Errors: `400` for a body without the required fields, `404` for an unknown
+Errors: `400` for a body without the required fields (`guest_fields_required`
+with `fields`, the missing ones of `firstName`, `lastName`, `email`; a body
+that is not JSON `invalid_body`, an Event id that is not one `invalid_id`;
+[problem-codes.md](problem-codes.md)), `404` for an unknown
 Event, `429` (below), for every caller that reaches the handler. A token
 holder can also get `401` (a blocked account), `403` (not trusted, above) or
 `503` (Group overage while Keycloak is unreachable, or the account access

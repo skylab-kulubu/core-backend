@@ -245,23 +245,13 @@ func (s *service) home(ctx context.Context, p authz.Principal, now time.Time, al
 }
 
 func (s *service) todo(ctx context.Context, p authz.Principal, now, today time.Time, covered []event.Event) (*Todo, error) {
-	editable := map[string]bool{}
-	issuable := map[string]bool{}
-	canEdit := func(team string) bool {
-		v, seen := editable[team]
-		if !seen {
-			v = s.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: team}, authz.Update)
-			editable[team] = v
-		}
-		return v
+	// Decided per Event: its Co-organizers are its own
+	// (docs/co-organizers.md).
+	canEdit := func(e event.Event) bool {
+		return s.authz.Allow(p, event.AuthzResource(e, authz.TypeEvent, now), authz.Update)
 	}
-	canIssue := func(team string) bool {
-		v, seen := issuable[team]
-		if !seen {
-			v = s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificate, OwnerTeam: team}, authz.Issue)
-			issuable[team] = v
-		}
-		return v
+	canIssue := func(e event.Event) bool {
+		return s.authz.Allow(p, event.AuthzResource(e, authz.TypeCertificate, now), authz.Issue)
 	}
 	handlesRequests := p.Product == "" && s.authz.Allow(p, authz.Resource{Type: authz.TypeSubjectRequest}, authz.Update)
 
@@ -272,8 +262,8 @@ func (s *service) todo(ctx context.Context, p authz.Principal, now, today time.T
 	issued := make([]uuid.UUID, 0)
 	names := map[uuid.UUID]string{}
 	for _, e := range covered {
-		edit := canEdit(e.OwnerTeam)
-		issue := canIssue(e.OwnerTeam)
+		edit := canEdit(e)
+		issue := canIssue(e)
 		acts = acts || edit || issue
 		if issue {
 			issued = append(issued, e.ID)

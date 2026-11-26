@@ -3,10 +3,12 @@ package event
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
@@ -31,6 +33,13 @@ func (s *PostgresStore) SetCoOrganizers(ctx context.Context, w CoOrganizersWrite
 		return Event{}, err
 	}
 	if owner != w.OwnerTeam {
+		return Event{}, ErrConflict
+	}
+	wasTeams, wasPeople, err := readCoOrganizers(ctx, tx, w.EventID)
+	if err != nil {
+		return Event{}, err
+	}
+	if w.Expect && !sameCoOrganizers(wasTeams, wasPeople, w.WasTeams, w.WasPeople) {
 		return Event{}, ErrConflict
 	}
 	codes := make([]string, len(w.Teams))
@@ -72,10 +81,35 @@ func (s *PostgresStore) SetCoOrganizers(ctx context.Context, w CoOrganizersWrite
 			return Event{}, err
 		}
 	}
+	if err := dropCoOrganizerTemplateBindings(ctx, tx, w, wasTeams); err != nil {
+		return Event{}, err
+	}
+	if err := s.queueCoOrganizerMail(ctx, tx, w, wasTeams, wasPeople); err != nil {
+		return Event{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Event{}, err
 	}
 	return s.Get(ctx, w.EventID)
+}
+
+// readCoOrganizers reads the Event's Co-organizer rows inside tx.
+func readCoOrganizers(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) ([]CoOrganizerTeam, []uuid.UUID, error) {
+	rows, err := tx.Query(ctx, `SELECT team_code, user_id, management, visibility FROM event_co_organizers WHERE event_id = $1`, eventID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var e Event
+	for rows.Next() {
+		var code, management, visibility *string
+		var userID *uuid.UUID
+		if err := rows.Scan(&code, &userID, &management, &visibility); err != nil {
+			return nil, nil, err
+		}
+		e.addCoOrganizer(code, userID, management, visibility)
+	}
+	return e.CoOrganizers, e.CoOrganizerIDs, rows.Err()
 }
 
 // CoOrganizerPeople reads the Event's Co-organizer people with their names
@@ -129,5 +163,89 @@ func dropOwnerCoOrganizer(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, own
 		return nil
 	}
 	_, err := tx.Exec(ctx, `DELETE FROM event_co_organizers WHERE event_id = $1 AND lower(team_code) = lower(btrim($2))`, eventID, ownerTeam)
+	return err
+}
+
+// HasCoOrganizerSeat reports whether p holds a seat on a current Event as
+// one of its Co-organizers (media.CoOrganizerSeats, docs/co-organizers.md):
+// a person row, or a team row of a team p leads (its leader subgroup), or
+// of a "members" team p is in; a row only while the Event's rights last
+// (CoOrganizerPersonGrace after its end, or after its start plus a day; an
+// Event with no date never ends). A read that fails is no seat.
+func (s *PostgresStore) HasCoOrganizerSeat(ctx context.Context, p authz.Principal) bool {
+	var person *uuid.UUID
+	if id, err := uuid.Parse(p.ID); err == nil {
+		person = &id
+	}
+	members, leads := seatTeams(p)
+	if person == nil && len(members) == 0 {
+		return false
+	}
+	var seat bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM event_co_organizers c
+			JOIN events e ON e.id = c.event_id AND e.archived_at IS NULL
+			WHERE (c.user_id = $1
+			    OR c.team_code = ANY($2::text[])
+			    OR (c.management = 'members' AND c.team_code = ANY($3::text[])))
+			  AND (COALESCE(e.end_date, e.start_date + interval '1 day') IS NULL
+			    OR COALESCE(e.end_date, e.start_date + interval '1 day') + make_interval(secs => $4) > now()))`,
+		person, leads, members, CoOrganizerPersonGrace.Seconds()).Scan(&seat)
+	return err == nil && seat
+}
+
+// seatTeams are the team codes p's Groups name, each segment of each path
+// (members), and those p leads: the segment right above a leader subgroup
+// (leads). Never nil.
+func seatTeams(p authz.Principal) (members, leads []string) {
+	members, leads = []string{}, []string{}
+	leaders := authz.DefaultPolicy().LeaderSubgroups
+	for _, group := range p.Groups {
+		segments := strings.Split(strings.Trim(group, "/"), "/")
+		for i, segment := range segments {
+			if segment == "" {
+				continue
+			}
+			if !slices.Contains(members, segment) {
+				members = append(members, segment)
+			}
+			if i == len(segments)-2 && slices.Contains(leaders, segments[i+1]) && !slices.Contains(leads, segment) {
+				leads = append(leads, segment)
+			}
+		}
+	}
+	return members, leads
+}
+
+// dropCoOrganizerTemplateBindings removes the Event's certificate template
+// binding to a template of a team that was one of its Co-organizer teams
+// shown outside the panel and no longer is (taken off the list, or made a
+// helper; docs/co-organizers.md): such a binding is allowed only while the
+// team is one, so it goes with it, in the same write. The Event then uses
+// its Owner team's template or the club's. An Event template or the Owner
+// team's own is never touched.
+func dropCoOrganizerTemplateBindings(ctx context.Context, tx pgx.Tx, w CoOrganizersWrite, wasTeams []CoOrganizerTeam) error {
+	var gone []string
+	for _, was := range wasTeams {
+		if was.Visibility != VisibilityCoOrganizer {
+			continue
+		}
+		still := slices.ContainsFunc(w.Teams, func(t CoOrganizerTeam) bool {
+			return strings.EqualFold(t.Code, was.Code) && t.Visibility == VisibilityCoOrganizer
+		})
+		if !still {
+			gone = append(gone, strings.ToUpper(strings.TrimSpace(was.Code)))
+		}
+	}
+	if len(gone) == 0 {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `
+		DELETE FROM certificate_template_bindings b
+		USING certificate_templates t
+		WHERE b.scope = 'event' AND b.scope_key = $1::uuid::text AND t.id = b.template_id
+		  AND t.event_id IS NULL AND upper(btrim(t.owner_team)) = ANY($2::text[])
+		  AND upper(btrim(t.owner_team)) <> upper(btrim($3))`, w.EventID, gone, w.OwnerTeam)
 	return err
 }

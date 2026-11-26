@@ -24,6 +24,12 @@ type Store interface {
 	MediaForDeletion(context.Context, uuid.UUID) ([]uuid.UUID, error)
 }
 
+// countedAnonymizer is a Store whose anonymize_core answers counts for the
+// completion proof (user.PostgresStore).
+type countedAnonymizer interface {
+	AnonymizeAccountCounted(context.Context, uuid.UUID, time.Time, []string) (map[string]int64, error)
+}
+
 type Identity interface {
 	EnsureDisabled(context.Context, uuid.UUID) error
 	EnsureLoggedOut(context.Context, uuid.UUID) error
@@ -111,7 +117,10 @@ type sagaStep struct {
 	name          user.DeletionStep
 	run           func(context.Context, uuid.UUID) error
 	withAddresses func(context.Context, uuid.UUID, []string) error
-	services      *ServiceErasure
+	// counted is withAddresses that also answers counts for the proof
+	// (anonymize_core); its checkpoint keeps them.
+	counted  func(context.Context, uuid.UUID, []string) (map[string]int64, error)
+	services *ServiceErasure
 }
 
 // erasurePass is what one pass reads once and keeps for that pass only: the
@@ -199,12 +208,20 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 			w.completedNoticeAddresses(ctx, request, pass)
 		}
 		run := step.run
-		if step.withAddresses != nil {
+		var counts map[string]int64
+		if step.withAddresses != nil || step.counted != nil {
 			emails, err := w.passAddresses(ctx, request, pass, w.services.Addresses)
 			if err != nil {
 				return true, w.retry(ctx, request, now, "erasure_addresses_failed", err, false)
 			}
-			run = func(ctx context.Context, id uuid.UUID) error { return step.withAddresses(ctx, id, emails) }
+			if step.counted != nil {
+				run = func(ctx context.Context, id uuid.UUID) (err error) {
+					counts, err = step.counted(ctx, id, emails)
+					return err
+				}
+			} else {
+				run = func(ctx context.Context, id uuid.UUID) error { return step.withAddresses(ctx, id, emails) }
+			}
 		}
 		stepCtx, cancel := context.WithTimeout(ctx, w.config.StepTimeout)
 		err := run(stepCtx, request.SubjectID)
@@ -215,7 +232,13 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		// A checkpoint carries the time its step finished, not the start of
 		// the pass: the completion proof lists when each step was done.
 		finished := w.config.Now()
-		if err := w.store.CompleteDeletionStep(ctx, request.ID, leaseToken, step.name, finished); err != nil {
+		checkpoint := func() error { return w.store.CompleteDeletionStep(ctx, request.ID, leaseToken, step.name, finished) }
+		if len(counts) > 0 {
+			checkpoint = func() error {
+				return w.store.CompleteServiceErasureStep(ctx, request.ID, leaseToken, step.name, finished, counts)
+			}
+		}
+		if err := checkpoint(); err != nil {
 			return true, w.retry(ctx, request, now, string(step.name)+"_checkpoint_failed", err, false)
 		}
 		pass.checkpoints[step.name] = finished
@@ -282,8 +305,14 @@ func (w *Worker) coreSaga(request user.DeletionRequest, now time.Time) []sagaSte
 			return err
 		}},
 		{services: &w.services},
-		{name: user.DeletionStepAnonymizeCore, withAddresses: func(ctx context.Context, id uuid.UUID, emails []string) error {
-			return w.store.AnonymizeAccount(ctx, id, now, emails)
+		// Core's own data: its proof keeps the count of Unticketed
+		// respondent rows deleted (docs/form-respondents.md) when the store
+		// reports it.
+		{name: user.DeletionStepAnonymizeCore, counted: func(ctx context.Context, id uuid.UUID, emails []string) (map[string]int64, error) {
+			if counted, ok := w.store.(countedAnonymizer); ok {
+				return counted.AnonymizeAccountCounted(ctx, id, now, emails)
+			}
+			return nil, w.store.AnonymizeAccount(ctx, id, now, emails)
 		}},
 		{name: user.DeletionStepEraseProfile, run: func(ctx context.Context, _ uuid.UUID) error {
 			// The profile picture and the uploads anonymize_core recorded.
