@@ -28,13 +28,15 @@ func kurumsalGoldenDocuments() []ticketpage.Document {
 
 // Kurumsal's ticket is the same, byte for byte, as before Event themes
 // (docs/event-theme.md): its document and its page head, hashed as main
-// drew them on 2026-11-26 (c91a3ac5), with no theme and with Kurumsal's.
+// drew them on 2026-11-26 (c91a3ac5), with no theme and with Kurumsal's;
+// the document's since the place's name, address and directions QR became
+// links and the ticket note got its section (2026-11-26, the head unchanged).
 func TestKurumsalTicketUnchanged(t *testing.T) {
 	t.Parallel()
 	want := []string{
-		"05b0a9f0dd79d05f8e06ae0492ac9bb99f41c5e2181163decb0f9ef312936aa1",
-		"70a7b96a161c2d949f942134d92b4113bcdc4eeb1b2c98910a8e221e53b1cae6",
-		"a11ac35b1c47ef465fb7ae92b24bcce9a0f2d7dc1116860d1ec9144dbd5cc64a",
+		"59f4c7793a8f414005a146d6a1d553fe9790c3b2bfe5772512b4ea470d3c55ef",
+		"ef13fe18b44996c479f1009106e46d6ec91fb4f0aaa8a5717c02207239557a08",
+		"8fd4fff354ae6bc43d6ce011ec6f77425a5795f355beedcde1a87b94ef9a7328",
 	}
 	const head = "b07f3efc14b8a14eb95d29cda14a6ed494e1edd33c906f82cf9e1fb85463da60"
 	for _, look := range []theme.Theme{{}, theme.Lookup(""), theme.Lookup("kurumsal"), theme.Lookup("bilinmeyen")} {
