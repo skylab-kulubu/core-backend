@@ -1,7 +1,8 @@
 // Package doorqr is the signed door QR that lets a guest check themselves in
-// to a Session, and the rotating attendance QR (the Session QR) that a member
-// scans with sky-app or a guest with their phone's camera
-// (docs/guest-self-check-in.md).
+// to a Session, the rotating attendance QR (the Session QR) that a member
+// scans with sky-app or a guest with their phone's camera, and the static
+// attendance QR, one per Session, for a printout or a screen that cannot
+// refresh (docs/guest-self-check-in.md).
 //
 // Door staff show a short-lived token on a screen at the door; it rotates
 // every RefreshAfter. A guest scans it, and Guest check-in sends it back with
@@ -54,6 +55,10 @@ const (
 	// ClassDisplay is the attendance screen on a projector or OBS: a whole
 	// room scans the same frame.
 	ClassDisplay Class = "display"
+	// ClassStatic is the static attendance QR: the same token for a Session
+	// every time, for a printout or a screen that cannot refresh. It never
+	// expires and has no use cap; the Session's time window bounds it.
+	ClassStatic Class = "static"
 )
 
 // ParseClass reads a class name; empty is ClassDoor.
@@ -63,6 +68,8 @@ func ParseClass(raw string) (Class, bool) {
 		return ClassDoor, true
 	case ClassDisplay:
 		return ClassDisplay, true
+	case ClassStatic:
+		return ClassStatic, true
 	default:
 		return "", false
 	}
@@ -94,6 +101,10 @@ const (
 	// DisplayMaxUsesEnv is how many check-ins one attendance screen token
 	// admits.
 	DisplayMaxUsesEnv = "ATTENDANCE_QR_MAX_USES"
+	// StaticEnv turns the static attendance QR on or off: on (the default)
+	// mints and accepts it, off refuses both, so every static QR already
+	// printed or shown stops checking anyone in.
+	StaticEnv = "DOOR_QR_STATIC"
 
 	// DefaultTTL is how long a door QR token is accepted. The screen asks
 	// for a new one every quarter of it (RefreshAfter), so a guest who has
@@ -132,10 +143,13 @@ const (
 	// DisplayField marks a display token: `v1.<exp>.<jti>.a.<mac>`. A door
 	// token keeps the original four fields.
 	DisplayField = "a"
+	// StaticField marks a static token: `v1.s.<mac>`, no expiry and no jti.
+	StaticField = "s"
 
 	keyInfo          = "skylab core door-qr v1"
 	macDomain        = "door-qr v1\x00"
 	macDomainDisplay = "door-qr display v1\x00"
+	macDomainStatic  = "door-qr static v1\x00"
 	jtiBytes         = 6
 	macBytes         = 12
 	// maxTracked bounds the use counts kept in memory. Only genuine tokens
@@ -163,6 +177,8 @@ type Config struct {
 	// SessionGrace widens a Session's time window on both sides. Negative
 	// means the default; zero means none.
 	SessionGrace time.Duration
+	// StaticOff refuses the static attendance QR (DOOR_QR_STATIC=off).
+	StaticOff bool
 }
 
 // ConfigFromEnv reads the settings. Unset values take their defaults; a value
@@ -213,6 +229,13 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("%s: want an https URL containing %s", GuestURLEnv, SessionPlaceholder)
 		}
 		cfg.GuestURL = raw
+	}
+	switch raw := strings.TrimSpace(getenv(StaticEnv)); raw {
+	case "", "on":
+	case "off":
+		cfg.StaticOff = true
+	default:
+		return Config{}, fmt.Errorf("%s: %q is neither %q nor %q", StaticEnv, raw, "on", "off")
 	}
 	if raw := strings.TrimSpace(getenv(SessionGraceEnv)); raw != "" {
 		grace, err := time.ParseDuration(raw)
@@ -328,6 +351,25 @@ func (g *Gate) SessionMode() Mode {
 	return g.cfg.SessionMode
 }
 
+// StaticOn reports whether the static attendance QR is minted and accepted.
+func (g *Gate) StaticOn() bool {
+	return g != nil && !g.cfg.StaticOff
+}
+
+// SessionWindow is the window SessionOpen applies to a Session with this
+// schedule: nil on a side the schedule leaves open.
+func (g *Gate) SessionWindow(start, end *time.Time) (from, until *time.Time) {
+	if start != nil {
+		t := start.Add(-g.cfg.SessionGrace).UTC()
+		from = &t
+	}
+	if end != nil {
+		t := end.Add(g.cfg.SessionGrace).UTC()
+		until = &t
+	}
+	return from, until
+}
+
 func (g *Gate) maxUses(class Class) int {
 	if class == ClassDisplay {
 		return g.cfg.DisplayMaxUses
@@ -370,17 +412,39 @@ func (g *Gate) mac(class Class, sessionID, eventID uuid.UUID, exp int64, jti []b
 	return m.Sum(nil)[:macBytes]
 }
 
+// staticMAC is the static token's tag: it covers only the Session and the
+// Event, so the token is the same every time it is minted.
+func (g *Gate) staticMAC(sessionID, eventID uuid.UUID) []byte {
+	m := hmac.New(sha256.New, g.key)
+	m.Write([]byte(macDomainStatic))
+	m.Write(sessionID[:])
+	m.Write(eventID[:])
+	return m.Sum(nil)[:macBytes]
+}
+
+// ErrStaticOff is a static token minted or presented while
+// DOOR_QR_STATIC=off.
+var ErrStaticOff = errors.New("doorqr: static qr off")
+
 // Mint signs a door token for one Session of one Event.
 func (g *Gate) Mint(sessionID, eventID uuid.UUID) (Pass, error) {
 	return g.MintFor(ClassDoor, sessionID, eventID)
 }
 
-// MintFor signs a token of the given class for one Session of one Event.
+// MintFor signs a token of the given class for one Session of one Event. A
+// static Pass has no ExpiresAt, no RefreshAfter and no MaxUses.
 func (g *Gate) MintFor(class Class, sessionID, eventID uuid.UUID) (Pass, error) {
+	now := g.clock().Truncate(time.Second)
+	if class == ClassStatic {
+		if g.cfg.StaticOff {
+			return Pass{}, ErrStaticOff
+		}
+		token := Version + "." + StaticField + "." + b64.EncodeToString(g.staticMAC(sessionID, eventID))
+		return Pass{Token: token, URL: g.passURL(sessionID, token), Class: ClassStatic, IssuedAt: now}, nil
+	}
 	if class != ClassDisplay {
 		class = ClassDoor
 	}
-	now := g.clock().Truncate(time.Second)
 	exp := now.Add(g.cfg.TTL)
 	jti := make([]byte, jtiBytes)
 	if _, err := rand.Read(jti); err != nil {
@@ -421,11 +485,15 @@ func (g *Gate) passURL(sessionID uuid.UUID, token string) string {
 }
 
 // Use is one admitted check-in on a token. Release gives the use back when
-// the check-in did not happen.
+// the check-in did not happen. A static token's Use counts nothing.
 type Use struct {
-	g   *Gate
-	key string
+	g      *Gate
+	key    string
+	static bool
 }
+
+// Static reports whether the token admitted was a static attendance QR.
+func (u Use) Static() bool { return u.static }
 
 // Release returns the use to the token: a failed attempt (an e-mail without a
 // Ticket, a server error) does not spend a guest's place.
@@ -449,6 +517,9 @@ func (g *Gate) Admit(raw string, sessionID, eventID uuid.UUID) (Use, error) {
 		return Use{}, ErrInvalid
 	}
 	parts := strings.Split(strings.TrimSpace(raw), ".")
+	if len(parts) == 3 && parts[0] == Version && parts[1] == StaticField {
+		return g.admitStatic(parts[2], sessionID, eventID)
+	}
 	class := ClassDoor
 	switch {
 	case len(parts) == 5 && parts[3] == DisplayField:
@@ -503,6 +574,19 @@ func (g *Gate) Admit(raw string, sessionID, eventID uuid.UUID) (Use, error) {
 		g.sweepLocked(now)
 	}
 	return Use{g: g, key: key}, nil
+}
+
+// admitStatic checks a static token's tag. The Session's time window, which
+// bounds it, is the caller's: the Session's schedule is not in the token.
+func (g *Gate) admitStatic(rawMAC string, sessionID, eventID uuid.UUID) (Use, error) {
+	mac, err := b64.DecodeString(rawMAC)
+	if err != nil || len(mac) != macBytes || !hmac.Equal(mac, g.staticMAC(sessionID, eventID)) {
+		return Use{}, ErrInvalid
+	}
+	if g.cfg.StaticOff {
+		return Use{}, ErrStaticOff
+	}
+	return Use{static: true}, nil
 }
 
 // sweepLocked forgets the use counts of tokens that have expired.

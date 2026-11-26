@@ -52,6 +52,8 @@ attendee import and the forms service's report.
 | 400 | `form_id_required` | | the forms service's report for the zero form id |
 | 400 | `form_status_invalid` | | the report's `status` is not `accepted`, `pending` or `declined` |
 | 400 | `guest_name_required` | | the report's `guest` has an e-mail but no first or last name |
+| 400 | `door_qr_static_off` | | the static attendance QR (`door-qr?use=static`) while `DOOR_QR_STATIC=off` (docs/guest-self-check-in.md) |
+| 400 | `session_times_required` | | the static attendance QR for a Session without a start or an end time |
 | 404 | `guest_ticket_not_found` | `registrationUrl` while the Event takes registrations | the guest's check-in: no Ticket for this e-mail or key on the Session's Event |
 | 409 | `already_checked_in` | | the Ticket already has this Session's Check-in |
 | 409 | `ambiguous_match` | | the desk's name or e-mail matches more than one Ticket (title "Ambiguous Match", unchanged) |
