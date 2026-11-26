@@ -12,7 +12,7 @@ import (
 // them; never a Team's own action.
 func TestEventEditorBasisActions(t *testing.T) {
 	t.Parallel()
-	for _, action := range []Action{ActionTicketCancel, ActionTicketRestore, ActionTicketPromote, ActionTicketImport, ActionTicketImportPreview, ActionTicketExport, ActionTicketResend, ActionTicketLinkRenew} {
+	for _, action := range []Action{ActionTicketCancel, ActionTicketRestore, ActionTicketPromote, ActionTicketImport, ActionTicketImportPreview, ActionTicketExport, ActionRaffleDraw, ActionRaffleForfeit, ActionTicketResend, ActionTicketLinkRenew} {
 		r := Record{
 			Actor:   Actor{ID: uuid.New(), Basis: BasisEventEditor, ViaGroupID: uuid.NewString(), Client: "core-frontend"},
 			Action:  action,

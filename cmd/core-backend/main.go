@@ -57,6 +57,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/memlimit"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/organizer"
+	"github.com/skylab-kulubu/core-backend/internal/raffle"
 	"github.com/skylab-kulubu/core-backend/internal/retention"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
@@ -1222,6 +1223,18 @@ func main() {
 	// form's answers are gathered; off, answers take the rule alone as
 	// before. The list and the sending answer whatever the switch says
 	// (they read no Forms).
+	// An Event's raffles (docs/raffle.md): attendance as the certificate
+	// rule counts it, the Team audit rows on the ticket operators' basis.
+	// Without the ticket service's audit rows a raffle would draw
+	// unrecorded: core does not start.
+	raffleAudit, ok := ticketSvc.(ticket.EventAuditor)
+	if !ok {
+		log.Fatal("raffles: the ticket service opens no event audit rows")
+	}
+	raffles := &raffle.Service{
+		Store: raffle.NewPostgres(pool), Events: events, Authz: az, Attendance: certs, Audit: raffleAudit,
+		Teams: raffle.DirectoryTeams{Dir: dir}, People: users.Accounts,
+	}
 	formRespondents := &formsfeed.Respondents{
 		Store: formsfeed.NewPostgresRespondents(pool), Events: events, Authz: az, Tickets: ticketSvc,
 		Jobs: formsfeed.NewPostgresTicketJobs(pool),
@@ -1398,6 +1411,7 @@ func main() {
 		FormBackfills:          formBackfills,
 		FormMappings:           formMappings,
 		FormRespondents:        formRespondents,
+		Raffles:                raffles,
 		FormResponseMapper:     formResponseMapper(mappedGuests),
 		Certificates:           certSvc,
 		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),
