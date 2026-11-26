@@ -69,6 +69,16 @@ const (
 // it only while DOOR_STAFF_MAIL is on.
 const DoorStaffAddedType = "event.door-staff-added"
 
+// CoOrganizerAddedType and CoOrganizerRemovedType are the Notification
+// types (and e-mail template keys) a team's Leaders or a person added to,
+// or removed from, an Event's Co-organizers are told by
+// (docs/co-organizers.md#mails). SkyNotify seeds them with their templates;
+// core sends them only while CO_ORGANIZER_MAIL is on.
+const (
+	CoOrganizerAddedType   = "core.event-co-organizer-added"
+	CoOrganizerRemovedType = "core.event-co-organizer-removed"
+)
+
 const (
 	kindTicketCreated = "ticket_created"
 	kindEventUpdated  = "event_updated"
@@ -77,6 +87,7 @@ const (
 	kindEventReminder = "event_reminder"
 	kindAttendance    = "attendance_mail"
 	kindDoorStaff     = "door_staff_added"
+	kindCoOrganizer   = "co_organizer"
 )
 
 // Notification is one POST /v1/notifications (SkyNotify docs/notifications.md):
@@ -255,6 +266,27 @@ func (s *SkyNotify) DoorStaffAdded(ctx context.Context, idempotencyKey string, s
 		Variables:  variables,
 		Source:     &source,
 		ExpiresAt:  expiresAt,
+	})
+}
+
+// CoOrganizer tells the people of a Co-organizer change (typ
+// CoOrganizerAddedType or CoOrganizerRemovedType): a person, or a team's
+// Leaders, by one Notification to their subjects (inbox and e-mail, as
+// SkyNotify's type says), idempotent under idempotencyKey.
+func (s *SkyNotify) CoOrganizer(ctx context.Context, typ, idempotencyKey string, subs []uuid.UUID, vars map[string]string, source NotificationSource) error {
+	variables := make(map[string]any, len(vars))
+	for name, value := range vars {
+		variables[name] = value
+	}
+	recipients := make([]NotificationRecipient, 0, len(subs))
+	for _, sub := range subs {
+		recipients = append(recipients, NotificationRecipient{Sub: sub})
+	}
+	return s.Notify(ctx, kindCoOrganizer, idempotencyKey, Notification{
+		Type:       typ,
+		Recipients: recipients,
+		Variables:  variables,
+		Source:     &source,
 	})
 }
 

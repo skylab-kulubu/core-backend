@@ -2121,6 +2121,37 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
 		  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.link.renew%'
 		  AND pg_get_constraintdef(oid) LIKE '%console%'`,
+	// An Event's Co-organizer list in the Team audit record and its mails'
+	// queue (docs/co-organizers.md): the action and Group checks name
+	// co_organizer.*, the queue with its keys and indexes.
+	20261127115000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%co_organizer.change%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_group_id_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%co_organizer.%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_group_path_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%co_organizer.%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%co_organizer.add%'
+		)
+		AND to_regclass('public.co_organizer_notifications') IS NOT NULL
+		AND to_regclass('public.co_organizer_notifications_team_key') IS NOT NULL
+		AND to_regclass('public.co_organizer_notifications_user_key') IS NOT NULL
+		AND to_regclass('public.co_organizer_notifications_due_idx') IS NOT NULL
+		AND to_regclass('public.co_organizer_notifications_user_idx') IS NOT NULL
+		AND to_regclass('public.co_organizer_notifications_actor_idx') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

@@ -94,6 +94,44 @@ Who: `ManageOrganizers` (Privileged and the Owner team's Leaders; never a Co-org
 
 `PUT`/`PATCH /v1/events/{id}` and the Event's create never write the list (a field of it in their body is ignored); a copy carries it as below.
 
+## Audit record
+
+`PUT /v1/events/{id}/organizers` writes a row of the Team audit record ([team-audit.md](team-audit.md)) for each change, opened before the write: without its row there is no change (`503 audit_unavailable`, nothing written; ADR-0065 decision 9).
+
+- `co_organizer.add`, `co_organizer.remove`: a team or a person added or removed; `co_organizer.change`: a team's `management` or `visibility` changed (one row, before and after).
+- Target: the Event's Owner team's Group; an Event without an Owner team has none (`group_id` NULL, `group_path` empty). Before/after: `eventId` and the team's `code`, `management`, `visibility`, or the person's `personId` alone; never a name.
+- Basis: `privileged`, or `leader` with the Team whose Leader group grants it (the Owner team or a Team above it).
+- A write `ManageOrganizers` refuses is recorded as one `denied` `co_organizer.change` row per request (basis `none`, `forbidden`): the Event and `changes`, how many changes it asked for (0 when its lists cannot be read). A validation refusal (`400`) or the switch off (`co_organizers_disabled`) writes no row.
+- The rows decide against the lists as the request read them: a write whose lists changed meanwhile is `409` and writes nothing, so a row never names a change that was not made.
+- A copy that carries Co-organizers writes a `co_organizer.add` row for each team and person it carries, `reason: "copy"`, against the copy's Owner team, opened before the copy (`503 audit_unavailable` and no copy when one cannot be). Basis: `privileged`, `leader` (the copy's Owner team or a Team above it), else `event_editor` through the copy's Owner team (a Co-organizer copying; migration `20261127115000`). A person the copy leaves out (an account no longer active) has the row `failed` `inactive_person`. A copy carrying none writes no row.
+
+## Mails
+
+**`CO_ORGANIZER_MAIL`** (`on`/`off`, unset is `off`). On (and SkyNotify configured), the write of the list queues, in its transaction, a mail for each team or person added or removed (`co_organizer_notifications`); a worker sends it two minutes later (`event.CoOrganizerMailDelay`) if the change still holds (an added one still on the list, a removed one off it): a change taken back meanwhile tells nobody. A team whose choices alone changed, a person whose rights ended (30 days after the Event) and a copy tell nobody.
+
+| Type | To |
+|---|---|
+| `core.event-co-organizer-added` | the person added; the Leaders of the team added (the enabled people of its own `LIDERLER`/`KOORDINATORLER` groups now, not a Team above's) |
+| `core.event-co-organizer-removed` | the person removed; the Leaders of the team removed |
+
+```http
+POST /v1/notifications
+Idempotency-Key: core:core.event-co-organizer-added:<rowId>:v1
+
+{"type": "core.event-co-organizer-added",
+ "recipients": [{"sub": "<userId>"}, …],
+ "variables": {"EventId": "…", "EventName": "…", "OwnerTeam": "SKY LAB: Bilgisayar Bilimleri Kulübü",
+               "TeamName": "WEBLAB · Web Geliştirme", "Management": "yalnız liderler", "Visibility": "ortak düzenleyen",
+               "ActorName": "Ada Lovelace", "PanelUrl": "https://admin.yildizskylab.com/events/<id>"},
+ "source": {"kind": "event", "ref": "<eventId>"}}
+```
+
+Every variable is always sent (empty when it does not apply): `TeamName`, `Management` (`yalnız liderler` | `bütün üyeler`) and `Visibility` (`ortak düzenleyen` | `yardımcı ekip (dışarıda görünmez)`) on a team's added mail alone (a removal has `TeamName` only); `ActorName` empty when who changed the list may no longer be named; `PanelUrl` empty without `PANEL_URL`. A transactional mail about one's own task: SkyNotify's `system` lane, no preferences.
+
+Retries as the door staff mail ([door-staff-mail.md](door-staff-mail.md#retries)): `400`/`422` done with (but `notification.type_unknown`), anything else tried again from 30 seconds up to 30 minutes, for 7 days. Account erasure deletes the person's rows and forgets the actor. Rollback: `CO_ORGANIZER_MAIL=off`; waiting rows stay unsent.
+
+Before turning it on: SkyNotify seeds both types with their templates and inbox texts (variables above); `core`'s service account already holds `skynotify:notifications:send`.
+
 ## Lists
 
 `GET /v1/events` (current Events only; with `lifecycle=inactive|all` either filter is `400 event_list_filter_invalid`):
@@ -127,7 +165,7 @@ The stored lists are never in the JSON by themselves: `ProjectFor` copies them f
 
 ## Data
 
-`event_co_organizers` (migration `20261126151000`): `event_id` (the Event's rows go with it), `team_code` or `user_id` (one of them), `management` and `visibility` (both on a team row, none on a person row; the checks enforce it), `added_by` (an id alone; the name is read when shown) and `added_at`. A team and a person are each once on an Event. `user_id` and `added_by` are current-identity links, guarded like `event_door_staff.user_id`. The audit record and the mails are ticket 05.
+`event_co_organizers` (migration `20261126151000`): `event_id` (the Event's rows go with it), `team_code` or `user_id` (one of them), `management` and `visibility` (both on a team row, none on a person row; the checks enforce it), `added_by` (an id alone; the name is read when shown) and `added_at`. A team and a person are each once on an Event. `user_id` and `added_by` are current-identity links, guarded like `event_door_staff.user_id`. The audit record and the mails: above (ticket 05; migration `20261127115000`).
 
 - **Retention** (`co_organizer_people`, [retention-sweep.md](retention-sweep.md); rule set v11): a person row goes 90 days after the Event's end, as door staff; an Event with no date is counted, never changed. The rights end 30 days after the Event, before. A team row lives with the Event.
 - **Account erasure**: the person's rows go; `added_by` of the rows they added is cleared, the rows stay.

@@ -11,6 +11,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 )
 
 type Service interface {
@@ -132,6 +133,11 @@ type service struct {
 	// now is the clock a Co-organizer person's end is read against; nil is
 	// time.Now.
 	now func() time.Time
+	// audit records the changes of the Co-organizer list in the Team audit
+	// record; nil records none (a test). groups finds the Event's Owner
+	// team's Group, the row's target.
+	audit  teamaudit.Writer
+	groups TeamGroups
 }
 
 func NewService(store Store, az authz.Authorizer, publicBase ...string) Service {

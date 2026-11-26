@@ -382,7 +382,18 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 			plan.Event.CoverImageID = source.CoverImageID
 		}
 	}
+	// What the copy carries of the Co-organizers is recorded, each a
+	// co_organizer.add row (reason copy), opened before the write.
+	var carried []uuid.UUID
+	if plan.CoOrganizerPeople == CopyWrite {
+		carried = source.CoOrganizerIDs
+	}
+	open, byPerson, err := s.copyOrganizerAudit(ctx, p, plan.Event, plan.CoOrganizerTeams, carried)
+	if err != nil {
+		return Copied{}, false, err
+	}
 	created, parts, err := s.store.Copy(ctx, plan)
+	s.finishCopyAudit(ctx, open, byPerson, created, err)
 	if errors.Is(err, ErrConflict) {
 		// Another request took the id meanwhile: the same copy, or not.
 		made, ok, err := s.madeCopy(ctx, &p, in.ID, source.ID, team)

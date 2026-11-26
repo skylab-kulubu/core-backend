@@ -40,6 +40,11 @@ type PostgresStore struct {
 	// staff gets (DOOR_STAFF_MAIL, docs/door-staff-mail.md) in the write
 	// that adds them.
 	notifyDoorStaff atomic.Bool
+	// notifyCoOrganizers queues the mail of a team or person added to, or
+	// removed from, an Event's Co-organizers (co_organizer_notifications,
+	// docs/co-organizers.md#mails) in the write of the list. Atomic, as
+	// notifyDoorStaff.
+	notifyCoOrganizers atomic.Bool
 	// notifyStatus queues a Ticket promoted from the waiting list as
 	// event.waitlist-promoted (TICKET_STATUS_MAIL, NotifyTicketStatus);
 	// off, as the new Ticket's mail while notifyTickets is on.

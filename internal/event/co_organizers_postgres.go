@@ -35,6 +35,13 @@ func (s *PostgresStore) SetCoOrganizers(ctx context.Context, w CoOrganizersWrite
 	if owner != w.OwnerTeam {
 		return Event{}, ErrConflict
 	}
+	wasTeams, wasPeople, err := readCoOrganizers(ctx, tx, w.EventID)
+	if err != nil {
+		return Event{}, err
+	}
+	if w.Expect && !sameCoOrganizers(wasTeams, wasPeople, w.WasTeams, w.WasPeople) {
+		return Event{}, ErrConflict
+	}
 	codes := make([]string, len(w.Teams))
 	for i, team := range w.Teams {
 		codes[i] = team.Code
@@ -74,10 +81,32 @@ func (s *PostgresStore) SetCoOrganizers(ctx context.Context, w CoOrganizersWrite
 			return Event{}, err
 		}
 	}
+	if err := s.queueCoOrganizerMail(ctx, tx, w, wasTeams, wasPeople); err != nil {
+		return Event{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Event{}, err
 	}
 	return s.Get(ctx, w.EventID)
+}
+
+// readCoOrganizers reads the Event's Co-organizer rows inside tx.
+func readCoOrganizers(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) ([]CoOrganizerTeam, []uuid.UUID, error) {
+	rows, err := tx.Query(ctx, `SELECT team_code, user_id, management, visibility FROM event_co_organizers WHERE event_id = $1`, eventID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var e Event
+	for rows.Next() {
+		var code, management, visibility *string
+		var userID *uuid.UUID
+		if err := rows.Scan(&code, &userID, &management, &visibility); err != nil {
+			return nil, nil, err
+		}
+		e.addCoOrganizer(code, userID, management, visibility)
+	}
+	return e.CoOrganizers, e.CoOrganizerIDs, rows.Err()
 }
 
 // CoOrganizerPeople reads the Event's Co-organizer people with their names
