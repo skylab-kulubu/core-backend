@@ -49,6 +49,9 @@ func TestNameWithTurkishNames(t *testing.T) {
 			t.Errorf("Name(%q) = %q, want %q", team, got, want)
 		}
 	}
+	if got := CoNames([]string{"WEBLAB", " ", "YK", "ARTLAB"}); got != "WEBLAB · Web Geliştirme, ARTLAB" {
+		t.Errorf("CoNames = %q", got)
+	}
 	if src.count() != 1 {
 		t.Fatalf("read %d times, want once", src.count())
 	}

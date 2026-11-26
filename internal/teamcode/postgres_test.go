@@ -63,8 +63,10 @@ func TestPostgresLedgerHeld(t *testing.T) {
 	exec(t, pool, `INSERT INTO certificate_template_bindings (id, scope, scope_key, template_id) VALUES ($1, 'ownerTeam', 'BOUNDTEAM', $2)`, uuid.New(), template)
 	exec(t, pool, `INSERT INTO certificate_template_bindings (id, scope, scope_key, template_id) VALUES ($1, 'event', 'EVENTSCOPE', $2)`, uuid.New(), template)
 	exec(t, pool, `INSERT INTO retired_team_codes (code, reason) VALUES ('OLDTEAM', 'seeded')`)
+	// An Event's Co-organizer team names its code too (docs/co-organizers.md).
+	exec(t, pool, `INSERT INTO event_co_organizers (event_id, team_code, management, visibility) VALUES ($1, 'CoTeam', 'leaders', 'helper')`, event)
 
-	for _, code := range []string{"EVENTTEAM", "eventteam", "CERTTEAM", "TEMPLATETEAM", "BOUNDTEAM", "OLDTEAM", "oldteam"} {
+	for _, code := range []string{"EVENTTEAM", "eventteam", "CERTTEAM", "TEMPLATETEAM", "BOUNDTEAM", "OLDTEAM", "oldteam", "COTEAM"} {
 		if !held(t, ledger, code) {
 			t.Errorf("%s is not held", code)
 		}
@@ -82,6 +84,7 @@ func TestPostgresLedgerHeld(t *testing.T) {
 		"certteam":     {teamcode.RecordCertificate},
 		"TEMPLATETEAM": {teamcode.RecordEvent, teamcode.RecordCertificateTemplate},
 		"BOUNDTEAM":    {teamcode.RecordTemplateBinding},
+		"coteam":       {teamcode.RecordEventCoOrganizer},
 		"OLDTEAM":      nil,
 		"EVENTSCOPE":   nil,
 	} {
@@ -421,6 +424,7 @@ func TestPostgresLedgerSeedRetired(t *testing.T) {
 	exec(t, pool, `INSERT INTO certificate_template_bindings (id, scope, scope_key, template_id) VALUES ($1, 'ownerTeam', 'OLD', $2)`, uuid.New(), template)
 	exec(t, pool, `INSERT INTO certificate_template_bindings (id, scope, scope_key, template_id) VALUES ($1, 'event', 'EVENTSCOPE', $2)`, uuid.New(), template)
 	exec(t, pool, `INSERT INTO retired_team_codes (code, reason) VALUES ('Old', 'renamed')`)
+	exec(t, pool, `INSERT INTO event_co_organizers (event_id, team_code, management, visibility) VALUES ($1, 'WEBLAB', 'members', 'co_organizer')`, event)
 
 	records, err := ledger.RecordCodes(ctx)
 	if err != nil {
@@ -428,7 +432,7 @@ func TestPostgresLedgerSeedRetired(t *testing.T) {
 	}
 	want := map[string][]string{
 		"GONE":   {teamcode.RecordEvent, teamcode.RecordCertificate},
-		"WEBLAB": {teamcode.RecordCertificateTemplate},
+		"WEBLAB": {teamcode.RecordCertificateTemplate, teamcode.RecordEventCoOrganizer},
 		"OLD":    {teamcode.RecordTemplateBinding},
 	}
 	if len(records) != len(want) {

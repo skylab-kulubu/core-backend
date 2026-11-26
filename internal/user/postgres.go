@@ -612,6 +612,14 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		`UPDATE tickets SET owner_id = NULL, access_key = NULL, qr_version = qr_version + 1, cancel_reason = NULL, form_response_id = NULL WHERE owner_id = $1`,
 		`UPDATE certificates SET owner_id = NULL, recipient_email = '' WHERE owner_id = $1`,
 		`DELETE FROM event_door_staff WHERE user_id = $1`,
+		// An Event's Co-organizer person goes with the account; who added a
+		// row is forgotten, the row stays (docs/co-organizers.md).
+		`DELETE FROM event_co_organizers WHERE user_id = $1`,
+		`UPDATE event_co_organizers SET added_by = NULL WHERE added_by = $1`,
+		// Their Co-organizer mails not sent yet go; who made a change is
+		// forgotten (docs/co-organizers.md#mails).
+		`DELETE FROM co_organizer_notifications WHERE user_id = $1`,
+		`UPDATE co_organizer_notifications SET actor_id = NULL WHERE actor_id = $1`,
 		// Venue entries stay with their Tickets (docs/venue-entry.md); the
 		// door staff who wrote one is forgotten.
 		`UPDATE venue_entries SET by_user_id = NULL WHERE by_user_id = $1`,

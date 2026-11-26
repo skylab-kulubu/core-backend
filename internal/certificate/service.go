@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -142,13 +143,31 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 	}
 }
 
-func (s *service) canIssue(p authz.Principal, ownerTeam string) bool {
-	return s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificate, OwnerTeam: ownerTeam}, authz.Issue)
+// eventResource is ev's decision of type t, its Co-organizers included
+// (event.AuthzResource, docs/co-organizers.md).
+func eventResource(ev event.Event, t authz.Type) authz.Resource {
+	return event.AuthzResource(ev, t, time.Now())
 }
 
-func (s *service) canReadWorkspace(p authz.Principal, ownerTeam string) bool {
-	return s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificate, OwnerTeam: ownerTeam}, authz.Read) ||
-		s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: ownerTeam}, authz.Read)
+func (s *service) canIssue(p authz.Principal, ev event.Event) bool {
+	return s.authz.Allow(p, eventResource(ev, authz.TypeCertificate), authz.Issue)
+}
+
+func (s *service) canReadWorkspace(p authz.Principal, ev event.Event) bool {
+	return s.authz.Allow(p, eventResource(ev, authz.TypeCertificate), authz.Read) ||
+		s.authz.Allow(p, eventResource(ev, authz.TypeCertificateTemplate), authz.Read)
+}
+
+// certificateResource is the decision on a certificate c: its Event's, the
+// Event's Co-organizers included; the Owner team it was issued under when
+// the Event cannot be read.
+func (s *service) certificateResource(ctx context.Context, c Certificate) authz.Resource {
+	if s.events != nil {
+		if ev, err := s.events.GetIncludingArchived(ctx, c.EventID); err == nil {
+			return eventResource(ev, authz.TypeCertificate)
+		}
+	}
+	return authz.Resource{Type: authz.TypeCertificate, OwnerTeam: c.OwnerTeam}
 }
 
 // eligible decides one Ticket by the Event's rule over the counted and
@@ -254,7 +273,7 @@ func (s *service) materializeLegacy(ctx context.Context, ev event.Event, t ticke
 	if err != nil {
 		return Certificate{}, err
 	}
-	c := Certificate{EventID: ev.ID, TicketID: t.ID, OwnerID: t.OwnerID, Serial: serial, RecipientName: name, RecipientEmail: email, EventName: ev.Name, OwnerTeam: ev.OwnerTeam, VerifyURL: url, TemplateSource: "legacy", Attendance: attendance}
+	c := Certificate{EventID: ev.ID, TicketID: t.ID, OwnerID: t.OwnerID, Serial: serial, RecipientName: name, RecipientEmail: email, EventName: ev.Name, OwnerTeam: ev.OwnerTeam, VerifyURL: url, TemplateSource: "legacy", Attendance: attendance, CoOrganizerTeams: coOrganizerSnapshot(ev)}
 	created, err := s.store.Create(ctx, c, pdf)
 	if err != nil {
 		return Certificate{}, err
@@ -309,7 +328,7 @@ func (s *service) RecomputeEvent(ctx context.Context, p authz.Principal, eventID
 	if err != nil {
 		return nil, err
 	}
-	if !s.canIssue(p, ev.OwnerTeam) {
+	if !s.canIssue(p, ev) {
 		return nil, ErrForbidden
 	}
 	if err := issuable(ev); err != nil {
@@ -340,7 +359,7 @@ func (s *service) Issue(ctx context.Context, p authz.Principal, eventID, ticketI
 	if err != nil {
 		return Certificate{}, err
 	}
-	if !s.canIssue(p, ev.OwnerTeam) {
+	if !s.canIssue(p, ev) {
 		return Certificate{}, ErrForbidden
 	}
 	if err := issuable(ev); err != nil {
@@ -364,7 +383,7 @@ func (s *service) Revoke(ctx context.Context, p authz.Principal, serial string) 
 	if err != nil {
 		return err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificate, OwnerTeam: c.OwnerTeam}, authz.Revoke) {
+	if !s.authz.Allow(p, s.certificateResource(ctx, c), authz.Revoke) {
 		return ErrForbidden
 	}
 	_, err = s.store.Revoke(ctx, serial)
@@ -382,7 +401,7 @@ func (s *service) Verify(ctx context.Context, serial string) (PublicCertificate,
 		status = "revoked"
 		pdfURL = ""
 	}
-	return PublicCertificate{Serial: c.Serial, RecipientName: c.RecipientName, EventName: c.EventName, OwnerTeam: c.OwnerTeam, OrganizerName: organizer.Name(c.OwnerTeam), Status: status, VerifyURL: c.VerifyURL, PDFURL: pdfURL, IssuedAt: c.IssuedAt, RevokedAt: c.RevokedAt, Attendance: publicAttendance(c.Attendance)}, nil
+	return PublicCertificate{Serial: c.Serial, RecipientName: c.RecipientName, EventName: c.EventName, OwnerTeam: c.OwnerTeam, OrganizerName: organizer.Name(c.OwnerTeam), CoOrganizerNames: coOrganizerNames(c), Status: status, VerifyURL: c.VerifyURL, PDFURL: pdfURL, IssuedAt: c.IssuedAt, RevokedAt: c.RevokedAt, Attendance: publicAttendance(c.Attendance)}, nil
 }
 
 func (s *service) PDF(ctx context.Context, serial string) ([]byte, error) {
@@ -433,7 +452,7 @@ func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uu
 	if err != nil {
 		return nil, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificate, OwnerTeam: ev.OwnerTeam}, authz.Read) {
+	if !s.authz.Allow(p, eventResource(ev, authz.TypeCertificate), authz.Read) {
 		return nil, ErrForbidden
 	}
 	certs, err := s.store.ListByEvent(ctx, eventID)

@@ -264,3 +264,45 @@ func TestRecordNormalizeVia(t *testing.T) {
 		t.Fatalf("the context replaced the record's own way: %q", got)
 	}
 }
+
+// A co_organizer.* row targets the Event's Owner team, or no Group for an
+// Event without one (then no path either), and never a person: the person
+// is in its state, an id alone; its choices are kept.
+func TestCoOrganizerRows(t *testing.T) {
+	t.Parallel()
+	person := uuid.NewString()
+	row := Record{
+		Actor:  Actor{ID: uuid.New(), Basis: BasisPrivileged},
+		Action: ActionCoOrganizerAdd, GroupID: uuid.NewString(), GroupPath: "/UYELER/YK",
+		After: &State{EventID: uuid.NewString(), Code: "WEBLAB", Management: "members", Visibility: "helper"},
+	}
+	got, bad := row.normalize()
+	if bad != "" || got.After.Code != "WEBLAB" || got.After.Management != "members" || got.After.Visibility != "helper" {
+		t.Fatalf("team row %q %+v", bad, got.After)
+	}
+	noGroup := row
+	noGroup.GroupID, noGroup.GroupPath = "", ""
+	noGroup.After = &State{EventID: uuid.NewString(), PersonID: person}
+	if got, bad := noGroup.normalize(); bad != "" || got.After.PersonID != person {
+		t.Fatalf("an Event without an Owner team %q %+v", bad, got.After)
+	}
+	for name, change := range map[string]func(r *Record){
+		"a path without a Group": func(r *Record) { r.GroupID, r.GroupPath = "", "/UYELER/YK" },
+		"a target person":        func(r *Record) { r.TargetUserID = uuid.New() },
+	} {
+		r := row
+		change(&r)
+		if _, bad := r.normalize(); bad == "" {
+			t.Errorf("%s was taken", name)
+		}
+	}
+	if got, _ := (Record{Actor: row.Actor, Action: ActionCoOrganizerRemove, GroupID: row.GroupID, GroupPath: row.GroupPath,
+		Before: &State{PersonID: "Ada"}}).normalize(); got.Before.PersonID != "" {
+		t.Fatalf("a name kept as the person: %+v", got.Before)
+	}
+	for _, action := range []Action{ActionCoOrganizerAdd, ActionCoOrganizerRemove, ActionCoOrganizerChange} {
+		if !action.IsCoOrganizer() || !slicesContains(Actions, action) {
+			t.Errorf("%s", action)
+		}
+	}
+}

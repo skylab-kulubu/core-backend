@@ -55,7 +55,13 @@ func TestCoOrganizerPersonMayNotLengthenTheirRights(t *testing.T) {
 		t.Fatalf("the person moves the end earlier: %v", err)
 	}
 	if err := edit(person, &start, &earlier); err != nil {
-		t.Fatalf("the person keeps the dates: %v", err)
+		t.Fatalf("the person saves the dates unchanged: %v", err)
+	}
+	// A plain member of a "leaders" Co-organizer team has no seat there:
+	// the person is still bound.
+	plain := authz.Principal{ID: personID.String(), Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	if err := edit(plain, &start, &later); !errors.Is(err, event.ErrCoOrganizerPersonDates) {
+		t.Fatalf("the person, also a plain WEBLAB member, moves the end later: %v", err)
 	}
 	// Door staff stay as they are: the person may not assign them.
 	updated, err := svc.Update(ctx, person, created.ID, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "YK", StartDate: &start, EndDate: &earlier, DoorStaffIDs: []uuid.UUID{uuid.New()}})
@@ -71,6 +77,17 @@ func TestCoOrganizerPersonMayNotLengthenTheirRights(t *testing.T) {
 	// No end to lengthen: the person edits the dates.
 	if err := edit(person, &start, &end); err != nil {
 		t.Fatalf("the person sets dates on an Event without them: %v", err)
+	}
+	// An Event with a start alone: the end is read from the start plus a
+	// day, so an end after that lengthens it; one before it does not.
+	if err := edit(ykMember, &start, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := edit(person, &start, &later); !errors.Is(err, event.ErrCoOrganizerPersonDates) {
+		t.Fatalf("the person adds an end after the start's day: %v", err)
+	}
+	if err := edit(person, &start, &end); err != nil {
+		t.Fatalf("the person adds an end within the start's day: %v", err)
 	}
 	// Seated in a team too, the person is not bound.
 	both := authz.Principal{ID: personID.String(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
