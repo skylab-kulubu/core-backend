@@ -945,6 +945,10 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/events/:eventId/entries/summary", tickets.EntrySummary)
 	app.Get("/v1/events/:eventId/entries", tickets.ListEntries)
 	app.Delete("/v1/events/:eventId/entries/:entryId", tickets.UndoEntry)
+	// Walk-in at the door (docs/walk-in.md): a person with no Ticket
+	// registered by who may take check-ins there, budgeted per subject.
+	walkInLimits := handlers.DefaultWalkInLimits().Handlers()
+	app.Post(handlers.WalkInPath, walkInLimits[0], append(walkInLimits[1:], tickets.WalkIn)...)
 	if pass != nil {
 		// One route for whatever the door scanned (docs/ticket-qr.md):
 		// check-in/scan is its name, check-in/skypass the old one the

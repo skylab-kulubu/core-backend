@@ -2295,6 +2295,40 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		AND to_regclass('public.co_organizer_notifications_due_idx') IS NOT NULL
 		AND to_regclass('public.co_organizer_notifications_user_idx') IS NOT NULL
 		AND to_regclass('public.co_organizer_notifications_actor_idx') IS NOT NULL`,
+	// Walk-in at the door (docs/walk-in.md): the guest's university,
+	// department and grade with their checks, the entry source walk_in, and
+	// the audit action ticket.walk_in with the basis door_staff. Rolling
+	// back keeps the columns and puts back the checks without walk_in, so
+	// the newer image runs the file again.
+	20261127220000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.tickets') AND conname = 'tickets_guest_grade_check' AND convalidated
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.tickets') AND conname = 'tickets_guest_university_check' AND convalidated
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.tickets') AND conname = 'tickets_guest_department_check' AND convalidated
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.venue_entries') AND conname = 'venue_entries_source_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%walk_in%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.walk_in%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%door_staff%'
+		)`,
 	// A certificate's snapshot of its Event's Co-organizer teams
 	// (docs/co-organizers.md).
 	20261127120000: `
