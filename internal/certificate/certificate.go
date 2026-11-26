@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/event"
 )
 
 var (
@@ -104,6 +105,10 @@ type Service interface {
 	AutoFinalize(ctx context.Context, now time.Time) (AutoFinalizeResult, error)
 	Rescan(ctx context.Context, p authz.Principal, eventID uuid.UUID) (RescanResult, error)
 	Attendance(ctx context.Context, p authz.Principal, eventID uuid.UUID) (AttendanceList, error)
+	// Standings is every active Ticket's attendance by ev's certificate
+	// rule (standing.go): no caller is checked, the caller decides who
+	// reads it (the attendee exports, the draw).
+	Standings(ctx context.Context, ev event.Event) (Standings, error)
 	QueueManual(ctx context.Context, p authz.Principal, eventID, ticketID uuid.UUID, justification string) (Batch, error)
 	GetBatch(ctx context.Context, p authz.Principal, id uuid.UUID) (Batch, error)
 	ListBatches(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]Batch, error)

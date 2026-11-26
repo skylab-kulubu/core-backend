@@ -2022,6 +2022,21 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 	20261127210000: `
 		SELECT 1 FROM pg_constraint
 		WHERE conrelid = to_regclass('public.events') AND conname = 'events_ticket_note_check' AND convalidated`,
+	// An attendee export in the Team audit record (docs/attendee-export.md):
+	// the action check takes ticket.export, and the event editor's basis
+	// with it. Rolling back keeps the action check wide.
+	20261127223000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.export%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.export%'
+		)`,
 	// An Event's raffles (docs/raffle.md): their two tables, and the Team
 	// audit checks taking raffle.draw and raffle.forfeit (as an event
 	// editor's too). Rolling back keeps all of them.

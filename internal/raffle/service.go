@@ -407,12 +407,14 @@ func (s *Service) eligible(ctx context.Context, ev event.Event, c Criteria, past
 		if err != nil {
 			return nil, Excluded{}, err
 		}
-		rule := certificate.RuleOf(ev)
-		attended = make(map[uuid.UUID]int, len(a.Tickets))
-		certified = make(map[uuid.UUID]bool, len(a.Tickets))
-		for _, t := range a.Tickets {
-			attended[t.TicketID] = t.Attended
-			certified[t.TicketID] = certificate.Eligible(rule, t.Attended, a.CountedTotal, len(t.MissingRequired))
+		// The one count of who attended how much: the certificate list's
+		// and the attendee exports' (certificate.StandingsOf).
+		standings := certificate.StandingsOf(ev, a)
+		attended = make(map[uuid.UUID]int, len(standings.Tickets))
+		certified = make(map[uuid.UUID]bool, len(standings.Tickets))
+		for id, st := range standings.Tickets {
+			attended[id] = st.Attended
+			certified[id] = st.Eligible
 		}
 	}
 	organizers, doorStaff, coOrganizers := newExcluder(), newExcluder(), newExcluder()

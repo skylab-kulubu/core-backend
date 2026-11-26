@@ -92,6 +92,12 @@ const (
 	// or a phone number. A Walk-in that found the person's Ticket already
 	// there writes no row.
 	ActionTicketWalkIn Action = "ticket.walk_in"
+	// ActionTicketExport is a download of an Event's attendees
+	// (docs/attendee-export.md), recorded as ActionTicketImport: the
+	// Event's team, the Event and what was downloaded (State.Export: the
+	// report, the format and the row count), never a row's content. It is
+	// written whole (ok or failed) when the file is made.
+	ActionTicketExport Action = "ticket.export"
 	// ActionRaffleDraw and ActionRaffleForfeit are an Event's raffle drawn,
 	// and a winner who did not come replaced by the next alternate
 	// (docs/raffle.md), recorded as ActionTicketImport: the Event's team,
@@ -158,7 +164,7 @@ var Actions = []Action{
 	ActionGroupRoles, ActionGroupAttributes, ActionAppAssign, ActionAppUnassign,
 	ActionTermExtend, ActionTermHandover, ActionTermExpired,
 	ActionTicketResend, ActionTicketLinkRenew, ActionTicketCancel, ActionTicketRestore, ActionTicketPromote,
-	ActionTicketImport, ActionTicketImportPreview, ActionTicketWalkIn,
+	ActionTicketImport, ActionTicketImportPreview, ActionTicketWalkIn, ActionTicketExport,
 	ActionRaffleDraw, ActionRaffleForfeit,
 	ActionCoOrganizerAdd, ActionCoOrganizerRemove, ActionCoOrganizerChange,
 	ActionUserEnable, ActionUserDisable, ActionUserPasswordSet, ActionUserPasswordMail,
@@ -421,6 +427,8 @@ type State struct {
 	Reason  string `json:"reason,omitempty"`
 	// Import is a ticket.import row's counts; absent on every other row.
 	Import *ImportCounts `json:"import,omitempty"`
+	// Export is a ticket.export row's download; absent on every other row.
+	Export *ExportInfo `json:"export,omitempty"`
 	// Raffle is a raffle.* row's raffle; absent on every other row.
 	Raffle *RaffleInfo `json:"raffle,omitempty"`
 	// Operation and ResourceType are Keycloak's names of a console change
@@ -463,6 +471,18 @@ type ImportCounts struct {
 	Source  string `json:"source,omitempty"`
 	JobID   string `json:"jobId,omitempty"`
 	Skipped int    `json:"skipped,omitempty"`
+}
+
+// ExportInfo is what an attendee export downloaded
+// (docs/attendee-export.md): the report, the file format, whether it was
+// the rows the panel showed (Selected) and how many rows the file has.
+// Never a row's content.
+type ExportInfo struct {
+	Report    string `json:"report"`
+	Format    string `json:"format"`
+	Selected  bool   `json:"selected,omitempty"`
+	SessionID string `json:"sessionId,omitempty"`
+	Rows      int    `json:"rows"`
 }
 
 // RaffleInfo is a raffle.* row's raffle (docs/raffle.md): its id and
@@ -609,7 +629,7 @@ func (r Record) normalize() (Record, string) {
 	case BasisEventEditor:
 		if _, err := uuid.Parse(r.Actor.ViaGroupID); err != nil ||
 			(r.Action != ActionTicketCancel && r.Action != ActionTicketRestore && r.Action != ActionTicketPromote &&
-				r.Action != ActionTicketImport && r.Action != ActionTicketImportPreview &&
+				r.Action != ActionTicketImport && r.Action != ActionTicketImportPreview && r.Action != ActionTicketExport &&
 				r.Action != ActionRaffleDraw && r.Action != ActionRaffleForfeit &&
 				r.Action != ActionTicketResend && r.Action != ActionTicketLinkRenew && r.Action != ActionCoOrganizerAdd) {
 			return r, "invalid_basis"
@@ -755,6 +775,16 @@ func (s *State) normalize() *State {
 	if s.Import != nil {
 		counts := *s.Import
 		out.Import = &counts
+	}
+	if s.Export != nil {
+		export := ExportInfo{
+			Report: cut(s.Export.Report, MaxIdentifier), Format: cut(s.Export.Format, MaxIdentifier),
+			Selected: s.Export.Selected, Rows: max(s.Export.Rows, 0),
+		}
+		if _, err := uuid.Parse(s.Export.SessionID); err == nil {
+			export.SessionID = s.Export.SessionID
+		}
+		out.Export = &export
 	}
 	if s.Raffle != nil {
 		if _, err := uuid.Parse(s.Raffle.ID); err == nil {
