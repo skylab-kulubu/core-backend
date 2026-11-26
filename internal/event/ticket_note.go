@@ -2,6 +2,7 @@ package event
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -76,4 +77,34 @@ func TicketNoteParts(e Event) (string, []NotePart) {
 		parts = append(parts, NotePart{Text: rest})
 	}
 	return note, parts
+}
+
+// TicketNoteLink is the address the ticket mails' announcement button
+// opens (docs/ticket-note.md#the-button): the note's first WhatsApp
+// address, else its first https address, "" for none. whatsApp is "1"
+// when it is a WhatsApp one (the button reads "WhatsApp grubuna katıl"),
+// "" otherwise: a text variable, as the mails' others.
+func TicketNoteLink(parts []NotePart) (link, whatsApp string) {
+	for _, p := range parts {
+		if p.URL != "" && isWhatsApp(p.URL) {
+			return p.URL, "1"
+		}
+	}
+	for _, p := range parts {
+		if p.URL != "" {
+			return p.URL, ""
+		}
+	}
+	return "", ""
+}
+
+// isWhatsApp reports whether address is a WhatsApp invite or chat link:
+// chat.whatsapp.com, whatsapp.com and its subdomains, wa.me.
+func isWhatsApp(address string) bool {
+	u, err := url.Parse(address)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "wa.me" || host == "whatsapp.com" || strings.HasSuffix(host, ".whatsapp.com")
 }

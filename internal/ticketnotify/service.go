@@ -21,6 +21,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/organizer"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
+	"github.com/skylab-kulubu/core-backend/internal/ticketpage"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -465,9 +466,10 @@ func (s *Service) holder(ctx context.Context, t ticket.Ticket) (mail.TicketHolde
 // docs/ticket-created-notification.md): TicketUrl, its page; TicketQrUrl,
 // its QR as a remote image; TicketCode, its code as text. A member and a
 // guest get the same. EventUrl is never sent: the site has no Event page.
-// TicketNote and TicketNoteParts are the organizer's announcement
-// (docs/ticket-note.md); event.waitlist-promoted gets them too, the
-// waiting list's and the cancellation's mails do not.
+// TicketNote, TicketNoteParts, TicketNoteLink and TicketNoteWhatsApp are
+// the organizer's announcement (docs/ticket-note.md); MapUrl the place's
+// directions link. event.waitlist-promoted gets them too, the waiting
+// list's and the cancellation's mails do not.
 func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]any {
 	vars := map[string]any{
 		"EventId":   ev.ID.String(),
@@ -480,6 +482,10 @@ func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]any {
 		// The Co-organizer teams shown outside the panel, for a template
 		// that names them (docs/co-organizers.md); empty for none.
 		"CoOrganizers": organizer.CoNames(event.PublicCoOrganizerTeams(ev)),
+		// The place's directions link, the reminder's MapUrl: the "Yer"
+		// row and the "Yol tarifi" button open it; "" for a place with
+		// neither a point nor an address.
+		"MapUrl": ticketpage.DirectionsURL(ev.Location, ev.LocationAddress, ev.LocationLat, ev.LocationLng),
 	}
 	if ev.StartDate != nil {
 		vars["EventDate"] = ev.StartDate.In(s.location).Format(dateLayout)
@@ -498,8 +504,11 @@ func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]any {
 		}
 	}
 	// The organizer's announcement (docs/ticket-note.md): always there, ""
-	// and [] for none; the parts link its https addresses.
-	vars["TicketNote"], vars["TicketNoteParts"] = event.TicketNoteParts(ev)
+	// and [] for none; the parts link its https addresses, TicketNoteLink
+	// is the address its button opens.
+	note, parts := event.TicketNoteParts(ev)
+	vars["TicketNote"], vars["TicketNoteParts"] = note, parts
+	vars["TicketNoteLink"], vars["TicketNoteWhatsApp"] = event.TicketNoteLink(parts)
 	return vars
 }
 

@@ -378,3 +378,56 @@ func TestTicketCoOrganizerLine(t *testing.T) {
 		t.Fatalf("no %q", want)
 	}
 }
+
+// With a directions link the place's name and address and the directions
+// QR with its caption are links to it (the PDF keeps them as link
+// annotations); without one, none of them is.
+func TestPlaceLinksToDirections(t *testing.T) {
+	t.Parallel()
+	d := baseDocument()
+	html, _ := render(t, d)
+	link := `<a class="git" href="https://www.google.com/maps/dir/?api=1&amp;destination=41.025376%2C28.889648">`
+	if strings.Count(html, link) != 2 || !strings.Contains(html, `<span>Yol tarifi</span></a></figure>`) {
+		t.Fatalf("want the place and the QR with its caption linked:\n%s", html)
+	}
+	if !strings.Contains(html, link+`<div class="ad">`) || !strings.Contains(html, link+`<img alt="Yol tarifi QR kodu"`) {
+		t.Fatal("the name or the QR is not the link")
+	}
+	d.DirectionsURL = ""
+	if html, _ = render(t, d); strings.Contains(html, `<a `) {
+		t.Fatal("a link without a directions link")
+	}
+}
+
+// The ticket note: its text in a section before the place, and for its
+// WhatsApp address a QR with "WhatsApp grubuna katıl" under it, both links
+// to it; another address reads "Bağlantıyı aç"; no address, no QR; no note,
+// no section.
+func TestTicketNoteSection(t *testing.T) {
+	t.Parallel()
+	d := baseDocument()
+	d.TicketNote = "Duyurular WhatsApp grubunda: https://chat.whatsapp.com/Ab1"
+	html, _ := render(t, d)
+	link := `<a class="git" href="https://chat.whatsapp.com/Ab1"><img alt="Duyuru bağlantısı QR kodu" src="data:image/svg&#43;xml;base64,`
+	if !strings.Contains(html, `<section class="duyuru"><h2>Duyuru</h2>`) || !strings.Contains(html, link) ||
+		!strings.Contains(html, `<span>WhatsApp grubuna katıl</span></a></figure>`) ||
+		!strings.Contains(html, `Duyurular WhatsApp grubunda: <a href="https://chat.whatsapp.com/Ab1">https://chat.whatsapp.com/Ab1</a>`) {
+		t.Fatalf("note section:\n%s", html)
+	}
+	if !strings.Contains(html, "</section>\n"+`<section class="yer">`) || strings.Index(html, `<section class="duyuru">`) > strings.Index(html, `<section class="yer">`) ||
+		strings.Index(html, `<section class="duyuru">`) < strings.Index(html, `<section class="hakkinda">`) {
+		t.Fatal("the note is not between the description and the place")
+	}
+	d.TicketNote = "Program: https://artlab.example/x"
+	if html, _ = render(t, d); !strings.Contains(html, `<span>Bağlantıyı aç</span>`) || strings.Contains(html, "WhatsApp grubuna katıl") {
+		t.Fatal("another address")
+	}
+	d.TicketNote = "Salon D-001"
+	if html, _ = render(t, d); !strings.Contains(html, `<p class="metin">Salon D-001</p>`) || strings.Contains(html, "Duyuru bağlantısı QR kodu") {
+		t.Fatal("a note without an address")
+	}
+	d.TicketNote = "  "
+	if html, _ = render(t, d); strings.Contains(html, `class="duyuru"`) {
+		t.Fatal("an empty note")
+	}
+}
