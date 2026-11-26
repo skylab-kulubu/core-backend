@@ -63,6 +63,11 @@ type ServiceOptions struct {
 	// update newly linked (formsfeed: the Unticketed respondents'
 	// gathering, docs/form-respondents.md); nil hears nothing.
 	FormsLinked FormsLinkedHook
+	// FormAccess is asked, before a create or an update writes, whether
+	// the person may see each application or extra form the Event newly
+	// lists (docs/form-respondents.md#who-may-link-a-form); nil asks
+	// nothing (a test).
+	FormAccess FormAccess
 }
 
 // FormsLinkedHook is told, after the write committed, which forms an Event
@@ -80,8 +85,8 @@ func NewServiceWithOptions(store Store, az authz.Authorizer, options ServiceOpti
 		store: store, authz: az, formLinks: options.FormLinks, media: options.Media,
 		addresses: media.Addresses{Base: options.PublicBase, Mode: options.ImageAddressMode},
 		policy:    policy, teams: options.Teams, coOrganizersWrite: options.CoOrganizersWrite, now: options.Now,
-		formsLinked: options.FormsLinked,
-		audit:       options.Audit, groups: options.Groups,
+		formsLinked: options.FormsLinked, formAccess: options.FormAccess,
+		audit: options.Audit, groups: options.Groups,
 	}
 }
 

@@ -1248,8 +1248,15 @@ func main() {
 	// says; the questions are read with it on.
 	formCollects := &formsfeed.Collects{Queue: formPulls, Events: events, On: formPuller != nil, Logf: log.Printf}
 	formMappings := &formsfeed.Mappings{Events: events, Authz: az, Store: formMappingStore, On: formsEvents != nil, Collects: formCollects}
+	// Who may link a form to an Event, or have its answers gathered again:
+	// the person on the form's team in Forms, read whatever the switch says
+	// (docs/form-respondents.md#who-may-link-a-form). Without Forms' client
+	// a newly linked form is 503 forms_unavailable: never linked unasked.
+	formAccess := &formsfeed.FormAccess{Logf: log.Printf}
 	if formsClient != nil {
 		formMappings.Forms = formsClient
+		formBackfills.Forms = formsClient
+		formAccess.Forms = formsClient
 	}
 	formsCounters := formsMetrics{puller: formPuller}
 	if formsEvents != nil {
@@ -1368,6 +1375,7 @@ func main() {
 
 			CoOrganizersWrite: coOrganizersWrite,
 			FormsLinked:       formCollects,
+			FormAccess:        formAccess,
 			Audit:             teamAudit,
 			Groups:            dir,
 		}),

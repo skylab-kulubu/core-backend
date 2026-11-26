@@ -101,6 +101,11 @@ func eventError(c fiber.Ctx, err error) error {
 			fiber.Map{"missing": incomplete.Missing})
 	case errors.As(err, &inUse):
 		return problemWithFields(c, fiber.StatusConflict, "Conflict", "Conflict", "form_in_use", formInUseFields(inUse))
+	case errors.Is(err, event.ErrFormsAccessDenied):
+		// A form the caller is not on the team of in Forms: nothing written.
+		return problemCode(c, fiber.StatusForbidden, "Forbidden", "forms_access_denied")
+	case errors.Is(err, event.ErrFormsUnavailable):
+		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", "forms_unavailable")
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
 	case errors.Is(err, teamaudit.ErrUnavailable):
