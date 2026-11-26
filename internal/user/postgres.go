@@ -626,6 +626,11 @@ func (s *PostgresStore) anonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		// Feedback invites (docs/event-feedback.md): the person's Tickets'
 		// go before the Tickets lose their owner; the counts stay.
 		`DELETE FROM feedback_invites WHERE ticket_id IN (SELECT id FROM tickets WHERE owner_id = $1)`,
+		// A raffle keeps the person's Tickets' places (ids, docs/raffle.md);
+		// a forfeit's reason may name them, so it goes before the Tickets
+		// lose their owner.
+		`UPDATE event_raffle_entries SET forfeit_reason = NULL
+		WHERE forfeit_reason IS NOT NULL AND ticket_id IN (SELECT id FROM tickets WHERE owner_id = $1)`,
 		// The Tickets' Notifications not sent yet (docs/ticket-created-notification.md).
 		`DELETE FROM ticket_notifications WHERE ticket_id IN (SELECT id FROM tickets WHERE owner_id = $1)`,
 		// A place on a waiting list goes with the person (KVKK): the
@@ -680,6 +685,11 @@ func (s *PostgresStore) anonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		`UPDATE certificate_fonts SET uploaded_by = NULL WHERE uploaded_by = $1`,
 		`UPDATE certificate_event_state SET attendance_finalized_by = NULL WHERE attendance_finalized_by = $1`,
 		`UPDATE certificate_batches SET requested_by = NULL WHERE requested_by = $1`,
+		// Who drew a raffle or forfeited a place is forgotten; the raffle
+		// stays (docs/raffle.md).
+		`UPDATE event_raffles SET drawn_by = NULL WHERE drawn_by = $1`,
+		`UPDATE event_raffle_entries SET forfeited_by = NULL WHERE forfeited_by = $1`,
+		`UPDATE event_raffle_entries SET promoted_by = NULL WHERE promoted_by = $1`,
 		// An organizer's form pulls and send-all jobs (docs/form-respondents.md)
 		// forget who asked.
 		`UPDATE form_pulls SET requested_by = NULL WHERE requested_by = $1`,
@@ -800,6 +810,16 @@ func clearGuestData(ctx context.Context, tx pgx.Tx, addresses []string, at time.
 		`, emails); err != nil {
 			return err
 		}
+	}
+	// A raffle keeps the guest Tickets' places (ids, docs/raffle.md); a
+	// forfeit's reason may name the guest, so it goes before the Tickets
+	// lose their address.
+	if _, err := tx.Exec(ctx, `
+		UPDATE event_raffle_entries SET forfeit_reason = NULL
+		WHERE forfeit_reason IS NOT NULL AND ticket_id IN (
+			SELECT id FROM tickets WHERE owner_id IS NULL AND guest_email <> '' AND lower(btrim(guest_email)) = ANY($1))
+	`, emails); err != nil {
+		return err
 	}
 	// A guest's place on a waiting list goes with the guest, as a
 	// member's (eraseAccount).

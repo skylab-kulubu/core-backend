@@ -69,8 +69,11 @@ Core anonymization clears the user profile, student-card UID, contact fields and
 | `certificates` | `owner_id IS NULL` and the recipient e-mail is one of the addresses | `recipient_email` becomes `''`; recipient name, serial and PDF stay, as on owned certificates |
 | `feedback_invites` | the invites of those guest Tickets | deleted; the target's counts stay ([event-feedback.md](event-feedback.md)) |
 | `ticket_notifications` | the unsent Notifications of those guest Tickets | deleted ([ticket-created-notification.md](ticket-created-notification.md)) |
+| `event_raffle_entries` | the raffle places of those guest Tickets | `forfeit_reason` becomes NULL (it may name the guest); the place, its status and times stay, so the raffle stays verifiable ([raffle.md](raffle.md)) |
 
 The match ignores case and surrounding spaces. Other guests' rows are untouched.
+
+**Raffles** ([raffle.md](raffle.md)). For the person's own account, in the same transaction: `event_raffles.drawn_by`, `event_raffle_entries.forfeited_by` and `event_raffle_entries.promoted_by` become NULL where they name the person, and `event_raffle_entries.forfeit_reason` becomes NULL on the places of the person's Tickets (before the Tickets lose their owner). The places, the eligible list, its hash and the seed stay: they hold Ticket ids only, and the Ticket stays anonymous.
 
 The physical purge primitive is intentionally absent from the HTTP and service interfaces. Its concrete PostgreSQL method only removes an already-anonymized row whose deletion request is completed. The durable request remains as the anti-resurrection marker.
 

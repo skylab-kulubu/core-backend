@@ -119,7 +119,9 @@ func TestLargeTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if took := time.Since(start); took > 10*time.Second {
+	// A loose bound: CI runs the tests with -race on a shared machine,
+	// where 3 000 rows take seconds; it only catches a quadratic slip.
+	if took := time.Since(start); took > time.Minute {
 		t.Fatalf("took %s", took)
 	}
 	t.Logf("xlsx %d bytes, csv %d bytes, %s", len(x), len(c), time.Since(start))
