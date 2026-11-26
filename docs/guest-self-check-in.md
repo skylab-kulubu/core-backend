@@ -40,7 +40,8 @@ Event, leaders of the owning team, Privileged, the team's members when
 `?use=door` (the default) mints a door token: guests pass the door one by
 one, so it admits `DOOR_QR_MAX_USES` (20). `?use=display` mints the token
 for a screen a whole room scans at once: it admits `ATTENDANCE_QR_MAX_USES`
-(400). Anything else is `400`. `201`, `Cache-Control: no-store`:
+(400). `?use=static` answers the Session's static attendance QR
+([Static attendance QR](#static-attendance-qr)). Anything else is `400`. `201`, `Cache-Control: no-store`:
 
 ```json
 {
@@ -70,6 +71,8 @@ the panel stops offering it for download. With `?svg=1` the answer also carries 
 | 403 | | not door staff of this Event |
 | 403 | `session_closed` | the Session is cancelled or outside its time window (below) |
 | 404 | | no such Session |
+| 400 | `door_qr_static_off` | `?use=static` while `DOOR_QR_STATIC=off` |
+| 400 | `session_times_required` | `?use=static` for a Session without a start or an end time |
 | 429 | `door_qr_rate_limited` | over 30 mints a minute for this person; `Retry-After` |
 
 `url` is `DOOR_QR_GUEST_URL` with `{sessionId}` filled in and `dq=<token>`
@@ -174,6 +177,56 @@ no Session window, so today's sky-app keeps working until the switch.
 
 Any other value stops core at start-up, so a typo cannot reopen the route.
 
+## Static attendance QR
+
+The fallback when no screen can refresh (Yusuf, 2026-11-26, for ARTLAB): if
+the projector or OBS cannot show the rotating QR, each Session's one fixed
+QR is shown or printed instead, and people scan it with their phone's camera
+as they would the rotating one. It opens the same guest page
+(`DOOR_QR_GUEST_URL`, `/kapi/{sessionId}?dq=<token>`), which takes the
+token without reading it; `check-in/me` takes it too. The rotating QR is
+unchanged.
+
+- `POST /v1/sessions/{id}/door-qr?use=static`, same callers as the other
+  classes (whoever may take check-ins at the Event's door). The token is the
+  same every time for a Session, so it can be printed ahead: it is minted
+  outside the Session window too (a cancelled Session: `403
+  session_closed`).
+- The answer has `use: "static"`, `maxUses: 0` (no cap),
+  `refreshAfterSeconds: 0` (never renewed), and `validFrom` / `validUntil`:
+  the window in which it checks anyone in. `expiresAt` is `validUntil`.
+- **Window: the rotating QR's own** (Yusuf, 2026-11-26): from
+  `DOOR_QR_SESSION_GRACE` (12 h) before the Session starts until 12 h after
+  it ends, applied at check-in against the Session's current times (`403
+  session_closed` outside it). Moving the Session moves the window; the
+  token stays the same. A Session needs both a start and an end time for a
+  static QR (`400 session_times_required`), and a static token presented
+  for a Session that has lost one is `403 door_qr_invalid`.
+- Token: `v1.s.<mac>`, the MAC (HMAC-SHA256, 12 bytes, the door QR key)
+  over its own domain label, the Session id and the Event id; no expiry, no
+  jti. A door or display token cannot be relabelled as static, nor the
+  reverse.
+- `DOOR_QR_STATIC=on` (default) or `off`. `off` refuses to mint it (`400
+  door_qr_static_off`) and stops every static QR already printed or shown
+  (`403 door_qr_invalid` at check-in); the rotating QR keeps working.
+  Anything else stops core at start-up.
+
+Decision: there is no per-Event switch. Only door staff can mint the static
+QR, the same people who would flip such a switch, and nobody gets it
+without asking for it; a switch would need a migration and an Event field
+and panel form on the day the Event runs. The server-wide `DOOR_QR_STATIC`
+is the lever if a static QR leaks.
+
+**Security.** A static QR is a bearer token for the whole window. A photo of
+it, shared or posted, lets anyone who knows the e-mail of a Ticket holder
+check them in from anywhere, from 12 hours before the Session until 12 hours
+after it, with no use cap (each Ticket still checks in once per Session).
+The rotating QR's photo is useless after 60 seconds. So: show the static QR
+only in the room, never on a live stream or in a recording, do not post it,
+and switch back to the rotating QR as soon as a screen can show it. If one
+leaks, set `DOOR_QR_STATIC=off` and redeploy core: every static QR stops,
+the rotating QR is unaffected.
+
 ## Session QR mode (`SESSION_QR_MODE`)
 
 The same two values for `check-in/me`:
@@ -209,6 +262,8 @@ A display token carries one more field, `v1.<exp>.<jti>.a.<mac>` (about 37
 characters). Its MAC uses its own domain label, so a door token cannot be
 relabelled as a display token to get the larger use cap, nor the reverse;
 every replica reads the class from the token itself.
+
+A static token is `v1.s.<mac>` ([Static attendance QR](#static-attendance-qr)).
 
 Times: `exp` = issue + `DOOR_QR_TTL` (default 60 s, allowed 30 s–10 min). A
 token is expired at `exp`; one whose `exp` lies more than TTL + 5 s ahead
