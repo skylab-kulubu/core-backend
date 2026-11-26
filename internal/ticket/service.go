@@ -1460,7 +1460,7 @@ func (s *service) checkInMe(ctx context.Context, p authz.Principal, sessionID uu
 		!s.door.SessionOpen(sess.StartTime, sess.EndTime, sess.Cancelled) {
 		return CheckIn{}, ErrSessionClosed
 	}
-	use, err := s.admitDoorQR(doorToken, sessionID, eventID, s.door.SessionMode())
+	use, err := s.admitDoorQR(doorToken, sess, sessionID, eventID, s.door.SessionMode())
 	if err != nil {
 		return CheckIn{}, err
 	}
@@ -1510,7 +1510,7 @@ func (s *service) checkInGuest(ctx context.Context, sessionID uuid.UUID, g Guest
 	// The door QR is checked before any Ticket is looked up, so without one
 	// (in qr mode) the route says nothing about which e-mails are
 	// registered.
-	use, err := s.admitDoorQR(g.DoorToken, sessionID, eventID, s.door.Mode())
+	use, err := s.admitDoorQR(g.DoorToken, sess, sessionID, eventID, s.door.Mode())
 	if err != nil {
 		return CheckIn{}, err
 	}
@@ -1635,8 +1635,10 @@ func registrationLink(ev event.Event) string {
 // admitDoorQR applies a self check-in mode (GUEST_SELF_CHECKIN_MODE for
 // guests, SESSION_QR_MODE for check-in/me): qr requires a valid token; open
 // takes none, but a token that is sent must be valid either way. Door and
-// display tokens are both accepted, each with its own use cap.
-func (s *service) admitDoorQR(token string, sessionID, eventID uuid.UUID, mode doorqr.Mode) (doorqr.Use, error) {
+// display tokens are both accepted, each with its own use cap; a static
+// token too, for a Session with a start and an end (the Session window,
+// checked before, is all that bounds it).
+func (s *service) admitDoorQR(token string, sess event.Session, sessionID, eventID uuid.UUID, mode doorqr.Mode) (doorqr.Use, error) {
 	if strings.TrimSpace(token) == "" {
 		if mode == doorqr.ModeQR {
 			return doorqr.Use{}, ErrDoorQRRequired
@@ -1645,6 +1647,10 @@ func (s *service) admitDoorQR(token string, sessionID, eventID uuid.UUID, mode d
 	}
 	use, err := s.door.Admit(token, sessionID, eventID)
 	switch {
+	case err == nil && use.Static() && (sess.StartTime == nil || sess.EndTime == nil):
+		// Without both times the window would leave a side open, and a
+		// static QR never expires on its own.
+		return doorqr.Use{}, ErrDoorQRInvalid
 	case err == nil:
 		return use, nil
 	case errors.Is(err, doorqr.ErrExpired):
@@ -1697,6 +1703,9 @@ func (s *service) MintDoorQR(ctx context.Context, p authz.Principal, sessionID u
 		}
 		return DoorQR{}, err
 	}
+	if class == doorqr.ClassStatic {
+		return s.mintStaticQR(sess, ev.ID)
+	}
 	// A QR no guest could use would only confuse the door.
 	if !s.door.SessionOpen(sess.StartTime, sess.EndTime, sess.Cancelled) {
 		return DoorQR{}, ErrSessionClosed
@@ -1716,6 +1725,39 @@ func (s *service) MintDoorQR(ctx context.Context, p authz.Principal, sessionID u
 		IssuedAt:            pass.IssuedAt,
 		ExpiresAt:           pass.ExpiresAt,
 		RefreshAfterSeconds: int(pass.RefreshAfter / time.Second),
+	}, nil
+}
+
+// mintStaticQR answers the static attendance QR: the same token for the
+// Session every time, so it can be printed or shown ahead. It is minted
+// outside the Session window too; validFrom and validUntil say when it checks
+// anyone in (the rotating QR's window, DOOR_QR_SESSION_GRACE).
+func (s *service) mintStaticQR(sess event.Session, eventID uuid.UUID) (DoorQR, error) {
+	if !s.door.StaticOn() {
+		return DoorQR{}, invalid(CodeDoorQRStaticOff)
+	}
+	if sess.Cancelled {
+		return DoorQR{}, ErrSessionClosed
+	}
+	if sess.StartTime == nil || sess.EndTime == nil {
+		return DoorQR{}, invalid(CodeSessionTimesRequired)
+	}
+	pass, err := s.door.MintFor(doorqr.ClassStatic, sess.ID, eventID)
+	if err != nil {
+		return DoorQR{}, err
+	}
+	from, until := s.door.SessionWindow(sess.StartTime, sess.EndTime)
+	return DoorQR{
+		Token:         pass.Token,
+		URL:           pass.URL,
+		Use:           string(pass.Class),
+		SessionQRMode: string(s.door.SessionMode()),
+		SessionID:     sess.ID,
+		EventID:       eventID,
+		IssuedAt:      pass.IssuedAt,
+		ExpiresAt:     *until,
+		ValidFrom:     from,
+		ValidUntil:    until,
 	}, nil
 }
 

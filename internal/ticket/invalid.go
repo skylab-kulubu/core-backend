@@ -34,4 +34,10 @@ const (
 	CodeUserIDInvalid            = "user_id_invalid"
 	CodeGuestNameRequired        = "guest_name_required"
 	CodeTokenSubjectInvalid      = "token_subject_invalid"
+	// CodeDoorQRStaticOff: the static attendance QR was asked for while
+	// DOOR_QR_STATIC=off.
+	CodeDoorQRStaticOff = "door_qr_static_off"
+	// CodeSessionTimesRequired: a static attendance QR for a Session without
+	// a start or an end time.
+	CodeSessionTimesRequired = "session_times_required"
 )

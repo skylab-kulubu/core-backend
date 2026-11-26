@@ -21,7 +21,7 @@ const partialFull = `{
 	"capacity":120,"startDate":"2030-03-14T16:00:00Z","endDate":"2030-03-15T00:00:00Z",
 	"linkedin":"https://linkedin.com/x","ranked":true,"prizeInfo":"Ödül",
 	"coverImageId":"cccccccc-cccc-cccc-cccc-cccccccccccc",
-	"attendanceRule":"count","attendanceMinCount":6,
+	"attendanceRule":"count","attendanceMinCount":6,"attendanceAutoFinalize":true,
 	"doorStaffIds":["dddddddd-dddd-dddd-dddd-dddddddddddd"],
 	"feedbackMode":"per_session","feedbackFormUrl":"https://forms.yildizskylab.com/f/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
 	"feedbackFormAlias":"gecekodu-geri-bildirim","feedbackAutoSend":false}`

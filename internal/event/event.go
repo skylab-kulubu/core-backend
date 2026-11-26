@@ -68,6 +68,16 @@ type Event struct {
 	// the Event, so a public answer cannot carry it by mistake.
 	AttendeeNote     *string `json:"-"`
 	AttendeeNoteView *string `json:"attendeeNote,omitempty"`
+	// TicketNote is the organizer's announcement for the Ticket holders
+	// (the event's WhatsApp group, say; docs/ticket-note.md): plain text,
+	// at most TicketNoteMax characters, "" for none, its https addresses
+	// links in the mail. The ticket mails carry it (event.ticket-created,
+	// event.waitlist-promoted, event.reminder). Nil on a write keeps the
+	// stored one; the store always answers it. Like the attendee note it
+	// is never in a JSON answer by itself: ProjectFor copies it to
+	// TicketNoteView for who reads the attendee note.
+	TicketNote     *string `json:"-"`
+	TicketNoteView *string `json:"ticketNote,omitempty"`
 	// Full is derived by the store: Capacity > 0 and the active Tickets
 	// fill it. Anyone who sees the Event sees it.
 	Full bool `json:"full"`
@@ -135,8 +145,21 @@ type Event struct {
 	// the Media JSON's sizes.
 	CoverImageSizes map[string]media.ImageAddress `json:"coverImageSizes,omitempty"`
 	CoverColors     []string                      `json:"coverColors"`
-	AttendanceRule  string                        `json:"attendanceRule"`
-	AttendanceRatio *float64                      `json:"attendanceRatio,omitempty"`
+	// Theme is the key of the Event's theme (docs/event-theme.md): the look
+	// of its PDF ticket, its participants' mails and its ticket page; nil
+	// for Kurumsal, and for a key the catalogue no longer has. A write takes
+	// a key of the catalogue (ErrThemeUnknown otherwise); nil, "" or
+	// "kurumsal" is Kurumsal. TicketAccentColor is the ticket page's colour
+	// it gives, #RRGGBB in capitals, nil for none. Anyone who sees the
+	// Event sees both.
+	Theme             *string `json:"theme"`
+	TicketAccentColor *string `json:"ticketAccentColor"`
+	// bannerImage is the Media of the Event's own ticket image (its
+	// poster, docs/ticket-image.md source upload) as the store read it:
+	// what BannerURL is built from.
+	bannerImage     *media.LinkedImage
+	AttendanceRule  string   `json:"attendanceRule"`
+	AttendanceRatio *float64 `json:"attendanceRatio,omitempty"`
 	// AttendanceMinCount is the count rule's threshold M ("at least M of
 	// the N counted Sessions"); null is the default, ceil(3N/4). Any other
 	// rule has none (docs/certificate-rule.md).

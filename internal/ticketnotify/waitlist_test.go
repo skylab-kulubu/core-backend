@@ -18,6 +18,7 @@ type statusCall struct {
 	typ, key string
 	holder   mail.TicketHolder
 	vars     map[string]string
+	raw      map[string]any
 }
 
 // statusMail is fakeMail that also sends the waiting list's mails.
@@ -26,8 +27,8 @@ type statusMail struct {
 	status []statusCall
 }
 
-func (m *statusMail) TicketStatus(_ context.Context, typ, key string, holder mail.TicketHolder, vars map[string]string, _ mail.NotificationSource, _ *time.Time, _ []mail.Attachment) error {
-	m.status = append(m.status, statusCall{typ, key, holder, vars})
+func (m *statusMail) TicketStatus(_ context.Context, typ, key string, holder mail.TicketHolder, vars map[string]any, _ mail.NotificationSource, _ *time.Time, _ []mail.Attachment) error {
+	m.status = append(m.status, statusCall{typ, key, holder, textVars(vars), vars})
 	return nil
 }
 
@@ -99,7 +100,7 @@ func TestWaitlistMails(t *testing.T) {
 	if joined.key != "core:event.waitlist-joined:"+waiting.ID.String()+":q2" || joined.holder.Sub != *waiting.OwnerID {
 		t.Fatalf("joined %+v", joined)
 	}
-	want := []string{"EventId", "EventName", "EventDate", "OwnerTeam", "Venue", "TicketUrl"}
+	want := []string{"EventId", "EventName", "EventDate", "OwnerTeam", "Venue", "TicketUrl", "Theme", "EventBannerUrl"}
 	if len(joined.vars) != len(want) || joined.vars["TicketUrl"] != "https://yildizskylab.com/bilet/"+key1 {
 		t.Fatalf("joined vars %v", joined.vars)
 	}
@@ -168,7 +169,7 @@ func TestCancellationMail(t *testing.T) {
 	if !ok || holder.holder.Sub != *byHolder.OwnerID || holder.vars["CancelledBy"] != "holder" || holder.vars["Reason"] != "" {
 		t.Fatalf("holder %+v (%v)", holder, byKey)
 	}
-	want := []string{"EventId", "EventName", "EventDate", "OwnerTeam", "CancelledBy", "Reason"}
+	want := []string{"EventId", "EventName", "EventDate", "OwnerTeam", "CancelledBy", "Reason", "Theme", "EventBannerUrl"}
 	if len(holder.vars) != len(want) {
 		t.Fatalf("vars %v", holder.vars)
 	}

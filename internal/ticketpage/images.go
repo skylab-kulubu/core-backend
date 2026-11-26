@@ -197,6 +197,27 @@ func CoverBand(data []byte) ([]byte, bool) {
 // another shape is narrowed about its centre to the band's. ok is false for
 // an image it cannot decode, or one too large to.
 func Band(data []byte, crop *ticketimage.Crop) ([]byte, bool) {
+	return cut(data, crop, ticketimage.BandAspect, bandMaxBytes)
+}
+
+// posterMaxBytes bounds a theme's poster (theme.Look.PosterAspect): about
+// a third of the page's width in height, it takes more bytes than the band
+// and still leaves the PDF under the mail attachment's 512 KB with the map
+// and the fonts.
+const posterMaxBytes = 144 << 10
+
+// Poster cuts a theme's poster from an image: the whole image narrowed about
+// its centre to aspect (width over height), at the band's width, as a JPEG
+// of at most posterMaxBytes. ok is false for an image it cannot decode.
+func Poster(data []byte, aspect float64) ([]byte, bool) {
+	if aspect <= 0 {
+		return nil, false
+	}
+	return cut(data, nil, aspect, posterMaxBytes)
+}
+
+// cut is Band of any shape (aspect, width over height) and size bound.
+func cut(data []byte, crop *ticketimage.Crop, aspect float64, maxBytes int) ([]byte, bool) {
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width*cfg.Height > bandMaxPixels {
 		return nil, false
@@ -205,17 +226,17 @@ func Band(data []byte, crop *ticketimage.Crop) ([]byte, bool) {
 	if err != nil {
 		return nil, false
 	}
-	region, ok := bandRegion(src.Bounds(), crop)
+	region, ok := bandRegion(src.Bounds(), crop, aspect)
 	if !ok {
 		return nil, false
 	}
 	// The JPEG shrinks in quality first, then in width, until it fits
-	// bandMaxBytes (a photo fits at the first try; noise needs the rest).
+	// maxBytes (a photo fits at the first try; noise needs the rest).
 	var out []byte
 	// A region narrower than bandMinWidth is cut at its own width and only
 	// loses quality; a wider one never goes below bandMinWidth.
 	for outW := min(bandWidth, region.Dx()); ; outW = max(bandMinWidth, outW*3/4) {
-		outH := max(1, int(math.Round(float64(outW)/ticketimage.BandAspect)))
+		outH := max(1, int(math.Round(float64(outW)/aspect)))
 		dst := image.NewRGBA(image.Rect(0, 0, outW, outH))
 		xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, region, xdraw.Src, nil)
 		for _, quality := range bandQualities {
@@ -224,7 +245,7 @@ func Band(data []byte, crop *ticketimage.Crop) ([]byte, bool) {
 				return nil, false
 			}
 			out = buf.Bytes()
-			if len(out) <= bandMaxBytes {
+			if len(out) <= maxBytes {
 				return out, true
 			}
 		}
@@ -236,8 +257,8 @@ func Band(data []byte, crop *ticketimage.Crop) ([]byte, bool) {
 }
 
 // bandRegion is the pixels of bounds the band shows: the region of crop
-// (or the whole image) narrowed about its centre to the band's shape.
-func bandRegion(bounds image.Rectangle, crop *ticketimage.Crop) (image.Rectangle, bool) {
+// (or the whole image) narrowed about its centre to the shape aspect.
+func bandRegion(bounds image.Rectangle, crop *ticketimage.Crop, aspect float64) (image.Rectangle, bool) {
 	w, h := float64(bounds.Dx()), float64(bounds.Dy())
 	x0, y0, rw, rh := 0.0, 0.0, w, h
 	if crop != nil {
@@ -247,12 +268,12 @@ func bandRegion(bounds image.Rectangle, crop *ticketimage.Crop) (image.Rectangle
 		x0, y0 = crop.X*w, crop.Y*h
 		rw, rh = min(crop.W*w, w-x0), min(crop.H*h, h-y0)
 	}
-	if rw/rh > ticketimage.BandAspect {
-		narrower := rh * ticketimage.BandAspect
+	if rw/rh > aspect {
+		narrower := rh * aspect
 		x0 += (rw - narrower) / 2
 		rw = narrower
 	} else {
-		lower := rw / ticketimage.BandAspect
+		lower := rw / aspect
 		y0 += (rh - lower) / 2
 		rh = lower
 	}

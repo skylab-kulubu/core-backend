@@ -105,8 +105,9 @@ func TestPostgresCertificateRule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !copiedRule.AutoFinalize {
-		t.Fatal("the copy's attendance does not close by itself")
+	// "Sertifikaları otomatik gönder": a copy has it off, though the source's is on.
+	if copiedRule.AutoFinalize {
+		t.Fatal("the copy sends its certificates by itself")
 	}
 	marks := map[string][2]bool{}
 	for _, s := range copiedRule.Sessions {

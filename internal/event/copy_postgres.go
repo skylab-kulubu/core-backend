@@ -67,17 +67,17 @@ func (s *PostgresStore) Copy(ctx context.Context, plan CopyPlan) (Event, []strin
 			registration_closes_at, feedback_mode, feedback_auto_send,
 			location_lat, location_lng, location_address, attendance_min_count, attendance_auto_finalize,
 			waitlist_enabled, entry_mode, attendance_welcome_mail, attendance_recorded_mail,
-			external_registration_url, attendee_note, form_responses_auto_ticket
+			external_registration_url, attendee_note, form_responses_auto_ticket, theme, ticket_accent_color
 		) VALUES ($2, $3, $4, $5, $6, $7, $1, $8, $9, $10, `+copySeasonSQL+`,
 			$11, $12, 'draft', $13, $14, $15, $16, $17, $18, $19, $20, $21, COALESCE($22::boolean, true), $23,
-			COALESCE($24::boolean, true), COALESCE($25::boolean, true), $26, COALESCE($27::text, ''), COALESCE($28::boolean, true))
+			COALESCE($24::boolean, true), COALESCE($25::boolean, true), $26, COALESCE($27::text, ''), COALESCE($28::boolean, true), $29, $30)
 		ON CONFLICT (id) DO NOTHING`,
 		e.StartDate, e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.Capacity,
 		e.EndDate, e.Ranked, e.PrizeInfo, attendanceRule(e.AttendanceRule), e.AttendanceRatio,
 		plan.Source, e.RegistrationClosesAt, string(feedbackMode(e.FeedbackMode)), e.FeedbackAutoSend,
 		e.LocationLat, e.LocationLng, e.LocationAddress, e.AttendanceMinCount, e.AttendanceAutoFinalize,
 		e.WaitlistEnabled, e.EntryMode, e.AttendanceWelcomeMail, e.AttendanceRecordedMail,
-		e.ExternalRegistrationURL, e.AttendeeNote, e.FormResponsesAutoTicket)
+		e.ExternalRegistrationURL, e.AttendeeNote, e.FormResponsesAutoTicket, e.Theme, e.TicketAccentColor)
 	if err != nil {
 		return Event{}, nil, err
 	}
@@ -88,6 +88,9 @@ func (s *PostgresStore) Copy(ctx context.Context, plan CopyPlan) (Event, []strin
 		skippedParts[SkippedAttendeeNote] = true
 	}
 	if err := copyCover(ctx, tx, plan, skippedParts); err != nil {
+		return Event{}, nil, err
+	}
+	if err := copyTicketImage(ctx, tx, plan, skippedParts); err != nil {
 		return Event{}, nil, err
 	}
 	if err := copyMap(ctx, tx, plan); err != nil {
@@ -133,6 +136,62 @@ func copyCover(ctx context.Context, tx pgx.Tx, plan CopyPlan, skippedParts map[s
 	_, err = savepoint.Exec(ctx, `UPDATE events SET cover_image_id = $2 WHERE id = $1`, plan.Event.ID, plan.Event.CoverImageID)
 	if _, refused := media.DatabaseLinkRefusal(err); refused {
 		skippedParts[SkippedCover] = true
+		return savepoint.Rollback(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	return savepoint.Commit(ctx)
+}
+
+// TicketImageUpload is the Media of the Event's own ticket image (source
+// upload), nil for none (or one whose Media is gone).
+func (s *PostgresStore) TicketImageUpload(ctx context.Context, eventID uuid.UUID) (*uuid.UUID, error) {
+	var id *uuid.UUID
+	err := s.pool.QueryRow(ctx, `SELECT media_id FROM event_ticket_images WHERE event_id = $1 AND source = 'upload'`, eventID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return id, err
+}
+
+// copyTicketImage brings the source's ticket image choice along
+// (docs/event-copy.md), in a savepoint: a cover region when the copy has
+// the cover it was drawn on, an image of its own unless the copy's Owner
+// team may not use it (plan.TicketImage) or the database refuses its link;
+// either refusal names it skipped. No choice (the cover's middle) has no
+// row to copy.
+func copyTicketImage(ctx context.Context, tx pgx.Tx, plan CopyPlan, skippedParts map[string]bool) error {
+	var source string
+	var mediaID *uuid.UUID
+	err := tx.QueryRow(ctx, `SELECT source, media_id FROM event_ticket_images WHERE event_id = $1`, plan.Source).Scan(&source, &mediaID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if source == "upload" {
+		if mediaID == nil {
+			return nil
+		}
+		if plan.TicketImage != CopyWrite {
+			skippedParts[SkippedTicketImage] = true
+			return nil
+		}
+	}
+	savepoint, err := tx.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = savepoint.Exec(ctx, `
+		INSERT INTO event_ticket_images (event_id, source, media_id, cover_media_id, crop_x, crop_y, crop_w, crop_h)
+		SELECT c.id, s.source, s.media_id, s.cover_media_id, s.crop_x, s.crop_y, s.crop_w, s.crop_h
+		FROM event_ticket_images s
+		JOIN events c ON c.id = $2
+		WHERE s.event_id = $1 AND (s.source = 'upload' OR s.cover_media_id = c.cover_image_id)`, plan.Source, plan.Event.ID)
+	if _, refused := media.DatabaseLinkRefusal(err); refused {
+		skippedParts[SkippedTicketImage] = true
 		return savepoint.Rollback(ctx)
 	}
 	if err != nil {

@@ -136,6 +136,9 @@ type service struct {
 	now func() time.Time
 	// formsLinked hears of the forms a write linked (ServiceOptions.FormsLinked).
 	formsLinked FormsLinkedHook
+	// formAccess tells whether the person may see a form it newly links
+	// (ServiceOptions.FormAccess); nil asks nothing.
+	formAccess FormAccess
 	// audit records the changes of the Co-organizer list in the Team audit
 	// record; nil records none (a test). groups finds the Event's Owner
 	// team's Group, the row's target.
@@ -221,6 +224,16 @@ func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
 			note = *in.AttendeeNote
 		}
 		in.AttendeeNoteView = &note
+	}
+	// The ticket note goes to the Ticket holders by mail; in an answer, to
+	// the same readers as the attendee note.
+	in.TicketNoteView = nil
+	if p != nil && s.readsAttendeeNote(*p, in) {
+		note := ""
+		if in.TicketNote != nil {
+			note = *in.TicketNote
+		}
+		in.TicketNoteView = &note
 	}
 	if p == nil || !s.authz.Allow(*p, s.eventResource(in, authz.TypeEvent), authz.Update) {
 		in.Files = servableItems(in.Files)
@@ -402,11 +415,20 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (_ Ev
 	if in, err = normalizeAttendeeNote(in); err != nil {
 		return Event{}, err
 	}
+	if in, err = normalizeTicketNote(in); err != nil {
+		return Event{}, err
+	}
+	if in, err = normalizeTheme(in); err != nil {
+		return Event{}, err
+	}
 	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() || !validEntryMode(in.EntryMode) {
 		return Event{}, ErrInvalid
 	}
 	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Create) {
 		return Event{}, ErrForbidden
+	}
+	if err := s.checkFormAccess(ctx, p, in, nil); err != nil {
+		return Event{}, err
 	}
 	if err := s.checkFormPlaces(ctx, in, false, nil); err != nil {
 		return Event{}, err
@@ -499,6 +521,12 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 	if in, err = normalizeAttendeeNote(in); err != nil {
 		return Event{}, err
 	}
+	if in, err = normalizeTicketNote(in); err != nil {
+		return Event{}, err
+	}
+	if in, err = normalizeTheme(in); err != nil {
+		return Event{}, err
+	}
 	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() || !validEntryMode(in.EntryMode) {
 		return Event{}, ErrInvalid
 	}
@@ -507,6 +535,9 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 	in.changedBy = lifecycle.ActorID(p.ID)
 	if syncForms {
 		kept := listedForms(existing)
+		if err := s.checkFormAccess(ctx, p, in, kept); err != nil {
+			return Event{}, err
+		}
 		if err := s.checkFormPlaces(ctx, in, false, kept); err != nil {
 			return Event{}, err
 		}

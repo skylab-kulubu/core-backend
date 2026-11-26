@@ -970,7 +970,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	worker("feedback mail", startFeedbackMail(workers, feedbackNotification, feedbackInvites, tickets, users, sky, log.Printf))
+	worker("feedback mail", startFeedbackMail(workers, feedbackNotification, feedbackInvites, tickets, users, events, sky, log.Printf))
 	// The new Ticket's Notification (docs/ticket-created-notification.md):
 	// SkyNotify tells the holder by inbox and e-mail.
 	ticketNotificationOn, err := ticketCreatedNotificationOn(os.Getenv)
@@ -1030,6 +1030,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	doorQRLimits, err := handlers.DoorQRLimitsFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("guest check-in failures: %d per address, %d per address and e-mail a minute",
+		doorQRLimits.GuestFailuresPerClient, doorQRLimits.GuestFailuresPerEmail)
 	ticketQR, err := ticketQRSigner(os.Getenv, passKey)
 	if err != nil {
 		log.Fatal(err)
@@ -1248,8 +1254,15 @@ func main() {
 	// says; the questions are read with it on.
 	formCollects := &formsfeed.Collects{Queue: formPulls, Events: events, On: formPuller != nil, Logf: log.Printf}
 	formMappings := &formsfeed.Mappings{Events: events, Authz: az, Store: formMappingStore, On: formsEvents != nil, Collects: formCollects}
+	// Who may link a form to an Event, or have its answers gathered again:
+	// the person on the form's team in Forms, read whatever the switch says
+	// (docs/form-respondents.md#who-may-link-a-form). Without Forms' client
+	// a newly linked form is 503 forms_unavailable: never linked unasked.
+	formAccess := &formsfeed.FormAccess{Logf: log.Printf}
 	if formsClient != nil {
 		formMappings.Forms = formsClient
+		formBackfills.Forms = formsClient
+		formAccess.Forms = formsClient
 	}
 	formsCounters := formsMetrics{puller: formPuller}
 	if formsEvents != nil {
@@ -1368,6 +1381,7 @@ func main() {
 
 			CoOrganizersWrite: coOrganizersWrite,
 			FormsLinked:       formCollects,
+			FormAccess:        formAccess,
 			Audit:             teamAudit,
 			Groups:            dir,
 		}),
@@ -1419,6 +1433,7 @@ func main() {
 		AppAssignments:            appAssignments,
 		AuthzRoleMetrics:          authzRoleMetrics,
 		GuestCheckInMetrics:       doorQR,
+		DoorQRLimits:              &doorQRLimits,
 		TicketQR:                  ticketQR,
 		TicketPage:                ticketPage,
 		DoorScanMetrics:           doorScans,
@@ -1664,6 +1679,11 @@ func doorQRGate(getenv func(string) string, passKey *ecdsa.PrivateKey) (*doorqr.
 	}
 	gate := doorqr.NewGate(doorqr.DeriveKey(passKey.D.FillBytes(make([]byte, 32))), cfg)
 	log.Printf("guest self check-in: %s=%s; session qr: %s=%s", doorqr.ModeEnv, gate.Mode(), doorqr.SessionModeEnv, gate.SessionMode())
+	static := "on"
+	if !gate.StaticOn() {
+		static = "off"
+	}
+	log.Printf("static attendance qr: %s=%s", doorqr.StaticEnv, static)
 	return gate, nil
 }
 

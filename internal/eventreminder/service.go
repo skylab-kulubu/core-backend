@@ -101,7 +101,7 @@ type Queue interface {
 
 // Mailer posts the reminder (mail.SkyNotify).
 type Mailer interface {
-	EventReminder(ctx context.Context, typ, idempotencyKey string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time) error
+	EventReminder(ctx context.Context, typ, idempotencyKey string, holder mail.TicketHolder, vars map[string]any, source mail.NotificationSource, expiresAt *time.Time) error
 }
 
 // Tickets, Events and Users are what the worker reads when it sends.
@@ -399,8 +399,10 @@ func (s *Service) recipientOf(ctx context.Context, m Mail) (recipient, bool, err
 // missingkey=error. TicketUrl, TicketQrUrl and TicketCode while
 // TICKET_PAGE_URL is set (the ticket created mail's rule); MapUrl is the
 // ticket page's directions link.
-func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]string {
-	vars := map[string]string{
+// TicketNote and TicketNoteParts are the organizer's announcement
+// (docs/ticket-note.md), "" and [] for none.
+func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]any {
+	vars := map[string]any{
 		"EventId":   ev.ID.String(),
 		"EventName": ev.Name,
 		"StartsAt":  "",
@@ -422,6 +424,11 @@ func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]string {
 		if origin := strings.TrimRight(s.config.APIOrigin, "/"); origin != "" {
 			vars["TicketQrUrl"] = origin + "/v1/public/tickets/" + t.AccessKey + "/qr.png"
 		}
+	}
+	vars["TicketNote"], vars["TicketNoteParts"] = event.TicketNoteParts(ev)
+	// The Event's theme and poster (docs/event-theme.md#mails).
+	for k, v := range event.MailLook(ev) {
+		vars[k] = v
 	}
 	return vars
 }
