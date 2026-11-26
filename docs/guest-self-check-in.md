@@ -108,11 +108,9 @@ Accepted risks (Yusuf's ticket 19 decision, the guest path's own): someone
 in the room, holding a fresh token, can type another person's school or
 account e-mail and check them in; and 201/409 against 404 tells them whether
 that address holds a Ticket of this Event. The token proves presence; the
-route's per-address budget (10 failures a minute) bounds the guessing.
-**Deviation from ticket 19:** the failed attempts are not counted per key
-(nor per e-mail): only the per-address budget applies. A key is 128 bits of
-random, so guessing one is not the risk; an e-mail is, and it is bounded as
-a guest's is.
+route's failure budgets (see [Failure budgets](#failure-budgets)) bound the
+guessing. A key is 128 bits of random, so guessing one is not the risk; an
+e-mail is, and it is bounded as a guest's is.
 
 | Status | `code` | Meaning |
 |---|---|---|
@@ -129,7 +127,7 @@ a guest's is.
 | 404 | | no such Session |
 | 409 | `already_checked_in` | already checked in to this Session |
 | 409 | `ticket_cancelled`, `ticket_waitlisted` | the Ticket found is cancelled or on the waiting list (docs/ticket-cancellation.md) |
-| 429 | `guest_check_in_rate_limited` | this address failed 10 times this minute; `Retry-After` |
+| 429 | `guest_check_in_rate_limited` | this address failed 10 times this minute for this e-mail (or key), or 300 times for any; `Retry-After` |
 
 The door QR is checked before any Ticket is looked up, so in `qr` mode the
 route no longer tells a stranger which e-mails are registered; nor does
@@ -249,10 +247,32 @@ single-use. What bounds a photo of it sent elsewhere:
   check-in that happened (or found the guest already checked in) spends a
   use; an e-mail without a Ticket gives its use back, so junk e-mails cannot
   use a token up;
-- failures are budgeted per client address instead: 10 a minute (anything
-  answered 400 or above, already-checked-in included). Successful check-ins
-  do not count, so a crowd behind one campus NAT is not refused;
+- failures are budgeted per client address and e-mail, and per client
+  address, instead ([Failure budgets](#failure-budgets));
 - a Ticket checks in to a Session once (`409` after that).
+
+### Failure budgets
+
+A failure is anything answered 400 or above, already-checked-in included;
+successful check-ins never count. Two budgets apply, in this order, each a
+fixed one-minute window:
+
+| Budget | Default | Setting | Bounds |
+|---|---|---|---|
+| one client address and one e-mail (the ticket key instead, when sent; case and spaces aside) | 10 a minute | `GUEST_CHECKIN_FAILURES_PER_EMAIL` | one guest who mistypes or taps again |
+| one client address, any e-mails | 300 a minute | `GUEST_CHECKIN_FAILURES_PER_IP` | trying many e-mails from one address |
+
+A request the first budget refuses does not count against the second, so
+one guest who keeps tapping cannot spend the hall's budget. A venue's Wi-Fi
+can put a whole hall behind one address: the per-address budget is sized for
+a few hundred guests each failing once or twice in a minute. Until
+2026-11-26 the only budget was 10 failures a minute per address, which a
+hall behind one address could reach in seconds and then everyone in it got
+429 for a minute.
+
+Each setting takes a whole number from 1 to 100000; anything else stops core.
+The limiter's memory keeps a hash of the e-mail, never the address itself.
+Like the use counts, the budgets live in each core process.
 
 The use counts live in each core process, bounded to 10 000 tokens (expired
 ones are dropped; only genuine tokens are counted and minting is limited to
@@ -273,7 +293,7 @@ On `/v1/metrics`, no Session, Event or person named:
   still reading the static Session QR: each would be refused under `qr`;
 - `skylab_session_self_checkin_mode{mode="open|qr"}`.
 
-Requests refused by the per-address budget (429) do not reach the counters.
+Requests refused by a failure budget (429) do not reach the counters.
 
 ## Rollout
 
@@ -329,5 +349,5 @@ Deviations:
   key the guest's browser does not have. The use cap, the short lifetime and
   the Session window bound the damage.
 - The replay cap is in memory and per process, not in a shared store.
-- The per-address budget is keyed on the client address the edge proxy
+- The failure budgets are keyed on the client address the edge proxy
   reports; overlay peers can write their own (docs/client-ip-trust.md).

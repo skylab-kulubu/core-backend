@@ -912,14 +912,15 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.CheckIn)
 	app.Delete("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.UndoCheckIn)
 	app.Post("/v1/sessions/:sessionId/check-in/me", tickets.CheckInMe)
-	// Guest check-in takes no sign-in; failures are budgeted per address, and
-	// the door QR caps how many guests one token lets in
-	// (docs/guest-self-check-in.md).
+	// Guest check-in takes no sign-in; failures are budgeted per address and
+	// e-mail, then per address, and the door QR caps how many guests one
+	// token lets in (docs/guest-self-check-in.md).
 	doorQRLimits := handlers.DefaultDoorQRLimits()
 	if deps.DoorQRLimits != nil {
 		doorQRLimits = *deps.DoorQRLimits
 	}
-	app.Post("/v1/sessions/:sessionId/check-in/guest", doorQRLimits.GuestCheckInLimit(trustedProxies), tickets.CheckInGuest)
+	app.Post("/v1/sessions/:sessionId/check-in/guest", doorQRLimits.GuestCheckInEmailLimit(trustedProxies),
+		doorQRLimits.GuestCheckInLimit(trustedProxies), tickets.CheckInGuest)
 	app.Post("/v1/sessions/:sessionId/door-qr", doorQRLimits.MintLimit(), tickets.MintDoorQR)
 	app.Post("/v1/sessions/:sessionId/check-in/resolve", tickets.ResolveAndCheckIn)
 	app.Get("/v1/sessions/:sessionId/check-ins", tickets.DoorActivity)
