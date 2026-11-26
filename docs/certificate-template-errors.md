@@ -1,6 +1,6 @@
 # Certificate template errors
 
-Saving, previewing or publishing a certificate template (`POST /v1/certificate-templates`, `PUT /v1/certificate-templates/{id}`, `POST /v1/certificate-templates/{id}/preview`, `POST /v1/certificate-templates/{id}/publish`) and the Event preview (`POST /v1/events/{eventId}/certificates/preview`) answer a refused layout, asset or rendering with `400` and a `code` (RFC 9457 extension member), so the panel can say what to change, and a renderer that is down with `503` and `renderer_unavailable`. A `400` without a `code` is still a malformed request (an unreadable body or id).
+Saving, previewing or publishing a certificate template (`POST /v1/certificate-templates`, `PUT /v1/certificate-templates/{id}`, `POST /v1/certificate-templates/{id}/preview`, `POST /v1/certificate-templates/{id}/publish`) the Event preview (`POST /v1/events/{eventId}/certificates/preview`) and the asset routes (`GET /v1/certificate-assets/{id}/info`, `GET /v1/certificate-assets/{id}/preview`, below) answer a refused layout, asset or rendering with `400` and a `code` (RFC 9457 extension member), so the panel can say what to change, and a renderer that is down with `503` and `renderer_unavailable` (Gotenberg) or `pdf_tools_unavailable` (pdf-tools). A `400` without a `code` is still a malformed request (an unreadable body or id).
 
 ## Required layers
 
@@ -33,7 +33,9 @@ A layout needs the recipient's name (`recipientName`) and at least one of the ve
 | `background_pdf_unreadable` | A PDF background that is not a PDF the renderer can read. |
 | `background_pdf_too_large` | A PDF background over 20 MB. |
 | `background_pdf_pages` | A PDF background that is not exactly one page. |
-| `renderer_unavailable` | `503`: core runs without its PDF renderer (Gotenberg), cannot reach it, or it failed on its side (5xx). A later try may pass; an issuance job tries again. |
+| `background_pdf_encrypted` | A PDF background that is encrypted or password protected (pdf-tools reads it). |
+| `renderer_unavailable` | `503`: core runs without its PDF renderer (Gotenberg), cannot reach it, or it failed on its side (5xx). A later try may pass; an issuance job tries again, at most five times. |
+| `pdf_tools_unavailable` | `503`: core runs without pdf-tools (`PDF_TOOLS_URL` unset), cannot reach it, it failed on its side (5xx), or it answered something that is not what it should (no PDF, no PNG). A later try may pass. A busy pdf-tools (503) gets one more try a moment later, then this. Only a placed PDF background and the asset routes of a PDF need pdf-tools; issuance never calls it. |
 | `render_failed` | The renderer refused the page (4xx) or answered no PDF. |
 | `template_event_scoped` | An Event template bound to a team, the club or another Event (`PUT /v1/certificate-template-bindings`); it serves its own Event only ([certificate-event-templates.md](certificate-event-templates.md)). |
 | `template_event_exists` | `409`: the Event has an Event template already (`POST /v1/events/{eventId}/certificate-template`). The answer's `templateId` is the current one, which the panel opens instead. |
@@ -52,7 +54,17 @@ A one-page PDF background is kept as a vector: Gotenberg renders the layers as H
 
 pdfcpu's `scale` is relative to the page (`scale 1 rel`), measured on pdfcpu v0.15.0, the one Gotenberg 8.37 builds (`pkg/pdfcpu/model/watermark.go`, `CalcBoundingBox` and `LowerLeftCorner`): a PDF wider than tall, or square, is scaled to the page's width; a taller one to the page's height; it is centred on both axes (anchor `c`). Its size is the page's visible box (CropBox, else MediaBox). So a PDF whose shape is not the page's leaves margins on two sides, or reaches past the page and is cut off (a landscape PDF less wide than a landscape page, for one).
 
-A layout with a `backgroundPlacement` and a PDF background is still printed this way until core places the PDF itself (pdf-tools).
+A layout without a `backgroundPlacement` is still printed this way, without pdf-tools.
+
+### Placed PDF backgrounds
+
+A layout with a `backgroundPlacement` and a PDF background is placed by pdf-tools (`PDF_TOOLS_URL`, [pdf-tools/README.md](../pdf-tools/README.md)): `/v1/inspect` reads the PDF's visible box, core computes the box (below, the PDF's pt × 96/72 as its natural size) and `/v1/place` draws the PDF's page into it on a new page of the layout's size in pt (px × 72/96), cut to the page. Gotenberg lays that placed PDF under the page as above; it has the page's size, so `scale 1 rel` fits it exactly, and the image and PDF backgrounds use the same box.
+
+- **Publishing** stores the placed PDF beside the version's asset copy, `certificate-template-assets/<version>/<media>.placed.pdf`, encrypted in the private bucket when the asset is private, and names it in the version's asset manifest (`placed`: key, encryption, SHA-256). It counts toward the 50 MB of a template's assets. A publish that fails deletes its private copies, the placed one too. Without pdf-tools the publish is `503 pdf_tools_unavailable` and stores nothing; a layout without a placement publishes without it.
+- **Issuing** a certificate, the Event preview and every other print of a published version read the version's placed copy and never call pdf-tools; a copy that does not match its SHA-256 is not printed. A version published before placed copies (2026-11-25) prints its PDF as it was published, by Gotenberg's scale above, its placement not applied: a published version does not change how it looks.
+- **The draft preview** places the PDF on the fly; core keeps the placed PDFs in memory (at most 64 and 200 MiB, by the PDF's SHA-256, the page and the box).
+
+`core_certificate_pdf_tools_errors_total{op}` (`/v1/metrics`) counts the calls that failed on pdf-tools' side, by operation (`inspect`, `place`, `render`); a PDF it refuses, and a request its caller cancelled, is not counted.
 
 ## Background placement
 
@@ -79,3 +91,19 @@ An image background with a placement is drawn as an `<img>` in that box, under e
 
 - an image: `{"fit": "cover", "x": 0.5, "y": 0.5, "scale": 1}`;
 - a PDF: `{"fit": "fitWidth", "x": 0.5, "y": 0.5, "scale": 1}` when it is wider than tall or square, `{"fit": "fitHeight", …}` when it is taller (pdfcpu, above).
+
+## Certificate assets
+
+The template editor reads a background's size and draws it from core. Both routes take a certificate asset (`certificate_asset`) or a Media uploaded without a purpose (`legacy`); another purpose's Media is `404`. They answer the Media's uploader, and whoever may edit a template (its draft or a published version) that links the Media; anyone else gets `404` too, as a Media link that is not the caller's does not say the Media exists.
+
+`GET /v1/certificate-assets/{id}/info` answers the asset's size in layout px:
+
+```json
+{ "contentType": "application/pdf", "widthPx": 793.701, "heightPx": 1122.52, "pages": 1, "textCount": 12 }
+```
+
+A PDF's is its first page's visible box (CropBox, turned by `/Rotate`) in pt × 96/72, with its page count and the texts pdf-tools found (`/v1/inspect`); an image's is its natural size (`pages` 1, `textCount` 0). An encrypted PDF is `400 background_pdf_encrypted`; without pdf-tools a PDF is `503 pdf_tools_unavailable`.
+
+`GET /v1/certificate-assets/{id}/preview?max=2000` answers a PDF's page as a PNG whose long side is `max` px (16–4000, default 2000; otherwise `400`), drawn by pdf-tools (`/v1/render`; core keeps the drawn pages in memory, at most 32 and 64 MiB, by the PDF's SHA-256 and `max`), and an image as itself, with its own type. Every answer has `X-Content-Type-Options: nosniff`; an SVG also `Content-Security-Policy: sandbox`.
+
+Both answer `Cache-Control: private, max-age=300`: an asset does not change, and only the editor's own browser keeps it.

@@ -1097,6 +1097,15 @@ func main() {
 	} else {
 		log.Printf("certificate mail: PDF attachment off (CERTIFICATE_PDF_ATTACHMENT is not on)")
 	}
+	// pdf-tools (PDF_TOOLS_URL, pdf-tools/README.md): places a PDF
+	// background with a placement and reads and previews PDF assets. Unset,
+	// those answer 503 pdf_tools_unavailable and the rest works as before.
+	pdfTools := certificate.NewPDFTools(os.Getenv("PDF_TOOLS_URL"))
+	if pdfTools == nil {
+		log.Printf("certificate pdf-tools: off (PDF_TOOLS_URL is not set)")
+	} else {
+		log.Printf("certificate pdf-tools: on")
+	}
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
@@ -1108,6 +1117,7 @@ func main() {
 		PrivateArtifacts: privateArtifacts,
 		Media:            media.NewLinker(mediaStore),
 		MailPDF:          certificatePDFAttachment,
+		PDFTools:         pdfTools,
 	})
 	worker("certificate issuance worker", certificate.MaintainIssuance(workers, certSvc, 2*time.Second, 10, func(err error) {
 		log.Printf("certificate issuance worker: %v", err)

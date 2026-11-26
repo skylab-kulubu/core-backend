@@ -87,7 +87,7 @@ type autoFinalizeMetrics struct {
 func (s *service) Prometheus() string {
 	return fmt.Sprintf("# TYPE core_certificate_auto_finalized_total counter\ncore_certificate_auto_finalized_total %d\n"+
 		"# TYPE core_certificate_auto_finalize_errors_total counter\ncore_certificate_auto_finalize_errors_total %d\n",
-		s.autoMetrics.finalized.Load(), s.autoMetrics.errors.Load()) + s.mailPDF.prometheus()
+		s.autoMetrics.finalized.Load(), s.autoMetrics.errors.Load()) + s.mailPDF.prometheus() + s.pdfToolsErrors.prometheus()
 }
 
 // AutoFinalize closes, at now, the attendance of every Event due: published

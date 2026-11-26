@@ -61,6 +61,11 @@ type Options struct {
 	// Mailer that is a CertificateAttachmentMailer; a PDF over SkyNotify's
 	// bound, or one that cannot be read, leaves the mail without it.
 	MailPDF bool
+	// PDFTools is core's internal PDF service (PDF_TOOLS_URL): it places a
+	// PDF background with a placement, reads a PDF asset's page and draws
+	// its preview. Nil leaves those off (503 pdf_tools_unavailable); a
+	// layout without a placement prints as before without it.
+	PDFTools PDFTools
 }
 
 type service struct {
@@ -87,6 +92,9 @@ type service struct {
 	mails            MailQueue
 	mailPDFOn        bool
 	mailPDF          mailPDFMetrics
+	pdfTools         PDFTools
+	pdfCache         pdfCaches
+	pdfToolsErrors   pdfToolsMetrics
 }
 
 // NewService preserves the original synchronous contract for existing embedders.
@@ -139,7 +147,7 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 		templates: opts.Templates, jobs: opts.Jobs, artifacts: opts.Artifacts,
 		assets: opts.Assets, legacyImmediate: opts.LegacyImmediate, media: opts.Media, privateArtifacts: opts.PrivateArtifacts,
 		attendance: opts.Attendance, autoFinalize: opts.AutoFinalize, mails: opts.Mails,
-		mailPDFOn: opts.MailPDF,
+		mailPDFOn: opts.MailPDF, pdfTools: opts.PDFTools, pdfCache: newPDFCaches(),
 	}
 }
 

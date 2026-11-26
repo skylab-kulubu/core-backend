@@ -831,6 +831,8 @@ func New(deps Deps) *fiber.App {
 		app.Put("/v1/certificate-templates/:id", certs.UpdateTemplate)
 		app.Post("/v1/certificate-templates/:id/publish", certs.PublishTemplate)
 		app.Post("/v1/certificate-templates/:id/preview", certs.PreviewTemplate)
+		app.Get("/v1/certificate-assets/:id/info", certs.AssetInfo)
+		app.Get("/v1/certificate-assets/:id/preview", certs.AssetPreview)
 		app.Get("/v1/certificate-template-bindings", certs.ListBindings)
 		app.Put("/v1/certificate-template-bindings", certs.SetBinding)
 		app.Delete("/v1/certificate-template-bindings/:scope/:scopeKey", certs.ClearBinding)

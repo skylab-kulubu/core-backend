@@ -112,6 +112,29 @@ type VersionAssetRef struct {
 	// Encryption opens the copy of a private asset, which is kept encrypted
 	// in the private bucket; nil for a public copy.
 	Encryption *media.Encryption `json:"encryption,omitempty"`
+	// Placed is a PDF background's copy placed on the version's page by
+	// its placement (pdf-tools /place), which every render of the version
+	// prints instead of placing it again; nil for an image, a layout
+	// without a placement, and a version published before placed copies.
+	Placed *PlacedAssetRef `json:"placed,omitempty"`
+}
+
+// PlacedAssetRef is a version's placed copy of its PDF background, stored
+// beside the asset's copy and, for a private asset, as encrypted as it.
+type PlacedAssetRef struct {
+	Key        string            `json:"key"`
+	Encryption *media.Encryption `json:"encryption,omitempty"`
+	// Checksum is the placed PDF's SHA-256, hex; a copy that reads back
+	// otherwise is not printed.
+	Checksum string `json:"checksum"`
+}
+
+// Sealed is the placed copy's private object; false for a public copy.
+func (r PlacedAssetRef) Sealed() (media.SealedObject, bool) {
+	if r.Encryption == nil {
+		return media.SealedObject{}, false
+	}
+	return media.SealedObject{Key: r.Key, Encryption: *r.Encryption}, true
 }
 
 // Sealed is the copy's private object; false for a public copy.

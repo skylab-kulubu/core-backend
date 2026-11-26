@@ -33,6 +33,7 @@ type gotenbergContract struct {
 	unreachable    bool // the server is closed before core calls it
 	converted      atomic.Int32
 	options        atomic.Value
+	watermark      atomic.Value // the last PDF laid under a page
 }
 
 func (g *gotenbergContract) server(t *testing.T) *httptest.Server {
@@ -66,6 +67,11 @@ func (g *gotenbergContract) server(t *testing.T) *httptest.Server {
 					return
 				}
 				g.options.Store(opts)
+				if file, err := r.MultipartForm.File["watermark"][0].Open(); err == nil {
+					laid, _ := io.ReadAll(file)
+					_ = file.Close()
+					g.watermark.Store(laid)
+				}
 			}
 			if g.status != 0 {
 				http.Error(w, "Service Unavailable", g.status)
