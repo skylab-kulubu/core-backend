@@ -220,15 +220,17 @@ func answerCode(body []byte) string {
 // take, by the type's e-mail template alone (/v1/mail_tasks/single).
 // attachments (the Ticket's PDF, docs/ticket-created-notification.md) go
 // with the e-mail either way; none sends the body of before.
-func (s *SkyNotify) TicketCreated(ctx context.Context, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
-	return s.tellHolder(ctx, kindTicketCreated, TicketCreatedType, idempotencyKey, holder, vars, source, expiresAt, attachments)
+// The variables are not all text: TicketNoteParts is a list
+// (docs/ticket-note.md).
+func (s *SkyNotify) TicketCreated(ctx context.Context, idempotencyKey string, holder TicketHolder, vars map[string]any, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
+	return s.tellHolderVariables(ctx, kindTicketCreated, TicketCreatedType, idempotencyKey, holder, vars, source, expiresAt, attachments)
 }
 
 // TicketStatus tells a Ticket's holder of its place on the waiting list
 // (typ WaitlistJoinedType or WaitlistPromotedType) or of its cancellation
 // (TicketCancelledType), the way TicketCreated tells of a new Ticket.
-func (s *SkyNotify) TicketStatus(ctx context.Context, typ, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
-	return s.tellHolder(ctx, kindTicketStatus, typ, idempotencyKey, holder, vars, source, expiresAt, attachments)
+func (s *SkyNotify) TicketStatus(ctx context.Context, typ, idempotencyKey string, holder TicketHolder, vars map[string]any, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
+	return s.tellHolderVariables(ctx, kindTicketStatus, typ, idempotencyKey, holder, vars, source, expiresAt, attachments)
 }
 
 // EventUpdated tells a Ticket holder that the Event's time or place changed,
@@ -247,8 +249,8 @@ func (s *SkyNotify) EventChanged(ctx context.Context, idempotencyKey string, hol
 // EventReminder tells a Ticket holder that the Event is tomorrow, under the
 // template key typ (SKYNOTIFY_EVENT_REMINDER_TEMPLATE_KEY), the way
 // EventUpdated tells of a new time or place.
-func (s *SkyNotify) EventReminder(ctx context.Context, typ, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time) error {
-	return s.tellHolder(ctx, kindEventReminder, typ, idempotencyKey, holder, vars, source, expiresAt, nil)
+func (s *SkyNotify) EventReminder(ctx context.Context, typ, idempotencyKey string, holder TicketHolder, vars map[string]any, source NotificationSource, expiresAt *time.Time) error {
+	return s.tellHolderVariables(ctx, kindEventReminder, typ, idempotencyKey, holder, vars, source, expiresAt, nil)
 }
 
 // DoorStaffAdded tells a person added to an Event's door staff, by a
@@ -312,6 +314,9 @@ func (s *SkyNotify) AttendanceMail(ctx context.Context, typ, idempotencyKey stri
 
 // tellHolderVariables is tellHolder with variables of any JSON shape.
 func (s *SkyNotify) tellHolderVariables(ctx context.Context, kind, typ, idempotencyKey string, holder TicketHolder, variables map[string]any, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
+	if variables == nil {
+		variables = map[string]any{}
+	}
 	if holder.Sub != uuid.Nil {
 		return s.Notify(ctx, kind, idempotencyKey, Notification{
 			Type:        typ,

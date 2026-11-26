@@ -65,7 +65,13 @@ type Queue interface {
 // Mailer posts one feedback mail (mail.SkyNotify).
 type Mailer interface {
 	FeedbackConfigured(kind mail.FeedbackKind) bool
-	Feedback(ctx context.Context, kind mail.FeedbackKind, idempotencyKey string, to mail.FeedbackRecipient, eventID uuid.UUID, eventName string, items []mail.FeedbackItem) error
+	Feedback(ctx context.Context, kind mail.FeedbackKind, idempotencyKey string, to mail.FeedbackRecipient, eventID uuid.UUID, eventName string, items []mail.FeedbackItem, look map[string]string) error
+}
+
+// Events reads the Event a mail is about, for its theme and poster
+// (event.MailLook; event.PostgresStore).
+type Events interface {
+	GetIncludingArchived(ctx context.Context, id uuid.UUID) (event.Event, error)
 }
 
 // Config is what a Service takes.
@@ -74,6 +80,10 @@ type Config struct {
 	Tickets ticket.Store
 	Users   user.Store
 	Mail    Mailer
+	// Events gives the mail its Event's theme and poster
+	// (docs/event-theme.md#mails); nil, or an Event it cannot read, sends
+	// both empty.
+	Events Events
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 	// Logger hears counts and failures, never a person; nil is log.Default.
@@ -85,6 +95,17 @@ type Service struct {
 	config Config
 	now    func() time.Time
 	logger *log.Logger
+}
+
+// look is the Event's theme and poster for its mail (event.MailLook), both
+// empty when the Event cannot be read: the mail goes all the same.
+func (s *Service) look(ctx context.Context, eventID uuid.UUID) map[string]string {
+	if s.config.Events != nil {
+		if ev, err := s.config.Events.GetIncludingArchived(ctx, eventID); err == nil {
+			return event.MailLook(ev)
+		}
+	}
+	return event.MailLook(event.Event{})
 }
 
 func NewService(config Config) (*Service, error) {
@@ -321,7 +342,7 @@ func (s *Service) deliver(ctx context.Context, claimed feedback.Mail, report *Re
 		kind = mail.FeedbackReminder
 	}
 	addressee := mail.FeedbackRecipient{Sub: to.sub, Email: to.email, FullName: to.full, FirstName: to.first}
-	err = s.config.Mail.Feedback(ctx, kind, idempotencyKey(kind, out.group, addressee, eventName, links), addressee, claimed.EventID, eventName, links)
+	err = s.config.Mail.Feedback(ctx, kind, idempotencyKey(kind, out.group, addressee, eventName, links), addressee, claimed.EventID, eventName, links, s.look(ctx, claimed.EventID))
 	var refused *mail.SendError
 	switch {
 	case errors.Is(err, mail.ErrTemplateUnconfigured):

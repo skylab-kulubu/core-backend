@@ -52,9 +52,13 @@ type Document struct {
 	// Days is the programme, in order; a day without Sessions is left out.
 	Days []ProgramDay
 	// BandJPEG is the cover band: the cover cut to the band's shape. Without
-	// it the band is BandColor (the cover's first colour, else the theme's).
-	BandJPEG  []byte
-	BandColor string
+	// it the band is the theme's band (theme.Look.Band), else BandColor
+	// (the Event's ticket colour or the cover's first colour), else the
+	// theme's accent. BandPoster says BandJPEG is the theme's poster
+	// (theme.Look.PosterAspect), not the band.
+	BandJPEG   []byte
+	BandColor  string
+	BandPoster bool
 	// Map is the place's map image (MapType image/jpeg or image/png) and
 	// the line that credits its data; none draws the place without a map.
 	Map            []byte
@@ -71,12 +75,19 @@ type ProgramDay struct {
 	Sessions []ProgramSession
 }
 
-// ProgramSession is one row of the programme.
+// ProgramSession is one row of the programme. Note is the Session's
+// description ("Unvan · Kurum"), printed under the title on one small line
+// (its first line, cut to fit: NoteRunes); empty draws none.
 type ProgramSession struct {
 	Start, End *time.Time
 	Title      string
 	Speaker    string
+	Note       string
 }
+
+// NoteRunes is how long a Session's note runs under its title: a day alone
+// takes the page's width, two days side by side half of it each.
+var NoteRunes = map[int]int{1: 96, 2: 44}
 
 // ProgramColumns is how many days stand side by side, at most: two (Yusuf,
 // 2026-11-22: three looked crowded). A third day starts a new row, under
@@ -242,7 +253,7 @@ type field struct {
 }
 
 type programRow struct {
-	Time, Title, Speaker string
+	Time, Title, Speaker, Note string
 }
 
 type programDay struct {
@@ -254,7 +265,10 @@ type page struct {
 	D           Document
 	FontCSS     template.CSS
 	CSS         template.CSS
+	LookCSS     template.CSS
+	Notes       bool
 	Band        template.CSS
+	Poster      bool
 	QR          template.URL
 	Fields      []field
 	Days        []programDay
@@ -279,6 +293,7 @@ func RenderHTML(d Document) (document, header string, err error) {
 		t = theme.Lookup("")
 		d.Theme = t
 	}
+	d = withoutEmoji(d)
 	svg, err := qr.PlainSVG(d.QRToken)
 	if err != nil {
 		return "", "", err
@@ -321,11 +336,19 @@ func RenderHTML(d Document) (document, header string, err error) {
 			out.Date = DayLine(*day.Date)
 		}
 		for _, sess := range day.Sessions {
-			out.Rows = append(out.Rows, programRow{Time: SessionTime(sess.Start, sess.End), Title: sess.Title, Speaker: sess.Speaker})
+			out.Rows = append(out.Rows, programRow{Time: SessionTime(sess.Start, sess.End), Title: sess.Title, Speaker: sess.Speaker, Note: sess.Note})
 		}
 		p.Days = append(p.Days, out)
 	}
 	p.Columns = min(len(p.Days), ProgramColumns)
+	for i := range p.Days {
+		for j := range p.Days[i].Rows {
+			row := &p.Days[i].Rows[j]
+			if row.Note = noteLine(row.Note, NoteRunes[max(p.Columns, 1)]); row.Note != "" {
+				p.Notes = true
+			}
+		}
+	}
 	p.Single = len(p.Days) == 1 && len(p.Days[0].Rows) == 1
 	if d.DirectionsURL != "" {
 		directions, err := qr.PlainSVG(d.DirectionsURL)
@@ -340,6 +363,9 @@ func RenderHTML(d Document) (document, header string, err error) {
 	switch {
 	case len(d.BandJPEG) > 0:
 		p.Band = template.CSS(`background-image:url("data:image/jpeg;base64,` + base64.StdEncoding.EncodeToString(d.BandJPEG) + `")`)
+		p.Poster = d.BandPoster && t.Look != nil && t.Look.PosterAspect > 0
+	case t.Look != nil && t.Look.Band != "":
+		p.Band = template.CSS(t.Look.Band)
 	case validColor(d.BandColor):
 		p.Band = template.CSS("background-color:" + d.BandColor)
 	default:
@@ -347,6 +373,15 @@ func RenderHTML(d Document) (document, header string, err error) {
 	}
 	p.CSS = template.CSS(`:root{--ink:` + t.Ink + `;--muted:` + t.Muted + `;--paper:` + t.Paper + `;--rule:` + t.Rule +
 		`;--accent:` + t.Accent + `}body{font-family:` + t.Sans + `}`)
+	// A theme's own drawing: its typefaces beside the club's, its rules
+	// after the layout's (theme.Look). Kurumsal has none, its page as
+	// before.
+	if t.Look != nil {
+		if t.Look.FontCSS != nil {
+			p.FontCSS = template.CSS(string(fontCSS) + t.Look.FontCSS())
+		}
+		p.LookCSS = template.CSS(t.Look.DocumentCSS)
+	}
 	var out bytes.Buffer
 	if err := documentTemplate.Execute(&out, p); err != nil {
 		return "", "", err
@@ -372,38 +407,50 @@ func validColor(c string) bool {
 }
 
 type head struct {
-	Club   string
-	Code   string
-	Font   template.CSS
-	Accent template.CSS
-	Mark   template.HTML
+	Club string
+	Sub  string
+	Code string
+	Font template.CSS
+	Rule template.CSS
+	Ink  template.CSS
+	Gray template.CSS
+	CSS  template.CSS
+	Mark template.HTML
 }
 
 // HeaderHTML is the page head of every page: the SKY LAB mark and the
-// club's name, the Ticket's code and the page's number. Chromium draws it
-// as a document of its own: it sees none of the page's fonts or styles.
+// club's name (a theme's own mark and name, theme.Look), the Ticket's code
+// and the page's number. Chromium draws it as a document of its own: it
+// sees none of the page's fonts or styles.
 func HeaderHTML(t theme.Theme, code string) (string, error) {
-	var mark strings.Builder
-	mark.WriteString(`<svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 586.43 553.91" aria-hidden="true"><g fill="` + t.Accent + `">`)
-	for _, d := range theme.MarkPaths() {
-		mark.WriteString(`<path d="` + d + `"/>`)
+	h := head{Club: ClubName, Code: code, Font: template.CSS(t.HeadSans), Rule: template.CSS("1pt solid " + t.Accent), Ink: "#000", Gray: "#555"}
+	if look := t.Look; look != nil && look.HeadMark != "" {
+		h.Club, h.Sub, h.Mark = look.HeadName, look.HeadSub, template.HTML(look.HeadMark)
+		h.Rule, h.Ink, h.Gray, h.CSS = template.CSS(look.HeadRule), template.CSS(look.HeadInk), template.CSS(look.HeadMuted), template.CSS(look.HeadCSS)
+	} else {
+		var mark strings.Builder
+		mark.WriteString(`<svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 586.43 553.91" aria-hidden="true"><g fill="` + t.Accent + `">`)
+		for _, d := range theme.MarkPaths() {
+			mark.WriteString(`<path d="` + d + `"/>`)
+		}
+		mark.WriteString(`</g></svg>`)
+		h.Mark = template.HTML(mark.String())
 	}
-	mark.WriteString(`</g></svg>`)
 	var out bytes.Buffer
-	err := headerTemplate.Execute(&out, head{Club: ClubName, Code: code, Font: template.CSS(t.HeadSans), Accent: template.CSS(t.Accent), Mark: template.HTML(mark.String())})
+	err := headerTemplate.Execute(&out, h)
 	return out.String(), err
 }
 
 var headerTemplate = template.Must(template.New("head").Parse(`<!doctype html>
 <html lang="tr"><head><meta charset="utf-8"><style>
 html,body{margin:0;padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-.bas{width:100%;margin:0 14mm;padding:8mm 0 2.4mm;border-bottom:1pt solid {{.Accent}};display:flex;align-items:center;justify-content:space-between;font-family:{{.Font}};font-size:8.5pt;color:#000}
+.bas{width:100%;margin:0 14mm;padding:8mm 0 2.4mm;border-bottom:{{.Rule}};display:flex;align-items:center;justify-content:space-between;font-family:{{.Font}};font-size:8.5pt;color:{{.Ink}}}
 .kulup{display:flex;align-items:center;gap:2mm}
 .isaret{display:block;width:7mm;height:6.6mm}
 .kulup b{font-size:9.5pt}
-.gri{color:#555}
-</style></head><body><div class="bas">
-<div class="kulup"><span class="isaret">{{.Mark}}</span><b>{{.Club}}</b></div>
+.gri{color:{{.Gray}}}
+{{.CSS}}</style></head><body><div class="bas">
+<div class="kulup"><span class="isaret">{{.Mark}}</span><b>{{.Club}}</b>{{if .Sub}}<span class="gri">· {{.Sub}}</span>{{end}}</div>
 <div><span class="gri">Bilet kodu</span> <b>{{.Code}}</b> <span class="gri">· Sayfa <span class="pageNumber"></span>/<span class="totalPages"></span></span></div>
 </div></body></html>
 `))
@@ -454,16 +501,17 @@ td.kisi{color:#444;text-align:right;white-space:nowrap}
 .yer figure img{width:24mm;height:24mm;display:block;margin-bottom:1mm}
 .atif{font-size:6.5pt;color:var(--muted);margin-top:1mm}
 .dip{margin-top:5.5mm;padding-top:2mm;border-top:.5pt solid var(--ink);font-size:7.3pt;line-height:1.55;color:#333;break-inside:avoid}
-</style>
+{{if .Notes}}td.otr .not{display:block;font-size:7.6pt;font-weight:400;color:var(--muted);margin-top:.3mm}
+{{end}}{{.LookCSS}}</style>
 </head>
 <body>
-<div class="kapak" style="{{.Band}}" role="img" aria-label="Etkinlik kapak görseli"></div>
+<div class="kapak{{if .Poster}} afis{{end}}" style="{{.Band}}" role="img" aria-label="Etkinlik kapak görseli"></div>
 <h1>ETKİNLİK GİRİŞ BİLETİ</h1>
 <div class="izgara">
 {{range $i, $f := .Fields}}{{if eq $i 1}}<figure class="h qr"><img alt="Bilet QR kodu" src="{{$.QR}}"><span class="kod">{{$.D.Code}}</span></figure>
 {{end}}<div class="h{{if $f.Wide}} genis{{end}}"><span>{{$f.Label}}</span><b{{if $f.Large}} class="buyuk"{{end}}>{{$f.Value}}</b></div>
 {{end}}</div>
-{{if .Days}}<section class="program"><h2>Program</h2><div class="gunler" style="--sutun:{{.Columns}}">{{range .Days}}<div class="gun">{{if gt (len $.Days) 1}}<h3>{{.Heading}}{{if .Date}} <span>· {{.Date}}</span>{{end}}</h3>{{end}}<table{{if $.Single}} class="tek"{{end}}>{{range .Rows}}<tr><td class="saat">{{.Time}}</td><td class="otr">{{.Title}}</td><td class="kisi">{{.Speaker}}</td></tr>{{end}}</table></div>{{end}}</div></section>
+{{if .Days}}<section class="program"><h2>Program</h2><div class="gunler" style="--sutun:{{.Columns}}">{{range .Days}}<div class="gun">{{if gt (len $.Days) 1}}<h3>{{.Heading}}{{if .Date}} <span>· {{.Date}}</span>{{end}}</h3>{{end}}<table{{if $.Single}} class="tek"{{end}}>{{range .Rows}}<tr><td class="saat">{{.Time}}</td><td class="otr">{{.Title}}{{if .Note}}<span class="not">{{.Note}}</span>{{end}}</td><td class="kisi">{{.Speaker}}</td></tr>{{end}}</table></div>{{end}}</div></section>
 {{end}}{{if .Description}}<section class="hakkinda"><h2>Etkinlik hakkında</h2><p class="aciklama">{{.Description}}</p></section>
 {{end}}<section class="yer"><h2>Etkinlik yeri</h2><div class="satir"><div class="kutu"><div class="ad">{{.D.Venue}}</div>{{if .D.VenueAddress}}<div class="adres">{{.D.VenueAddress}}</div>{{end}}{{if .MapImage}}<img class="harita" src="{{.MapImage}}" alt="Etkinlik yeri haritası">{{end}}</div>{{if .Directions}}<figure><img alt="Yol tarifi QR kodu" src="{{.Directions}}">Yol tarifi</figure>{{end}}</div>
 {{if .MapImage}}{{if .D.MapAttribution}}<p class="atif">{{.D.MapAttribution}}</p>{{end}}{{end}}</section>

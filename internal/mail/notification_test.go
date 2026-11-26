@@ -44,7 +44,7 @@ func TestTicketCreatedForAMemberPostsANotification(t *testing.T) {
 	sub := uuid.New()
 	end := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
 	err := sky.TicketCreated(context.Background(), "core:event.ticket-created:x:v1", TicketHolder{Sub: sub, Email: "unused@example.com"},
-		map[string]string{"EventName": "Gece"}, NotificationSource{Kind: "ticket", Ref: "x"}, &end, nil)
+		map[string]any{"EventName": "Gece"}, NotificationSource{Kind: "ticket", Ref: "x"}, &end, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestTicketCreatedForAGuestPostsTheTemplateByAddress(t *testing.T) {
 	srv, got := notificationServer(t, http.StatusCreated, `{}`)
 	sky := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok")}
 	if err := sky.TicketCreated(context.Background(), "k", TicketHolder{Email: "can@example.com", FullName: "Can Er"},
-		map[string]string{"EventName": "Gece"}, NotificationSource{Kind: "ticket", Ref: "x"}, nil, nil); err != nil {
+		map[string]any{"EventName": "Gece"}, NotificationSource{Kind: "ticket", Ref: "x"}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	c := (*got)[0]
@@ -204,7 +204,7 @@ func TestEventReminderPostsTheGivenTypeToAMemberAndItsTemplateToAGuest(t *testin
 	srv, got := notificationServer(t, http.StatusCreated, `{}`)
 	sky := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok")}
 	sub := uuid.New()
-	vars := map[string]string{"EventName": "Gece", "StartsAt": "25.11.2026 10:00"}
+	vars := map[string]any{"EventName": "Gece", "StartsAt": "25.11.2026 10:00"}
 	source := NotificationSource{Kind: "event", Ref: "e"}
 	if err := sky.EventReminder(context.Background(), EventReminderType, "core:event.reminder:e:1:t", TicketHolder{Sub: sub}, vars, source, nil); err != nil {
 		t.Fatal(err)
@@ -256,7 +256,7 @@ func TestTicketCreatedCarriesThePDF(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			srv, got := notificationServer(t, http.StatusCreated, `{}`)
 			sky := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok")}
-			if err := sky.TicketCreated(context.Background(), "core:event.ticket-created:x:v1", holder, map[string]string{"EventName": "Gece"}, NotificationSource{Kind: "ticket", Ref: "x"}, nil, att); err != nil {
+			if err := sky.TicketCreated(context.Background(), "core:event.ticket-created:x:v1", holder, map[string]any{"EventName": "Gece"}, NotificationSource{Kind: "ticket", Ref: "x"}, nil, att); err != nil {
 				t.Fatal(err)
 			}
 			files, _ := (*got)[0].body["attachments"].([]any)

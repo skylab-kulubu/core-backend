@@ -110,21 +110,27 @@ func (e *GuestNotFoundError) Unwrap() error { return ErrNotFound }
 // DoorQR is a minted door QR for the screen at a Session's door. URL is what
 // the QR encodes; the screen asks for a new one after RefreshAfterSeconds.
 //
-// Use is the token's class ("door" or "display") and MaxUses how many
-// check-ins one token admits. SessionQRMode is SESSION_QR_MODE: in "qr" the
-// static Session QR no longer checks anyone in, so the panel stops offering
-// it.
+// Use is the token's class ("door", "display" or "static") and MaxUses how
+// many check-ins one token admits (0 for static: no cap). SessionQRMode is
+// SESSION_QR_MODE: in "qr" the static Session QR (the API address sky-app
+// reads) no longer checks anyone in, so the panel stops offering it.
+//
+// A static token never expires and is not renewed (RefreshAfterSeconds 0):
+// ValidFrom and ValidUntil are the Session window in which it checks anyone
+// in, and ExpiresAt is ValidUntil. Both are absent on the other classes.
 type DoorQR struct {
-	Token               string    `json:"token"`
-	URL                 string    `json:"url"`
-	Use                 string    `json:"use"`
-	MaxUses             int       `json:"maxUses"`
-	SessionQRMode       string    `json:"sessionQrMode"`
-	SessionID           uuid.UUID `json:"sessionId"`
-	EventID             uuid.UUID `json:"eventId"`
-	IssuedAt            time.Time `json:"issuedAt"`
-	ExpiresAt           time.Time `json:"expiresAt"`
-	RefreshAfterSeconds int       `json:"refreshAfterSeconds"`
+	Token               string     `json:"token"`
+	URL                 string     `json:"url"`
+	Use                 string     `json:"use"`
+	MaxUses             int        `json:"maxUses"`
+	SessionQRMode       string     `json:"sessionQrMode"`
+	SessionID           uuid.UUID  `json:"sessionId"`
+	EventID             uuid.UUID  `json:"eventId"`
+	IssuedAt            time.Time  `json:"issuedAt"`
+	ExpiresAt           time.Time  `json:"expiresAt"`
+	RefreshAfterSeconds int        `json:"refreshAfterSeconds"`
+	ValidFrom           *time.Time `json:"validFrom,omitempty"`
+	ValidUntil          *time.Time `json:"validUntil,omitempty"`
 }
 
 type DoorActivity struct {

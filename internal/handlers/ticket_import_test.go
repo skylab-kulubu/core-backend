@@ -14,6 +14,8 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
 
@@ -98,6 +100,57 @@ func TestAttendeeImportHTTP(t *testing.T) {
 		status, body := call(lead, base+"/preview", tc.body)
 		if status != tc.want || !strings.Contains(body, tc.code) {
 			t.Errorf("%s: %d %.200s", tc.code, status, body)
+		}
+	}
+}
+
+// With the Team audit record on (production), the preview and the import
+// each open their row (ticket.import.preview, ticket.import) under the
+// caller: both routes hand the service a ctx that carries them. A route
+// without one would answer 503 audit_unavailable and write nothing.
+func TestAttendeeImportHTTPRecordsTheCaller(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	dir := identity.NewMemory()
+	dir.PutGroup(identity.Group{ID: uuid.NewString(), Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"})
+	audit := teamaudit.NewMemory()
+	events := event.NewMemoryStore()
+	store := ticket.NewMemoryStore()
+	ev, err := events.Create(ctx, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lead := uuid.New()
+	h := NewTicketHandler(ticket.NewService(store, events, authz.NewAuthorizer(authz.DefaultPolicy()), dir, audit))
+	h.logger = log.New(io.Discard, "", 0)
+	a := fiber.New()
+	a.Use(func(c fiber.Ctx) error {
+		c.Locals(authn.LocalsIdentity, authn.Identity{ID: lead, Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}})
+		return c.Next()
+	})
+	a.Post("/v1/events/:eventId/attendee-imports/preview", h.PreviewImport)
+	a.Post("/v1/events/:eventId/attendee-imports", h.ImportAttendees)
+	base := "/v1/events/" + ev.ID.String() + "/attendee-imports"
+	body := `{"text":"Ad,Soyad,E-posta\nAda,Lovelace,ada@example.com\n","sendMail":false}`
+	for _, path := range []string{base + "/preview", base} {
+		req := httptest.NewRequest(fiber.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := a.Test(req, fiber.TestConfig{Timeout: 0})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != fiber.StatusOK {
+			t.Fatalf("%s: %d %s", path, resp.StatusCode, got)
+		}
+	}
+	rows := audit.Rows()
+	if len(rows) != 2 {
+		t.Fatalf("%d audit rows", len(rows))
+	}
+	for i, want := range []teamaudit.Action{teamaudit.ActionTicketImportPreview, teamaudit.ActionTicketImport} {
+		if r := rows[i]; r.Action != want || r.Actor.ID != lead || r.Outcome != teamaudit.OutcomeOK {
+			t.Errorf("row %d: %s by %s, %s", i, r.Action, r.Actor.ID, r.Outcome)
 		}
 	}
 }

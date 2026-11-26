@@ -83,5 +83,13 @@ a video's poster). The Event owns its Media attachment in the role
 `event_ticket_images.media_id` (migration 20261127190000). The Team media
 library rule applies: another team's Event's image is refused.
 
-A copy of an Event does not take the choice yet (the copy's band is its
-cover's middle).
+A copy of an Event takes the choice ([event-copy.md](event-copy.md)): a
+cover region when the copy has the cover it was drawn on, an image of its
+own when the copy's Owner team may use it (else it is left out and named
+`ticketImage` in `skipped`).
+
+In a theme that prints a poster ([event-theme.md](event-theme.md), ARTLAB),
+an image of the Event's own is printed whole, cut about its centre to the
+theme's shape (3 : 1), instead of the band; the mails show the same image
+(`EventBannerUrl`). Without a choice such a theme draws its own band, not the
+cover's middle.

@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/organizer"
 )
@@ -188,7 +189,20 @@ func (s *service) sendDirect(ctx context.Context, c Certificate) {
 	if s.mail == nil {
 		return
 	}
-	s.mail.Certificate(ctx, c.RecipientEmail, c.RecipientName, certificateMailVars(c))
+	s.mail.Certificate(ctx, c.RecipientEmail, c.RecipientName, s.mailVars(ctx, c))
+}
+
+// mailVars are c's mail's variables with its Event's theme and poster
+// (event.MailLook, docs/event-theme.md#mails), both empty when the Event
+// cannot be read: the mail goes all the same.
+func (s *service) mailVars(ctx context.Context, c Certificate) map[string]string {
+	var ev event.Event
+	if s.events != nil {
+		if got, err := s.events.GetIncludingArchived(ctx, c.EventID); err == nil {
+			ev = got
+		}
+	}
+	return event.WithMailLook(certificateMailVars(c), ev)
 }
 
 func certificateMailVars(c Certificate) map[string]string {

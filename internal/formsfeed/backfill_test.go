@@ -46,16 +46,25 @@ func TestBackfillRequestRules(t *testing.T) {
 	editor := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/YK"}}
 	member := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/GAMELAB"}}
 	service := authz.Principal{ID: uuid.NewString(), ServiceAccount: true, Groups: []string{"/UYELER/YK"}}
+	// The editor's place on the form's team in Forms: a viewer is enough
+	// (Yusuf, 2026-11-26).
+	teamForm := func(role string) FormReader {
+		return stubForm{form: Form{FormID: form, AccessListed: true, Collaborators: []Collaborator{
+			{UserID: uuid.MustParse(editor.ID), Role: role}, {UserID: uuid.New(), Role: RoleOwner}}}}
+	}
+	viewer := teamForm(RoleViewer)
 
 	cases := []struct {
-		name  string
-		p     authz.Principal
-		ev    uuid.UUID
-		form  uuid.UUID
-		on    bool
-		want  error
-		again bool
-		after time.Duration
+		name    string
+		p       authz.Principal
+		ev      uuid.UUID
+		form    uuid.UUID
+		on      bool
+		forms   FormReader
+		noForms bool
+		want    error
+		again   bool
+		after   time.Duration
 	}{
 		{name: "queued", p: editor, ev: open.ID, form: form, on: true},
 		{name: "asked again within 15 minutes", p: editor, ev: open.ID, form: form, on: true, again: true, after: 14 * time.Minute, want: ErrBackfillCooldown},
@@ -69,13 +78,24 @@ func TestBackfillRequestRules(t *testing.T) {
 		{name: "not listed", p: editor, ev: open.ID, form: uuid.New(), on: true, want: ErrBackfillNotListed},
 		{name: "in another Event", p: editor, ev: sharedA.ID, form: shared, on: true, want: ErrBackfillFormInUse},
 		{name: "pulls off", p: editor, ev: open.ID, form: form, on: false, want: ErrBackfillOff},
+		{name: "the form's owner in Forms", p: editor, ev: open.ID, form: form, on: true, forms: teamForm(RoleOwner)},
+		{name: "an editor in Forms", p: editor, ev: open.ID, form: form, on: true, forms: teamForm(RoleEditor)},
+		{name: "not on the form's team", p: editor, ev: open.ID, form: form, on: true, forms: stubForm{form: Form{FormID: form, AccessListed: true, Collaborators: []Collaborator{{UserID: uuid.New(), Role: RoleOwner}}}}, want: ErrFormsAccessDenied},
+		{name: "a Forms without the team", p: editor, ev: open.ID, form: form, on: true, forms: stubForm{form: Form{FormID: form}}, want: ErrFormsAccessDenied},
+		{name: "the form gone in Forms", p: editor, ev: open.ID, form: form, on: true, forms: stubForm{err: ErrNotFound}, want: ErrFormsAccessDenied},
+		{name: "Forms down", p: editor, ev: open.ID, form: form, on: true, forms: stubForm{err: errors.New("formsfeed: Forms answered 503")}, want: ErrFormsUnavailable},
+		{name: "no Forms client", p: editor, ev: open.ID, form: form, on: true, noForms: true, want: ErrFormsUnavailable},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			q := &memQueue{}
+			forms := tc.forms
+			if forms == nil && !tc.noForms {
+				forms = viewer
+			}
 			b := &Backfills{
 				Events: backfillEvents{events: []event.Event{open, draft, cancelled, ended, sharedA, sharedB}},
-				Authz:  authz.NewAuthorizer(authz.DefaultPolicy()), Queue: q, On: tc.on, Now: func() time.Time { return now },
+				Authz:  authz.NewAuthorizer(authz.DefaultPolicy()), Queue: q, On: tc.on, Forms: forms, Now: func() time.Time { return now },
 			}
 			if tc.again {
 				b.Now = func() time.Time { return now.Add(-tc.after) }
@@ -91,6 +111,11 @@ func TestBackfillRequestRules(t *testing.T) {
 			var cooldown *BackfillCooldownError
 			if errors.As(err, &cooldown) && cooldown.RetryAfter != BackfillCooldown-tc.after {
 				t.Fatalf("retry after %v", cooldown.RetryAfter)
+			}
+			// A refusal before the queue queues nothing: no gathering of a
+			// form the caller may not see in Forms.
+			if err != nil && !tc.again && len(q.asked) != 0 {
+				t.Fatalf("refused but queued %v", q.asked)
 			}
 		})
 	}

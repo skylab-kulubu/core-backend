@@ -40,7 +40,8 @@ Event, leaders of the owning team, Privileged, the team's members when
 `?use=door` (the default) mints a door token: guests pass the door one by
 one, so it admits `DOOR_QR_MAX_USES` (20). `?use=display` mints the token
 for a screen a whole room scans at once: it admits `ATTENDANCE_QR_MAX_USES`
-(400). Anything else is `400`. `201`, `Cache-Control: no-store`:
+(400). `?use=static` answers the Session's static attendance QR
+([Static attendance QR](#static-attendance-qr)). Anything else is `400`. `201`, `Cache-Control: no-store`:
 
 ```json
 {
@@ -70,6 +71,8 @@ the panel stops offering it for download. With `?svg=1` the answer also carries 
 | 403 | | not door staff of this Event |
 | 403 | `session_closed` | the Session is cancelled or outside its time window (below) |
 | 404 | | no such Session |
+| 400 | `door_qr_static_off` | `?use=static` while `DOOR_QR_STATIC=off` |
+| 400 | `session_times_required` | `?use=static` for a Session without a start or an end time |
 | 429 | `door_qr_rate_limited` | over 30 mints a minute for this person; `Retry-After` |
 
 `url` is `DOOR_QR_GUEST_URL` with `{sessionId}` filled in and `dq=<token>`
@@ -108,11 +111,9 @@ Accepted risks (Yusuf's ticket 19 decision, the guest path's own): someone
 in the room, holding a fresh token, can type another person's school or
 account e-mail and check them in; and 201/409 against 404 tells them whether
 that address holds a Ticket of this Event. The token proves presence; the
-route's per-address budget (10 failures a minute) bounds the guessing.
-**Deviation from ticket 19:** the failed attempts are not counted per key
-(nor per e-mail): only the per-address budget applies. A key is 128 bits of
-random, so guessing one is not the risk; an e-mail is, and it is bounded as
-a guest's is.
+route's failure budgets (see [Failure budgets](#failure-budgets)) bound the
+guessing. A key is 128 bits of random, so guessing one is not the risk; an
+e-mail is, and it is bounded as a guest's is.
 
 | Status | `code` | Meaning |
 |---|---|---|
@@ -129,7 +130,7 @@ a guest's is.
 | 404 | | no such Session |
 | 409 | `already_checked_in` | already checked in to this Session |
 | 409 | `ticket_cancelled`, `ticket_waitlisted` | the Ticket found is cancelled or on the waiting list (docs/ticket-cancellation.md) |
-| 429 | `guest_check_in_rate_limited` | this address failed 10 times this minute; `Retry-After` |
+| 429 | `guest_check_in_rate_limited` | this address failed 10 times this minute for this e-mail (or key), or 300 times for any; `Retry-After` |
 
 The door QR is checked before any Ticket is looked up, so in `qr` mode the
 route no longer tells a stranger which e-mails are registered; nor does
@@ -174,6 +175,56 @@ no Session window, so today's sky-app keeps working until the switch.
 
 Any other value stops core at start-up, so a typo cannot reopen the route.
 
+## Static attendance QR
+
+The fallback when no screen can refresh (Yusuf, 2026-11-26, for ARTLAB): if
+the projector or OBS cannot show the rotating QR, each Session's one fixed
+QR is shown or printed instead, and people scan it with their phone's camera
+as they would the rotating one. It opens the same guest page
+(`DOOR_QR_GUEST_URL`, `/kapi/{sessionId}?dq=<token>`), which takes the
+token without reading it; `check-in/me` takes it too. The rotating QR is
+unchanged.
+
+- `POST /v1/sessions/{id}/door-qr?use=static`, same callers as the other
+  classes (whoever may take check-ins at the Event's door). The token is the
+  same every time for a Session, so it can be printed ahead: it is minted
+  outside the Session window too (a cancelled Session: `403
+  session_closed`).
+- The answer has `use: "static"`, `maxUses: 0` (no cap),
+  `refreshAfterSeconds: 0` (never renewed), and `validFrom` / `validUntil`:
+  the window in which it checks anyone in. `expiresAt` is `validUntil`.
+- **Window: the rotating QR's own** (Yusuf, 2026-11-26): from
+  `DOOR_QR_SESSION_GRACE` (12 h) before the Session starts until 12 h after
+  it ends, applied at check-in against the Session's current times (`403
+  session_closed` outside it). Moving the Session moves the window; the
+  token stays the same. A Session needs both a start and an end time for a
+  static QR (`400 session_times_required`), and a static token presented
+  for a Session that has lost one is `403 door_qr_invalid`.
+- Token: `v1.s.<mac>`, the MAC (HMAC-SHA256, 12 bytes, the door QR key)
+  over its own domain label, the Session id and the Event id; no expiry, no
+  jti. A door or display token cannot be relabelled as static, nor the
+  reverse.
+- `DOOR_QR_STATIC=on` (default) or `off`. `off` refuses to mint it (`400
+  door_qr_static_off`) and stops every static QR already printed or shown
+  (`403 door_qr_invalid` at check-in); the rotating QR keeps working.
+  Anything else stops core at start-up.
+
+Decision: there is no per-Event switch. Only door staff can mint the static
+QR, the same people who would flip such a switch, and nobody gets it
+without asking for it; a switch would need a migration and an Event field
+and panel form on the day the Event runs. The server-wide `DOOR_QR_STATIC`
+is the lever if a static QR leaks.
+
+**Security.** A static QR is a bearer token for the whole window. A photo of
+it, shared or posted, lets anyone who knows the e-mail of a Ticket holder
+check them in from anywhere, from 12 hours before the Session until 12 hours
+after it, with no use cap (each Ticket still checks in once per Session).
+The rotating QR's photo is useless after 60 seconds. So: show the static QR
+only in the room, never on a live stream or in a recording, do not post it,
+and switch back to the rotating QR as soon as a screen can show it. If one
+leaks, set `DOOR_QR_STATIC=off` and redeploy core: every static QR stops,
+the rotating QR is unaffected.
+
 ## Session QR mode (`SESSION_QR_MODE`)
 
 The same two values for `check-in/me`:
@@ -209,6 +260,8 @@ A display token carries one more field, `v1.<exp>.<jti>.a.<mac>` (about 37
 characters). Its MAC uses its own domain label, so a door token cannot be
 relabelled as a display token to get the larger use cap, nor the reverse;
 every replica reads the class from the token itself.
+
+A static token is `v1.s.<mac>` ([Static attendance QR](#static-attendance-qr)).
 
 Times: `exp` = issue + `DOOR_QR_TTL` (default 60 s, allowed 30 s–10 min). A
 token is expired at `exp`; one whose `exp` lies more than TTL + 5 s ahead
@@ -249,10 +302,32 @@ single-use. What bounds a photo of it sent elsewhere:
   check-in that happened (or found the guest already checked in) spends a
   use; an e-mail without a Ticket gives its use back, so junk e-mails cannot
   use a token up;
-- failures are budgeted per client address instead: 10 a minute (anything
-  answered 400 or above, already-checked-in included). Successful check-ins
-  do not count, so a crowd behind one campus NAT is not refused;
+- failures are budgeted per client address and e-mail, and per client
+  address, instead ([Failure budgets](#failure-budgets));
 - a Ticket checks in to a Session once (`409` after that).
+
+### Failure budgets
+
+A failure is anything answered 400 or above, already-checked-in included;
+successful check-ins never count. Two budgets apply, in this order, each a
+fixed one-minute window:
+
+| Budget | Default | Setting | Bounds |
+|---|---|---|---|
+| one client address and one e-mail (the ticket key instead, when sent; case and spaces aside) | 10 a minute | `GUEST_CHECKIN_FAILURES_PER_EMAIL` | one guest who mistypes or taps again |
+| one client address, any e-mails | 300 a minute | `GUEST_CHECKIN_FAILURES_PER_IP` | trying many e-mails from one address |
+
+A request the first budget refuses does not count against the second, so
+one guest who keeps tapping cannot spend the hall's budget. A venue's Wi-Fi
+can put a whole hall behind one address: the per-address budget is sized for
+a few hundred guests each failing once or twice in a minute. Until
+2026-11-26 the only budget was 10 failures a minute per address, which a
+hall behind one address could reach in seconds and then everyone in it got
+429 for a minute.
+
+Each setting takes a whole number from 1 to 100000; anything else stops core.
+The limiter's memory keeps a hash of the e-mail, never the address itself.
+Like the use counts, the budgets live in each core process.
 
 The use counts live in each core process, bounded to 10 000 tokens (expired
 ones are dropped; only genuine tokens are counted and minting is limited to
@@ -273,7 +348,7 @@ On `/v1/metrics`, no Session, Event or person named:
   still reading the static Session QR: each would be refused under `qr`;
 - `skylab_session_self_checkin_mode{mode="open|qr"}`.
 
-Requests refused by the per-address budget (429) do not reach the counters.
+Requests refused by a failure budget (429) do not reach the counters.
 
 ## Rollout
 
@@ -329,5 +404,5 @@ Deviations:
   key the guest's browser does not have. The use cap, the short lifetime and
   the Session window bound the damage.
 - The replay cap is in memory and per process, not in a shared store.
-- The per-address budget is keyed on the client address the edge proxy
+- The failure budgets are keyed on the client address the edge proxy
   reports; overlay peers can write their own (docs/client-ip-trust.md).

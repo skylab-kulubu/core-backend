@@ -66,6 +66,34 @@ The answer's log line is the usual `form_response` (outcome
 `respondent_kept` when only a row was written); routing writes
 `"event":"form_respondent"` lines with the step, ids and a count, never who.
 
+## Who may link a form
+
+Linking a form gathers every answer of it with core's own service account,
+the names and e-mails with them (below). So an Event lists a form newly,
+as its application (`formUrl`) or an extra form (`extraFormUrls`), only
+when the person writing it is on the form's team in Forms: its owner, an
+editor or a viewer (Yusuf, 2026-11-26). Before a create or an update
+(`POST`, `PUT`, `PATCH /v1/events…`) writes, core reads each form the
+Event did not list before from Forms (`GET {FORMS_INTERNAL_URL}/internal/v1/forms/{formId}`,
+its `collaborators`; [form-mappings.md](form-mappings.md#routes)):
+
+| Answer | When |
+| --- | --- |
+| `403 forms_access_denied` | the person is not on the form's team, Forms has no such form, Forms does not say who is, or the caller is a product's service account |
+| `503 forms_unavailable` | core has no Forms address or service account, or Forms did not answer, refused core or answered what core cannot read |
+
+Either refusal writes nothing: no Event change, no short link, no
+gathering. A form the Event lists already (the same form id, under any
+address or slot) is not asked about, so a write that keeps its forms reads
+no Forms and a link made before this check stays. The form id is the first
+UUID in the address's path. A feedback form is not asked about: core
+gathers none of its answers. The organizer's backfill asks the same
+([form-pulls.md](form-pulls.md#backfill)).
+
+Each check writes one line, `"event":"form_access_check"`: the form,
+`outcome` (`ok`, `denied`, `forms_unavailable`) and, for the last,
+`reason` (`no_client`, `forbidden`, `invalid`, `failed`); never who asked.
+
 ## Gathering a linked form
 
 When an Event newly lists a form (create or update; `event.FormsLinkedHook`)

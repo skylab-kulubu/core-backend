@@ -46,7 +46,8 @@ for many people at once. A key that is not 26 characters of `A`–`Z` and
   "pdfUrl": "https://api.yildizskylab.com/v1/public/tickets/{key}/pdf",
   "state": "active",
   "cancellable": true,
-  "theme": {"key": "kurumsal", "accent": "#0F766E"}
+  "theme": {"key": "kurumsal", "accent": "#0F766E"},
+  "ticketAccentColor": null
 }
 ```
 
@@ -75,10 +76,14 @@ for many people at once. A key that is not 26 characters of `A`–`Z` and
 - `coverImageUrl`: the Event's cover at its public media address, left out
   while it has none; `coverColors` its colours, the dominant first (`[]`
   without a cover). The page draws its front from them.
-- `theme`: `key` is the look (Kurumsal); `accent` the page's accent:
-  the cover's first colour, else the club's purple `#8B5CF6` (Yusuf's order;
-  the Event's own ticket colour goes first once ticket 16 adds it). The
-  PDF keeps its own purple rule (`#7C3AED`, the v5 design).
+- `theme`: `key` is the Event's theme ([event-theme.md](event-theme.md)):
+  `kurumsal` or `artlab`; `accent` the page's accent: the Event's
+  `ticketAccentColor`, else its theme's own colour (a theme other than
+  Kurumsal: ARTLAB's `#FF8A1F`), else the cover's first colour, else the
+  club's purple `#8B5CF6` (Yusuf's order). Kurumsal's PDF keeps its own
+  purple rule (`#7C3AED`, the v5 design).
+- `ticketAccentColor`: the Event's own ticket colour, `#RRGGBB`, `null`
+  for none.
 - `state`:
 
 | State | When | QR and PDF |
@@ -226,9 +231,15 @@ tarifi QR kodu"), the code real text.
      a row**: two days are two columns, a third day starts a new row under
      the first, and so on. One day takes the whole width (with one Session
      in larger type). A row is hours, title and speaker (on the right); a
-     long title wraps, never cut. A row never splits across pages, and a
-     day's heading stays with its rows;
+     long title wraps, never cut. Under the title, on one small muted line,
+     the Session's description ("Unvan · Kurum"): its first line, cut at a
+     word with "…" to 96 characters (44 with two days side by side); a
+     Session without one draws as before. A row never splits across pages,
+     and a day's heading stays with its rows;
   4. "Etkinlik hakkında": the description, as written (line breaks kept);
+     its emoji are left out (as from every text the PDF prints: its
+     typefaces have none, and the renderer would draw a box), with the
+     spaces they leave; the ticket page and the mails keep them;
   5. "Etkinlik yeri", **always last** and never split (it moves to the next
      page when it does not fit): the name, the address, the map when there
      is one ([event-map.md](event-map.md); its JPEG embedded as it is
@@ -259,8 +270,9 @@ tarifi QR kodu"), the code real text.
   see the PR; to be measured again on the sandbox's Gotenberg.
 - **Look, Kurumsal** (`internal/ticket/theme`): black on white, the club's
   purple (`#7C3AED`) for the head's rule and a band without a cover. The QR
-  keeps its place and size; a theme changes colours and type only (ticket
-  16 adds themes).
+  keeps its place and size in every theme. The Event's theme picks the look
+  ([event-theme.md](event-theme.md)): ARTLAB's page is dark, with its poster
+  across the top.
 
 ## The holder's own list: `GET /v1/tickets/me`
 

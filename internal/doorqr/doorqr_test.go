@@ -114,6 +114,7 @@ func TestConfigFromEnvReadsEverySetting(t *testing.T) {
 		SessionGraceEnv:   "0s",
 		SessionModeEnv:    "qr",
 		DisplayMaxUsesEnv: "250",
+		StaticEnv:         "off",
 	}
 	cfg, err := ConfigFromEnv(func(k string) string { return env[k] })
 	if err != nil {
@@ -121,7 +122,7 @@ func TestConfigFromEnvReadsEverySetting(t *testing.T) {
 	}
 	want := Config{
 		Mode: ModeQR, SessionMode: ModeQR, TTL: 90 * time.Second, MaxUses: 30, DisplayMaxUses: 250,
-		GuestURL: env[GuestURLEnv], SessionGrace: 0,
+		GuestURL: env[GuestURLEnv], SessionGrace: 0, StaticOff: true,
 	}
 	if cfg != want {
 		t.Fatalf("config %+v", cfg)
@@ -143,6 +144,8 @@ func TestConfigFromEnvRefusesTyposAndOutOfRangeValues(t *testing.T) {
 		"grace too long":   {SessionGraceEnv: "24h"},
 		"session mode":     {SessionModeEnv: "closed"},
 		"display uses":     {DisplayMaxUsesEnv: "0"},
+		"static typo":      {StaticEnv: "yes"},
+		"static upper":     {StaticEnv: "OFF"},
 	}
 	for name, env := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -481,7 +484,7 @@ func TestMetricsCountOutcomes(t *testing.T) {
 }
 
 func TestParseClass(t *testing.T) {
-	for raw, want := range map[string]Class{"": ClassDoor, "door": ClassDoor, " display ": ClassDisplay} {
+	for raw, want := range map[string]Class{"": ClassDoor, "door": ClassDoor, " display ": ClassDisplay, "static": ClassStatic} {
 		if got, ok := ParseClass(raw); !ok || got != want {
 			t.Errorf("%q: %q %v", raw, got, ok)
 		}
@@ -582,5 +585,131 @@ func TestSelfCheckInMetricsAreSeparate(t *testing.T) {
 	nilGate.RecordSelf(true, OutcomeCheckedIn)
 	if nilGate.SessionMode() != ModeOpen {
 		t.Fatal("nil gate session mode")
+	}
+}
+
+// The static attendance QR is the same token every time for a Session:
+// `v1.s.<mac>`, bound to the Session and the Event, with no expiry and no
+// use cap (the caller applies the Session window).
+func TestStaticTokenIsStableAndBound(t *testing.T) {
+	g, c := newGate(t, Config{Mode: ModeQR, DisplayMaxUses: 2, MaxUses: 2})
+	first, err := g.MintFor(ClassStatic, sessionID, eventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.now = c.now.Add(time.Hour)
+	again, err := g.MintFor(ClassStatic, sessionID, eventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Token != again.Token || first.URL != again.URL {
+		t.Fatalf("not stable: %q %q", first.Token, again.Token)
+	}
+	if !strings.HasPrefix(first.Token, "v1.s.") || len(first.Token) != len("v1.s.")+16 {
+		t.Fatalf("token %q", first.Token)
+	}
+	if first.Class != ClassStatic || first.MaxUses != 0 || first.RefreshAfter != 0 || !first.ExpiresAt.IsZero() {
+		t.Fatalf("pass %+v", first)
+	}
+	// A month later and a thousand check-ins on: still the same answer.
+	c.now = c.now.Add(30 * 24 * time.Hour)
+	for i := range 1000 {
+		use, err := g.Admit(first.Token, sessionID, eventID)
+		if err != nil || !use.Static() {
+			t.Fatalf("admit %d: %v %v", i+1, err, use.Static())
+		}
+		use.Release()
+	}
+	other, err := g.MintFor(ClassStatic, uuid.New(), eventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.Token == first.Token {
+		t.Fatal("two Sessions share a static token")
+	}
+	if _, err := g.Admit(first.Token, uuid.New(), eventID); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("other session: %v", err)
+	}
+	if _, err := g.Admit(first.Token, sessionID, uuid.New()); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("other event: %v", err)
+	}
+	foreign := NewGate([]byte("another key, another key, anothe"), Config{})
+	if _, err := foreign.Admit(first.Token, sessionID, eventID); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("other key: %v", err)
+	}
+	mac := strings.TrimPrefix(first.Token, "v1.s.")
+	flipped := []byte(mac)
+	if flipped[0] == 'A' {
+		flipped[0] = 'B'
+	} else {
+		flipped[0] = 'A'
+	}
+	for name, raw := range map[string]string{
+		"tampered":   "v1.s." + string(flipped),
+		"short":      "v1.s." + mac[:10],
+		"v2":         "v2.s." + mac,
+		"label":      "v1.t." + mac,
+		"as door":    "v1." + strconv.FormatInt(c.now.Add(time.Minute).Unix(), 36) + ".AAAAAAAA." + mac,
+		"as display": "v1." + strconv.FormatInt(c.now.Add(time.Minute).Unix(), 36) + ".AAAAAAAA.a." + mac,
+	} {
+		if _, err := g.Admit(raw, sessionID, eventID); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// A rotating token is never taken for a static one.
+	door, err := g.Mint(sessionID, eventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if use, err := g.Admit(door.Token, sessionID, eventID); err != nil || use.Static() {
+		t.Fatalf("door token: %v %v", err, use.Static())
+	}
+}
+
+// DOOR_QR_STATIC=off refuses to mint a static token and stops every one
+// already printed.
+func TestStaticOffRefusesMintAndAdmit(t *testing.T) {
+	on, _ := newGate(t, Config{})
+	pass, err := on.MintFor(ClassStatic, sessionID, eventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	off, _ := newGate(t, Config{StaticOff: true})
+	if off.StaticOn() || !on.StaticOn() {
+		t.Fatal("StaticOn")
+	}
+	if _, err := off.MintFor(ClassStatic, sessionID, eventID); !errors.Is(err, ErrStaticOff) {
+		t.Fatalf("mint %v", err)
+	}
+	if _, err := off.Admit(pass.Token, sessionID, eventID); !errors.Is(err, ErrStaticOff) {
+		t.Fatalf("admit %v", err)
+	}
+	// The rotating QR is untouched.
+	door, err := off.Mint(sessionID, eventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := admit(off, door.Token); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionWindowMatchesSessionOpen(t *testing.T) {
+	g, c := newGate(t, Config{SessionGrace: 2 * time.Hour})
+	start, end := c.now.Add(3*time.Hour), c.now.Add(4*time.Hour)
+	from, until := g.SessionWindow(&start, &end)
+	if from == nil || until == nil || !from.Equal(c.now.Add(time.Hour)) || !until.Equal(c.now.Add(6*time.Hour)) {
+		t.Fatalf("window %v %v", from, until)
+	}
+	c.now = from.Add(-time.Second)
+	if g.SessionOpen(&start, &end, false) {
+		t.Fatal("open before the window")
+	}
+	c.now = *from
+	if !g.SessionOpen(&start, &end, false) {
+		t.Fatal("closed at the window's start")
+	}
+	if f, u := g.SessionWindow(nil, nil); f != nil || u != nil {
+		t.Fatal("open sides")
 	}
 }

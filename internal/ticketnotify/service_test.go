@@ -77,9 +77,11 @@ func (q *memQueue) len() int {
 }
 
 type call struct {
-	key         string
-	holder      mail.TicketHolder
-	vars        map[string]string
+	key    string
+	holder mail.TicketHolder
+	vars   map[string]string
+	// raw are the variables as sent: vars holds the text ones.
+	raw         map[string]any
 	source      mail.NotificationSource
 	expiry      *time.Time
 	attachments []mail.Attachment
@@ -92,8 +94,8 @@ type fakeMail struct {
 	errs []error
 }
 
-func (m *fakeMail) TicketCreated(_ context.Context, key string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time, attachments []mail.Attachment) error {
-	m.calls = append(m.calls, call{key, holder, vars, source, expiresAt, attachments})
+func (m *fakeMail) TicketCreated(_ context.Context, key string, holder mail.TicketHolder, vars map[string]any, source mail.NotificationSource, expiresAt *time.Time, attachments []mail.Attachment) error {
+	m.calls = append(m.calls, call{key, holder, textVars(vars), vars, source, expiresAt, attachments})
 	if len(m.errs) > 0 {
 		err := m.errs[0]
 		m.errs = m.errs[1:]
@@ -203,7 +205,8 @@ func TestMemberGetsOneNotificationBySubject(t *testing.T) {
 	if c.source != (mail.NotificationSource{Kind: "ticket", Ref: tk.ID.String()}) {
 		t.Fatalf("source %+v", c.source)
 	}
-	want := map[string]string{"EventId": e.ev.ID.String(), "EventName": "Kodlama Gecesi", "Venue": "D-Blok", "OwnerTeam": "WEBLAB", "EventDate": "10.11.2026 18:30", "CoOrganizers": ""}
+	want := map[string]string{"EventId": e.ev.ID.String(), "EventName": "Kodlama Gecesi", "Venue": "D-Blok", "OwnerTeam": "WEBLAB", "EventDate": "10.11.2026 18:30", "CoOrganizers": "", "TicketNote": "",
+		"Theme": "", "EventBannerUrl": ""}
 	for k, v := range want {
 		if c.vars[k] != v {
 			t.Fatalf("vars[%s] = %q, want %q (%v)", k, c.vars[k], v, c.vars)
@@ -405,5 +408,53 @@ func TestCancelledTicketIsDropped(t *testing.T) {
 	e.tickets[tk.ID] = tk
 	if r := e.pass(t); r.Dropped != 1 || r.Sent != 0 || len(e.mail.calls) != 0 {
 		t.Fatalf("report %+v, calls %d", r, len(e.mail.calls))
+	}
+}
+
+// textVars are the text variables of vars.
+func textVars(vars map[string]any) map[string]string {
+	out := map[string]string{}
+	for k, v := range vars {
+		if s, ok := v.(string); ok {
+			out[k] = s
+		}
+	}
+	return out
+}
+
+// The organizer's announcement goes in the ticket mail (docs/ticket-note.md):
+// the note and its parts, its https addresses links and an http one text.
+func TestTicketMailCarriesTheTicketNote(t *testing.T) {
+	e := newEnv(t)
+	note := "WhatsApp: https://chat.whatsapp.com/Ornek123\nEski: http://example.test"
+	e.ev.TicketNote = &note
+	e.events[e.ev.ID] = e.ev
+	e.guest("can@example.com")
+	if r := e.pass(t); r.Sent != 1 {
+		t.Fatalf("report %+v, want one sent", r)
+	}
+	raw := e.mail.calls[0].raw
+	if raw["TicketNote"] != note {
+		t.Fatalf("TicketNote %v", raw["TicketNote"])
+	}
+	want := []event.NotePart{
+		{Text: "WhatsApp: "},
+		{Text: "https://chat.whatsapp.com/Ornek123", URL: "https://chat.whatsapp.com/Ornek123"},
+		{Text: "\nEski: http://example.test"},
+	}
+	if got, _ := raw["TicketNoteParts"].([]event.NotePart); !slices.Equal(got, want) {
+		t.Fatalf("TicketNoteParts %#v", raw["TicketNoteParts"])
+	}
+}
+
+// Without a note the two are there, empty: the template leaves the
+// section out.
+func TestTicketMailWithoutANoteSendsItEmpty(t *testing.T) {
+	e := newEnv(t)
+	e.member(user.AccountActive)
+	e.pass(t)
+	raw := e.mail.calls[0].raw
+	if parts, ok := raw["TicketNoteParts"].([]event.NotePart); raw["TicketNote"] != "" || !ok || parts == nil || len(parts) != 0 {
+		t.Fatalf("TicketNote %#v, parts %#v", raw["TicketNote"], raw["TicketNoteParts"])
 	}
 }

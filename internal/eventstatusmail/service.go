@@ -348,7 +348,8 @@ func (s *Service) vars(ev event.Event, kind event.StatusMailKind) map[string]str
 	if kind == event.StatusMailCancelled {
 		vars["CancelReason"] = ev.CancelReason
 	}
-	return vars
+	// The Event's theme and poster (docs/event-theme.md#mails).
+	return event.WithMailLook(vars, ev)
 }
 
 func joinName(first, last string) string {

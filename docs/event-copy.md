@@ -54,6 +54,8 @@ Who: whoever may see the source (a draft: who may edit it, ADR 0066) and create 
 | Attendee note | only with `includeAttendeeNote` | left out (`attendeeNote`) when the caller may not read it on the source (who may edit the Event, or read its Tickets) |
 | The door's mail switches (`attendanceWelcomeMail`, `attendanceRecordedMail`) and entry mode | yes | |
 | "Otomatik bilet gönder" (`formResponsesAutoTicket`; [form-respondents.md](form-respondents.md)) | yes | |
+| Theme and ticket colour (`theme`, `ticketAccentColor`; [event-theme.md](event-theme.md)) | yes | |
+| Ticket image ([ticket-image.md](ticket-image.md)) | a cover region when the copy has the cover it was drawn on; an image of its own (an "Ayrı görsel") with its region | the image is left out (`ticketImage`) when the Team media library refuses it in the copy's Owner team (another team's image), or the database refuses its link; a cover region without its cover is not copied (the band is the copy's cover's middle) |
 | LinkedIn link, gallery, files, videos, mail list | no | |
 | Application and extra forms, their short links | no | |
 | Feedback mode (`feedbackMode`), `feedbackAutoSend` | yes | the feedback form and its alias are not copied (one place per form; [event-feedback.md](event-feedback.md)) |
@@ -62,7 +64,7 @@ Who: whoever may see the source (a draft: who may edit it, ADR 0066) and create 
 | Status | always `draft` (publish it with `POST …/publish`) | |
 | `copiedFromEventId` | the source | |
 
-A part is named in `skipped` only when the source has it: `doorStaff`, `competitions` and `attendeeNote` only when asked for.
+A part is named in `skipped` only when the source has it: `doorStaff`, `competitions` and `attendeeNote` only when asked for; `ticketImage` only for an image of the source's own.
 
 ## Dates
 

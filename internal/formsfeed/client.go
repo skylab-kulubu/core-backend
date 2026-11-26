@@ -330,17 +330,20 @@ const (
 	RoleViewer = "viewer"
 )
 
-// Edits reports whether the person whose subject is id is the form's owner
-// or an editor in Forms: who may read its questions and map it from core
-// (a viewer may not; orchestrator's decision, 2026-11-25). A Forms that
-// lists nobody (AccessListed false) lets nobody in: the safe side.
-func (f Form) Edits(id string) bool {
+// Sees reports whether the person whose subject is id is on the form's team
+// in Forms: its owner, an editor or a viewer. Who may link the form to an
+// Event, ask for its answers to be gathered again, and read its questions
+// and map it from core (Yusuf, 2026-11-26: a viewer too; Forms shows a
+// viewer the answers already, and a mapping changes nothing in the form).
+// A Forms that lists nobody (AccessListed false) lets nobody in: the safe
+// side.
+func (f Form) Sees(id string) bool {
 	person, err := uuid.Parse(id)
 	if err != nil || person == uuid.Nil || !f.AccessListed {
 		return false
 	}
 	for _, c := range f.Collaborators {
-		if c.UserID == person && (c.Role == RoleOwner || c.Role == RoleEditor) {
+		if c.UserID == person && (c.Role == RoleOwner || c.Role == RoleEditor || c.Role == RoleViewer) {
 			return true
 		}
 	}

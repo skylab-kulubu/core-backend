@@ -37,8 +37,10 @@ func NewFormBackfillHandler(backfills FormBackfills, logger *log.Logger) *FormBa
 // {"queued": true}, or 200 {"queued": false} when a backfill of the form
 // waits already. 404 for an Event the caller cannot see (or archived), 403
 // for one they may not edit, 409 event_cancelled, event_ended,
-// form_not_listed or form_in_use, 429 backfill_cooldown (with Retry-After)
-// within 15 minutes of the form's last one, 503 forms_pull_off.
+// form_not_listed or form_in_use, 403 forms_access_denied for a form the
+// caller is not on the team of in Forms, 429 backfill_cooldown (with
+// Retry-After) within 15 minutes of the form's last one, 503 forms_pull_off,
+// 503 forms_unavailable when Forms could not tell.
 func (h *FormBackfillHandler) Request(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
@@ -81,6 +83,10 @@ func (h *FormBackfillHandler) Request(c fiber.Ctx) error {
 		return problemCode(c, fiber.StatusTooManyRequests, "Too Many Requests", "backfill_cooldown")
 	case errors.Is(err, formsfeed.ErrBackfillOff):
 		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", "forms_pull_off")
+	case errors.Is(err, formsfeed.ErrFormsAccessDenied):
+		return problemCode(c, fiber.StatusForbidden, "Forbidden", "forms_access_denied")
+	case errors.Is(err, formsfeed.ErrFormsUnavailable):
+		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", "forms_unavailable")
 	default:
 		return err
 	}
@@ -96,6 +102,10 @@ func (h *FormBackfillHandler) log(c fiber.Ctx, eventID, formID uuid.UUID, queued
 	switch {
 	case errors.Is(err, formsfeed.ErrBackfillCooldown):
 		outcome = "cooldown"
+	case errors.Is(err, formsfeed.ErrFormsAccessDenied):
+		outcome = "forms_access_denied"
+	case errors.Is(err, formsfeed.ErrFormsUnavailable):
+		outcome = "forms_unavailable"
 	case err != nil:
 		outcome = "refused"
 	case !queued:

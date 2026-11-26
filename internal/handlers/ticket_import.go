@@ -102,7 +102,7 @@ func (h *TicketHandler) PreviewImport(c fiber.Ctx) error {
 	if err != nil {
 		return importError(c, err)
 	}
-	report, err := h.svc.PreviewImport(c.Context(), p, eventID, in)
+	report, err := h.svc.PreviewImport(auditContext(c, p), p, eventID, in)
 	if err != nil {
 		return importError(c, err)
 	}
