@@ -2160,6 +2160,49 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.form_pulls') AND conname = 'form_pulls_kind_check'
 			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%collect%')
 		AND NOT EXISTS (SELECT 1 FROM form_pulls WHERE kind = 'collect' AND next_attempt_at = 'infinity')`,
+	// A Ticket's resend and link renewal by an event editor (a
+	// Co-organizer's, docs/co-organizers.md): the basis check names them.
+	20261126190000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
+		  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.link.renew%'
+		  AND pg_get_constraintdef(oid) LIKE '%console%'`,
+	// An Event's Co-organizer list in the Team audit record and its mails'
+	// queue (docs/co-organizers.md): the action and Group checks name
+	// co_organizer.*, the queue with its keys and indexes.
+	20261127115000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%co_organizer.change%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_group_id_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%co_organizer.%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_group_path_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%co_organizer.%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%co_organizer.add%'
+		)
+		AND to_regclass('public.co_organizer_notifications') IS NOT NULL
+		AND to_regclass('public.co_organizer_notifications_team_key') IS NOT NULL
+		AND to_regclass('public.co_organizer_notifications_user_key') IS NOT NULL
+		AND to_regclass('public.co_organizer_notifications_due_idx') IS NOT NULL
+		AND to_regclass('public.co_organizer_notifications_user_idx') IS NOT NULL
+		AND to_regclass('public.co_organizer_notifications_actor_idx') IS NOT NULL`,
+	// A certificate's snapshot of its Event's Co-organizer teams
+	// (docs/co-organizers.md).
+	20261127120000: `
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'certificates' AND column_name = 'co_organizer_teams'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

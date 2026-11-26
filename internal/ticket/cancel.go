@@ -32,7 +32,7 @@ func (s *service) statusStore() (StatusStore, error) {
 // ordinary member may not.
 func (s *service) ticketOperator(p authz.Principal, ev event.Event) bool {
 	return p.ID != "" && p.Product == "" &&
-		s.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: ev.OwnerTeam}, authz.Update)
+		s.authz.Allow(p, eventResource(ev, authz.TypeEvent), authz.Update)
 }
 
 // privilegedOperator reports whether p cancels as Privileged (the audit

@@ -157,6 +157,12 @@ The record of the editors' answers about telling an Event's Ticket holders ([`ev
 |---|---|---|---|
 | `event_change_notices_age` | an `event_change_notice_choices` row | `EventChangeNoticePeriod`, 3 years after `decided_at` (as the Team audit record) | row deleted |
 
+An Event's Co-organizer people ([`co-organizers.md`](co-organizers.md#data); rule set v11, Yusuf S1 2026-11-25):
+
+| Rule | Selects | Period | Action |
+|---|---|---|---|
+| `co_organizer_people` | an `event_co_organizers` person row (`user_id` set) | `CoOrganizerPeoplePeriod`, 90 days after the Event end, as `door_staff`; an Event with no date is counted as `anchorless`, never changed | row deleted (a relationship row). The person's rights end 30 days after the Event, before the row goes; a team row lives with the Event |
+
 The Unticketed respondents ([`form-respondents.md`](form-respondents.md#data); rule set v12, hub SPEC form-alan-eslestirme §7.6, 2026-11-25; v11 is taken by the Co-organizer people rule of a parallel change):
 
 | Rule | Selects | Period | Action |

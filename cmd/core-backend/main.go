@@ -31,6 +31,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/competition"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/consent"
+	"github.com/skylab-kulubu/core-backend/internal/coorganizermail"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
 	"github.com/skylab-kulubu/core-backend/internal/doorqr"
 	"github.com/skylab-kulubu/core-backend/internal/doorstaffmail"
@@ -1004,6 +1005,15 @@ func main() {
 		log.Fatal(err)
 	}
 	worker("door staff mail", startDoorStaffMail(workers, doorStaffMail, events, doorstaffmail.NewPostgresQueue(pool), users, sky, strings.TrimSpace(os.Getenv("PANEL_URL")), log.Printf))
+	// A team or person added to, or removed from, an Event's Co-organizers
+	// (docs/co-organizers.md#mails).
+	coOrganizerMail, err := coOrganizerMailOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	worker("co-organizer mail", startCoOrganizerMail(workers, coOrganizerMail, events, coorganizermail.NewPostgresQueue(pool), users,
+		coorganizermail.DirectoryLeaders{Teams: teamTree, Directory: dir, LeaderSubgroups: authzPolicy.LeaderSubgroups},
+		sky, strings.TrimSpace(os.Getenv("PANEL_URL")), log.Printf))
 
 	var render certificate.Renderer
 	if baseURL := gotenbergURL(); baseURL != "" {
@@ -1331,6 +1341,8 @@ func main() {
 
 			CoOrganizersWrite: coOrganizersWrite,
 			FormsLinked:       formCollects,
+			Audit:             teamAudit,
+			Groups:            dir,
 		}),
 		Seasons:         season.NewService(seasons, az),
 		SubjectRequests: subjectrequest.NewService(subjectrequest.NewPostgresStore(pool), az, nil),
@@ -1345,6 +1357,7 @@ func main() {
 			Private:            privateMedia,
 			Direct:             directUploads,
 			Scans:              mediaScans,
+			CoOrganizerSeats:   events,
 		}),
 		URLs:                   urlSvc,
 		Competitions:           competition.NewService(competitions, events, az),

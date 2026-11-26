@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 )
 
 // FormLink is a form an event points at and the alias the event gave it.
@@ -53,6 +54,11 @@ type ServiceOptions struct {
 	// Now is the clock a Co-organizer person's end is read against; nil is
 	// time.Now.
 	Now func() time.Time
+	// Audit records each change of an Event's Co-organizer list in the Team
+	// audit record (docs/co-organizers.md); nil records none. Groups finds
+	// the Event's Owner team's Group, the row's target; Audit needs it.
+	Audit  teamaudit.Writer
+	Groups TeamGroups
 	// FormsLinked hears of the application and extra forms a create or an
 	// update newly linked (formsfeed: the Unticketed respondents'
 	// gathering, docs/form-respondents.md); nil hears nothing.
@@ -75,6 +81,7 @@ func NewServiceWithOptions(store Store, az authz.Authorizer, options ServiceOpti
 		addresses: media.Addresses{Base: options.PublicBase, Mode: options.ImageAddressMode},
 		policy:    policy, teams: options.Teams, coOrganizersWrite: options.CoOrganizersWrite, now: options.Now,
 		formsLinked: options.FormsLinked,
+		audit:       options.Audit, groups: options.Groups,
 	}
 }
 

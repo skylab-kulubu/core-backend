@@ -78,7 +78,7 @@ func (h *FeedbackHandler) CloseSession(c fiber.Ctx) error {
 }
 
 func (h *FeedbackHandler) close(c fiber.Ctx, p authz.Principal, ev event.Event, t feedback.Target) error {
-	if !h.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: ev.OwnerTeam}, authz.Update) {
+	if !h.authz.Allow(p, event.AuthzResource(ev, authz.TypeEvent, time.Now()), authz.Update) {
 		return eventError(c, event.ErrForbidden)
 	}
 	n, err := h.reminders.CancelReminders(c.Context(), t, time.Now().UTC())
@@ -154,7 +154,7 @@ func (h *FeedbackHandler) sessionTarget(c fiber.Ctx) (p authz.Principal, ev even
 // (feedback_form_missing) or may not be sent (feedback_not_sendable: a
 // draft, a cancelled Event or Session).
 func (h *FeedbackHandler) sendNow(c fiber.Ctx, p authz.Principal, ev event.Event, t feedback.Target) error {
-	if !h.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: ev.OwnerTeam}, authz.Update) {
+	if !h.authz.Allow(p, event.AuthzResource(ev, authz.TypeEvent, time.Now()), authz.Update) {
 		return eventError(c, event.ErrForbidden)
 	}
 	sent, recipients, err := h.sender.SendNow(c.Context(), t, time.Now().UTC())
@@ -192,7 +192,7 @@ func (h *FeedbackHandler) Counts(c fiber.Ctx) error {
 	if err != nil {
 		return eventError(c, err)
 	}
-	if !h.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: ev.OwnerTeam}, authz.ReadFull) {
+	if !h.authz.Allow(p, event.AuthzResource(ev, authz.TypeEvent, time.Now()), authz.ReadFull) {
 		return eventError(c, event.ErrForbidden)
 	}
 	counts, err := h.counts.Counts(c.Context(), ev.ID)

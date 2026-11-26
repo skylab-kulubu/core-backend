@@ -75,18 +75,22 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func (s *MemoryStore) List(_ context.Context, ownerTeam string, activeOnly bool) ([]Event, error) {
-	return s.list(ownerTeam, activeOnly, false, lifecycle.CurrentOnly), nil
+	return s.list(ownerTeam, "", activeOnly, false, lifecycle.CurrentOnly), nil
 }
 
 func (s *MemoryStore) ListIncludingDrafts(_ context.Context, ownerTeam string) ([]Event, error) {
-	return s.list(ownerTeam, false, true, lifecycle.CurrentOnly), nil
+	return s.list(ownerTeam, "", false, true, lifecycle.CurrentOnly), nil
 }
 
 func (s *MemoryStore) ListLifecycle(_ context.Context, ownerTeam string, visibility lifecycle.Visibility) ([]Event, error) {
-	return s.list(ownerTeam, false, true, visibility), nil
+	return s.list(ownerTeam, "", false, true, visibility), nil
 }
 
-func (s *MemoryStore) list(ownerTeam string, activeOnly, drafts bool, visibility lifecycle.Visibility) []Event {
+func (s *MemoryStore) ListTeam(_ context.Context, team string, activeOnly, drafts bool) ([]Event, error) {
+	return s.list("", team, activeOnly, drafts, lifecycle.CurrentOnly), nil
+}
+
+func (s *MemoryStore) list(ownerTeam, team string, activeOnly, drafts bool, visibility lifecycle.Visibility) []Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Event, 0, len(s.byID))
@@ -98,6 +102,9 @@ func (s *MemoryStore) list(ownerTeam string, activeOnly, drafts bool, visibility
 			continue
 		}
 		if ownerTeam != "" && e.OwnerTeam != ownerTeam {
+			continue
+		}
+		if team != "" && e.OwnerTeam != team && !slices.Contains(PublicCoOrganizerTeams(e), team) {
 			continue
 		}
 		if activeOnly && !e.ActiveAt(time.Now()) {
@@ -953,6 +960,14 @@ func (s *MemoryStore) Copy(_ context.Context, plan CopyPlan) (Event, []string, e
 	case CopyWrite:
 		e.DoorStaffIDs = slices.Clone(source.DoorStaffIDs)
 	}
+	var people []uuid.UUID
+	switch plan.CoOrganizerPeople {
+	case CopyRefused:
+		skippedParts[SkippedCoOrganizerPeople] = len(source.CoOrganizerIDs) > 0
+	case CopyWrite:
+		people = source.CoOrganizerIDs
+	}
+	e.CoOrganizers, e.CoOrganizerIDs = sortedCoOrganizers(plan.CoOrganizerTeams, people)
 	now := time.Now().UTC()
 	e.CreatedAt, e.UpdatedAt = now, now
 	e = emptyGallery(e)

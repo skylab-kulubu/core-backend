@@ -3,6 +3,7 @@ package event
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"slices"
 	"strings"
@@ -39,6 +40,11 @@ type PostgresStore struct {
 	// staff gets (DOOR_STAFF_MAIL, docs/door-staff-mail.md) in the write
 	// that adds them.
 	notifyDoorStaff atomic.Bool
+	// notifyCoOrganizers queues the mail of a team or person added to, or
+	// removed from, an Event's Co-organizers (co_organizer_notifications,
+	// docs/co-organizers.md#mails) in the write of the list. Atomic, as
+	// notifyDoorStaff.
+	notifyCoOrganizers atomic.Bool
 	// notifyStatus queues a Ticket promoted from the waiting list as
 	// event.waitlist-promoted (TICKET_STATUS_MAIL, NotifyTicketStatus);
 	// off, as the new Ticket's mail while notifyTickets is on.
@@ -90,18 +96,31 @@ const eventFrom = `events e LEFT JOIN media m ON m.id = e.cover_image_id AND m.d
 	LEFT JOIN media mm ON mm.id = e.map_media_id AND mm.deleted_at IS NULL`
 
 func (s *PostgresStore) List(ctx context.Context, ownerTeam string, activeOnly bool) ([]Event, error) {
-	return s.list(ctx, ownerTeam, activeOnly, false, lifecycle.CurrentOnly)
+	return s.list(ctx, ownerTeam, "", activeOnly, false, lifecycle.CurrentOnly)
 }
 
 func (s *PostgresStore) ListIncludingDrafts(ctx context.Context, ownerTeam string) ([]Event, error) {
-	return s.list(ctx, ownerTeam, false, true, lifecycle.CurrentOnly)
+	return s.list(ctx, ownerTeam, "", false, true, lifecycle.CurrentOnly)
 }
 
 func (s *PostgresStore) ListLifecycle(ctx context.Context, ownerTeam string, visibility lifecycle.Visibility) ([]Event, error) {
-	return s.list(ctx, ownerTeam, false, true, visibility)
+	return s.list(ctx, ownerTeam, "", false, true, visibility)
 }
 
-func (s *PostgresStore) list(ctx context.Context, ownerTeam string, activeOnly, drafts bool, visibility lifecycle.Visibility) ([]Event, error) {
+func (s *PostgresStore) ListTeam(ctx context.Context, team string, activeOnly, drafts bool) ([]Event, error) {
+	return s.list(ctx, "", team, activeOnly, drafts, lifecycle.CurrentOnly)
+}
+
+// teamListSQL is an Event team $n names as its Owner team or as one of its
+// Co-organizer teams shown outside the panel (ListTeam): a helper team's
+// row never matches.
+func teamListSQL(n int) string {
+	arg := fmt.Sprintf("$%d", n)
+	return `(e.owner_team = ` + arg + ` OR EXISTS (SELECT 1 FROM event_co_organizers lc
+		WHERE lc.event_id = e.id AND lc.team_code = ` + arg + ` AND lc.visibility = 'co_organizer'))`
+}
+
+func (s *PostgresStore) list(ctx context.Context, ownerTeam, team string, activeOnly, drafts bool, visibility lifecycle.Visibility) ([]Event, error) {
 	q := `SELECT ` + eventCols + ` FROM ` + eventFrom
 	args := []any{}
 	where := make([]string, 0, 4)
@@ -112,8 +131,12 @@ func (s *PostgresStore) list(ctx context.Context, ownerTeam string, activeOnly, 
 		where = append(where, notDraftSQL)
 	}
 	if ownerTeam != "" {
-		where = append(where, `e.owner_team = $1`)
 		args = append(args, ownerTeam)
+		where = append(where, fmt.Sprintf(`e.owner_team = $%d`, len(args)))
+	}
+	if team != "" {
+		args = append(args, team)
+		where = append(where, teamListSQL(len(args)))
 	}
 	if activeOnly {
 		where = append(where, activeSQL)
