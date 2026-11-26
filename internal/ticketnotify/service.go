@@ -481,6 +481,9 @@ func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]string {
 	if ev.StartDate != nil {
 		vars["EventDate"] = ev.StartDate.In(s.location).Format(dateLayout)
 	}
+	// The Event's theme and poster, for the template's look
+	// (docs/event-theme.md#mails); every status mail keeps them.
+	event.WithMailLook(vars, ev)
 	if link := s.config.Page.Link(t.AccessKey); link != "" {
 		vars["TicketUrl"] = link
 		vars["TicketCode"] = t.Code
@@ -497,8 +500,8 @@ func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]string {
 // leave the list (empty without TICKET_PAGE_URL). No QR and no code: a
 // waitlisted Ticket opens no door (its QR answers 410).
 func waitlistedVars(vars map[string]string) map[string]string {
-	out := make(map[string]string, 6)
-	for _, name := range []string{"EventId", "EventName", "EventDate", "OwnerTeam", "Venue", "TicketUrl"} {
+	out := make(map[string]string, 8)
+	for _, name := range []string{"EventId", "EventName", "EventDate", "OwnerTeam", "Venue", "TicketUrl", "Theme", "EventBannerUrl"} {
 		out[name] = vars[name]
 	}
 	return out
@@ -509,8 +512,8 @@ func waitlistedVars(vars map[string]string) map[string]string {
 // operator's reason (empty for the holder, or when none was given), all of
 // them always. No link, QR or code: a cancelled Ticket opens nothing.
 func cancelledVars(vars map[string]string, t ticket.Ticket) map[string]string {
-	out := make(map[string]string, 6)
-	for _, name := range []string{"EventId", "EventName", "EventDate", "OwnerTeam"} {
+	out := make(map[string]string, 8)
+	for _, name := range []string{"EventId", "EventName", "EventDate", "OwnerTeam", "Theme", "EventBannerUrl"} {
 		out[name] = vars[name]
 	}
 	out["CancelledBy"] = string(t.CancelledBy)

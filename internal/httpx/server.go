@@ -744,6 +744,9 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/teams/:team/members", teamsLimit, teams.Members)
 	app.Get("/v1/teams/:team/leaders", teamsLimit, teams.Leaders)
 
+	// The Event themes' catalogue (docs/event-theme.md): public, the same
+	// for everyone.
+	app.Get("/v1/event-themes", handlers.EventThemes)
 	app.Get("/v1/events", events.List)
 	app.Get("/v1/events/active", events.ListActive)
 	app.Get("/v1/events/places", events.Places)

@@ -402,6 +402,9 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (_ Ev
 	if in, err = normalizeAttendeeNote(in); err != nil {
 		return Event{}, err
 	}
+	if in, err = normalizeTheme(in); err != nil {
+		return Event{}, err
+	}
 	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() || !validEntryMode(in.EntryMode) {
 		return Event{}, ErrInvalid
 	}
@@ -497,6 +500,9 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 		return Event{}, err
 	}
 	if in, err = normalizeAttendeeNote(in); err != nil {
+		return Event{}, err
+	}
+	if in, err = normalizeTheme(in); err != nil {
 		return Event{}, err
 	}
 	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() || !validEntryMode(in.EntryMode) {

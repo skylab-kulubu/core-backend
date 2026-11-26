@@ -49,7 +49,7 @@ func (m *mailer) FeedbackConfigured(kind mail.FeedbackKind) bool {
 	return !m.off[kind]
 }
 
-func (m *mailer) Feedback(_ context.Context, kind mail.FeedbackKind, key string, to mail.FeedbackRecipient, eventID uuid.UUID, eventName string, items []mail.FeedbackItem) error {
+func (m *mailer) Feedback(_ context.Context, kind mail.FeedbackKind, key string, to mail.FeedbackRecipient, eventID uuid.UUID, eventName string, items []mail.FeedbackItem, _ map[string]string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.keys = append(m.keys, key)

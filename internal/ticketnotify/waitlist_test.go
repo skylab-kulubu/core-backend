@@ -99,7 +99,7 @@ func TestWaitlistMails(t *testing.T) {
 	if joined.key != "core:event.waitlist-joined:"+waiting.ID.String()+":q2" || joined.holder.Sub != *waiting.OwnerID {
 		t.Fatalf("joined %+v", joined)
 	}
-	want := []string{"EventId", "EventName", "EventDate", "OwnerTeam", "Venue", "TicketUrl"}
+	want := []string{"EventId", "EventName", "EventDate", "OwnerTeam", "Venue", "TicketUrl", "Theme", "EventBannerUrl"}
 	if len(joined.vars) != len(want) || joined.vars["TicketUrl"] != "https://yildizskylab.com/bilet/"+key1 {
 		t.Fatalf("joined vars %v", joined.vars)
 	}
@@ -168,7 +168,7 @@ func TestCancellationMail(t *testing.T) {
 	if !ok || holder.holder.Sub != *byHolder.OwnerID || holder.vars["CancelledBy"] != "holder" || holder.vars["Reason"] != "" {
 		t.Fatalf("holder %+v (%v)", holder, byKey)
 	}
-	want := []string{"EventId", "EventName", "EventDate", "OwnerTeam", "CancelledBy", "Reason"}
+	want := []string{"EventId", "EventName", "EventDate", "OwnerTeam", "CancelledBy", "Reason", "Theme", "EventBannerUrl"}
 	if len(holder.vars) != len(want) {
 		t.Fatalf("vars %v", holder.vars)
 	}

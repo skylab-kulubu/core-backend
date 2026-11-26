@@ -35,7 +35,7 @@ func TestSkyNotifyFeedbackPostsItemsAsAList(t *testing.T) {
 	sky := &SkyNotify{BaseURL: srv.URL, FeedbackRequestTemplateKey: DefaultFeedbackRequestTemplateKey, Tokens: StaticToken("tok"), HTTP: srv.Client()}
 	items := []FeedbackItem{{Title: "Açılış", URL: "https://forms.yildizskylab.com/x?davet=a"}, {Title: "Go", URL: "https://forms.yildizskylab.com/y?davet=b"}}
 	to := FeedbackRecipient{Email: "ada@example.test", FullName: "Ada Lovelace"}
-	if err := sky.Feedback(t.Context(), FeedbackRequest, "key", to, uuid.New(), "Gecekodu", items); err != nil {
+	if err := sky.Feedback(t.Context(), FeedbackRequest, "key", to, uuid.New(), "Gecekodu", items, nil); err != nil {
 		t.Fatal(err)
 	}
 	b := payload.BodyVariables
@@ -44,7 +44,7 @@ func TestSkyNotifyFeedbackPostsItemsAsAList(t *testing.T) {
 		t.Fatalf("payload %+v", payload)
 	}
 	off := &SkyNotify{BaseURL: srv.URL, Tokens: StaticToken("tok")}
-	if off.FeedbackConfigured(FeedbackRequest) || !errors.Is(off.Feedback(t.Context(), FeedbackRequest, "key", FeedbackRecipient{Email: "a@b.c"}, uuid.New(), "", nil), ErrTemplateUnconfigured) {
+	if off.FeedbackConfigured(FeedbackRequest) || !errors.Is(off.Feedback(t.Context(), FeedbackRequest, "key", FeedbackRecipient{Email: "a@b.c"}, uuid.New(), "", nil, nil), ErrTemplateUnconfigured) {
 		t.Fatal("an empty key is on")
 	}
 }
@@ -76,7 +76,7 @@ func TestSkyNotifyFeedbackNotifiesAMember(t *testing.T) {
 	items := []FeedbackItem{{Title: "Açılış", URL: "https://forms.yildizskylab.com/x?davet=a"}}
 
 	member := FeedbackRecipient{Sub: sub, Email: "ada@example.test", FullName: "Ada Lovelace", FirstName: "Ada"}
-	if err := sky.Feedback(t.Context(), FeedbackReminder, "core:feedback:k1", member, eventID, "Gecekodu", items); err != nil {
+	if err := sky.Feedback(t.Context(), FeedbackReminder, "core:feedback:k1", member, eventID, "Gecekodu", items, nil); err != nil {
 		t.Fatal(err)
 	}
 	got := <-calls
@@ -102,7 +102,7 @@ func TestSkyNotifyFeedbackNotifiesAMember(t *testing.T) {
 	}
 
 	guest := FeedbackRecipient{Email: "guest@example.test", FullName: "Grace Hopper", FirstName: "Grace"}
-	if err := sky.Feedback(t.Context(), FeedbackReminder, "core:feedback:k2", guest, eventID, "Gecekodu", items); err != nil {
+	if err := sky.Feedback(t.Context(), FeedbackReminder, "core:feedback:k2", guest, eventID, "Gecekodu", items, nil); err != nil {
 		t.Fatal(err)
 	}
 	got = <-calls
@@ -125,7 +125,7 @@ func TestSkyNotifyFeedbackOffMailsAMemberByAddress(t *testing.T) {
 	t.Cleanup(srv.Close)
 	sky := &SkyNotify{BaseURL: srv.URL, FeedbackRequestTemplateKey: DefaultFeedbackRequestTemplateKey, Tokens: StaticToken("tok"), HTTP: srv.Client()}
 	member := FeedbackRecipient{Sub: uuid.New(), Email: "ada@example.test"}
-	if err := sky.Feedback(t.Context(), FeedbackRequest, "k", member, uuid.New(), "Gecekodu", nil); err != nil {
+	if err := sky.Feedback(t.Context(), FeedbackRequest, "k", member, uuid.New(), "Gecekodu", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if path := <-paths; path != "/v1/mail_tasks/single" {

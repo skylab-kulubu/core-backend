@@ -423,7 +423,8 @@ func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]string {
 			vars["TicketQrUrl"] = origin + "/v1/public/tickets/" + t.AccessKey + "/qr.png"
 		}
 	}
-	return vars
+	// The Event's theme and poster (docs/event-theme.md#mails).
+	return event.WithMailLook(vars, ev)
 }
 
 // dayStart is the start of t's Istanbul day.
