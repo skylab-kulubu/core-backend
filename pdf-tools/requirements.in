@@ -5,3 +5,7 @@
 pypdfium2==5.15.2
 pikepdf==10.18.2
 pillow==13.0.0
+# Fonts (/v1/font/sanitize): OTS, fontTools, and brotli for WOFF2.
+opentype-sanitizer==9.2.0
+fonttools==4.68.0
+brotli==1.2.1
