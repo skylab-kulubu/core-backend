@@ -24,10 +24,14 @@ const (
 	// SkippedCoOrganizerPeople: the copier may not change the copy's
 	// Co-organizers (docs/co-organizers.md).
 	SkippedCoOrganizerPeople = "coOrganizerPeople"
+	// SkippedTicketImage: the source's own ticket image (its "Ayrı
+	// görsel") may not be used in the copy's Owner team, as a cover
+	// (docs/ticket-image.md, docs/event-copy.md).
+	SkippedTicketImage = "ticketImage"
 )
 
 // skippedOrder is the order the answer lists skipped parts in.
-var skippedOrder = []string{SkippedCertificateTemplate, SkippedDoorStaff, SkippedCover, SkippedCompetitions, SkippedAttendeeNote, SkippedCoOrganizerPeople}
+var skippedOrder = []string{SkippedCertificateTemplate, SkippedDoorStaff, SkippedCover, SkippedCompetitions, SkippedAttendeeNote, SkippedCoOrganizerPeople, SkippedTicketImage}
 
 // CopyInput is what POST /v1/events/{id}/copy asks for (ADR 0066, ticket
 // 06): the copy's id (the client makes it, so a retried request finds the
@@ -114,6 +118,19 @@ type CopyPlan struct {
 	// accounts are active (CopyWrite); CopyRefused names them skipped when
 	// the source has some.
 	CoOrganizerPeople CopyPart
+	// TicketImage is what the copy does with the source's own ticket image
+	// (an "Ayrı görsel"): CopyWrite copies it; CopyRefused (the Team media
+	// library refuses it in the copy's Owner team) and CopyNot (nobody
+	// checked it) leave it out and name it skipped. A cover region comes
+	// along whenever the copy has the same cover.
+	TicketImage CopyPart
+}
+
+// ticketImageSource reads the Media of an Event's own ticket image (its
+// "Ayrı görsel", docs/ticket-image.md), nil for none: the Postgres store.
+// A store without it copies no ticket image.
+type ticketImageSource interface {
+	TicketImageUpload(ctx context.Context, eventID uuid.UUID) (*uuid.UUID, error)
 }
 
 // skipped puts the parts in the answer's order, each once, never nil.
@@ -312,6 +329,10 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 			// bildirim formu §2.1).
 			FeedbackMode:     source.FeedbackMode,
 			FeedbackAutoSend: source.FeedbackAutoSend,
+			// The theme and the ticket colour are the Event's look: the copy
+			// keeps them (docs/event-theme.md).
+			Theme:             source.Theme,
+			TicketAccentColor: source.TicketAccentColor,
 		},
 		Shift:               shift,
 		By:                  lifecycle.ActorID(p.ID),
@@ -383,6 +404,26 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 			return Copied{}, false, err
 		default:
 			plan.Event.CoverImageID = source.CoverImageID
+		}
+	}
+	// The source's own ticket image comes along when the copy's Owner team
+	// may use it, as the cover (docs/event-copy.md); a store that cannot
+	// tell which image it is copies none of its own (CopyNot).
+	if images, ok := s.store.(ticketImageSource); ok {
+		upload, err := images.TicketImageUpload(ctx, source.ID)
+		if err != nil {
+			return Copied{}, false, err
+		}
+		plan.TicketImage = CopyWrite
+		if upload != nil {
+			err := s.checkMedia(ctx, in.ID, team, *upload, media.RoleEventTicketImage)
+			var refusal *media.LinkRefusal
+			switch {
+			case errors.As(err, &refusal):
+				plan.TicketImage = CopyRefused
+			case err != nil:
+				return Copied{}, false, err
+			}
 		}
 	}
 	// What the copy carries of the Co-organizers is recorded, each a

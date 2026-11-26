@@ -370,14 +370,15 @@ func (s *Service) changedVars(ev event.Event, claimed Queued) map[string]string 
 	if n := len(names); n > 1 {
 		list = strings.Join(names[:n-1], ", ") + " ve " + names[n-1]
 	}
-	return map[string]string{
+	// With the Event's theme and poster (docs/event-theme.md#mails).
+	return event.WithMailLook(map[string]string{
 		"EventId":       ev.ID.String(),
 		"EventName":     ev.Name,
 		"ChangedFields": list,
 		"ChangeSummary": "Etkinliğin " + list + " değişti.",
 		"StartsAt":      s.format(ev.StartDate),
 		"Venue":         strings.TrimSpace(ev.Location),
-	}
+	}, ev)
 }
 
 func sameTime(a, b *time.Time) bool {
@@ -506,14 +507,15 @@ func (s *Service) vars(ev event.Event, claimed Queued) map[string]string {
 	case !timeChanged:
 		summary = "Etkinliğin yeri değişti."
 	}
-	return map[string]string{
+	// With the Event's theme and poster (docs/event-theme.md#mails).
+	return event.WithMailLook(map[string]string{
 		"EventId":       ev.ID.String(),
 		"EventName":     ev.Name,
 		"ChangeSummary": summary,
 		"NewStartsAt":   s.format(ev.StartDate),
 		"NewEndsAt":     s.format(ev.EndDate),
 		"NewVenue":      strings.TrimSpace(ev.Location),
-	}
+	}, ev)
 }
 
 // withTicket is vars with the recipient's Ticket page and code (ADR 0082;

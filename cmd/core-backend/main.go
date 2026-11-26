@@ -970,7 +970,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	worker("feedback mail", startFeedbackMail(workers, feedbackNotification, feedbackInvites, tickets, users, sky, log.Printf))
+	worker("feedback mail", startFeedbackMail(workers, feedbackNotification, feedbackInvites, tickets, users, events, sky, log.Printf))
 	// The new Ticket's Notification (docs/ticket-created-notification.md):
 	// SkyNotify tells the holder by inbox and e-mail.
 	ticketNotificationOn, err := ticketCreatedNotificationOn(os.Getenv)

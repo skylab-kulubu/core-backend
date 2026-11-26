@@ -2203,6 +2203,20 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM pg_constraint
 			WHERE conrelid = to_regclass('public.tickets') AND conname = 'tickets_form_response_status_check'
 		)`,
+	// An Event's theme and ticket colour (docs/event-theme.md): both
+	// columns and both checks (NOT VALID: not convalidated).
+	20261127200000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events'
+			  AND column_name IN ('theme', 'ticket_accent_color')
+		) = 2
+		AND (
+			SELECT count(*) FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events')
+			  AND conname IN ('events_theme_check', 'events_ticket_accent_color_check')
+		) = 2`,
 	// Unticketed respondents (docs/form-respondents.md): the two tables, the
 	// Event's setting and form_pulls' collect kind, with no collect job parked
 	// by a rollback (the up migration runs again and puts it back).

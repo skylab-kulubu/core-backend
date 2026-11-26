@@ -135,7 +135,7 @@ func TestPageAnswersOnlyWhatThePageShows(t *testing.T) {
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
-	want := []string{"cancellable", "code", "coverColors", "eventEnd", "eventName", "eventStart", "eventStatus", "holderName", "organizerName", "ownerTeam", "pdfUrl", "qrToken", "qrUrl", "state", "theme", "venue"}
+	want := []string{"cancellable", "code", "coverColors", "eventEnd", "eventName", "eventStart", "eventStatus", "holderName", "organizerName", "ownerTeam", "pdfUrl", "qrToken", "qrUrl", "state", "theme", "ticketAccentColor", "venue"}
 	if !slices.Equal(keys, want) {
 		t.Fatalf("keys %v", keys)
 	}

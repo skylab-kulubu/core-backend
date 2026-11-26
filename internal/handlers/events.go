@@ -54,6 +54,11 @@ type eventBody struct {
 	// AttendeeNote: the organizer's note for whoever enters; none keeps it
 	// (docs/attendance-mail.md).
 	AttendeeNote *string `json:"attendeeNote"`
+	// Theme and TicketAccentColor on create: a key of the catalogue (none,
+	// "" or "kurumsal" for Kurumsal) and #RRGGBB, none for none
+	// (docs/event-theme.md).
+	Theme             *string `json:"theme"`
+	TicketAccentColor *string `json:"ticketAccentColor"`
 	// EntryMode on create: per_session, venue, or none for automatic
 	// (docs/venue-entry.md).
 	EntryMode *event.EntryMode `json:"entryMode"`
@@ -125,6 +130,10 @@ func eventError(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "event_location_invalid")
 	case errors.Is(err, event.ErrExternalRegistrationURLInvalid):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "external_registration_url_invalid")
+	case errors.Is(err, event.ErrThemeUnknown):
+		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "event_theme_unknown")
+	case errors.Is(err, event.ErrTicketAccentColorInvalid):
+		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "event_ticket_accent_color_invalid")
 	case errors.Is(err, event.ErrInvalid):
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	default:
@@ -167,6 +176,8 @@ func (b eventBody) asEvent() event.Event {
 		AttendanceRecordedMail:  b.AttendanceRecordedMail,
 		FormResponsesAutoTicket: b.FormResponsesAutoTicket,
 		AttendeeNote:            b.AttendeeNote,
+		Theme:                   b.Theme,
+		TicketAccentColor:       b.TicketAccentColor,
 		StartDate:               b.StartDate,
 		EndDate:                 b.EndDate,
 		Linkedin:                b.Linkedin,

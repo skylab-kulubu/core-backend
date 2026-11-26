@@ -107,6 +107,10 @@ func (s *Service) vars(kind string, ev event.Event, firstName string, rows []Mai
 		"MissingRequired": c.missingRequired,
 		"MissedRequired":  c.missedRequired,
 	}
+	// The Event's theme and poster (docs/event-theme.md#mails).
+	for k, v := range event.MailLook(ev) {
+		vars[k] = v
+	}
 	if kind == KindRecorded {
 		vars["Sessions"] = sessions
 		vars["HasRule"] = c.hasRule

@@ -22,6 +22,7 @@ ADR 0066 addendum (2026-10-19), ticket 13. `PUT` and `PATCH` on `/v1/events/{id}
 | `ranked`, `registrationClosed`, `feedbackAutoSend` | `null` is `400` (send `false`) |
 | `feedbackMode` | may not be cleared: `null` or a value other than `event`, `per_session`, `event_with_sessions` is `400` |
 | `registrationClosesAt` | no deadline ([event-registration-closure.md](event-registration-closure.md)) |
+| `theme`, `ticketAccentColor` ([event-theme.md](event-theme.md)) | Kurumsal (also `"kurumsal"` for `theme`), no colour; a key not in the catalogue is `400 event_theme_unknown`, a colour not `#RRGGBB` `400 event_ticket_accent_color_invalid` |
 
 - `cancelReason` edits a cancelled Event's public reason; on any other Event it is ignored ([event-cancel.md](event-cancel.md)).
 - `id`, `status` and `active` in the body are not read: the status changes only through its endpoints (`publish`, `unpublish`, …) and `active` is derived.

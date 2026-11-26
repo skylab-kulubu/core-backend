@@ -61,6 +61,9 @@ func (s *SkyNotify) FeedbackConfigured(kind FeedbackKind) bool {
 // Feedback sends kind's mail and reports what SkyNotify answered, as
 // EventStatus does. Its variables are not all text: Items is a list, which
 // SkyNotify's templates range over; EventId fills the inbox item's link.
+// look is the Event's theme and poster (event.MailLook: Theme and
+// EventBannerUrl), both always sent, empty when look has none
+// (docs/event-theme.md#mails).
 //
 // With FeedbackNotification on, a member's mail is a Notification of the
 // template's type (the type's e-mail text is the template of the same key,
@@ -68,7 +71,7 @@ func (s *SkyNotify) FeedbackConfigured(kind FeedbackKind) bool {
 // member's inbox. A guest has no subject SkyNotify could take, so a guest's
 // mail, and every mail while it is off, is the template by address
 // (/v1/mail_tasks/single, which reads no key).
-func (s *SkyNotify) Feedback(ctx context.Context, kind FeedbackKind, idempotencyKey string, to FeedbackRecipient, eventID uuid.UUID, eventName string, items []FeedbackItem) error {
+func (s *SkyNotify) Feedback(ctx context.Context, kind FeedbackKind, idempotencyKey string, to FeedbackRecipient, eventID uuid.UUID, eventName string, items []FeedbackItem, look map[string]string) error {
 	key := s.FeedbackTemplateKey(kind)
 	if key == "" || s.noBaseURL() {
 		return ErrTemplateUnconfigured
@@ -78,6 +81,9 @@ func (s *SkyNotify) Feedback(ctx context.Context, kind FeedbackKind, idempotency
 		"EventName": eventName,
 		"Items":     items,
 		"EventId":   eventID.String(),
+		// The Event's theme and poster, always (docs/event-theme.md#mails).
+		"Theme":          look["Theme"],
+		"EventBannerUrl": look["EventBannerUrl"],
 	}
 	if s.FeedbackNotification && to.Sub != uuid.Nil {
 		return s.Notify(ctx, "feedback_"+string(kind), idempotencyKey, Notification{
