@@ -139,12 +139,14 @@ func scanRespondent(row pgx.Row) (RespondentRow, error) {
 
 // ticketedSQL: the person of the respondent r holds a Ticket on r's Event:
 // the answer's, the account's, or (a guest) the address's. A Ticket Forms'
-// own decline cancelled does not count: an acceptance reopens it.
+// own decline cancelled does not count: an acceptance reopens it. A guest
+// Ticket linked to an account (docs/guest-account-links.md) is still the
+// address's: only a guest Ticket carries an address.
 const ticketedSQL = `EXISTS (SELECT 1 FROM tickets t WHERE t.event_id = r.event_id
 	AND NOT (t.status = 'cancelled' AND t.cancelled_by = 'form')
 	AND (t.form_response_id = r.form_response_id
 		OR (r.user_id IS NOT NULL AND t.owner_id = r.user_id)
-		OR (r.email IS NOT NULL AND t.owner_id IS NULL AND lower(t.guest_email) = r.email)))`
+		OR (r.email IS NOT NULL AND t.ticket_type = 'GUEST' AND lower(t.guest_email) = r.email)))`
 
 func (s *PostgresRespondents) Keep(ctx context.Context, row RespondentRow) (bool, error) {
 	if row.ID == uuid.Nil {

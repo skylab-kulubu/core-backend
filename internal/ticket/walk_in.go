@@ -331,7 +331,9 @@ func (s *service) writeWalkIn(ctx context.Context, ev event.Event, w WalkIn, fou
 		}
 		return reopened, WalkInCreated, nil
 	}
-	created, err := s.create(ctx, Ticket{
+	// A Walk-in whose address an account holds verified is written linked
+	// to it (docs/guest-account-links.md), still GUEST.
+	created, err := s.createGuest(ctx, Ticket{
 		EventID:          ev.ID,
 		TicketType:       Guest,
 		GuestFirstName:   w.FirstName,
@@ -341,7 +343,7 @@ func (s *service) writeWalkIn(ctx context.Context, ev event.Event, w WalkIn, fou
 		GuestUniversity:  w.University,
 		GuestDepartment:  w.Department,
 		GuestGrade:       w.Grade,
-	}, Admission{})
+	}, func(t Ticket) (Ticket, error) { return s.create(ctx, t, Admission{}) })
 	if errors.Is(err, ErrConflict) {
 		again, getErr := s.tickets.GetByGuestEvent(ctx, w.Email, ev.ID)
 		if getErr != nil {

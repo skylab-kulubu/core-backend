@@ -81,6 +81,9 @@ type Deps struct {
 	// /v1/events/{id}/respondents (docs/form-respondents.md); nil leaves
 	// them out.
 	FormRespondents handlers.FormRespondents
+	// Raffles serves an Event's raffles under /v1/events/{id}/raffles
+	// (docs/raffle.md); nil leaves them out.
+	Raffles handlers.Raffles
 	// FormResponseMapper runs the forms report through the form mappings
 	// (docs/form-mappings.md); nil takes it as before.
 	FormResponseMapper     handlers.FormResponseMapper
@@ -788,6 +791,15 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/events/:id/forms/:formId/mapping", formMappings.Get)
 		app.Put("/v1/events/:id/forms/:formId/mapping", formMappings.Put)
 		app.Delete("/v1/events/:id/forms/:formId/mapping", formMappings.Delete)
+	}
+	if deps.Raffles != nil {
+		raffles := handlers.NewRaffleHandler(deps.Raffles)
+		app.Post("/v1/events/:id/raffles/preview", raffles.Preview)
+		app.Get("/v1/events/:id/raffles", raffles.List)
+		app.Post("/v1/events/:id/raffles", raffles.Draw)
+		app.Get("/v1/events/:id/raffles/:raffleId", raffles.Get)
+		app.Get("/v1/events/:id/raffles/:raffleId/verification", raffles.Verification)
+		app.Post("/v1/events/:id/raffles/:raffleId/forfeits", raffles.Forfeit)
 	}
 	if deps.FormRespondents != nil {
 		respondents := handlers.NewFormRespondentHandler(deps.FormRespondents)

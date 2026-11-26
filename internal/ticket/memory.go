@@ -629,9 +629,11 @@ func (s *MemoryStore) CreateAdmitted(ctx context.Context, t Ticket, a Admission)
 	return created, nil
 }
 
+// sameHolder is the database's two unique indexes: one Ticket per owner,
+// one per guest address (a linked guest Ticket has both).
 func sameHolder(a, b Ticket) bool {
-	if a.OwnerID != nil && b.OwnerID != nil {
-		return *a.OwnerID == *b.OwnerID
+	if a.OwnerID != nil && b.OwnerID != nil && *a.OwnerID == *b.OwnerID {
+		return true
 	}
 	return a.TicketType == Guest && b.TicketType == Guest &&
 		strings.EqualFold(strings.TrimSpace(a.GuestEmail), strings.TrimSpace(b.GuestEmail))

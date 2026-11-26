@@ -182,11 +182,13 @@ func (s *service) BeginExport(ctx context.Context, p authz.Principal, eventID uu
 }
 
 // exportPeople names each Ticket's person: a guest's own fields, a
-// member's account (one read for all of them).
+// member's account (one read for all of them). A guest Ticket linked to an
+// account (docs/guest-account-links.md) is the guest's fields too: the
+// account's own name and addresses are not the reader's to learn from it.
 func (s *service) exportPeople(ctx context.Context, out *ExportData) error {
 	owners := make([]uuid.UUID, 0, len(out.Tickets))
 	for _, t := range out.Tickets {
-		if t.OwnerID != nil {
+		if t.OwnerID != nil && t.TicketType != Guest {
 			owners = append(owners, *t.OwnerID)
 		}
 	}
@@ -198,7 +200,7 @@ func (s *service) exportPeople(ctx context.Context, out *ExportData) error {
 		}
 	}
 	for _, t := range out.Tickets {
-		if t.OwnerID == nil {
+		if t.OwnerID == nil || t.TicketType == Guest {
 			out.People[t.ID] = ExportPerson{
 				FirstName: t.GuestFirstName, LastName: t.GuestLastName, Email: t.GuestEmail, Phone: t.GuestPhoneNumber,
 				University: t.GuestUniversity, Department: t.GuestDepartment, Grade: t.GuestGrade,

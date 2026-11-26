@@ -44,6 +44,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/feedback"
 	"github.com/skylab-kulubu/core-backend/internal/formsfeed"
 	"github.com/skylab-kulubu/core-backend/internal/googlewallet"
+	"github.com/skylab-kulubu/core-backend/internal/guestlink"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/health"
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
@@ -57,6 +58,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/memlimit"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/organizer"
+	"github.com/skylab-kulubu/core-backend/internal/raffle"
 	"github.com/skylab-kulubu/core-backend/internal/retention"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
@@ -132,6 +134,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == teamStructureReportCommandName {
 		os.Exit(runTeamStructureReport(os.Args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == guestAccountLinkCommandName {
+		os.Exit(runGuestAccountLink(os.Args[2:], os.Getenv, os.Stdout))
 	}
 	if len(os.Args) > 1 && os.Args[1] == retentionSweepCommandName {
 		os.Exit(runRetentionSweep(os.Args[2:], os.Getenv, os.Stdout))
@@ -795,6 +800,21 @@ func main() {
 		recipientsState = "on"
 	}
 	log.Printf("recipient question: %s (YTÜ identity provider %s)", recipientsState, ytuIdentityProvider)
+	// Guest Tickets and certificates linked to the account their address is
+	// (docs/guest-account-links.md): a new guest Ticket is written linked,
+	// the user sync's pass links what the accounts' addresses now name. One
+	// switch in the database, off until `core-backend guest-account-link
+	// -apply`. Without Keycloak nothing is linked.
+	guestLinks := guestlink.NewPostgres(pool)
+	var guestOwners ticket.GuestOwners
+	var guestLinker *guestlink.Linker
+	if recipients != nil {
+		guestOwners = guestlink.NewResolver(guestLinks, recipients, log.Printf)
+		guestLinker = guestlink.NewLinker(guestLinks, recipients, log.Printf)
+		log.Print("guest account links: ready (the switch is in the database)")
+	} else {
+		log.Print("guest account links: off (no Keycloak)")
+	}
 	if keycloakConfigured {
 		worker("communication preference cleanup", commpref.MaintainCleanup(workers, communicationPreferences, commpref.CleanupInterval, func(what string, removed int64, err error) {
 			if err != nil {
@@ -947,6 +967,9 @@ func main() {
 		log.Printf("user sync: %s; no Welcome mail is sent", userSyncConfig)
 	default:
 		syncWorker := usersync.New(userSyncDir, user.NewService(users, dir), usersync.NewPostgres(pool), welcomeMailer, userSyncConfig, log.Printf)
+		if guestLinker != nil {
+			syncWorker.SetGuestLinker(guestLinker)
+		}
 		worker("user sync", syncWorker.Run(workers))
 		userSync = syncWorker
 		if welcomeMailer == nil {
@@ -1047,7 +1070,7 @@ func main() {
 	// The Team audit record (docs/team-audit.md): Group writes, and the
 	// ticket actions of the panel (docs/ticket-resend.md).
 	teamAudit := teamaudit.NewPostgres(pool)
-	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites, ticketQR, doorScans, ticketPageConfig, teamAudit)
+	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites, ticketQR, doorScans, ticketPageConfig, teamAudit, guestOwners)
 	var ticketPDF ticketpage.Renderer
 	if g, ok := render.(*certificate.Gotenberg); ok && g != nil {
 		ticketPDF = g
@@ -1225,6 +1248,18 @@ func main() {
 	// form's answers are gathered; off, answers take the rule alone as
 	// before. The list and the sending answer whatever the switch says
 	// (they read no Forms).
+	// An Event's raffles (docs/raffle.md): attendance as the certificate
+	// rule counts it, the Team audit rows on the ticket operators' basis.
+	// Without the ticket service's audit rows a raffle would draw
+	// unrecorded: core does not start.
+	raffleAudit, ok := ticketSvc.(ticket.EventAuditor)
+	if !ok {
+		log.Fatal("raffles: the ticket service opens no event audit rows")
+	}
+	raffles := &raffle.Service{
+		Store: raffle.NewPostgres(pool), Events: events, Authz: az, Attendance: certs, Audit: raffleAudit,
+		Teams: raffle.DirectoryTeams{Dir: dir}, People: users.Accounts,
+	}
 	formRespondents := &formsfeed.Respondents{
 		Store: formsfeed.NewPostgresRespondents(pool), Events: events, Authz: az, Tickets: ticketSvc,
 		Jobs: formsfeed.NewPostgresTicketJobs(pool),
@@ -1401,6 +1436,7 @@ func main() {
 		FormBackfills:          formBackfills,
 		FormMappings:           formMappings,
 		FormRespondents:        formRespondents,
+		Raffles:                raffles,
 		FormResponseMapper:     formResponseMapper(mappedGuests),
 		Certificates:           certSvc,
 		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),

@@ -98,6 +98,13 @@ const (
 	// report, the format and the row count), never a row's content. It is
 	// written whole (ok or failed) when the file is made.
 	ActionTicketExport Action = "ticket.export"
+	// ActionRaffleDraw and ActionRaffleForfeit are an Event's raffle drawn,
+	// and a winner who did not come replaced by the next alternate
+	// (docs/raffle.md), recorded as ActionTicketImport: the Event's team,
+	// the Event and the raffle's counts (State.Raffle), never a name, an
+	// e-mail address nor the forfeit's reason.
+	ActionRaffleDraw    Action = "raffle.draw"
+	ActionRaffleForfeit Action = "raffle.forfeit"
 	// ActionCoOrganizerAdd, ActionCoOrganizerRemove and
 	// ActionCoOrganizerChange are an Event's Co-organizer list changed
 	// (docs/co-organizers.md): a team or a person added or removed, or a
@@ -158,6 +165,7 @@ var Actions = []Action{
 	ActionTermExtend, ActionTermHandover, ActionTermExpired,
 	ActionTicketResend, ActionTicketLinkRenew, ActionTicketCancel, ActionTicketRestore, ActionTicketPromote,
 	ActionTicketImport, ActionTicketImportPreview, ActionTicketWalkIn, ActionTicketExport,
+	ActionRaffleDraw, ActionRaffleForfeit,
 	ActionCoOrganizerAdd, ActionCoOrganizerRemove, ActionCoOrganizerChange,
 	ActionUserEnable, ActionUserDisable, ActionUserPasswordSet, ActionUserPasswordMail,
 	ActionUserEmailChange, ActionUserEmailVerify, ActionUserEmailMail, ActionUserEmailPrimary,
@@ -421,6 +429,8 @@ type State struct {
 	Import *ImportCounts `json:"import,omitempty"`
 	// Export is a ticket.export row's download; absent on every other row.
 	Export *ExportInfo `json:"export,omitempty"`
+	// Raffle is a raffle.* row's raffle; absent on every other row.
+	Raffle *RaffleInfo `json:"raffle,omitempty"`
 	// Operation and ResourceType are Keycloak's names of a console change
 	// (CREATE, UPDATE, DELETE, ACTION; GROUP, CLIENT, CLIENT_ROLE …), on a
 	// via console row; Composites the roles a role's composites gained or
@@ -473,6 +483,19 @@ type ExportInfo struct {
 	Selected  bool   `json:"selected,omitempty"`
 	SessionID string `json:"sessionId,omitempty"`
 	Rows      int    `json:"rows"`
+}
+
+// RaffleInfo is a raffle.* row's raffle (docs/raffle.md): its id and
+// counts, and on a raffle.forfeit the place given up and the alternate's
+// place that took it. Never a name, an address nor the reason.
+type RaffleInfo struct {
+	ID         string `json:"id"`
+	Eligible   int    `json:"eligible"`
+	Winners    int    `json:"winners"`
+	Alternates int    `json:"alternates"`
+	// Forfeited and Promoted are a raffle.forfeit's positions.
+	Forfeited int `json:"forfeited,omitempty"`
+	Promoted  int `json:"promoted,omitempty"`
 }
 
 // SourceFormRespondents is ImportCounts.Source of a form respondents'
@@ -607,6 +630,7 @@ func (r Record) normalize() (Record, string) {
 		if _, err := uuid.Parse(r.Actor.ViaGroupID); err != nil ||
 			(r.Action != ActionTicketCancel && r.Action != ActionTicketRestore && r.Action != ActionTicketPromote &&
 				r.Action != ActionTicketImport && r.Action != ActionTicketImportPreview && r.Action != ActionTicketExport &&
+				r.Action != ActionRaffleDraw && r.Action != ActionRaffleForfeit &&
 				r.Action != ActionTicketResend && r.Action != ActionTicketLinkRenew && r.Action != ActionCoOrganizerAdd) {
 			return r, "invalid_basis"
 		}
@@ -761,6 +785,12 @@ func (s *State) normalize() *State {
 			export.SessionID = s.Export.SessionID
 		}
 		out.Export = &export
+	}
+	if s.Raffle != nil {
+		if _, err := uuid.Parse(s.Raffle.ID); err == nil {
+			info := *s.Raffle
+			out.Raffle = &info
+		}
 	}
 	for _, name := range RecordedAttributes {
 		if v, ok := s.Attributes[name]; ok {
