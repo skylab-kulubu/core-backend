@@ -261,6 +261,19 @@ const (
 	LinkBulk LinkSource = "bulk"
 )
 
+// linkedInsert is what a new Ticket's insert writes for its owner and its
+// link mark, owner and link being its query parameters: a Ticket written
+// linked (its mark set) keeps the owner only while linking is on, as the
+// insert reads the switch; turned off since the lookup, it is written
+// unlinked. guestlink's writes read the same switch.
+func linkedInsert(owner, link string) (ownerValue, sourceValue, atValue string) {
+	on := `EXISTS (SELECT 1 FROM guest_account_link_settings gs WHERE gs.id AND gs.enabled_at IS NOT NULL)`
+	linked := link + `::text IS NOT NULL AND ` + on
+	return `CASE WHEN ` + link + `::text IS NULL OR ` + on + ` THEN ` + owner + `::uuid END`,
+		`CASE WHEN ` + linked + ` THEN ` + link + `::text END`,
+		`CASE WHEN ` + linked + ` THEN now() END`
+}
+
 // linkParam is the link's mark as a query parameter: NULL for none.
 func (t Ticket) linkParam() *string {
 	if t.ownerLink == "" {

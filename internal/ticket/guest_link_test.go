@@ -77,6 +77,9 @@ func TestGuestTicketWrittenLinked(t *testing.T) {
 		got.GuestFirstName != "Ada" || got.GuestLastName != "Byron" || got.GuestPhoneNumber != "555" {
 		t.Fatalf("stored %+v", got)
 	}
+	if got.Owner != nil {
+		t.Fatalf("a linked guest Ticket answered the account's summary: %+v", got.Owner)
+	}
 	mine, err := e.svc.Mine(ctx, e.ada)
 	if err != nil || len(mine) != 1 || mine[0].ID != got.ID {
 		t.Fatalf("Biletlerim: %+v %v", mine, err)

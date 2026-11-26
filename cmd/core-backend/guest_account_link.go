@@ -20,7 +20,7 @@ import (
 // of the server (docs/guest-account-links.md):
 //
 //	core-backend guest-account-link          counts, writes nothing
-//	core-backend guest-account-link -apply   links them, then turns linking on
+//	core-backend guest-account-link -apply   turns linking on, then links them
 //	core-backend guest-account-link -off     turns linking off; links stay
 //	core-backend guest-account-link -undo    turns linking off, takes every link back
 //
@@ -70,7 +70,7 @@ func runGuestAccountLink(args []string, getenv func(string) string, out io.Write
 func guestAccountLinkCommand(ctx context.Context, args []string, out io.Writer, read func(context.Context) (map[string]commpref.VerifiedAddress, error), store *guestlink.Postgres) int {
 	flags := flag.NewFlagSet(guestAccountLinkCommandName, flag.ContinueOnError)
 	flags.SetOutput(out)
-	apply := flags.Bool("apply", false, "link the guest Tickets and certificates there are, then turn linking on")
+	apply := flags.Bool("apply", false, "turn linking on, then link the guest Tickets and certificates there are")
 	off := flags.Bool("off", false, "turn linking off; the links made stay")
 	undo := flags.Bool("undo", false, "turn linking off and take back every link core made")
 	if err := flags.Parse(args); err != nil {
@@ -113,20 +113,23 @@ func guestAccountLinkCommand(ctx context.Context, args []string, out io.Writer, 
 		fmt.Fprintf(out, "keycloak: %v\n", err)
 		return 1
 	}
-	source := ticket.LinkBulk
-	report, err := guestlink.Run(ctx, store, addrs, source, *apply)
+	if *apply {
+		// On first: every link's write checks the switch (so a link
+		// cannot outlive -off or -undo). A run that fails half way leaves
+		// it on; running it again, or the user sync's next pass, links the
+		// rest, and -undo takes all of it back.
+		if err := store.SetEnabled(ctx, true); err != nil {
+			fmt.Fprintf(out, "core: %v\n", err)
+			return 1
+		}
+	}
+	report, err := guestlink.Run(ctx, store, addrs, ticket.LinkBulk, *apply)
 	if err != nil {
 		fmt.Fprintf(out, "core: %v\n", err)
 		return 1
 	}
 	if *apply {
-		// Turned on after the links: a run that fails half way leaves it
-		// off, and running it again links the rest.
-		if err := store.SetEnabled(ctx, true); err != nil {
-			fmt.Fprintf(out, "core: %v\n", err)
-			return 1
-		}
-		fmt.Fprintln(out, "guest account links: linked, and linking turned on")
+		fmt.Fprintln(out, "guest account links: linking turned on, and linked")
 	} else {
 		fmt.Fprintln(out, "guest account links, dry run (add -apply to link and turn linking on)")
 	}

@@ -168,6 +168,15 @@ func TestRunLinksByTheRuleOnceAndTakesBack(t *testing.T) {
 	}
 	w.wantOwner(t, "certificates", "dry run", w.certAda, nil, "")
 
+	// Off, a run writes no link: each write reads the switch.
+	off, err := guestlink.Run(ctx, w.store, w.addrs, ticket.LinkBulk, true)
+	if err != nil || off.Tickets.Total() != 0 || off.Certificates.Total() != 0 || off.Tickets.Changed != 3 {
+		t.Fatalf("run while off: %+v %v", off, err)
+	}
+	w.wantOwner(t, "tickets", "run while off", w.adaE1, nil, "")
+	if err := w.store.SetEnabled(ctx, true); err != nil {
+		t.Fatal(err)
+	}
 	applied, err := guestlink.Run(ctx, w.store, w.addrs, ticket.LinkBulk, true)
 	if err != nil {
 		t.Fatal(err)

@@ -119,12 +119,13 @@ func (s *PostgresStore) Create(ctx context.Context, t Ticket) (Ticket, error) {
 	if t.ID == uuid.Nil {
 		t.ID = uuid.New()
 	}
+	owner, source, at := linkedInsert("$4", "$11")
 	insert := `
 		INSERT INTO tickets (
 			id, event_id, ticket_type, owner_id,
 			guest_first_name, guest_last_name, guest_email, guest_phone_number,
 			access_key, code, owner_link_source, owner_linked_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::text, CASE WHEN $11::text IS NULL THEN NULL ELSE now() END)
+		) VALUES ($1,$2,$3,` + owner + `,$5,$6,$7,$8,$9,$10,` + source + `,` + at + `)
 		RETURNING ` + ticketCols
 	if s.notifyCreated.Load() {
 		// One statement writes the Ticket and queues its Notification:

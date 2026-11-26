@@ -359,8 +359,13 @@ func personSummaryMatches(summary PersonSummary, query string) bool {
 	return false
 }
 
+// withEvent gives t its Event and, for a member's Ticket, its owner's
+// summary. A guest Ticket linked to an account (docs/guest-account-links.md)
+// keeps its ownerId but gets no summary: it is the guest's name and e-mail
+// that the Ticket was written for, and the account's own name and
+// addresses are not the reader's to learn from it.
 func (s *service) withEvent(ctx context.Context, t Ticket) Ticket {
-	if t.OwnerID != nil {
+	if t.OwnerID != nil && t.TicketType != Guest {
 		if s.users != nil {
 			if shadow, err := s.users.Get(ctx, *t.OwnerID); err == nil {
 				summary := ownerSummary(shadow)

@@ -109,7 +109,7 @@ func (p *Postgres) CountUnlinked(ctx context.Context) (int, int, error) {
 	return tickets, certificates, err
 }
 
-// activeAccountSQL is the database's active_account_reference rule for $1:
+// activeAccountSQL is the database's active_account_reference rule for $2:
 // an active row and no erasure request.
 const activeAccountSQL = `EXISTS (SELECT 1 FROM users au WHERE au.id = $2 AND au.account_state = 'active')
 	AND NOT EXISTS (SELECT 1 FROM account_deletion_requests ad WHERE ad.subject_id = $2)`
@@ -165,16 +165,40 @@ func (p *Postgres) OwnerFree(ctx context.Context, owner, eventID uuid.UUID) (boo
 	return free, err
 }
 
+// switchOnSQL: linking is on, as the write itself reads it. Unlink turns
+// it off in the transaction that takes the links back, so a link written
+// after that commit is refused here; one a statement wrote that began
+// before it is the reason the wizard's --geri-al takes back twice.
+const switchOnSQL = `EXISTS (SELECT 1 FROM guest_account_link_settings gs WHERE gs.id AND gs.enabled_at IS NOT NULL)`
+
 // LinkTicket writes l's owner on the Ticket while it is still an unlinked
-// guest Ticket of the address. The database's own rules decide the rest:
-// one Ticket per account and Event (tickets_owner_event_idx), an active
-// account (active_account_reference, which also serializes with an
-// erasure request).
+// guest Ticket of the address and linking is on. The database's own rules
+// decide the rest: one Ticket per account and Event
+// (tickets_owner_event_idx), an active account (active_account_reference,
+// which also serializes with an erasure request).
 func (p *Postgres) LinkTicket(ctx context.Context, l Link, source ticket.LinkSource) (LinkOutcome, error) {
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE tickets t SET owner_id = $2, owner_link_source = $3, owner_linked_at = now()
-		WHERE t.id = $1 AND t.owner_id IS NULL AND t.ticket_type = 'GUEST' AND `+guestAddressSQL+` = $4`,
+		WHERE t.id = $1 AND t.owner_id IS NULL AND t.ticket_type = 'GUEST' AND `+guestAddressSQL+` = $4
+		  AND `+switchOnSQL,
 		l.ID, l.Owner, string(source), l.Address)
+	return linkOutcome(tag.RowsAffected(), err)
+}
+
+// LinkCertificate writes l's owner on the certificate while it has none,
+// still has the address it was read with, and linking is on. Its trigger
+// (certificates_require_active_owner, the same active_account_reference
+// rule) refuses an account that is not active.
+func (p *Postgres) LinkCertificate(ctx context.Context, l Link, source ticket.LinkSource) (LinkOutcome, error) {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE certificates SET owner_id = $2, owner_link_source = $3, owner_linked_at = now()
+		WHERE id = $1 AND owner_id IS NULL AND btrim(recipient_email) <> '' AND lower(btrim(recipient_email)) = $4
+		  AND `+switchOnSQL,
+		l.ID, l.Owner, string(source), l.Address)
+	return linkOutcome(tag.RowsAffected(), err)
+}
+
+func linkOutcome(rows int64, err error) (LinkOutcome, error) {
 	switch {
 	case subjectlock.IsInactiveAccountReference(err):
 		return NotLinkedInactive, nil
@@ -182,45 +206,10 @@ func (p *Postgres) LinkTicket(ctx context.Context, l Link, source ticket.LinkSou
 		return NotLinkedDuplicate, nil
 	case err != nil:
 		return 0, err
-	case tag.RowsAffected() == 0:
+	case rows == 0:
 		return NotLinkedChanged, nil
 	}
 	return Linked, nil
-}
-
-// LinkCertificate writes l's owner on the certificate while it has none
-// and still has its address, under the account's subject lock (the lock an
-// erasure request takes) and only while the account is active: certificates
-// have no trigger of their own.
-func (p *Postgres) LinkCertificate(ctx context.Context, l Link, source ticket.LinkSource) (LinkOutcome, error) {
-	outcome := Linked
-	err := pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
-		if err := subjectlock.Lock(ctx, tx, l.Owner); err != nil {
-			return err
-		}
-		var active bool
-		if err := tx.QueryRow(ctx, `SELECT `+activeAccountSQL+` FROM (SELECT $1::uuid) x`, uuid.Nil, l.Owner).Scan(&active); err != nil {
-			return err
-		}
-		if !active {
-			outcome = NotLinkedInactive
-			return nil
-		}
-		tag, err := tx.Exec(ctx, `
-			UPDATE certificates SET owner_id = $2, owner_link_source = $3, owner_linked_at = now()
-			WHERE id = $1 AND owner_id IS NULL AND btrim(recipient_email) <> ''`, l.ID, l.Owner, string(source))
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() == 0 {
-			outcome = NotLinkedChanged
-		}
-		return nil
-	})
-	if err != nil {
-		return 0, err
-	}
-	return outcome, nil
 }
 
 // Undone counts what Unlink took back.

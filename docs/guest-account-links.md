@@ -44,6 +44,13 @@ the same reads and the same rule, compared trimmed and lower case:
 - the Personal e-mail with a proof stamp (`personalEmailVerifiedAt`, which
   sky-account writes when the code is confirmed; `edit=[admin]`).
 
+An admin who may manage the person's account (`users:manage`) and marks an
+address verified there (the Primary e-mail's verification, or a Personal
+e-mail with its stamp) makes it verified the same way: the next pass links
+the guest Tickets and certificates of that address to the account. The
+admin's change is a Team audit record row (`user.email.verify` and the
+other `user.*` actions, ADR-0083).
+
 An address is linked only when exactly **one** account holds it so, that
 account is enabled in Keycloak and not a service account, and core has an
 active row for it without an erasure request (the database's
@@ -66,13 +73,18 @@ gets to see or use another person's Ticket.
 |---|---|
 | A guest Ticket is written | `writeGuest` (Guest apply, Katılımcı ekle, a Forms answer, an Unticketed respondent's Ticket) and an import's guest row write it linked when the address is one account's and that account holds no Ticket on the Event. The directory is the one in memory (at most 5 minutes old, 15 while Keycloak does not answer); a lookup waits at most 2 seconds. Any failure writes the Ticket unlinked, as before; a later pass links it. A database refusal of the link (the account took a Ticket meanwhile, or stopped being active) writes it unlinked. |
 | An account is opened or an address verified | Keycloak's `REGISTER`, `UPDATE_EMAIL`, `UPDATE_PROFILE` (sky-account's Personal e-mail confirmation) and admin `USER` events wake the user sync ([user-sync.md](user-sync.md)); its pass ends by reading the directory anew and linking (`sync`). A verification without such an event waits for the 5-minute pass. |
-| Once | `core-backend guest-account-link -apply` links what there is (`bulk`) and turns linking on. |
+| Once | `core-backend guest-account-link -apply` turns linking on and links what there is (`bulk`). |
 
 **The switch.** `guest_account_link_settings.enabled_at`: NULL links nothing
 anywhere, not even a new Ticket. The migration leaves it off. `-apply` turns it
-on after its links; `-off` and `-undo` turn it off. The ticket service reads it
-at most every 30 seconds per replica. A database switch rather than an
-environment variable: it is turned on with the links, without a release.
+on, then links; `-off` and `-undo` turn it off. Every link's own write reads
+it (the `UPDATE` of a pass, the `INSERT` of a new Ticket), so nothing is
+linked once it is off; the ticket service's lookup also caches it for at
+most 30 seconds per replica. A write whose statement began before `-undo`
+committed may still leave a link: the wizard's `--geri-al` takes back a
+second time 45 seconds later and checks that none is left. A database switch
+rather than an environment variable: it is turned on with the links,
+without a release.
 
 ## Two Tickets of one person on one Event
 
@@ -112,6 +124,9 @@ which do not change.
   ([form-respondents.md](form-respondents.md)).
 - **The door** finds it by the guest's e-mail, name and code as before, and
   by the person (`personId`, SkyPass, `CheckInUser`) as well.
+- **Answers** carry its `ownerId`, but no `owner` summary: the Ticket is the
+  guest's name and e-mail, and the account's own name and addresses are not
+  an operator's to learn from it.
 - **Counts**: the dashboard counts a linked Ticket as a guest's (its type).
 
 ## The command
