@@ -26,6 +26,7 @@ func (d *ticketQRDoor) eventDoorApp(ident authn.Identity) *fiber.App {
 		return c.Next()
 	})
 	app.Post("/v1/sessions/:sessionId/check-in/scan", pass.CheckInSession)
+	app.Get("/v1/sessions/:sessionId/check-ins", tickets.DoorActivity)
 	app.Post("/v1/events/:eventId/entries/scan", pass.EnterEvent)
 	app.Post("/v1/events/:eventId/entries/resolve", tickets.ResolveEntry)
 	app.Get("/v1/events/:eventId/entries/summary", tickets.EntrySummary)
@@ -170,5 +171,56 @@ func TestSessionScanInVenueMode(t *testing.T) {
 	}
 	if again := d.scan(app, "scan", d.second.ID, d.qr(d.guest, updated)); again.status != fiber.StatusConflict {
 		t.Fatalf("again: %+v", again)
+	}
+}
+
+// The panel's door at a Session in the venue mode: a scan with checkIn
+// writes the Session's Check-in (201 kind check_in), also for someone the
+// Event's door let in; ?kind=check_in lists the Session's Check-ins
+// without the day's entries; another kind is 400 invalid_query.
+func TestSessionScanAskingForTheCheckIn(t *testing.T) {
+	t.Parallel()
+	d := newTicketQRDoor(t)
+	venue := event.EntryVenue
+	ev := d.ev
+	ev.EntryMode = &venue
+	updated, err := d.events.Update(t.Context(), ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := d.eventDoorApp(d.staff)
+	if got := d.call(app, fiber.MethodPost, "/v1/events/"+d.ev.ID.String()+"/entries/scan",
+		`{"token":`+jsonString(d.qr(d.member, updated))+`}`); got.status != fiber.StatusCreated {
+		t.Fatalf("event door: %+v", got)
+	}
+	session := "/v1/sessions/" + d.sess.ID.String()
+	got := d.call(app, fiber.MethodPost, session+"/check-in/scan", `{"token":`+jsonString(d.qr(d.guest, updated))+`,"checkIn":true}`)
+	if got.status != fiber.StatusCreated {
+		t.Fatalf("scan: %+v", got)
+	}
+	var ci ticket.CheckIn
+	if err := json.Unmarshal([]byte(got.body), &ci); err != nil || ci.Kind != ticket.KindCheckIn || ci.SessionID != d.sess.ID {
+		t.Fatalf("answer %s", got.body)
+	}
+	if got := d.call(app, fiber.MethodPost, session+"/check-in/scan", `{"token":`+jsonString(d.qr(d.member, updated))+`,"checkIn":true}`); got.status != fiber.StatusCreated ||
+		!strings.Contains(got.body, `"kind":"check_in"`) {
+		t.Fatalf("entered at the Event's door: %+v", got)
+	}
+
+	all := d.call(app, fiber.MethodGet, session+"/check-ins", "")
+	if all.status != fiber.StatusOK || !strings.Contains(all.body, `"total":4`) {
+		t.Fatalf("door activity: %+v", all)
+	}
+	only := d.call(app, fiber.MethodGet, session+"/check-ins?kind=check_in", "")
+	if only.status != fiber.StatusOK || !strings.Contains(only.body, `"total":2`) || strings.Contains(only.body, `"kind":"entry"`) {
+		t.Fatalf("check-ins: %+v", only)
+	}
+	other := d.call(app, fiber.MethodGet, "/v1/sessions/"+d.second.ID.String()+"/check-ins?kind=check_in", "")
+	if other.status != fiber.StatusOK || !strings.Contains(other.body, `"total":0`) {
+		t.Fatalf("other Session: %+v", other)
+	}
+	if bad := d.call(app, fiber.MethodGet, session+"/check-ins?kind=entry", ""); bad.status != fiber.StatusBadRequest ||
+		bad.code != "invalid_query" || !strings.Contains(bad.body, `"param":"kind"`) {
+		t.Fatalf("bad kind: %+v", bad)
 	}
 }

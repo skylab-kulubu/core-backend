@@ -173,6 +173,89 @@ func TestVenueScanWritesTheDaysEntryAlone(t *testing.T) {
 	}
 }
 
+// venue (chosen): a scan that asks for the Session's Check-in
+// (WithSessionCheckIn, the panel's door at a Session it chose) writes it,
+// also for someone already let in that day; the next Session that day
+// adds a Check-in and no entry; the same Session again is 409 already
+// checked in.
+func TestVenueScanAskedForTheCheckInWritesIt(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	d := newVenueDoor(t, entryMode(event.EntryVenue))
+	// Let in that day: the venue scan writes the day's entry alone.
+	if ci, err := d.svc.CheckInUser(ctx, d.staff, d.open.ID, d.memberID); err != nil || ci.Kind != ticket.KindEntry {
+		t.Fatalf("let in: %+v %v", ci, err)
+	}
+	asked := ticket.WithSessionCheckIn(ctx)
+	ci, err := d.svc.CheckInUser(asked, d.staff, d.open.ID, d.memberID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ci.Kind != ticket.KindCheckIn || ci.SessionID != d.open.ID || ci.TicketID != d.member.ID {
+		t.Fatalf("answer %+v", ci)
+	}
+	if ok, _ := d.tickets.HasCheckIn(ctx, d.member.ID, d.open.ID); !ok {
+		t.Fatal("no check-in")
+	}
+	if _, err := d.svc.CheckInUser(asked, d.staff, d.talk.ID, d.memberID); err != nil {
+		t.Fatalf("next Session: %v", err)
+	}
+	if _, err := d.svc.CheckInUser(asked, d.staff, d.open.ID, d.memberID); !errors.Is(err, ticket.ErrAlreadyCheckedIn) {
+		t.Fatalf("again: %v", err)
+	}
+	if got := d.entries(t, firstDay); len(got) != 1 {
+		t.Fatalf("entries %+v", got)
+	}
+	// Without asking, the same mode still writes the entry alone.
+	if _, err := d.svc.CheckInUser(ctx, d.staff, d.next.ID, d.memberID); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := d.tickets.HasCheckIn(ctx, d.member.ID, d.next.ID); ok {
+		t.Fatal("a check-in was written without asking")
+	}
+}
+
+// A Session's Check-ins alone (SessionCheckIns): in the venue mode the
+// door activity counts the day's entries too, the Session's Check-ins do
+// not. Someone only let in at the door is in no Session's.
+func TestSessionCheckInsLeaveTheDaysEntriesOut(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	d := newVenueDoor(t, entryMode(event.EntryVenue))
+	// Let in at the door that day: the day's entry alone.
+	if _, err := d.svc.CheckInUser(ctx, d.staff, d.talk.ID, d.memberID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.svc.CheckInGuest(ctx, d.open.ID, ticket.GuestCheckIn{Email: "ada@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	activity, err := d.svc.DoorActivity(ctx, d.staff, d.open.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activity.Total != 3 {
+		t.Fatalf("door activity %+v", activity)
+	}
+	open, err := d.svc.SessionCheckIns(ctx, d.staff, d.open.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if open.Total != 1 || len(open.Items) != 1 || open.Items[0].Kind != ticket.KindCheckIn ||
+		open.Items[0].PersonName != "Ada Lovelace" {
+		t.Fatalf("open %+v", open)
+	}
+	talk, err := d.svc.SessionCheckIns(ctx, d.staff, d.talk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if talk.Total != 0 || len(talk.Items) != 0 {
+		t.Fatalf("talk %+v", talk)
+	}
+	if _, err := d.svc.SessionCheckIns(ctx, authz.Principal{ID: uuid.NewString()}, d.open.ID); !errors.Is(err, ticket.ErrForbidden) {
+		t.Fatalf("stranger: %v", err)
+	}
+}
+
 // Every other Session Check-in (the person's own, a guest's, the desk's)
 // writes the day's entry when there is none, of its own source, and
 // leaves one already there alone. Nobody is refused for not being scanned
