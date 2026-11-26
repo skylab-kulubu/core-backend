@@ -153,6 +153,7 @@ func TestViewerMatchesTheDecisions(t *testing.T) {
 		"ticket.assign": {authz.TypeTicket, authz.Assign}, "certificate.issue": {authz.TypeCertificate, authz.Issue},
 		"certificate.revoke": {authz.TypeCertificate, authz.Revoke}, "certificate.template.assign": {authz.TypeCertificateTemplate, authz.Assign},
 		"competition.manage": {authz.TypeCompetition, authz.Update},
+		"certificate.read":   {authz.TypeCertificate, authz.Read}, "door.checkIn": {authz.TypeTicket, authz.Validate},
 	}
 	if keys := event.ViewerAbilities(); len(keys) != len(actions) {
 		t.Fatalf("keys %v", keys)

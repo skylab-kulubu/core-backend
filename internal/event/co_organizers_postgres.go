@@ -81,6 +81,9 @@ func (s *PostgresStore) SetCoOrganizers(ctx context.Context, w CoOrganizersWrite
 			return Event{}, err
 		}
 	}
+	if err := dropCoOrganizerTemplateBindings(ctx, tx, w, wasTeams); err != nil {
+		return Event{}, err
+	}
 	if err := s.queueCoOrganizerMail(ctx, tx, w, wasTeams, wasPeople); err != nil {
 		return Event{}, err
 	}
@@ -213,4 +216,36 @@ func seatTeams(p authz.Principal) (members, leads []string) {
 		}
 	}
 	return members, leads
+}
+
+// dropCoOrganizerTemplateBindings removes the Event's certificate template
+// binding to a template of a team that was one of its Co-organizer teams
+// shown outside the panel and no longer is (taken off the list, or made a
+// helper; docs/co-organizers.md): such a binding is allowed only while the
+// team is one, so it goes with it, in the same write. The Event then uses
+// its Owner team's template or the club's. An Event template or the Owner
+// team's own is never touched.
+func dropCoOrganizerTemplateBindings(ctx context.Context, tx pgx.Tx, w CoOrganizersWrite, wasTeams []CoOrganizerTeam) error {
+	var gone []string
+	for _, was := range wasTeams {
+		if was.Visibility != VisibilityCoOrganizer {
+			continue
+		}
+		still := slices.ContainsFunc(w.Teams, func(t CoOrganizerTeam) bool {
+			return strings.EqualFold(t.Code, was.Code) && t.Visibility == VisibilityCoOrganizer
+		})
+		if !still {
+			gone = append(gone, strings.ToUpper(strings.TrimSpace(was.Code)))
+		}
+	}
+	if len(gone) == 0 {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `
+		DELETE FROM certificate_template_bindings b
+		USING certificate_templates t
+		WHERE b.scope = 'event' AND b.scope_key = $1::uuid::text AND t.id = b.template_id
+		  AND t.event_id IS NULL AND upper(btrim(t.owner_team)) = ANY($2::text[])
+		  AND upper(btrim(t.owner_team)) <> upper(btrim($3))`, w.EventID, gone, w.OwnerTeam)
+	return err
 }

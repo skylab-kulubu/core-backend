@@ -28,7 +28,7 @@ var resourcesFromAnEvent = map[string]int{}
 var ownerTeamOnPurpose = map[string]int{
 	"internal/event/service.go":                4,
 	"internal/certificate/event_template.go":   2,
-	"internal/certificate/template_service.go": 4,
+	"internal/certificate/template_service.go": 5,
 	"internal/certificate/service.go":          1,
 }
 

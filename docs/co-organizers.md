@@ -45,10 +45,10 @@ For each organizer team the authorizer reads the person's levels in it (`ownerLe
 **Event-by-Event answers.** The Event's detail and list answer `viewer` to a signed-in caller:
 
 ```json
-"viewer": {"via": "coTeam", "can": {"event.update": true, "event.delete": false, "event.publish": true, "event.manageOrganizers": false, "event.assignDoorStaff": false, "ticket.read": true, "ticket.assign": true, "certificate.issue": true, "certificate.revoke": true, "certificate.template.assign": true, "competition.manage": true}}
+"viewer": {"via": "coTeam", "can": {"event.update": true, "event.delete": false, "event.publish": true, "event.manageOrganizers": false, "event.assignDoorStaff": false, "ticket.read": true, "ticket.assign": true, "certificate.issue": true, "certificate.revoke": true, "certificate.template.assign": true, "competition.manage": true, "certificate.read": true, "door.checkIn": true}}
 ```
 
-`via` is what the right to edit rests on, the strongest: `privileged`, `owner`, `coTeam`, `coPerson`, or `none`. Each `can` is the decision its endpoint takes on the Event: `event.manageOrganizers` also reads `EVENT_CO_ORGANIZERS_WRITE`; `event.delete` is false on a published or cancelled Event but for `event:manage` (only it archives one); `certificate.template.assign` is also true for who may edit the Event (they bind its template). The panel reads it instead of `teamCan(ownerTeam, …)`; `GET /v1/users/me/capabilities` keeps the decisions that name no Event ("for which team may I create one").
+`via` is what the right to edit rests on, the strongest: `privileged`, `owner`, `coTeam`, `coPerson`, or `none`. Each `can` is the decision its endpoint takes on the Event: `event.manageOrganizers` also reads `EVENT_CO_ORGANIZERS_WRITE`; `event.delete` is false on a published or cancelled Event but for `event:manage` (only it archives one); `certificate.template.assign` is also true for who may edit the Event (they bind its template). `certificate.read` is the Event's certificates' read decision: on a Co-organizer seat the same as issuing or revoking them (a Leader, a person, a member with `certificate:issue` or `certificate:revoke`), and `event:manage`/DK's read. `door.checkIn` is the door's decision (`Validate`): door staff, a Leader's seat or a person, Privileged, or a member of the Owner team or of a `members` Co-organizer team while that team's Team door scan is on (read from the kept team tree, so it may lag a setting changed in the last minutes; the door reads the Group itself). The panel reads it instead of `teamCan(ownerTeam, …)`; `GET /v1/users/me/capabilities` keeps the decisions that name no Event ("for which team may I create one").
 
 ## Limits
 
@@ -158,10 +158,21 @@ Before turning it on: SkyNotify seeds both types with their templates and inbox 
 | Field | Who sees it |
 |---|---|
 | `coOrganizerTeams: ["WEBLAB"]` | anyone: the `co_organizer` teams alone, never a `helper` team or a person; left out when none |
+| `coOrganizerNames: "WEBLAB · Web Geliştirme, ARTLAB"` | anyone: those teams named as the site shows a team (`organizer.CoNames`, in the list's order); left out when none |
 | `coOrganizers: [{code, management, visibility}]` | who may edit the Event; left out when none |
 | `coOrganizerIds: ["<user id>"]` | who may edit the Event; left out when none |
 
 The stored lists are never in the JSON by themselves: `ProjectFor` copies them for who may edit, as the attendee note.
+
+## Outside the panel
+
+Only the `co_organizer` teams are ever named outside the panel (`event.PublicCoOrganizerTeams`); a `helper` team and a person never are (Yusuf S4). An Event without them answers and renders exactly as before: every field below is left out, no line is drawn.
+
+- **Event JSON** and the Event summary the Tickets, competitors and the door answer (`Resource`): `coOrganizerTeams`, `coOrganizerNames`.
+- **Ticket page** JSON: `coOrganizerTeams`, `coOrganizerNames`. Its **PDF**: an "Ortak düzenleyen" line under "Düzenleyen".
+- **Mails**: the Ticket's mail (`event.ticket-created`), the reminder, the attendance mails, the certificate mail and the attendance auto-finalization mail send `CoOrganizers` (the names, empty for none) beside `OwnerTeam`. No template uses it yet; one may ("WEBLAB ve ARTLAB iş birliğiyle").
+- **Certificate**: a certificate issued keeps the `co_organizer` teams of that moment (`certificates.co_organizer_teams`, migration `20261127120000`; an empty list is "none", NULL a certificate issued before); the public verification answers `coOrganizerNames` from it (left out for none and for an older one). A later change of the list or of a team's visibility leaves it as it was. Its PDF names the Owner team alone, as before.
+- **Certificate templates**: the order a template is found in stays (the Event's binding, the Owner team's binding, the club's). An Event's binding may also take a template of one of its Co-organizer teams shown outside the panel (`co_organizer`; never a `helper` team's, whose name would show on the certificate), for who may read that team's templates (`403` otherwise); a helper team's or another team's template is `400`, as before. When that team leaves the list or becomes a `helper`, the Event's binding to its template goes in the same write (`PUT …/organizers`), and the Event uses its Owner team's template or the club's; an Event template or the Owner team's own is never touched.
 
 ## Data
 

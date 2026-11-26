@@ -2152,6 +2152,11 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		AND to_regclass('public.co_organizer_notifications_due_idx') IS NOT NULL
 		AND to_regclass('public.co_organizer_notifications_user_idx') IS NOT NULL
 		AND to_regclass('public.co_organizer_notifications_actor_idx') IS NOT NULL`,
+	// A certificate's snapshot of its Event's Co-organizer teams
+	// (docs/co-organizers.md).
+	20261127120000: `
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'certificates' AND column_name = 'co_organizer_teams'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

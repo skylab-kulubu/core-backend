@@ -200,6 +200,9 @@ func certificateMailVars(c Certificate) map[string]string {
 		"FirstName": first, "EventName": c.EventName, "VerifyURL": c.VerifyURL,
 		// The template's "Düzenleyen" row: the organizer as the club shows it.
 		"Serial": c.Serial, "OwnerTeam": organizer.Name(c.OwnerTeam),
+		// The Co-organizer teams of its snapshot (docs/co-organizers.md);
+		// empty for none and for a certificate issued before it was kept.
+		"CoOrganizers": organizer.CoNames(c.CoOrganizerTeams),
 	}
 }
 
