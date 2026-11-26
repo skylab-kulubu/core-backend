@@ -183,7 +183,7 @@ func TestURLCreateRedirectAndListHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if redir.StatusCode != fiber.StatusMovedPermanently {
+	if redir.StatusCode != fiber.StatusFound {
 		t.Fatalf("redirect %d", redir.StatusCode)
 	}
 	if loc := redir.Header.Get("Location"); loc != "https://skylab.com" {
@@ -346,7 +346,7 @@ func createClubURL(t *testing.T, store shorturl.Store) shorturl.URL {
 	return created
 }
 
-func TestURLRedirectStays301WhenHitPruneFails(t *testing.T) {
+func TestURLRedirectStillRedirectsWhenHitPruneFails(t *testing.T) {
 	t.Parallel()
 	store := &pruneErrStore{Store: shorturl.NewMemoryStore(), err: errors.New("prune failed")}
 	created := createClubURL(t, store)
@@ -359,7 +359,7 @@ func TestURLRedirectStays301WhenHitPruneFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if redir.StatusCode != fiber.StatusMovedPermanently {
+	if redir.StatusCode != fiber.StatusFound {
 		t.Fatalf("redirect %d", redir.StatusCode)
 	}
 	if loc := redir.Header.Get("Location"); loc != "https://skylab.com" {
@@ -409,7 +409,7 @@ func TestGoRedirectInsertsHitWithoutKeycloak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if redir.StatusCode != fiber.StatusMovedPermanently {
+	if redir.StatusCode != fiber.StatusFound {
 		t.Fatalf("redirect %d", redir.StatusCode)
 	}
 	loc := redir.Header.Get("Location")
@@ -480,7 +480,7 @@ func TestGoRedirectRecordsUTMAndForwardsMissingTags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if redir.StatusCode != fiber.StatusMovedPermanently {
+	if redir.StatusCode != fiber.StatusFound {
 		t.Fatalf("redirect %d", redir.StatusCode)
 	}
 	if loc := redir.Header.Get("Location"); loc != "https://skylab.com?utm_medium=social&utm_source=linkedin" {
@@ -616,7 +616,7 @@ func TestURLRedirectRecordsSilentHit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if redir.StatusCode != fiber.StatusMovedPermanently {
+	if redir.StatusCode != fiber.StatusFound {
 		t.Fatalf("redirect %d", redir.StatusCode)
 	}
 
@@ -723,7 +723,7 @@ func TestURLRedirectAttachesUserFromBearerNotCookies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if badResp.StatusCode != fiber.StatusMovedPermanently {
+	if badResp.StatusCode != fiber.StatusFound {
 		t.Fatalf("invalid bearer %d", badResp.StatusCode)
 	}
 
@@ -848,7 +848,7 @@ func TestURLRedirectRecordsTheAddressTheTrustedProxyObserved(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if resp.StatusCode != fiber.StatusMovedPermanently {
+			if resp.StatusCode != fiber.StatusFound {
 				t.Fatalf("redirect %d", resp.StatusCode)
 			}
 
@@ -876,7 +876,7 @@ func TestURLChannelSuffixTagsTheRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tagged.StatusCode != fiber.StatusMovedPermanently {
+	if tagged.StatusCode != fiber.StatusFound {
 		t.Fatalf("status %d", tagged.StatusCode)
 	}
 	if loc := tagged.Header.Get(fiber.HeaderLocation); loc != "https://skylab.com?utm_campaign=son-gun&utm_source=instagram" {
@@ -886,7 +886,7 @@ func TestURLChannelSuffixTagsTheRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loc := unknown.Header.Get(fiber.HeaderLocation); unknown.StatusCode != fiber.StatusMovedPermanently || loc != "https://skylab.com" {
+	if loc := unknown.Header.Get(fiber.HeaderLocation); unknown.StatusCode != fiber.StatusFound || loc != "https://skylab.com" {
 		t.Fatalf("unknown suffix status=%d location=%s", unknown.StatusCode, loc)
 	}
 
@@ -900,6 +900,36 @@ func TestURLChannelSuffixTagsTheRedirect(t *testing.T) {
 	}
 	if len(hits) != 2 || sources["instagram"] != 1 || sources[""] != 1 {
 		t.Fatalf("hits %+v", hits)
+	}
+}
+
+// A link's target can change, so the hop must not be cached by the phone that
+// scanned it: 302 Found with no-store, never a permanent 301.
+func TestURLRedirectIsTemporaryAndNotCached(t *testing.T) {
+	t.Parallel()
+	store := shorturl.NewMemoryStore()
+	createClubURL(t, store)
+	app := urlAppWith(t, authn.Identity{}, store)
+
+	for _, tc := range []struct{ method, path, location string }{
+		{fiber.MethodGet, "/v1/go/club", "https://skylab.com"},
+		{fiber.MethodHead, "/v1/go/club", "https://skylab.com"},
+		{fiber.MethodGet, "/v1/go/club?utm_source=poster", "https://skylab.com?utm_source=poster"},
+		{fiber.MethodGet, "/v1/go/club/wa", "https://skylab.com?utm_source=whatsapp"},
+	} {
+		resp, err := app.Test(httptest.NewRequest(tc.method, tc.path, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != fiber.StatusFound {
+			t.Fatalf("%s %s status %d", tc.method, tc.path, resp.StatusCode)
+		}
+		if cc := resp.Header.Get(fiber.HeaderCacheControl); cc != "no-store" {
+			t.Fatalf("%s %s cache-control %q", tc.method, tc.path, cc)
+		}
+		if loc := resp.Header.Get(fiber.HeaderLocation); loc != tc.location {
+			t.Fatalf("%s %s location %s", tc.method, tc.path, loc)
+		}
 	}
 }
 
@@ -1045,7 +1075,7 @@ func TestURLFormLinkEndpointsNeedTheFormsRole(t *testing.T) {
 		t.Fatalf("availability %+v", answer)
 	}
 
-	if resp := send(forms, fiber.MethodGet, "/v1/go/yaz-kampi-2026/wa", ""); resp.StatusCode != fiber.StatusMovedPermanently {
+	if resp := send(forms, fiber.MethodGet, "/v1/go/yaz-kampi-2026/wa", ""); resp.StatusCode != fiber.StatusFound {
 		t.Fatalf("the retired alias must keep redirecting, got %d", resp.StatusCode)
 	}
 	stats := send(forms, fiber.MethodGet, "/v1/urls/forms/"+formID.String()+"/stats", "")

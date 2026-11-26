@@ -162,7 +162,7 @@ func TestShortLinkHopStillRedirectsABrowser(t *testing.T) {
 	createClubURL(t, store)
 	app := urlAppOn(t, store, authn.Identity{}, nil)
 	resp, _ := shortLinkMiss(t, app, "/v1/go/club", browserAccept)
-	if resp.StatusCode != fiber.StatusMovedPermanently || resp.Header.Get(fiber.HeaderLocation) == "" {
+	if resp.StatusCode != fiber.StatusFound || resp.Header.Get(fiber.HeaderLocation) == "" {
 		t.Fatalf("status %d location %q", resp.StatusCode, resp.Header.Get(fiber.HeaderLocation))
 	}
 }

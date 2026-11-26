@@ -623,7 +623,7 @@ func TestGoRedirectRecordsHitsWithoutRequiringLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if redir.StatusCode != fiber.StatusMovedPermanently {
+	if redir.StatusCode != fiber.StatusFound {
 		t.Fatalf("anon %d", redir.StatusCode)
 	}
 

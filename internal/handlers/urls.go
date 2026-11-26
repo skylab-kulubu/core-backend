@@ -130,8 +130,12 @@ func (h *URLHandler) redirect(c fiber.Ctx, channel shorturl.UTM) error {
 	if err != nil {
 		return urlError(c, err)
 	}
+	// 302 and no-store: a link's target can change (an event moves its form,
+	// a moderator edits the URL), and a cached 301 would keep old phones on
+	// the old target for good.
 	c.Set(fiber.HeaderLocation, utm.FillInto(u.URL))
-	return c.SendStatus(fiber.StatusMovedPermanently)
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.SendStatus(fiber.StatusFound)
 }
 
 func (h *URLHandler) QR(c fiber.Ctx) error {

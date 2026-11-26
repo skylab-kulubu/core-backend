@@ -53,6 +53,20 @@ personal link to the form still shows up in the form's channels. A hop counts
 as a scan when it carries `utm_medium=qr`, or `utm_source=qr` from a code
 printed without a channel.
 
+## The redirect
+
+`GET` and `HEAD` on `/v1/go/{alias}` (`skyl.app/{alias}`) answer `302 Found`
+with `Cache-Control: no-store`. The target of a link can change: an event
+moves its form, a moderator edits the URL. A permanent `301` would be cached
+by every phone that scanned the code and keep sending it to the old target,
+so the hop is temporary and never cached. Every hop reaches Core, which also
+keeps the click counts complete. A missing or released alias answers the
+`404`/`410` page in [`short-link-miss-page.md`](short-link-miss-page.md).
+
+Phones that cached a `301` from before this change keep the old target until
+their browser drops it from its cache; only clearing the browser cache (or a
+new alias) reaches them sooner.
+
 ## Channels and QR codes
 
 A shared link carries its channel either as a query or as a two-letter

@@ -309,5 +309,5 @@ func TestShortURLLifecycleHTTP(t *testing.T) {
 	restorePath := path + "/restore"
 	requireStatus(t, owner, fiber.MethodPost, restorePath, fiber.StatusOK)
 	requireStatus(t, owner, fiber.MethodPost, restorePath, fiber.StatusOK)
-	requireStatus(t, owner, fiber.MethodGet, "/v1/go/club", fiber.StatusMovedPermanently)
+	requireStatus(t, owner, fiber.MethodGet, "/v1/go/club", fiber.StatusFound)
 }

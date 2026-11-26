@@ -51,7 +51,7 @@ func TestGoHopUsesExistingJWTWithoutKeycloak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if anonResp.StatusCode != fiber.StatusMovedPermanently {
+	if anonResp.StatusCode != fiber.StatusFound {
 		t.Fatalf("anon redirect %d", anonResp.StatusCode)
 	}
 	if loc := anonResp.Header.Get("Location"); loc != "https://skylab.com?utm_medium=referral&utm_source=instagram" {
@@ -80,7 +80,7 @@ func TestGoHopUsesExistingJWTWithoutKeycloak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if authedResp.StatusCode != fiber.StatusMovedPermanently {
+	if authedResp.StatusCode != fiber.StatusFound {
 		t.Fatalf("authed redirect %d", authedResp.StatusCode)
 	}
 	if loc := authedResp.Header.Get("Location"); loc != "https://skylab.com" {

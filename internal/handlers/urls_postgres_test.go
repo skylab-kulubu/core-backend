@@ -115,7 +115,7 @@ func TestURLRedirectWritesTheClientAddressToURLHits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != fiber.StatusMovedPermanently {
+	if response.StatusCode != fiber.StatusFound {
 		t.Fatalf("redirect %d", response.StatusCode)
 	}
 
