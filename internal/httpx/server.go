@@ -71,7 +71,11 @@ type Deps struct {
 	FeedbackReminders handlers.FeedbackReminders
 	// FormBackfills serves POST /v1/events/{id}/forms/{formId}/backfill
 	// (docs/form-pulls.md); nil leaves it out.
-	FormBackfills          handlers.FormBackfills
+	FormBackfills handlers.FormBackfills
+	// FormMappings serves the form mapping routes under
+	// /v1/events/{id}/forms/{formId} (docs/form-mappings.md); nil leaves
+	// them out.
+	FormMappings           handlers.FormMappings
 	Media                  media.Service
 	URLs                   shorturl.Service
 	Certificates           certificate.Service
@@ -760,6 +764,13 @@ func New(deps Deps) *fiber.App {
 	}
 	if deps.FormBackfills != nil {
 		app.Post("/v1/events/:id/forms/:formId/backfill", handlers.NewFormBackfillHandler(deps.FormBackfills, log.Default()).Request)
+	}
+	if deps.FormMappings != nil {
+		formMappings := handlers.NewFormMappingHandler(deps.FormMappings, log.Default())
+		app.Get("/v1/events/:id/forms/:formId/questions", formMappings.Questions)
+		app.Get("/v1/events/:id/forms/:formId/mapping", formMappings.Get)
+		app.Put("/v1/events/:id/forms/:formId/mapping", formMappings.Put)
+		app.Delete("/v1/events/:id/forms/:formId/mapping", formMappings.Delete)
 	}
 	app.Post("/v1/events/:id/images", events.AddImages)
 	app.Delete("/v1/events/:id/images", events.RemoveImages)
