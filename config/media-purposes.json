@@ -52,6 +52,18 @@
       "attach": "core",
       "image": { "reencode": true, "max_dimension": 2560 }
     },
+    "certificate_font": {
+      "description": "A font a team or the club uploads for its certificate templates (docs/certificate-fonts.md): the upload as it came, which core sends to pdf-tools to check, and the checked WOFF2 core keeps. Read only by core: the template editor and the certificate renderer.",
+      "upload": "certificate_font_editor",
+      "types": ["font/ttf", "font/otf", "font/woff2"],
+      "max_mib": 10,
+      "visibility": "private",
+      "encrypted": true,
+      "scan": false,
+      "pending_ttl": "24h",
+      "transport": "single_step",
+      "attach": "core"
+    },
     "cms_image": {
       "description": "An image on a CMS page. An SVG is stored sanitized and served as a download.",
       "upload": "authenticated",

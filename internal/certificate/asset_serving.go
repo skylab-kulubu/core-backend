@@ -34,15 +34,21 @@ func BackfillAssetServingPolicy(ctx context.Context, store AssetServingStore, bl
 
 func applyAssetServingPolicy(ctx context.Context, store AssetServingStore, blobs media.BlobStore, version TemplateVersion) error {
 	for _, ref := range version.AssetManifest {
-		if ref.Encryption != nil {
-			continue // a private copy is never served
+		copies := []VersionAssetRef{ref}
+		if ref.Placed != nil {
+			copies = append(copies, VersionAssetRef{Key: ref.Placed.Key, ContentType: "application/pdf", Encryption: ref.Placed.Encryption})
 		}
-		serving := media.ServingMetadata(ref.ContentType, "")
-		if serving == (media.BlobMetadata{ContentType: ref.ContentType}) {
-			continue
-		}
-		if err := blobs.SetMetadata(ctx, ref.Key, serving); err != nil && !errors.Is(err, media.ErrNotFound) {
-			return err
+		for _, stored := range copies {
+			if stored.Encryption != nil {
+				continue // a private copy is never served
+			}
+			serving := media.ServingMetadata(stored.ContentType, "")
+			if serving == (media.BlobMetadata{ContentType: stored.ContentType}) {
+				continue
+			}
+			if err := blobs.SetMetadata(ctx, stored.Key, serving); err != nil && !errors.Is(err, media.ErrNotFound) {
+				return err
+			}
 		}
 	}
 	return store.SetAssetServingPolicyApplied(ctx, version.ID)

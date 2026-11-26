@@ -92,6 +92,7 @@ var appAbilities = []ability{
 	{"media.readPrivate", Resource{Type: TypeMediaReadLink}, Read},
 	{"media.uploadEventMedia", Resource{Type: TypeMedia, MediaUploader: MediaUploaderEventEditor}, Upload},
 	{"media.uploadCertificateTemplateMedia", Resource{Type: TypeMedia, MediaUploader: MediaUploaderCertificateTemplateEditor}, Upload},
+	{"media.uploadCertificateFont", Resource{Type: TypeMedia, MediaUploader: MediaUploaderCertificateFontEditor}, Upload},
 	{"url.create", Resource{Type: TypeURL}, Create},
 	{"url.listMine", Resource{Type: TypeURL}, ReadMe},
 	{"url.moderate", Resource{Type: TypeURL}, Read},

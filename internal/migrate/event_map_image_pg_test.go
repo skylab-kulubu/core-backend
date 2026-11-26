@@ -64,6 +64,7 @@ func TestEventMapImageMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	undoEventTicketImages(t, pool)
 	down := readDown(t, eventMapImageVersion+"_event_map_image.down.sql")
 	if _, err := pool.Exec(ctx, down); err != nil {
 		t.Fatal(err)
@@ -92,12 +93,14 @@ func TestEventMapImageMigration(t *testing.T) {
 	}
 }
 
-// undoEventMapImage rolls back the map migration, whose triggers use the
-// Media attachments' function and whose role tables an older down
-// replaces, so that an older down migration can run; applying again brings
-// it back.
+// undoEventMapImage rolls back the map migration (and the ticket image's
+// after it), whose triggers use the Media attachments' function and whose
+// role tables an older down replaces, so that an older down migration can
+// run; applying again brings it back.
 func undoEventMapImage(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	undoEventTicketImages(t, pool)
+	undoCertificateFonts(t, pool)
 	if _, err := pool.Exec(context.Background(), readDown(t, eventMapImageVersion+"_event_map_image.down.sql")); err != nil {
 		t.Fatalf("event map image down: %v", err)
 	}

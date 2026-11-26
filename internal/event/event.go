@@ -54,6 +54,12 @@ type Event struct {
 	// the store always answers them.
 	AttendanceWelcomeMail  *bool `json:"attendanceWelcomeMail"`
 	AttendanceRecordedMail *bool `json:"attendanceRecordedMail"`
+	// FormResponsesAutoTicket is the organizer's "Otomatik bilet gönder"
+	// (docs/form-respondents.md): on, an accepted answer to the Event's form
+	// writes its Ticket as before; off, it is kept as an Unticketed
+	// respondent for the organizer to send. Nil on a write keeps the stored
+	// one (on for a new Event); the store always answers it.
+	FormResponsesAutoTicket *bool `json:"formResponsesAutoTicket"`
 	// AttendeeNote is the organizer's note for whoever enters (Wi-Fi, the
 	// way to the room; docs/attendance-mail.md): plain text, at most
 	// AttendeeNoteMax characters, "" for none. Nil on a write keeps the
@@ -156,6 +162,10 @@ type Event struct {
 	CoOrganizersView   []CoOrganizerTeam `json:"coOrganizers,omitempty"`
 	CoOrganizerIDsView []uuid.UUID       `json:"coOrganizerIds,omitempty"`
 	CoOrganizerTeams   []string          `json:"coOrganizerTeams,omitempty"`
+	// CoOrganizerNames names CoOrganizerTeams as the site shows them
+	// (organizer.CoNames): "WEBLAB · Web Geliştirme, ARTLAB"; left out for
+	// none.
+	CoOrganizerNames string `json:"coOrganizerNames,omitempty"`
 	// Viewer is what the signed-in caller may do on the Event (ProjectFor
 	// answers it); left out for who is signed out.
 	Viewer     *Viewer    `json:"viewer,omitempty"`
@@ -216,7 +226,13 @@ type Resource struct {
 	Location      string     `json:"location"`
 	OwnerTeam     string     `json:"ownerTeam"`
 	OrganizerName string     `json:"organizerName"` // organizer.Name(OwnerTeam)
-	CoverImageURL string     `json:"coverImageUrl,omitempty"`
+	// CoOrganizerTeams and CoOrganizerNames are the Event's Co-organizer
+	// teams shown outside the panel and their names
+	// (docs/co-organizers.md); left out for none, never a helper team or a
+	// person.
+	CoOrganizerTeams []string `json:"coOrganizerTeams,omitempty"`
+	CoOrganizerNames string   `json:"coOrganizerNames,omitempty"`
+	CoverImageURL    string   `json:"coverImageUrl,omitempty"`
 	// CoverImageSizes are the cover's card and page addresses, built like
 	// the Media JSON's sizes.
 	CoverImageSizes map[string]media.ImageAddress `json:"coverImageSizes,omitempty"`
@@ -252,6 +268,8 @@ func (e Event) Resource() Resource {
 		Location:           e.Location,
 		OwnerTeam:          e.OwnerTeam,
 		OrganizerName:      organizer.Name(e.OwnerTeam),
+		CoOrganizerTeams:   PublicCoOrganizerTeams(e),
+		CoOrganizerNames:   organizer.CoNames(PublicCoOrganizerTeams(e)),
 		CoverImageURL:      addresses.Object(e.CoverImageURL),
 		CoverImageSizes:    addresses.LinkedSizes(e.coverImage),
 		CoverColors:        append([]string{}, e.CoverColors...),

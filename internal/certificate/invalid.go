@@ -59,8 +59,18 @@ const (
 	CodeBackgroundPDFUnreadable = "background_pdf_unreadable"
 	CodeBackgroundPDFTooLarge   = "background_pdf_too_large"
 	CodeBackgroundPDFPages      = "background_pdf_pages"
-	CodeRendererUnavailable     = "renderer_unavailable"
-	CodeRenderFailed            = "render_failed"
+	CodeBackgroundPDFEncrypted  = "background_pdf_encrypted"
+	// Background text conversion (docs/certificate-template-errors.md):
+	// nothing convertible chosen, the chosen text not removed from the
+	// PDF, or a PDF with no text at all (outlines, a picture).
+	CodeBackgroundTextSelectionEmpty = "background_text_selection_empty"
+	CodeBackgroundTextStripFailed    = "background_text_strip_failed"
+	CodeBackgroundPDFNoText          = "background_pdf_no_text"
+	CodeRendererUnavailable          = "renderer_unavailable"
+	// CodePDFToolsUnavailable is pdf-tools not set up (PDF_TOOLS_URL),
+	// unreachable or failing on its side (503, UnavailableError).
+	CodePDFToolsUnavailable = "pdf_tools_unavailable"
+	CodeRenderFailed        = "render_failed"
 	// CodeTemplateEventScoped is an Event template bound to another scope
 	// or another Event (400); CodeTemplateEventExists a second Event
 	// template for an Event (409, EventTemplateExistsError).

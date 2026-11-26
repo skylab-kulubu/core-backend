@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -67,7 +68,7 @@ func (s *service) CreateTemplate(ctx context.Context, p authz.Principal, in Temp
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: in.OwnerTeam}, authz.Create) {
 		return Template{}, ErrForbidden
 	}
-	if err := s.checkLayoutMedia(ctx, in.Layout, Layout{}); err != nil {
+	if err := s.checkLayoutMedia(ctx, in.Layout, Layout{}, Layout{}, in.OwnerTeam); err != nil {
 		return Template{}, err
 	}
 	item := Template{
@@ -99,7 +100,7 @@ func (s *service) UpdateTemplate(ctx context.Context, p authz.Principal, id uuid
 		}
 		existing.OwnerTeam = normalizeTeam(in.OwnerTeam)
 	}
-	if err := s.checkLayoutMedia(ctx, in.Layout, existing.DraftLayout); err != nil {
+	if err := s.checkLayoutMedia(ctx, in.Layout, existing.DraftLayout, existing.DraftLayout, existing.OwnerTeam); err != nil {
 		return Template{}, err
 	}
 	existing.Name = strings.TrimSpace(in.Name)
@@ -111,21 +112,75 @@ func (s *service) UpdateTemplate(ctx context.Context, p authz.Principal, id uuid
 }
 
 // checkLayoutMedia checks each Media the layout links that the previous
-// draft did not: a certificate asset, or a legacy Media.
-func (s *service) checkLayoutMedia(ctx context.Context, layout, previous Layout) error {
+// draft did not: a certificate asset, or a legacy Media, for a background or
+// an image (a certificate font's file, or a font upload, is
+// asset_type_unsupported there); an element's font a certificate font of
+// ownerTeam or the club, unless keptFonts (the draft before, or the layout
+// a copy starts from) has it already (checkLayoutFonts).
+func (s *service) checkLayoutMedia(ctx context.Context, layout, previous, keptFonts Layout, ownerTeam string) error {
+	if err := s.checkLayoutFonts(ctx, layout, keptFonts, ownerTeam); err != nil {
+		return err
+	}
+	linked := make(map[uuid.UUID]bool)
+	for _, id := range layoutLinkedIDs(previous) {
+		linked[id] = true
+	}
+	if err := s.checkDrawnMedia(ctx, layout, linked); err != nil {
+		return err
+	}
 	if s.media == nil {
 		return nil
 	}
-	linked := make(map[uuid.UUID]bool)
-	for _, id := range layoutAssetIDs(previous) {
-		linked[id] = true
-	}
-	for _, id := range layoutAssetIDs(layout) {
+	fonts := layoutFontIDs(layout)
+	for _, id := range layoutLinkedIDs(layout) {
 		if linked[id] {
 			continue
 		}
-		if err := s.media.CheckLink(ctx, id, media.RoleCertificateAsset); err != nil {
+		role := media.RoleCertificateAsset
+		if slices.Contains(fonts, id) {
+			role = media.RoleCertificateFont
+		}
+		if err := s.media.CheckLink(ctx, id, role); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// checkDrawnMedia refuses a background, its original or an image element
+// that is a certificate_font Media (a font's checked file, or an upload no
+// one checked): asset_type_unsupported when the draft is saved, not when it
+// prints. A Media linked before (linked) is not read again.
+func (s *service) checkDrawnMedia(ctx context.Context, layout Layout, linked map[uuid.UUID]bool) error {
+	origins, ok := s.assets.(assetOrigins)
+	if !ok {
+		return nil
+	}
+	var drawn []uuid.UUID
+	for _, id := range []*uuid.UUID{layout.BackgroundMediaID, layout.BackgroundOriginalMediaID} {
+		if id != nil {
+			drawn = append(drawn, *id)
+		}
+	}
+	for _, el := range layout.Elements {
+		if el.MediaID != nil {
+			drawn = append(drawn, *el.MediaID)
+		}
+	}
+	for _, id := range drawn {
+		if linked[id] {
+			continue
+		}
+		origin, err := origins.AssetOrigin(ctx, id)
+		if errors.Is(err, ErrNotFound) {
+			// The link check says what is wrong with it.
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if origin.Purpose == media.PurposeCertificateFont {
+			return invalid(CodeAssetTypeUnsupported)
 		}
 	}
 	return nil
@@ -305,14 +360,14 @@ func (s *service) ListBindings(ctx context.Context, p authz.Principal) ([]Bindin
 	}
 	out := make([]Binding, 0, len(bindings))
 	for _, binding := range bindings {
-		owner, _, _, err := s.bindingScope(ctx, p, binding.Scope, binding.ScopeKey)
+		owner, _, ev, err := s.bindingScope(ctx, p, binding.Scope, binding.ScopeKey)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		if s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: owner}, authz.Assign) {
+		if s.canAssign(p, owner, ev) {
 			out = append(out, binding)
 		}
 	}
@@ -371,7 +426,16 @@ func (s *service) SetBinding(ctx context.Context, p authz.Principal, in Binding)
 			return Binding{}, invalid(CodeTemplateEventScoped)
 		}
 	case item.OwnerTeam != "" && normalizeTeam(item.OwnerTeam) != normalizeTeam(owner):
-		return Binding{}, ErrInvalid
+		// An Event's binding may also take a template of one of its
+		// Co-organizer teams shown outside the panel (co_organizer, never a
+		// helper; docs/co-organizers.md), for who may read that team's
+		// templates; any other team's stays refused as before.
+		if ev == nil || !coOrganizerTeamOf(*ev, item.OwnerTeam) {
+			return Binding{}, ErrInvalid
+		}
+		if !s.authz.Allow(p, templateResource(item.OwnerTeam), authz.Read) {
+			return Binding{}, ErrForbidden
+		}
 	}
 	if !s.canAssign(p, owner, ev) {
 		return Binding{}, ErrForbidden
@@ -403,8 +467,8 @@ func (s *service) ClearBinding(ctx context.Context, p authz.Principal, scope, sc
 // template rule's Assign, and for an Event's binding (ev) who may edit the
 // Event too.
 func (s *service) canAssign(p authz.Principal, owner string, ev *event.Event) bool {
-	if ev != nil && s.canEditEvent(p, *ev) {
-		return true
+	if ev != nil {
+		return s.canEditEvent(p, *ev) || s.authz.Allow(p, eventResource(*ev, authz.TypeCertificateTemplate), authz.Assign)
 	}
 	return s.authz.Allow(p, templateResource(owner), authz.Assign)
 }

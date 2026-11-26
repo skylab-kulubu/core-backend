@@ -212,9 +212,11 @@ tarifi QR kodu"), the code real text.
   is a document of its own and sees no embedded font: it is set in Noto
   Sans (Liberation Sans where there is none).
 - **Order, fixed:**
-  1. the cover band (182 × 24 mm): the cover's page size cut from its
-     middle to 1240 × 164 px, a JPEG of about 25 KB, kept 30 minutes per
-     cover; without a cover, the cover's first colour, else the purple;
+  1. the band (182 × 24 mm): the Event's ticket image
+     ([ticket-image.md](ticket-image.md)), by default the middle of the
+     cover, cut at up to 2150 px (300 dpi) to a JPEG of at most 64 KB,
+     kept 30 minutes; without a picture, the cover's first colour, else
+     the purple;
   2. "ETKİNLİK GİRİŞ BİLETİ" and the ticket: a grid of the Event (name),
      its date and hours (one day) or its start and end (longer), the place's
      name, the holder and the organizer (`organizerName`), beside the QR (44 mm) and the

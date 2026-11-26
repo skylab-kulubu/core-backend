@@ -96,6 +96,21 @@ type service struct {
 	direct             DirectUploadConfig
 	// scans is the malware scan; nil while core has no scanner.
 	scans ScanQueue
+	// coSeats tells who holds a Co-organizer seat (CoOrganizerSeats); nil
+	// is nobody.
+	coSeats CoOrganizerSeats
+}
+
+// CoOrganizerSeats tells whether p holds a seat on some current Event as
+// one of its Co-organizers (docs/co-organizers.md): the event store.
+type CoOrganizerSeats interface {
+	HasCoOrganizerSeat(ctx context.Context, p authz.Principal) bool
+}
+
+// coOrganizerRule reports whether rule is one of an Event's editor's, which
+// a Co-organizer seat may meet.
+func coOrganizerRule(rule authz.MediaUploader) bool {
+	return rule == authz.MediaUploaderEventEditor || rule == authz.MediaUploaderCertificateTemplateEditor
 }
 
 func NewService(media Store, blobs BlobStore, az authz.Authorizer, publicBase string) Service {
@@ -127,6 +142,10 @@ type ServiceOptions struct {
 	// the scan gate closed: a purpose that needs a scan is refused
 	// (ErrPurposeNeedsScanner).
 	Scans ScanQueue
+	// CoOrganizerSeats lets an Event's Co-organizers meet an Event's
+	// editor's upload rules (docs/co-organizers.md); nil leaves them to the
+	// Owner teams' editors.
+	CoOrganizerSeats CoOrganizerSeats
 }
 
 // PrivateMedia is what private Media needs (docs/media-lifecycle.md).
@@ -169,7 +188,7 @@ func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, pu
 	return &service{
 		media: media, blobs: blobs, objects: objects, authz: az, addresses: addresses, uploadStagingGrace: grace,
 		decoding: decoding, serviceProducts: options.ServiceProducts, private: options.Private,
-		direct: options.Direct, scans: options.Scans,
+		direct: options.Direct, scans: options.Scans, coSeats: options.CoOrganizerSeats,
 	}
 }
 
@@ -235,9 +254,17 @@ func (s *service) UploadForPurpose(ctx context.Context, p authz.Principal, purpo
 // purposeRefusal is the first rule that refuses p an upload of the purpose
 // by the transport, nil when none does. Single-step uploads and Direct
 // upload check the same rules in the same order.
-func (s *service) purposeRefusal(p authz.Principal, purpose Purpose, transport Transport) error {
+func (s *service) purposeRefusal(ctx context.Context, p authz.Principal, purpose Purpose, transport Transport) error {
 	resource := authz.Resource{Type: authz.TypeMedia, MediaUploader: purpose.Uploader, MediaOwner: purpose.OwningProduct()}
-	if !s.authz.Allow(p, resource, authz.Upload) {
+	allowed := s.authz.Allow(p, resource, authz.Upload)
+	// An Event's editor's rules name no Event: who may create none in their
+	// own teams uploads while they hold a Co-organizer seat
+	// (docs/co-organizers.md), read only then.
+	if !allowed && s.coSeats != nil && coOrganizerRule(purpose.Uploader) && s.coSeats.HasCoOrganizerSeat(ctx, p) {
+		resource.CoOrganizerSeat = true
+		allowed = s.authz.Allow(p, resource, authz.Upload)
+	}
+	if !allowed {
 		return &PurposeRefusal{Err: ErrPurposeForbidden, Purpose: purpose.Name}
 	}
 	private := purpose.Visibility == VisibilityPrivate
@@ -275,7 +302,7 @@ func (s *service) purposeRefusal(p authz.Principal, purpose Purpose, transport T
 }
 
 func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose, file UploadedFile) (Media, error) {
-	if err := s.purposeRefusal(p, purpose, TransportSingleStep); err != nil {
+	if err := s.purposeRefusal(ctx, p, purpose, TransportSingleStep); err != nil {
 		return Media{}, err
 	}
 	// Kept with the Media and shown as its name: it must read as what it
@@ -547,8 +574,9 @@ func purposeFile(purpose Purpose, data []byte) (storedFile, error) {
 	if detected == "" || !purpose.accepts(detected) {
 		return storedFile{}, purpose.typeRefusal()
 	}
-	if detected == pdfType || detected == docxType {
-		// PDF and DOCX are kept as they came.
+	if detected == pdfType || detected == docxType || isFontType(detected) {
+		// PDF, DOCX and a font are kept as they came (a font is checked by
+		// pdf-tools before core uses it: docs/certificate-fonts.md).
 		return storedFile{body: data, ctype: detected, kind: KindFile, keyPrefix: "files/"}, nil
 	}
 	var img reencodedImage

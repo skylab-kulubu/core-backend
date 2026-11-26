@@ -49,3 +49,19 @@ func Name(ownerTeam string) string {
 	}
 	return code
 }
+
+// CoNames names an Event's Co-organizer teams shown outside the panel, in
+// the order given, as Name names an Owner team: "WEBLAB · Web Geliştirme,
+// ARTLAB". The caller gives the co_organizer teams alone
+// (event.PublicCoOrganizerTeams); a blank code, or one of the club's own
+// (which is never a Co-organizer), is left out. Empty for none.
+func CoNames(teams []string) string {
+	names := make([]string, 0, len(teams))
+	for _, team := range teams {
+		if strings.TrimSpace(team) == "" || Club(team) {
+			continue
+		}
+		names = append(names, Name(team))
+	}
+	return strings.Join(names, ", ")
+}

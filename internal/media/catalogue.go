@@ -58,6 +58,11 @@ const (
 	// (MapWorker) when the place gets a point: no person uploads one. The
 	// Event links it (RoleEventMap).
 	PurposeEventMap = "event_map"
+	// PurposeCertificateFont is a font a team (or the club) uploads for its
+	// certificate templates: the upload as it came, then the copy core
+	// keeps once pdf-tools has checked it (docs/certificate-fonts.md). A
+	// certificate font links the checked copy (RoleCertificateFont).
+	PurposeCertificateFont = "certificate_font"
 )
 
 // requiredPurposes are the purposes core refers to in code. A catalogue that
@@ -65,7 +70,7 @@ const (
 var requiredPurposes = []string{
 	PurposeLegacy, PurposeProfilePicture, PurposeEventCover, PurposeEventGallery, PurposeCertificateAsset,
 	PurposeCMSImage, PurposeCMSFile, PurposeAnswerFile, PurposeAnswerFileLarge, PurposeAnswerFileGuest, PurposeClubFile,
-	PurposeVideo, PurposeVideoFrame, PurposeEventMap,
+	PurposeVideo, PurposeVideoFrame, PurposeEventMap, PurposeCertificateFont,
 }
 
 // ErrCatalogueInvalid is a catalogue file core cannot read as one: a field it
@@ -198,7 +203,7 @@ var purposeName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 // catalogueTypes are the content types a purpose may name: the raster
 // formats, from the one table the sanitizer and the serving policy share,
 // and the other types core knows.
-var catalogueTypes = append(rasterContentTypes(), svgType, pdfType, docxType, zipType, mp4Type)
+var catalogueTypes = append(rasterContentTypes(), svgType, pdfType, docxType, zipType, mp4Type, ttfType, otfType, woff2Type)
 
 func rasterContentTypes() []string {
 	out := make([]string, 0, len(rasterFormats))

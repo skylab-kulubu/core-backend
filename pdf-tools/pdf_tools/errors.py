@@ -15,6 +15,12 @@ STATUS = {
     "pdf_pages": 422,
     "pdf_timeout": 422,
     "strip_incomplete": 422,
+    "font_too_large": 413,
+    "font_unreadable": 422,
+    "font_collection": 422,
+    "font_variable": 422,
+    "font_embedding_restricted": 422,
+    "font_timeout": 422,
     "busy": 503,
     "internal": 500,
 }

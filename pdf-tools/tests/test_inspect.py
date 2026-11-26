@@ -162,3 +162,17 @@ def test_encrypted():
     with pytest.raises(Problem) as e:
         ops.inspect(fixtures.encrypted())
     assert e.value.code == "pdf_encrypted"
+
+
+def test_objects_tell_outlined_text_from_a_picture():
+    # The same counts for every PDF: core says why a PDF has no text.
+    outlined = ops.inspect(fixtures.outlined())
+    assert outlined["textCount"] == 0 and outlined["spans"] == []
+    assert outlined["objects"] == {"text": 0, "path": 24, "image": 0, "shading": 0, "form": 0}
+    picture = ops.inspect(fixtures.picture())
+    assert picture["textCount"] == 0
+    assert picture["objects"]["image"] == 1 and picture["objects"]["path"] == 0
+    # Text objects inside Form XObjects count too.
+    cert = ops.inspect(fixtures.certificate())
+    assert cert["objects"]["form"] == 1 and cert["objects"]["shading"] == 1
+    assert cert["objects"]["text"] >= cert["textCount"]

@@ -9,21 +9,23 @@ import (
 // The Event's door without a Session: Venue entry (docs/venue-entry.md).
 // The scan route is SkyPassHandler.EnterEvent (it reads SkyPass too).
 
-// eventDoorTarget is the desk's body, as check-in/resolve's.
-func eventDoorTarget(c fiber.Ctx) (ticket.DoorCheckInTarget, bool) {
+// eventDoorTarget is the desk's body, as check-in/resolve's. For a body it
+// cannot read it says why, as the problem code: invalid_body, or
+// door_target_invalid for a personId that is not an id.
+func eventDoorTarget(c fiber.Ctx) (ticket.DoorCheckInTarget, string) {
 	var body resolveCheckInBody
 	if err := c.Bind().Body(&body); err != nil {
-		return ticket.DoorCheckInTarget{}, false
+		return ticket.DoorCheckInTarget{}, "invalid_body"
 	}
 	target := ticket.DoorCheckInTarget{Query: body.Query}
 	if body.PersonID != "" {
 		personID, err := uuid.Parse(body.PersonID)
 		if err != nil {
-			return ticket.DoorCheckInTarget{}, false
+			return ticket.DoorCheckInTarget{}, "door_target_invalid"
 		}
 		target.PersonID = &personID
 	}
-	return target, true
+	return target, ""
 }
 
 // ResolveEntry is POST /v1/events/:eventId/entries/resolve: the desk finds
@@ -35,11 +37,11 @@ func (h *TicketHandler) ResolveEntry(c fiber.Ctx) error {
 	}
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "eventId")
 	}
-	target, ok := eventDoorTarget(c)
-	if !ok {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	target, refused := eventDoorTarget(c)
+	if refused != "" {
+		return problemCode(c, fiber.StatusBadRequest, "Bad Request", refused)
 	}
 	entry, err := h.svc.ResolveEntry(c.Context(), p, eventID, target)
 	if err != nil {
@@ -57,11 +59,11 @@ func (h *TicketHandler) UndoEntry(c fiber.Ctx) error {
 	}
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "eventId")
 	}
 	entryID, err := uuid.Parse(c.Params("entryId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "entryId")
 	}
 	if err := h.svc.UndoEntry(c.Context(), p, eventID, entryID); err != nil {
 		return ticketError(c, err)
@@ -77,7 +79,7 @@ func (h *TicketHandler) EntrySummary(c fiber.Ctx) error {
 	}
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "eventId")
 	}
 	summary, err := h.svc.EntrySummary(c.Context(), p, eventID)
 	if err != nil {
@@ -96,7 +98,7 @@ func (h *TicketHandler) ListEntries(c fiber.Ctx) error {
 	}
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return badID(c, "eventId")
 	}
 	entries, err := h.svc.ListEntries(c.Context(), p, eventID, c.Query("date"))
 	if err != nil {

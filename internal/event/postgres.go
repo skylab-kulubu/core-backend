@@ -3,6 +3,7 @@ package event
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"slices"
 	"strings"
@@ -39,6 +40,11 @@ type PostgresStore struct {
 	// staff gets (DOOR_STAFF_MAIL, docs/door-staff-mail.md) in the write
 	// that adds them.
 	notifyDoorStaff atomic.Bool
+	// notifyCoOrganizers queues the mail of a team or person added to, or
+	// removed from, an Event's Co-organizers (co_organizer_notifications,
+	// docs/co-organizers.md#mails) in the write of the list. Atomic, as
+	// notifyDoorStaff.
+	notifyCoOrganizers atomic.Bool
 	// notifyStatus queues a Ticket promoted from the waiting list as
 	// event.waitlist-promoted (TICKET_STATUS_MAIL, NotifyTicketStatus);
 	// off, as the new Ticket's mail while notifyTickets is on.
@@ -69,7 +75,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 var eventCols = `e.id, e.name, e.description, e.location, e.location_lat, e.location_lng, e.location_address, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, ` + activeSQL + `, e.status, e.published_at, e.published_by, e.cancelled_at, e.cancelled_by, e.cancel_reason, e.cancel_notified_at, e.copied_from_event_id, e.ranked, e.prize_info, e.feedback_mode, e.feedback_form_url, e.feedback_form_alias, e.feedback_auto_send, e.registration_closed, e.registration_closes_at, e.registration_closed_at, ` + registrationOpenSQL + `, e.season_id, e.cover_image_id, ` + media.ServedKeySQL("m") + `, ` + media.LinkedImageSQL("m") + `, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.attendance_min_count, e.attendance_auto_finalize, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at, ` +
 	servableCountSQL(Files) + `, ` + servableCountSQL(Videos) + `, e.map_media_id, ` + media.ServableKeySQL("mm") + `, ` +
 	`e.waitlist_enabled, ` + ticketCountSQL("active") + `, ` + ticketCountSQL("waitlisted") + `, ` +
-	`e.entry_mode, ` + liveSessionsSQL + `, e.external_registration_url, e.attendance_welcome_mail, e.attendance_recorded_mail, e.attendee_note`
+	`e.entry_mode, ` + liveSessionsSQL + `, e.external_registration_url, e.attendance_welcome_mail, e.attendance_recorded_mail, e.attendee_note, e.form_responses_auto_ticket`
 
 // ticketCountSQL counts the Event's Tickets of status: a subquery on the
 // index of the Event's Tickets by status (docs/event-capacity.md).
@@ -90,18 +96,31 @@ const eventFrom = `events e LEFT JOIN media m ON m.id = e.cover_image_id AND m.d
 	LEFT JOIN media mm ON mm.id = e.map_media_id AND mm.deleted_at IS NULL`
 
 func (s *PostgresStore) List(ctx context.Context, ownerTeam string, activeOnly bool) ([]Event, error) {
-	return s.list(ctx, ownerTeam, activeOnly, false, lifecycle.CurrentOnly)
+	return s.list(ctx, ownerTeam, "", activeOnly, false, lifecycle.CurrentOnly)
 }
 
 func (s *PostgresStore) ListIncludingDrafts(ctx context.Context, ownerTeam string) ([]Event, error) {
-	return s.list(ctx, ownerTeam, false, true, lifecycle.CurrentOnly)
+	return s.list(ctx, ownerTeam, "", false, true, lifecycle.CurrentOnly)
 }
 
 func (s *PostgresStore) ListLifecycle(ctx context.Context, ownerTeam string, visibility lifecycle.Visibility) ([]Event, error) {
-	return s.list(ctx, ownerTeam, false, true, visibility)
+	return s.list(ctx, ownerTeam, "", false, true, visibility)
 }
 
-func (s *PostgresStore) list(ctx context.Context, ownerTeam string, activeOnly, drafts bool, visibility lifecycle.Visibility) ([]Event, error) {
+func (s *PostgresStore) ListTeam(ctx context.Context, team string, activeOnly, drafts bool) ([]Event, error) {
+	return s.list(ctx, "", team, activeOnly, drafts, lifecycle.CurrentOnly)
+}
+
+// teamListSQL is an Event team $n names as its Owner team or as one of its
+// Co-organizer teams shown outside the panel (ListTeam): a helper team's
+// row never matches.
+func teamListSQL(n int) string {
+	arg := fmt.Sprintf("$%d", n)
+	return `(e.owner_team = ` + arg + ` OR EXISTS (SELECT 1 FROM event_co_organizers lc
+		WHERE lc.event_id = e.id AND lc.team_code = ` + arg + ` AND lc.visibility = 'co_organizer'))`
+}
+
+func (s *PostgresStore) list(ctx context.Context, ownerTeam, team string, activeOnly, drafts bool, visibility lifecycle.Visibility) ([]Event, error) {
 	q := `SELECT ` + eventCols + ` FROM ` + eventFrom
 	args := []any{}
 	where := make([]string, 0, 4)
@@ -112,8 +131,12 @@ func (s *PostgresStore) list(ctx context.Context, ownerTeam string, activeOnly, 
 		where = append(where, notDraftSQL)
 	}
 	if ownerTeam != "" {
-		where = append(where, `e.owner_team = $1`)
 		args = append(args, ownerTeam)
+		where = append(where, fmt.Sprintf(`e.owner_team = $%d`, len(args)))
+	}
+	if team != "" {
+		args = append(args, team)
+		where = append(where, teamListSQL(len(args)))
 	}
 	if activeOnly {
 		where = append(where, activeSQL)
@@ -302,7 +325,7 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 			feedback_mode, feedback_form_url, feedback_form_alias, feedback_auto_send,
 			location_lat, location_lng, location_address, map_retry_at, attendance_min_count,
 			attendance_auto_finalize, waitlist_enabled, entry_mode, external_registration_url,
-			attendance_welcome_mail, attendance_recorded_mail, attendee_note
+			attendance_welcome_mail, attendance_recorded_mail, attendee_note, form_responses_auto_ticket
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
 			$18,
 			CASE WHEN $18 = 'published' THEN now() END,
@@ -311,14 +334,14 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 			$22, $23, $24, $25,
 			$26, $27, $28, CASE WHEN $26::double precision IS NOT NULL THEN now() + `+mapSettleSQL+` END, $29,
 			$30, COALESCE($31::boolean, true), $32, $33,
-			COALESCE($34::boolean, true), COALESCE($35::boolean, true), COALESCE($36::text, ''))`,
+			COALESCE($34::boolean, true), COALESCE($35::boolean, true), COALESCE($36::text, ''), COALESCE($37::boolean, true))`,
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
 		e.StartDate, e.EndDate, e.Linkedin, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
 		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e),
 		string(e.Status), e.PublishedBy, e.RegistrationClosed, e.RegistrationClosesAt,
 		string(feedbackMode(e.FeedbackMode)), e.FeedbackFormURL, e.FeedbackFormAlias, e.FeedbackAutoSend,
 		e.LocationLat, e.LocationLng, e.LocationAddress, e.AttendanceMinCount, e.AttendanceAutoFinalize, e.WaitlistEnabled,
-		e.EntryMode, e.ExternalRegistrationURL, e.AttendanceWelcomeMail, e.AttendanceRecordedMail, e.AttendeeNote)
+		e.EntryMode, e.ExternalRegistrationURL, e.AttendanceWelcomeMail, e.AttendanceRecordedMail, e.AttendeeNote, e.FormResponsesAutoTicket)
 	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
 		return Event{}, refusal
 	}
@@ -379,6 +402,7 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 			attendance_welcome_mail = COALESCE($33::boolean, attendance_welcome_mail),
 			attendance_recorded_mail = COALESCE($34::boolean, attendance_recorded_mail),
 			attendee_note = COALESCE($35::text, attendee_note),
+			form_responses_auto_ticket = COALESCE($36::boolean, form_responses_auto_ticket),
 			-- A new point clears the map drawn of the old one and its tries;
 			-- the worker draws another once the point has settled
 			-- (docs/event-map.md). The right-hand columns are the row's
@@ -397,7 +421,7 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 		e.RegistrationClosed, e.RegistrationClosesAt, sentCancelReason(e),
 		string(feedbackMode(e.FeedbackMode)), e.FeedbackFormURL, e.FeedbackFormAlias, e.FeedbackAutoSend,
 		e.LocationLat, e.LocationLng, e.LocationAddress, e.AttendanceMinCount, e.AttendanceAutoFinalize, e.WaitlistEnabled,
-		e.EntryMode, e.ExternalRegistrationURL, e.AttendanceWelcomeMail, e.AttendanceRecordedMail, e.AttendeeNote)
+		e.EntryMode, e.ExternalRegistrationURL, e.AttendanceWelcomeMail, e.AttendanceRecordedMail, e.AttendeeNote, e.FormResponsesAutoTicket)
 	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
 		return Event{}, refusal
 	}
@@ -406,6 +430,15 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 	}
 	if tag.RowsAffected() == 0 {
 		return Event{}, ErrNotFound
+	}
+	// The Unticketed respondents of a form the Event let go go with it, in
+	// the same transaction (docs/form-respondents.md).
+	for _, table := range []string{"event_form_respondents", "event_form_collect_counts"} {
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM `+table+` WHERE event_id = $1 AND NOT (form_id = ANY($2::uuid[]))`,
+			e.ID, ApplicationFormIDs(e)); err != nil {
+			return Event{}, err
+		}
 	}
 	// The Event's template follows its Owner team, in the same
 	// transaction (docs/certificate-event-templates.md#copy-and-team-change).
@@ -671,6 +704,8 @@ func (s *PostgresStore) TeamsUsingMedia(ctx context.Context, mediaID, except uui
 			SELECT 1 FROM event_files ef WHERE ef.event_id = e.id AND ef.media_id = $1
 		  ) OR EXISTS (
 			SELECT 1 FROM event_videos ev WHERE ev.event_id = e.id AND (ev.media_id = $1 OR ev.poster_media_id = $1)
+		  ) OR EXISTS (
+			SELECT 1 FROM event_ticket_images eti WHERE eti.event_id = e.id AND eti.media_id = $1
 		  ))
 	`, mediaID, except)
 	if err != nil {
@@ -1154,7 +1189,7 @@ func scanEvent(row rowScanner) (Event, error) {
 	var e Event
 	var coverURL, mapURL *string
 	var extraRaw []byte
-	var waitlist, liveSessions, welcomeMail, recordedMail bool
+	var waitlist, liveSessions, welcomeMail, recordedMail, autoTicket bool
 	var attendeeNote string
 	err := row.Scan(
 		&e.ID, &e.Name, &e.Description, &e.Location, &e.LocationLat, &e.LocationLng, &e.LocationAddress, &e.OwnerTeam, &e.FormURL, &e.Capacity,
@@ -1165,8 +1200,9 @@ func scanEvent(row rowScanner) (Event, error) {
 		&e.CoverImageID, &coverURL, &e.coverImage, &e.CoverColors, &e.AttendanceRule, &e.AttendanceRatio, &e.AttendanceMinCount, &e.AttendanceAutoFinalize, &extraRaw, &e.MailListID, &e.ArchivedAt, &e.ArchivedBy, &e.CreatedAt, &e.UpdatedAt,
 		&e.FileCount, &e.VideoCount, &e.MapImageID, &mapURL,
 		&waitlist, &e.ticketCount, &e.waitlistCount,
-		&e.EntryMode, &liveSessions, &e.ExternalRegistrationURL, &welcomeMail, &recordedMail, &attendeeNote,
+		&e.EntryMode, &liveSessions, &e.ExternalRegistrationURL, &welcomeMail, &recordedMail, &attendeeNote, &autoTicket,
 	)
+	e.FormResponsesAutoTicket = &autoTicket
 	e.AttendeeNote = &attendeeNote
 	e.WaitlistEnabled = &waitlist
 	e.AttendanceWelcomeMail, e.AttendanceRecordedMail = &welcomeMail, &recordedMail

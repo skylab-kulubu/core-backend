@@ -3,6 +3,7 @@ package event
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,10 +21,13 @@ const (
 	SkippedCover               = "cover"
 	SkippedCompetitions        = "competitions"
 	SkippedAttendeeNote        = "attendeeNote"
+	// SkippedCoOrganizerPeople: the copier may not change the copy's
+	// Co-organizers (docs/co-organizers.md).
+	SkippedCoOrganizerPeople = "coOrganizerPeople"
 )
 
 // skippedOrder is the order the answer lists skipped parts in.
-var skippedOrder = []string{SkippedCertificateTemplate, SkippedDoorStaff, SkippedCover, SkippedCompetitions, SkippedAttendeeNote}
+var skippedOrder = []string{SkippedCertificateTemplate, SkippedDoorStaff, SkippedCover, SkippedCompetitions, SkippedAttendeeNote, SkippedCoOrganizerPeople}
 
 // CopyInput is what POST /v1/events/{id}/copy asks for (ADR 0066, ticket
 // 06): the copy's id (the client makes it, so a retried request finds the
@@ -42,6 +46,10 @@ type CopyInput struct {
 	// OwnerTeam is the copy's Owner team (ticket 16); empty is the
 	// source's.
 	OwnerTeam string
+	// IncludeCoOrganizerPeople copies the source's Co-organizer people
+	// whose accounts are active, for who may change the copy's
+	// Co-organizers (docs/co-organizers.md).
+	IncludeCoOrganizerPeople bool
 	// SkipCertificateTemplate leaves the source's certificate template out:
 	// its Event template and its binding (named skipped when it has one).
 	// The default copies them.
@@ -99,6 +107,13 @@ type CopyPlan struct {
 	// CopyRefused when the copier may not read it (the answer names it
 	// skipped).
 	AttendeeNote CopyPart
+	// CoOrganizerTeams are the copy's Co-organizer teams: the source's,
+	// with their choices, but the copy's Owner team (docs/co-organizers.md).
+	CoOrganizerTeams []CoOrganizerTeam
+	// CoOrganizerPeople copies the source's Co-organizer people whose
+	// accounts are active (CopyWrite); CopyRefused names them skipped when
+	// the source has some.
+	CoOrganizerPeople CopyPart
 }
 
 // skipped puts the parts in the answer's order, each once, never nil.
@@ -208,7 +223,12 @@ func earliest(a, b *time.Time) *time.Time {
 // Owner team may; into another Owner team (ticket 16), whoever may edit the
 // source and create Events in that team, and each part is decided for that
 // team. A part the copier may not write, or a rule refuses, is left out and
-// named in Skipped. The same id from the same source into the same team
+// named in Skipped. Its Co-organizer teams come along with their choices
+// (while EVENT_CO_ORGANIZERS_WRITE is on), and, when asked, its
+// Co-organizer people whose accounts are active, for who may change the
+// copy's Co-organizers (docs/co-organizers.md). A Co-organizer of the
+// source who may not create Events in its Owner team copies it into that
+// team, and only while they still manage the copy. The same id from the same source into the same team
 // answers the copy made already (fresh false); an id another Event has, or
 // that copy in another team, is ErrConflict.
 func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUID, in CopyInput) (Copied, bool, error) {
@@ -229,8 +249,17 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 		}
 		team = target
 	}
+	// A Co-organizer of the source who may not create Events in its Owner
+	// team copies it into that team, never into their own
+	// (docs/co-organizers.md): checked below, once the copy's
+	// Co-organizers are known, that they still manage the copy.
+	byCoOrganizer := false
 	if !s.authz.Allow(p, resource(team), authz.Create) {
-		return Copied{}, false, ErrForbidden
+		via := s.authz.EventVia(p, s.eventResource(source, authz.TypeEvent))
+		if team != source.OwnerTeam || (via != authz.ViaCoTeam && via != authz.ViaCoPerson) {
+			return Copied{}, false, ErrForbidden
+		}
+		byCoOrganizer = true
 	}
 	if made, ok, err := s.madeCopy(ctx, &p, in.ID, source.ID, team); ok || err != nil {
 		return made, false, err
@@ -258,6 +287,9 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 			// copy keeps them (docs/attendance-mail.md).
 			AttendanceWelcomeMail:  source.AttendanceWelcomeMail,
 			AttendanceRecordedMail: source.AttendanceRecordedMail,
+			// "Otomatik bilet gönder" is how the Event is run: the copy keeps
+			// it (docs/form-respondents.md).
+			FormResponsesAutoTicket: source.FormResponsesAutoTicket,
 			// The door's mode is how the Event is run: the copy keeps it
 			// (CONTEXT: Entry mode).
 			EntryMode:            source.EntryMode,
@@ -286,10 +318,30 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 		CertificateTemplate: CopyRefused,
 		EventTemplate:       CopyRefused,
 	}
+	// The Co-organizer teams come along while the list may be written
+	// (EVENT_CO_ORGANIZERS_WRITE: no list changes without its record),
+	// but the one that is the copy's Owner team.
+	if s.coOrganizersWrite {
+		plan.CoOrganizerTeams = withoutOwner(slices.Clone(source.CoOrganizers), team)
+	}
+	// Each part is decided on the copy as it will be: its Owner team and
+	// the Co-organizer teams it gets.
+	planned := plan.Event
+	planned.CoOrganizers = plan.CoOrganizerTeams
+	if in.IncludeCoOrganizerPeople {
+		plan.CoOrganizerPeople = CopyRefused
+		if s.coOrganizersWrite && s.authz.Allow(p, s.eventResource(planned, authz.TypeEvent), authz.ManageOrganizers) {
+			plan.CoOrganizerPeople = CopyWrite
+			planned.CoOrganizerIDs = slices.Clone(source.CoOrganizerIDs)
+		}
+	}
+	if byCoOrganizer && !s.authz.Allow(p, s.eventResource(planned, authz.TypeEvent), authz.Update) {
+		return Copied{}, false, ErrForbidden
+	}
 	if !in.SkipCertificateTemplate {
 		plan.EventTemplate = CopyWrite
 		plan.EventTemplateSourceLinks = s.authz.Allow(p, AuthzResource(source, authz.TypeCertificateTemplate, time.Now()), authz.Read)
-		if s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: team}, authz.Assign) {
+		if s.authz.Allow(p, s.eventResource(planned, authz.TypeCertificateTemplate), authz.Assign) {
 			plan.CertificateTemplate = CopyWrite
 		}
 	}
@@ -301,7 +353,7 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 	}
 	if in.IncludeCompetitions {
 		plan.Competitions = CopyRefused
-		if s.authz.Allow(p, authz.Resource{Type: authz.TypeCompetition, OwnerTeam: team}, authz.Create) {
+		if s.authz.Allow(p, s.eventResource(planned, authz.TypeCompetition), authz.Create) {
 			plan.Competitions = CopyWrite
 		}
 	}
@@ -333,7 +385,18 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 			plan.Event.CoverImageID = source.CoverImageID
 		}
 	}
+	// What the copy carries of the Co-organizers is recorded, each a
+	// co_organizer.add row (reason copy), opened before the write.
+	var carried []uuid.UUID
+	if plan.CoOrganizerPeople == CopyWrite {
+		carried = source.CoOrganizerIDs
+	}
+	open, byPerson, err := s.copyOrganizerAudit(ctx, p, plan.Event, plan.CoOrganizerTeams, carried)
+	if err != nil {
+		return Copied{}, false, err
+	}
 	created, parts, err := s.store.Copy(ctx, plan)
+	s.finishCopyAudit(ctx, open, byPerson, created, err)
 	if errors.Is(err, ErrConflict) {
 		// Another request took the id meanwhile: the same copy, or not.
 		made, ok, err := s.madeCopy(ctx, &p, in.ID, source.ID, team)

@@ -256,10 +256,11 @@ func TestCoverBand(t *testing.T) {
 		t.Fatal("no band")
 	}
 	cfg, err := jpeg.DecodeConfig(bytes.NewReader(band))
-	if err != nil || cfg.Width != 1240 || cfg.Height != 164 {
+	// A 1200-pixel page size is not enlarged: 1200 × 158, the band's shape.
+	if err != nil || cfg.Width != 1200 || cfg.Height != 158 {
 		t.Fatalf("band %+v %v", cfg, err)
 	}
-	if len(band) > 60<<10 {
+	if len(band) > 64<<10 {
 		t.Fatalf("band of %d bytes", len(band))
 	}
 	if _, ok := ticketpage.CoverBand([]byte("bir resim değil")); ok {
@@ -296,23 +297,27 @@ func TestPageHead(t *testing.T) {
 }
 
 // What the renderer receives stays under the mail attachment's 512 KB even
-// for a long ticket: a three-day programme, a long description, the cover
-// band and a map. Chromium embeds the images as they are and the fonts'
-// used glyphs only, so the PDF is smaller than this (measured with
-// Chromium: docs/ticket-page.md).
+// for a long ticket: a three-day programme, a long description, the
+// largest band (2150 pixels of noise, cut to at most 64 KB) and a map.
+// Chromium embeds the images as they are and the fonts' used glyphs only,
+// so the PDF is smaller than this (measured with Chromium:
+// docs/ticket-page.md).
 func TestDocumentSize(t *testing.T) {
 	t.Parallel()
 	d := baseDocument()
 	d.Days = programDays(3, 8)
 	d.Description = strings.Repeat("Yapay Zeka Kampı, makine öğrenmesine yeni başlayanlar için uygulamalı bir kamptır. ", 40)
-	photo := image.NewRGBA(image.Rect(0, 0, 1200, 800))
-	for y := range 800 {
-		for x := range 1200 {
-			photo.Set(x, y, color.RGBA{uint8(x / 5), uint8(y / 4), 120, 255})
+	// A noisy 2560-pixel original: the band at its full 2150 pixels, as
+	// large as a band gets.
+	photo := image.NewRGBA(image.Rect(0, 0, 2560, 1440))
+	r := rand.New(rand.NewPCG(3, 4))
+	for y := range 1440 {
+		for x := range 2560 {
+			photo.Set(x, y, color.RGBA{uint8(x / 10), uint8(r.IntN(256)), uint8(y / 6), 255})
 		}
 	}
 	var src bytes.Buffer
-	if err := jpeg.Encode(&src, photo, &jpeg.Options{Quality: 85}); err != nil {
+	if err := jpeg.Encode(&src, photo, &jpeg.Options{Quality: 90}); err != nil {
 		t.Fatal(err)
 	}
 	band, ok := ticketpage.CoverBand(src.Bytes())
@@ -354,5 +359,22 @@ func TestDirectionsOnlyForAPlaceOnAMap(t *testing.T) {
 	html, _ := render(t, d)
 	if strings.Contains(html, "Yol tarifi") || !strings.Contains(html, `<div class="ad">Online</div>`) {
 		t.Error("a directions QR for a place known by its name alone")
+	}
+}
+
+// The Co-organizer teams shown outside the panel stand under the organizer
+// (docs/co-organizers.md); none draws no line, as before.
+func TestTicketCoOrganizerLine(t *testing.T) {
+	t.Parallel()
+	d := baseDocument()
+	html, _ := render(t, d)
+	if strings.Contains(html, "Ortak düzenleyen") {
+		t.Fatal("a line without Co-organizers")
+	}
+	d.CoOrganizers = "WEBLAB · Web Geliştirme, ARTLAB"
+	html, _ = render(t, d)
+	want := "<span>Düzenleyen</span><b>AILAB</b></div>\n<div class=\"h genis\"><span>Ortak düzenleyen</span><b>WEBLAB · Web Geliştirme, ARTLAB</b></div>"
+	if !strings.Contains(html, want) {
+		t.Fatalf("no %q", want)
 	}
 }

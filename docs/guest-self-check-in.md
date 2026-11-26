@@ -117,15 +117,18 @@ a guest's is.
 | Status | `code` | Meaning |
 |---|---|---|
 | 201 | | checked in |
-| 400 | | neither an e-mail nor a ticket key |
+| 400 | `email_or_ticket_key_required` | neither an e-mail nor a ticket key |
+| 400 | `invalid_id`, `invalid_body` | the Session id is not a UUID (`param: "sessionId"`), the body is not JSON |
 | 403 | `door_qr_required` | a ticket key without a `doorToken`, in any mode |
 | 403 | `session_closed` | the Session is cancelled or outside its time window |
 | 403 | `door_qr_required` | `qr` mode and no `doorToken` |
 | 403 | `door_qr_invalid` | not a door QR of this Session and Event (forged, another key, garbled, over 1 KB) |
 | 403 | `door_qr_expired` | past `expiresAt`: scan the screen again |
 | 403 | `door_qr_used_up` | this token has let `DOOR_QR_MAX_USES` guests in: scan the screen again |
-| 404 | | no Ticket for this e-mail or key on the Session's Event, or no such Session. While the Event takes registrations the body carries `registrationUrl`: its form (`formUrl`), else its external registration link; the page shows it. Closed registration, no field |
-| 409 | | already checked in to this Session |
+| 404 | `guest_ticket_not_found` | no Ticket for this e-mail or key on the Session's Event. While the Event takes registrations the body carries `registrationUrl`: its form (`formUrl`), else its external registration link; the page shows it. Closed registration, no field |
+| 404 | | no such Session |
+| 409 | `already_checked_in` | already checked in to this Session |
+| 409 | `ticket_cancelled`, `ticket_waitlisted` | the Ticket found is cancelled or on the waiting list (docs/ticket-cancellation.md) |
 | 429 | `guest_check_in_rate_limited` | this address failed 10 times this minute; `Retry-After` |
 
 The door QR is checked before any Ticket is looked up, so in `qr` mode the
