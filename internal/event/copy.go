@@ -119,10 +119,10 @@ type CopyPlan struct {
 	// the source has some.
 	CoOrganizerPeople CopyPart
 	// TicketImage is what the copy does with the source's own ticket image
-	// (an "Ayrı görsel"): CopyWrite copies it, CopyRefused leaves it out
-	// and names it skipped (the Team media library refuses it in the
-	// copy's Owner team). A cover region comes along whenever the copy has
-	// the same cover.
+	// (an "Ayrı görsel"): CopyWrite copies it; CopyRefused (the Team media
+	// library refuses it in the copy's Owner team) and CopyNot (nobody
+	// checked it) leave it out and name it skipped. A cover region comes
+	// along whenever the copy has the same cover.
 	TicketImage CopyPart
 }
 
@@ -407,13 +407,14 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 		}
 	}
 	// The source's own ticket image comes along when the copy's Owner team
-	// may use it, as the cover (docs/event-copy.md).
-	plan.TicketImage = CopyWrite
+	// may use it, as the cover (docs/event-copy.md); a store that cannot
+	// tell which image it is copies none of its own (CopyNot).
 	if images, ok := s.store.(ticketImageSource); ok {
 		upload, err := images.TicketImageUpload(ctx, source.ID)
 		if err != nil {
 			return Copied{}, false, err
 		}
+		plan.TicketImage = CopyWrite
 		if upload != nil {
 			err := s.checkMedia(ctx, in.ID, team, *upload, media.RoleEventTicketImage)
 			var refusal *media.LinkRefusal

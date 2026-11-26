@@ -78,7 +78,8 @@ file). At the top:
 picture. What Gotenberg receives for a long ARTLAB ticket with the largest
 poster and a map stays under 640 KB (`TestArtlabDocumentSize`); the PDF
 embeds the images as they are and the fonts' used glyphs only (a full
-ARTLAB sample measured 255 KB with Chromium 153, under the mail
+two-page ARTLAB sample with the poster and a map measured 261 KB with
+Chromium 153, Gotenberg 8.37.0 runs Chromium 152; under the mail
 attachment's 512 KB).
 
 ## Mails
