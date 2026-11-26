@@ -303,9 +303,9 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 			AttendanceRule:       source.AttendanceRule,
 			AttendanceRatio:      source.AttendanceRatio,
 			AttendanceMinCount:   source.AttendanceMinCount,
-			// A copy closes its attendance by itself, whatever the source
-			// had (an old Event's switch is off; migration 20261124010000).
-			AttendanceAutoFinalize: true,
+			// A copy never sends its certificates by itself, whatever the
+			// source had: the organizer turns it on (docs/certificate-rule.md).
+			AttendanceAutoFinalize: false,
 			// The feedback mode and whether the form is mailed when the
 			// Event ends come along (the organizer's choices); the feedback
 			// form does not (a form is in one place only; etkinlik geri

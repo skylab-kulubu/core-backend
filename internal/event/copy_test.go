@@ -48,7 +48,7 @@ func copySource(t *testing.T, store *event.MemoryStore) event.Event {
 		Capacity:      120, StartDate: stamp("2026-03-14T19:00:00+03:00"), EndDate: stamp("2026-03-15T03:00:00+03:00"),
 		Linkedin: "https://linkedin.com/x", Status: event.StatusPublished, Ranked: true, PrizeInfo: "Ödül",
 		RegistrationClosed: true, RegistrationClosesAt: stamp("2026-03-13T23:59:00+03:00"),
-		SeasonID: &season, CoverImageID: &cover, AttendanceRule: "ratio", AttendanceRatio: &ratio,
+		SeasonID: &season, CoverImageID: &cover, AttendanceRule: "ratio", AttendanceRatio: &ratio, AttendanceAutoFinalize: true,
 		Images: []event.GalleryImage{{ID: uuid.New()}}, DoorStaffIDs: []uuid.UUID{staff}, MailListID: &mailList,
 	})
 	if err != nil {
@@ -133,7 +133,7 @@ func TestCopyTable(t *testing.T) {
 		{"cover", c.CoverImageID != nil && *c.CoverImageID == *source.CoverImageID},
 		{"gallery is not copied", len(c.Images) == 0},
 		{"certificate rule", c.AttendanceRule == "ratio" && c.AttendanceRatio != nil && *c.AttendanceRatio == 0.75},
-		{"attendance closes by itself, though the source's does not", !source.AttendanceAutoFinalize && c.AttendanceAutoFinalize},
+		{"certificates are not sent by themselves, though the source's are", source.AttendanceAutoFinalize && !c.AttendanceAutoFinalize},
 		{"one day, the archived one left out", len(days) == 1 && days[0].Name == "Cumartesi"},
 		{"day moves", len(days) == 1 && days[0].StartDate.Equal(*stamp("2027-03-13T19:00:00+03:00")) && days[0].EndDate.Equal(*stamp("2027-03-14T03:00:00+03:00"))},
 		{"one Session, the archived one left out", len(sessions) == 1 && sessions[0].Title == "Açılış"},
