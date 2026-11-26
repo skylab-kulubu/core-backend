@@ -26,7 +26,7 @@ Any route, before a service reads the request.
 |---|---|---|---|
 | 400 | `invalid_id` | `param`: the path segment (`eventId`, `sessionId`, `id`, …) | a path segment that must be an id is not a UUID |
 | 400 | `invalid_body` | | the body is not the route's JSON |
-| 400 | `invalid_query` | `param`: the query parameter (`status`, `include`, `use`, `notify`, …) | a query parameter has a value the route does not take |
+| 400 | `invalid_query` | `param`: the query parameter (`status`, `include`, `use`, `notify`, `kind`, …) | a query parameter has a value the route does not take |
 
 Used by the Tickets and door routes so far; the other routes follow.
 

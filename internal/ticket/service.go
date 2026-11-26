@@ -95,6 +95,9 @@ type Service interface {
 	AuthorizeSessionDoor(ctx context.Context, p authz.Principal, sessionID uuid.UUID) error
 	ResolveAndCheckIn(ctx context.Context, p authz.Principal, sessionID uuid.UUID, target DoorCheckInTarget) (DoorCheckIn, error)
 	DoorActivity(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorActivity, error)
+	// SessionCheckIns is DoorActivity without the day's Venue entries: the
+	// Session's Check-ins alone, in either mode (docs/venue-entry.md).
+	SessionCheckIns(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorActivity, error)
 	// CheckInTicketQR takes a check-in from a Ticket QR the door scanned
 	// (docs/ticket-qr.md).
 	CheckInTicketQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID, token string) (CheckIn, error)
@@ -1313,9 +1316,10 @@ func (s *service) checkIn(ctx context.Context, p authz.Principal, ticketID, sess
 	if scan {
 		// A scan at the door: in the venue mode the day's Venue entry
 		// alone, else the Check-in and the day's entry if none yet
-		// (docs/venue-entry.md).
+		// (docs/venue-entry.md). A scan that asks for the Session's
+		// Check-in (WithSessionCheckIn) writes it in either mode.
 		how := staffEntry(EntryScan, p)
-		if venueMode(ev) {
+		if venueMode(ev) && !sessionCheckInAsked(ctx) {
 			return s.enterAtSession(ctx, t, sessionID, how)
 		}
 		return s.addSessionCheckIn(ctx, t, sessionID, how)
@@ -2054,6 +2058,21 @@ func (s *service) DoorActivity(
 		return activity, err
 	}
 	return s.withDayEntries(ctx, ev, sessionID, activity)
+}
+
+// SessionCheckIns is the Session's door activity without the day's Venue
+// entries the venue mode adds: its Check-ins alone (kind check_in), and
+// how many it has. The panel's door counts a Session by it.
+func (s *service) SessionCheckIns(
+	ctx context.Context,
+	p authz.Principal,
+	sessionID uuid.UUID,
+) (DoorActivity, error) {
+	ev, err := s.authorizedDoorEvent(ctx, p, sessionID, false)
+	if err != nil {
+		return DoorActivity{}, err
+	}
+	return s.sessionActivity(ctx, ev, sessionID)
 }
 
 // doorActivityLimit is how many of the latest the door activity lists.
