@@ -201,6 +201,10 @@ func (a *afterCheckIn) DoorActivity(ctx context.Context, p authz.Principal, sess
 	return a.inner.DoorActivity(ctx, p, sessionID)
 }
 
+func (a *afterCheckIn) SessionCheckIns(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorActivity, error) {
+	return a.inner.SessionCheckIns(ctx, p, sessionID)
+}
+
 func (a *afterCheckIn) CheckInTicketQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID, token string) (CheckIn, error) {
 	ci, err := a.inner.CheckInTicketQR(ctx, p, sessionID, token)
 	if err == nil {

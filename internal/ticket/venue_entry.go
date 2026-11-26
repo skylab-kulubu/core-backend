@@ -244,6 +244,21 @@ func (s *service) enterAtSession(ctx context.Context, t Ticket, sessionID uuid.U
 	}, nil
 }
 
+type sessionCheckInKey struct{}
+
+// WithSessionCheckIn is ctx for a scan at a Session's door that asks for
+// the Session's Check-in (and the day's entry if none) in the venue mode
+// too: the panel's door after its staff chose the Session
+// (docs/venue-entry.md). Without it a venue scan writes the entry alone.
+func WithSessionCheckIn(ctx context.Context) context.Context {
+	return context.WithValue(ctx, sessionCheckInKey{}, true)
+}
+
+func sessionCheckInAsked(ctx context.Context) bool {
+	asked, _ := ctx.Value(sessionCheckInKey{}).(bool)
+	return asked
+}
+
 // venueMode reports whether ev's door writes the day's Venue entry alone.
 func venueMode(ev event.Event) bool {
 	return ev.EffectiveEntryMode == event.EntryVenue

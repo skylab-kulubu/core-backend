@@ -55,6 +55,10 @@ type settleBody struct {
 	// ScannedAt is when the door device took the scan, for a scan it
 	// sends later (RFC 3339; docs/offline-door.md). Empty: now.
 	ScannedAt string `json:"scannedAt"`
+	// CheckIn asks a scan at a Session's door for the Session's Check-in
+	// in the venue mode too (docs/venue-entry.md); the Event's door
+	// ignores it.
+	CheckIn bool `json:"checkIn"`
 }
 
 // scanContext is ctx carrying the body's scannedAt, checked against core's
@@ -244,6 +248,9 @@ func (h *SkyPassHandler) CheckInSession(c fiber.Ctx) error {
 	ctx, ok, answered := scanContext(c, body)
 	if !ok {
 		return answered
+	}
+	if body.CheckIn {
+		ctx = ticket.WithSessionCheckIn(ctx)
 	}
 	// The door first: reading a Google Wallet code spends it, and the
 	// answer to someone who may not scan here must not depend on whose

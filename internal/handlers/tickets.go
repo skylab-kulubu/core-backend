@@ -664,7 +664,17 @@ func (h *TicketHandler) DoorActivity(c fiber.Ctx) error {
 	if err != nil {
 		return badID(c, "sessionId")
 	}
-	activity, err := h.svc.DoorActivity(c.Context(), p, sessionID)
+	// ?kind=check_in: the Session's Check-ins alone, without the day's
+	// Venue entries the venue mode lists (docs/venue-entry.md).
+	read := h.svc.DoorActivity
+	switch c.Query("kind") {
+	case "":
+	case ticket.KindCheckIn:
+		read = h.svc.SessionCheckIns
+	default:
+		return badQuery(c, "kind")
+	}
+	activity, err := read(c.Context(), p, sessionID)
 	if err != nil {
 		return ticketError(c, err)
 	}
