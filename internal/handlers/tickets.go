@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/doorqr"
+	"github.com/skylab-kulubu/core-backend/internal/formsfeed"
 	"github.com/skylab-kulubu/core-backend/internal/qr"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
@@ -19,7 +21,21 @@ import (
 type TicketHandler struct {
 	svc    ticket.Service
 	logger *log.Logger
+	// formMapper nil takes the forms report as before; set, a report that
+	// names nobody goes through the Events' form mappings.
+	formMapper FormResponseMapper
 }
+
+// FormResponseMapper runs the forms report through the Events' form
+// mappings (formsfeed.MappedGuests): an accepted answer that names nobody
+// gets the guest a mapping builds; any other goes to record as it came.
+type FormResponseMapper interface {
+	RecordReport(ctx context.Context, record formsfeed.RecordFunc, r ticket.FormResponse) (ticket.FormResponseResult, error)
+}
+
+// MapFormResponsesWith turns the form mappings on for the forms report
+// (docs/form-mappings.md), with EVENTS_FORMS_ENABLED=true.
+func (h *TicketHandler) MapFormResponsesWith(m FormResponseMapper) { h.formMapper = m }
 
 func NewTicketHandler(svc ticket.Service) *TicketHandler {
 	return &TicketHandler{svc: svc, logger: log.Default()}
@@ -296,7 +312,15 @@ func (h *TicketHandler) RecordFormResponse(c fiber.Ctx) error {
 	if body.Guest != nil {
 		r.Guest = &ticket.GuestInfo{FirstName: body.Guest.FirstName, LastName: body.Guest.LastName, Email: body.Guest.Email}
 	}
-	result, err := h.svc.RecordFormResponse(c.Context(), p, r)
+	record := func(ctx context.Context, r ticket.FormResponse) (ticket.FormResponseResult, error) {
+		return h.svc.RecordFormResponse(ctx, p, r)
+	}
+	var result ticket.FormResponseResult
+	if h.formMapper != nil {
+		result, err = h.formMapper.RecordReport(c.Context(), record, r)
+	} else {
+		result, err = record(c.Context(), r)
+	}
 	h.logFormResponse(c, r, result, err)
 	if err != nil {
 		return ticketError(c, err)

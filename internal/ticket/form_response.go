@@ -45,6 +45,11 @@ type FormResponse struct {
 	// ?davet= of the mail's link), when Forms reports it: it marks that
 	// invite answered (etkinlik geri bildirim formu, ticket 04).
 	Invite string
+	// GuestEvents, when set, are the only Events the answer may write on:
+	// those whose form mapping built Guest (docs/form-mappings.md). An
+	// Event listing the form without a mapping gets no guest from another
+	// Event's mapping. Nil is every Event that lists the form, as before.
+	GuestEvents []uuid.UUID
 }
 
 // FeedbackAnswers marks who answered a feedback form: the invite the code
@@ -108,6 +113,15 @@ const (
 	// FormResponseCancelled is a declined answer that cancelled the
 	// Tickets it had written (kontenjan-iptal-hatirlatma 05): a 204 still.
 	FormResponseCancelled FormResponseOutcome = "cancelled"
+	// FormResponseMappedGuest is an answer that named nobody and wrote (or
+	// found) the Ticket of a guest built from an Event's form mapping
+	// (docs/form-mappings.md): FormResponseRecorded by that way in. Only the
+	// mapping's caller (formsfeed) names it; the rule answers Recorded.
+	FormResponseMappedGuest FormResponseOutcome = "mapped_guest"
+	// FormResponseMappingIncomplete is an answer that named nobody, to a
+	// form with a mapping whose answers give no guest: an e-mail that is
+	// not an address, or no first and last name. No Ticket; a 204.
+	FormResponseMappingIncomplete FormResponseOutcome = "mapping_incomplete"
 )
 
 // FormResponseResult is what recording a report did.
@@ -211,8 +225,11 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 	}
 	listing := listingForm(events, r.FormID)
 	listed := len(listing)
-	if listed == 0 {
-		return FormResponseResult{Outcome: FormResponseNotListed}, nil
+	if r.GuestEvents != nil && r.UserID == nil {
+		listing = onlyEvents(listing, r.GuestEvents)
+	}
+	if len(listing) == 0 {
+		return FormResponseResult{Outcome: FormResponseNotListed, ListingEvents: listed}, nil
 	}
 	listing = notCancelled(listing)
 	if len(listing) == 0 {
@@ -340,6 +357,20 @@ func (s *service) declineFormResponse(ctx context.Context, events []event.Event,
 		result.Outcome = FormResponseCancelled
 	}
 	return result, nil
+}
+
+// onlyEvents keeps the Events whose id is one of ids (FormResponse.GuestEvents).
+func onlyEvents(listing []event.Event, ids []uuid.UUID) []event.Event {
+	out := listing[:0:0]
+	for _, ev := range listing {
+		for _, id := range ids {
+			if ev.ID == id {
+				out = append(out, ev)
+				break
+			}
+		}
+	}
+	return out
 }
 
 func listsEvent(events []event.Event, id uuid.UUID) bool {

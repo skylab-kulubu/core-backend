@@ -93,6 +93,65 @@ number, an id number, free text) never leaves Forms. Core keeps the
 answers in memory for the length of one answer; it never logs or stores
 them.
 
+## Tickets from a mapping
+
+Who an answer names is decided in one place, `formsfeed.ResolveRespondents`,
+for every way an answer comes in: the HTTP report
+([form-response-tickets.md](form-response-tickets.md)), a `core.forms`
+event and a pull ([form-pulls.md](form-pulls.md)). In this order:
+
+1. a `userId`: that person;
+2. else the guest Forms names (the form's identity fields): that guest;
+3. else, for an accepted answer to a form an Event that lists it now maps:
+   the guest built from the mapped answers;
+4. else nobody: `no_respondent`, as before.
+
+Writing the Ticket is apart (`formsfeed.RecordRespondents`), always by the
+one Ticket rule (`ticket.Service.RecordFormResponse`): capacity, waiting
+list, closed applying by `submittedAt`, cancelled and ended Events, a
+declined answer's cancellation (`tickets.form_response_id`). A mapped guest
+is written only on the Events whose mapping built it
+(`FormResponse.GuestEvents`): an Event that lists the same form without a
+mapping (a form shared before the one-place rule) gets no guest. The guest
+is written as every forms guest is: an e-mail with a Ticket on the Event
+already gets no second one, and the guest is never renamed.
+
+How each way reads the answers:
+
+- **HTTP report** (`formsfeed.MappedGuests.RecordReport`): the report
+  carries no answers, so core reads the single answer with `fields`. A read
+  that finds nothing is `gone` (a 2xx); another failure answers 5xx, and
+  Forms sends the report again.
+- **`core.forms` event**: an event carries no answers; the single read
+  (claim check) asks for `fields` too.
+- **Pull**: each page is asked with `fields`; an item's `answers` build the
+  guest without a single read.
+
+The guest from the answers (SPEC §5.3):
+
+- e-mail: trimmed, in lower case, one plain address with a dotted domain;
+- first and last name questions: trimmed, inner spaces folded, at most 100
+  characters each;
+- a full name question fills only what those leave empty: the last word is
+  the last name, the words before it the first name.
+
+Two decisions of Yusuf (SPEC §11, 2026-11-25, as proposed), each in one
+place:
+
+- **K3**, a full name of one word: no Ticket, counted `mapping_incomplete`
+  (`splitFullName`).
+- **K4**, an e-mail that is a member's account's: a guest Ticket, as every
+  guest Ticket; matching it to the member is later work (`MappedGuest`).
+
+New outcomes of the `form_response` line and
+`skylab_forms_answers_total{outcome}`: `mapped_guest` (a guest Ticket
+written or found through a mapping) and `mapping_incomplete` (an e-mail
+that is not an address, or no first and last name; no Ticket). Neither
+the line nor the metric names anybody.
+
+With `EVENTS_FORMS_ENABLED` off none of this runs: an answer that names
+nobody is `no_respondent`, as before.
+
 ## Table
 
 Migration `20261127100000`: `event_form_mappings` (`event_id`, `form_id`,

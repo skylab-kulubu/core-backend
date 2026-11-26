@@ -23,7 +23,9 @@ invite code as the `davet` hidden field. A third, the pull from Forms'
 list (an organizer's backfill and the daily catch-up,
 [form-pulls.md](form-pulls.md)), takes the same rule. All end in
 `ticket.Service.RecordFormResponse`; what this page says of an answer holds
-for each. The HTTP report goes when Forms stops sending it, after at most
+for each. An accepted answer that names nobody (no `userId`, no `guest`) to
+a form an Event maps gets the guest its mapped answers give, by every way
+in ([form-mappings.md](form-mappings.md)). The HTTP report goes when Forms stops sending it, after at most
 one to two days of both (hub ticket R16).
 
 ## Endpoint
