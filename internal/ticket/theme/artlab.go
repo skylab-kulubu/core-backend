@@ -82,7 +82,7 @@ var artlab = Theme{
 			// rasterized, a larger file).
 			`.yer .harita{border-color:var(--line);opacity:.62}`,
 			`.yer figure{width:26.4mm}`,
-			`.yer figure img{background:#fff;padding:1.2mm;box-sizing:content-box;border-radius:1mm}`,
+			`.yer figure img,.duyuru figure img{background:#fff;padding:1.2mm;box-sizing:content-box;border-radius:1mm}`,
 			`.dip{border-top:.6pt solid var(--line);color:var(--muted)}`,
 		}, ""),
 		// No picture: a band of the theme, dark with the poster's orange to

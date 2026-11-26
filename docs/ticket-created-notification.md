@@ -104,8 +104,12 @@ Ticket insert ──(same statement)──▶ ticket_notifications ──▶ wor
     the button and the code do the work.
   - `TicketCode`: the code as text, `XXXX-XXXX`.
 
-- **The organizer's announcement**: `TicketNote` and `TicketNoteParts`,
-  always, `""` and `[]` for none ([ticket-note.md](ticket-note.md)).
+- **The organizer's announcement**: `TicketNote`, `TicketNoteParts`,
+  `TicketNoteLink` and `TicketNoteWhatsApp`, always, `""` and `[]` for none
+  ([ticket-note.md](ticket-note.md)).
+- **The place's directions**: `MapUrl`, always, the reminder's (the
+  ticket page's `directionsUrl`): the "Yer" row and the "Yol tarifi" button
+  open it. `""` for a place with neither a point nor an address.
 
   Unset, the five of before go, as before. `EventUrl` is never sent: the
   site has no Event page. The Idempotency-Key stays `:v1`: the three are the

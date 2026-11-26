@@ -123,3 +123,26 @@ func TestTicketNoteParts(t *testing.T) {
 		t.Errorf("nil note: %q %#v", note, parts)
 	}
 }
+
+// The mails' button opens the note's first WhatsApp address, else its
+// first https one; none without an address.
+func TestTicketNoteLink(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		note, link, whatsApp string
+	}{
+		"none":            {"", "", ""},
+		"text":            {"Salon D-001, http://example.test", "", ""},
+		"whatsapp":        {"Grup: https://chat.whatsapp.com/Ab1.", "https://chat.whatsapp.com/Ab1", "1"},
+		"whatsapp second": {"Site: https://artlab.example/x\nGrup: https://chat.whatsapp.com/Ab1", "https://chat.whatsapp.com/Ab1", "1"},
+		"wa.me":           {"https://wa.me/905551112233", "https://wa.me/905551112233", "1"},
+		"other":           {"Program: https://artlab.example/x", "https://artlab.example/x", ""},
+		"lookalike":       {"https://chat.whatsapp.com.example/x", "https://chat.whatsapp.com.example/x", ""},
+	} {
+		note := tc.note
+		_, parts := event.TicketNoteParts(event.Event{TicketNote: &note})
+		if link, whatsApp := event.TicketNoteLink(parts); link != tc.link || whatsApp != tc.whatsApp {
+			t.Errorf("%s: %q %q", name, link, whatsApp)
+		}
+	}
+}

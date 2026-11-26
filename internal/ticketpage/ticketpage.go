@@ -468,6 +468,9 @@ func (s *Service) document(ctx context.Context, o opened, token string) (Documen
 		HolderName: o.holder, Code: o.ticket.Code, QRToken: token,
 		Description: ev.Description, Theme: th, IssuedAt: s.now(),
 	}
+	if ev.TicketNote != nil {
+		doc.TicketNote = *ev.TicketNote
+	}
 	program, err := s.program(ctx, ev)
 	if err != nil {
 		return Document{}, err

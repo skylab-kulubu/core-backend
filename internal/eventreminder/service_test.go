@@ -343,7 +343,7 @@ func TestEachAddressGetsOneReminderAndOnlyActiveTicketsCount(t *testing.T) {
 		"EventId": f.ev.ID.String(), "EventName": "Gece Kodu", "StartsAt": "25.11.2026 10:00", "Venue": "Kongre Merkezi",
 		"OwnerTeam": first.vars["OwnerTeam"], "TicketUrl": "https://yildizskylab.com/bilet/7Q2MK4XRWZ3HN5TJVB6PDYCGEA",
 		"TicketQrUrl": "https://api.example.test/v1/public/tickets/7Q2MK4XRWZ3HN5TJVB6PDYCGEA/qr.png", "TicketCode": "K7M2-QX9F",
-		"MapUrl": first.vars["MapUrl"], "CoOrganizers": "", "TicketNote": "", "Theme": "", "EventBannerUrl": "",
+		"MapUrl": first.vars["MapUrl"], "CoOrganizers": "", "TicketNote": "", "TicketNoteLink": "", "TicketNoteWhatsApp": "", "Theme": "", "EventBannerUrl": "",
 	}
 	if len(first.vars) != len(want) || first.vars["OwnerTeam"] == "" || !strings.HasPrefix(first.vars["MapUrl"], "https://") {
 		t.Fatalf("vars %v", first.vars)
@@ -580,5 +580,8 @@ func TestTheReminderCarriesTheTicketNote(t *testing.T) {
 	}
 	if got, _ := raw["TicketNoteParts"].([]event.NotePart); !slices.Equal(got, want) {
 		t.Fatalf("TicketNoteParts %#v", raw["TicketNoteParts"])
+	}
+	if raw["TicketNoteLink"] != "https://chat.whatsapp.com/Ornek123" || raw["TicketNoteWhatsApp"] != "1" {
+		t.Fatalf("button %v %v", raw["TicketNoteLink"], raw["TicketNoteWhatsApp"])
 	}
 }
