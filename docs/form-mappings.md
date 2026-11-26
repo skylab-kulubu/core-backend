@@ -29,9 +29,11 @@ per Event and form, for a form the Event lists as its application
 
 All under `/v1/events/{id}/forms/{formId}`, with the organizer's token.
 The caller is a person who may edit the Event (authz `Update` on the Event,
-its Co-organizers included), and the form's owner or an editor in Forms: a
-viewer of the form, or someone not on its team, is refused (orchestrator's
-decision, 2026-11-25). A product's service account never is. Each route
+its Co-organizers included), and on the form's team in Forms: its owner, an
+editor or a viewer (Yusuf, 2026-11-26: a mapping changes nothing in the
+form, only says which question names the guest, and Forms shows a viewer
+the answers already; until then a viewer was refused). Someone not on the
+team is refused. A product's service account never is. Each route
 reads the form from Forms for its team (`collaborators: [{userId, role}]`,
 forms-backend #43; removed members are left out by Forms); a Forms that
 sends no `collaborators` lets nobody in.
@@ -59,7 +61,7 @@ questions.
 | `400` | an id in the path that is not a UUID, or a body that is not JSON |
 | `404` | no such current Event (archived too), or a draft the caller may not edit |
 | `403` | the caller may not edit the Event, or is a service account |
-| `403 forms_access_denied` | the caller is not the form's owner or an editor in Forms (a viewer is not), or Forms does not say who is |
+| `403 forms_access_denied` | the caller is not on the form's team in Forms (owner, editor or viewer), or Forms does not say who is |
 | `404 form_not_listed` | the Event does not list the form as its application or an extra form |
 | `400 mapping_invalid` | the mapping breaks the rule above |
 | `422 mapping_question_missing` | the form has no question of some ids: `missing` lists them |

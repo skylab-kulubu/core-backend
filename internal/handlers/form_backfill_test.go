@@ -43,6 +43,8 @@ func TestFormBackfillAnswers(t *testing.T) {
 		{err: formsfeed.ErrBackfillNotListed, status: 409, code: "form_not_listed"},
 		{err: formsfeed.ErrBackfillFormInUse, status: 409, code: "form_in_use"},
 		{err: formsfeed.ErrBackfillOff, status: 503, code: "forms_pull_off"},
+		{err: formsfeed.ErrFormsAccessDenied, status: 403, code: "forms_access_denied"},
+		{err: errors.Join(formsfeed.ErrFormsUnavailable, errors.New("formsfeed: Forms answered 503")), status: 503, code: "forms_unavailable"},
 		{err: &formsfeed.BackfillCooldownError{RetryAfter: 89500 * time.Millisecond}, status: 429, code: "backfill_cooldown", retryAfter: "90"},
 		{err: errors.New("database"), status: 500},
 	}

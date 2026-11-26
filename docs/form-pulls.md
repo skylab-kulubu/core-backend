@@ -33,7 +33,10 @@ Authorization: Bearer <the organizer's token>
 No body. It queues the form's gathering (`collect`,
 [form-respondents.md](form-respondents.md#gathering-a-linked-form)); before
 bilet 04 it queued a pull that wrote Tickets. The caller is a person who may edit the Event (a product's
-service account never asks). Then, in order:
+service account never asks) and who is on the form's team in Forms, read
+from Forms at each request: its owner, an editor or a viewer (Yusuf,
+2026-11-26; [form-respondents.md](form-respondents.md#who-may-link-a-form)).
+Then, in order:
 
 | Answer | When |
 | --- | --- |
@@ -45,12 +48,14 @@ service account never asks). Then, in order:
 | `409` `form_in_use` | another current Event lists the form, as any form (the one-place rule, ADR 0069 addendum of 2026-11-22): last year's form linked to this year's Event must not ticket its applicants through the other |
 | `429` `backfill_cooldown` | the form's backfill was asked for less than 15 minutes ago (`Retry-After`: the seconds left); a button pressed again and again |
 | `503` `forms_pull_off` | `EVENTS_FORMS_ENABLED` is not `true` (below) |
+| `403` `forms_access_denied` | the caller is not on the form's team in Forms, Forms has no such form, or Forms does not say who is |
+| `503` `forms_unavailable` | Forms could not tell: no client, Forms did not answer, refused core or answered what core cannot read |
 | `202 {"queued": true}` | a job is queued |
 | `200 {"queued": false}` | a gathering of the form waits already |
 
 The request writes one line, `"event":"form_backfill_request"`, with the
-Event, the form and `outcome` (`queued`, `waiting`, `cooldown`, `refused`),
-never who asked. The ask is kept on the form (`last_backfill_at`); a form
+Event, the form and `outcome` (`queued`, `waiting`, `cooldown`,
+`forms_access_denied`, `forms_unavailable`, `refused`), never who asked. The ask is kept on the form (`last_backfill_at`); a form
 the daily pass had not seen gets its watermark then.
 
 The gathering reads every answer of the form, any status, and keeps rows,

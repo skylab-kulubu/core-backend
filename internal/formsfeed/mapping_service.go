@@ -31,8 +31,8 @@ var (
 	// ErrFormGone is a form Forms does not have (404 form_not_found):
 	// deleted, or a Forms without the route yet.
 	ErrFormGone = errors.New("formsfeed: Forms has no such form")
-	// ErrFormsAccessDenied is a caller who is neither the form's owner nor
-	// an editor of it in Forms (a viewer is not), or a Forms that does not
+	// ErrFormsAccessDenied is a caller who is not on the form's team in
+	// Forms (owner, editor or viewer; Form.Sees), or a Forms that does not
 	// say who is (403 forms_access_denied).
 	ErrFormsAccessDenied = errors.New("formsfeed: not the form's owner or collaborator in Forms")
 )
@@ -45,9 +45,9 @@ type FormReader interface {
 // Mappings serves an Event's form mappings (docs/form-mappings.md): the
 // form's questions for the panel, and the mapping itself. Every call is a
 // person's who may edit the Event (authz Update on the Event, its
-// Co-organizers included), and who is the form's owner or an editor in
-// Forms (read from Forms each time; Form.Edits); a product's service
-// account never is.
+// Co-organizers included), and who is on the form's team in Forms: its
+// owner, an editor or a viewer (read from Forms each time; Form.Sees); a
+// product's service account never is.
 type Mappings struct {
 	Events BackfillEvents
 	Authz  authz.Authorizer
@@ -99,7 +99,7 @@ func (m *Mappings) editable(ctx context.Context, p authz.Principal, eventID, for
 }
 
 // readForm reads the form from Forms, its errors as the routes answer them,
-// and checks the caller is its owner or a collaborator there.
+// and checks the caller is on its team there (Form.Sees).
 func (m *Mappings) readForm(ctx context.Context, p authz.Principal, formID uuid.UUID) (Form, error) {
 	if !m.On {
 		return Form{}, ErrFormsPullOff
@@ -116,7 +116,7 @@ func (m *Mappings) readForm(ctx context.Context, p authz.Principal, formID uuid.
 		// panel's; it never carries an answer.
 		return Form{}, errors.Join(ErrFormsUnavailable, err)
 	}
-	if !form.Edits(p.ID) {
+	if !form.Sees(p.ID) {
 		return Form{}, ErrFormsAccessDenied
 	}
 	return form, nil
