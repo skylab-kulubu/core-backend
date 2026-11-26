@@ -906,6 +906,13 @@ func New(deps Deps) *fiber.App {
 	// turned into Tickets, previewed first (docs/attendee-import.md).
 	app.Post("/v1/events/:eventId/attendee-imports/preview", tickets.PreviewImport)
 	app.Post("/v1/events/:eventId/attendee-imports", tickets.ImportAttendees)
+	// The attendee export: a report of the Event's attendees as an XLSX or
+	// CSV file, for a reader of its Tickets (docs/attendee-export.md).
+	var standings handlers.StandingsReader
+	if deps.Certificates != nil {
+		standings = deps.Certificates
+	}
+	app.Post("/v1/events/:eventId/exports", handlers.NewExportHandler(deps.Tickets, standings).Export)
 	app.Get("/v1/tickets", tickets.List)
 	app.Post(handlers.TicketSearchPath, tickets.Search)
 	// The forms service's account with ticket:forms reports each answer to its
