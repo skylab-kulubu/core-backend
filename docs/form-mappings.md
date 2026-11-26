@@ -216,7 +216,8 @@ core-backend backfill-form-guest-details -event <id> [-apply]
 - For each such form it reads every answer that is not archived from Forms
   (the list, `fields` the details' questions only, a page of 100 at a time)
   and puts each answer's details (`MappedDetails`) on the guest Ticket of
-  the Event that answer wrote (`tickets.form_response_id`; not a cancelled
+  the Event that answer wrote (`tickets.form_response_id`; ticket type
+  GUEST, one linked to the guest's account since too; not a cancelled
   Ticket, nor one whose identity retention cleared) and on its Unticketed
   respondent's guest row, only where the row has none: a run again finds
   nothing to do. Never a signed-in person's Ticket.

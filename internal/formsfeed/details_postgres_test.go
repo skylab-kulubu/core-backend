@@ -181,4 +181,25 @@ func TestFillingInEarlierGuestsDetails(t *testing.T) {
 	if err != nil || again.TicketsFilled != 0 || again.RespondentsFilled != 0 || again.Tickets != 3 {
 		t.Fatalf("again %+v %v", again, err)
 	}
+
+	// A signed-in person's Ticket is never touched; a cancelled one neither.
+	person := uuid.New()
+	if _, err := w.pool.Exec(ctx, `INSERT INTO users (id, email) VALUES ($1, 'linus@example.org')`, person); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.pool.Exec(ctx, `
+		UPDATE tickets SET ticket_type = 'REGISTERED', owner_id = $2, guest_first_name = '', guest_last_name = '', guest_email = '',
+			guest_grade = '' WHERE form_response_id = $1`, linus, person); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.pool.Exec(ctx, `UPDATE tickets SET status = 'cancelled', cancelled_at = now(), cancelled_by = 'operator', guest_grade = '' WHERE form_response_id = $1`, grace); err != nil {
+		t.Fatal(err)
+	}
+	last, err := fill.FillDetails(ctx, w.ev.ID, true)
+	if err != nil || last.Tickets != 1 || last.TicketsFilled != 0 {
+		t.Fatalf("member and cancelled %+v %v", last, err)
+	}
+	if got := w.guestDetails(t, "tickets", "form_response_id = $1", linus); got[3] != "" {
+		t.Fatalf("a member's Ticket took %v", got)
+	}
 }

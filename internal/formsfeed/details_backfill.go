@@ -53,9 +53,10 @@ type DetailsReport struct {
 	// answers Forms gave for them.
 	Forms   int
 	Answers int
-	// Tickets are the guest Tickets those answers wrote (not cancelled, the
-	// guest's identity still kept); TicketsFilled those taking at least one
-	// detail (dry run: that would).
+	// Tickets are the guest Tickets those answers wrote (ticket type GUEST,
+	// a guest Ticket linked to its account since included; not cancelled,
+	// the guest's identity still kept); TicketsFilled those taking at least
+	// one detail (dry run: that would).
 	Tickets       int
 	TicketsFilled int
 	// Respondents and RespondentsFilled are the same for the Unticketed
@@ -121,7 +122,7 @@ func (b *DetailsBackfill) FillDetails(ctx context.Context, eventID uuid.UUID, ap
 	tickets, err := b.detailRows(ctx, `
 		SELECT id, form_response_id, guest_phone_number, guest_university, guest_department, guest_grade
 		FROM tickets
-		WHERE event_id = $1 AND owner_id IS NULL AND form_response_id IS NOT NULL
+		WHERE event_id = $1 AND ticket_type = 'GUEST' AND form_response_id IS NOT NULL
 		  AND status IS DISTINCT FROM 'cancelled' AND guest_email <> ''`, eventID)
 	if err != nil {
 		return report, err
@@ -189,7 +190,7 @@ func (b *DetailsBackfill) fillForm(ctx context.Context, m Mapping, tickets, resp
 							guest_department = CASE WHEN guest_department = '' THEN $4 ELSE guest_department END,
 							guest_grade = CASE WHEN guest_grade = '' THEN $5 ELSE guest_grade END,
 							updated_at = now()
-						WHERE id = $1 AND owner_id IS NULL AND guest_email <> ''
+						WHERE id = $1 AND ticket_type = 'GUEST' AND guest_email <> ''
 						  AND ((guest_phone_number = '' AND $2 <> '') OR (guest_university = '' AND $3 <> '')
 						    OR (guest_department = '' AND $4 <> '') OR (guest_grade = '' AND $5 <> ''))`,
 						row.id, fill[0], fill[1], fill[2], fill[3])
