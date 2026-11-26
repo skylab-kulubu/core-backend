@@ -1030,6 +1030,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	doorQRLimits, err := handlers.DoorQRLimitsFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("guest check-in failures: %d per address, %d per address and e-mail a minute",
+		doorQRLimits.GuestFailuresPerClient, doorQRLimits.GuestFailuresPerEmail)
 	ticketQR, err := ticketQRSigner(os.Getenv, passKey)
 	if err != nil {
 		log.Fatal(err)
@@ -1427,6 +1433,7 @@ func main() {
 		AppAssignments:            appAssignments,
 		AuthzRoleMetrics:          authzRoleMetrics,
 		GuestCheckInMetrics:       doorQR,
+		DoorQRLimits:              &doorQRLimits,
 		TicketQR:                  ticketQR,
 		TicketPage:                ticketPage,
 		DoorScanMetrics:           doorScans,
