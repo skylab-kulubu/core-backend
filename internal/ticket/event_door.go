@@ -40,7 +40,7 @@ func (s *service) eventDoor(ctx context.Context, p authz.Principal, eventID uuid
 	}
 	if !write {
 		if s.canUseDoor(ctx, p, ev) ||
-			s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Read) {
+			s.authz.Allow(p, eventResource(ev, authz.TypeTicket), authz.Read) {
 			return ev, nil
 		}
 		return event.Event{}, ErrForbidden
@@ -230,10 +230,10 @@ func (s *service) ListEntries(ctx context.Context, p authz.Principal, eventID uu
 		}
 	}
 	if !entryDatePattern.MatchString(date) {
-		return nil, ErrInvalid
+		return nil, invalid(CodeEntryDateInvalid)
 	}
 	if _, err := time.Parse(time.DateOnly, date); err != nil {
-		return nil, ErrInvalid
+		return nil, invalid(CodeEntryDateInvalid)
 	}
 	return s.namedEntries(ctx, ev.ID, date)
 }

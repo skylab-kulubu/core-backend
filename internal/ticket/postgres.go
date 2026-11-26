@@ -83,7 +83,8 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 }
 
 const ticketCols = `id, event_id, ticket_type, owner_id, guest_first_name, guest_last_name, guest_email, guest_phone_number, access_key, code, qr_version, created_at, updated_at,
-	status, status_changed_at, waitlisted_at, cancelled_at, cancelled_by, cancel_reason, forms_rejected_at`
+	status, status_changed_at, waitlisted_at, cancelled_at, cancelled_by, cancel_reason, forms_rejected_at,
+	form_response_id, form_response_status`
 
 // doorTicketCols carry the Ticket's status: the door finds a cancelled
 // Ticket to say so (409 ticket_cancelled), its lists leave it out.
@@ -713,13 +714,17 @@ func scanTicket(row rowScanner) (Ticket, error) {
 	var created, updated time.Time
 	var code string
 	var accessKey, cancelledBy, cancelReason *string
+	var formResponse *uuid.UUID
+	var formResponseStatus *string
 	err := row.Scan(
 		&t.ID, &t.EventID, &t.TicketType, &t.OwnerID,
 		&t.GuestFirstName, &t.GuestLastName, &t.GuestEmail, &t.GuestPhoneNumber,
 		&accessKey, &code, &t.QRVersion,
 		&created, &updated,
 		&t.Status, &t.StatusChangedAt, &t.WaitlistedAt, &t.CancelledAt, &cancelledBy, &cancelReason, &t.FormsRejectedAt,
+		&formResponse, &formResponseStatus,
 	)
+	t.FormsStatus = FormsStatusOf(formResponse != nil, formResponseStatus, t.FormsRejectedAt)
 	if accessKey != nil {
 		t.AccessKey = *accessKey
 	}

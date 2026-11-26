@@ -45,6 +45,17 @@ type FormResponse struct {
 	// ?davet= of the mail's link), when Forms reports it: it marks that
 	// invite answered (etkinlik geri bildirim formu, ticket 04).
 	Invite string
+	// GuestEvents, when set, are the only Events the answer may write on:
+	// those whose form mapping built Guest (docs/form-mappings.md). An
+	// Event listing the form without a mapping gets no guest from another
+	// Event's mapping. Nil is every Event that lists the form, as before.
+	GuestEvents []uuid.UUID
+	// OnlyEvents, when set, are the only Events the answer may write on,
+	// whoever answered: those whose "Otomatik bilet gönder" is on
+	// (docs/form-respondents.md); an Event with it off keeps the answer as
+	// an Unticketed respondent instead. Nil is every Event that lists the
+	// form, as before.
+	OnlyEvents []uuid.UUID
 }
 
 // FeedbackAnswers marks who answered a feedback form: the invite the code
@@ -110,6 +121,15 @@ const (
 	// (Yusuf, 2026-11-25) a decline cancels nothing; the outcome stays
 	// named for the logs and metrics read before.
 	FormResponseCancelled FormResponseOutcome = "cancelled"
+	// FormResponseMappedGuest is an answer that named nobody and wrote (or
+	// found) the Ticket of a guest built from an Event's form mapping
+	// (docs/form-mappings.md): FormResponseRecorded by that way in. Only the
+	// mapping's caller (formsfeed) names it; the rule answers Recorded.
+	FormResponseMappedGuest FormResponseOutcome = "mapped_guest"
+	// FormResponseMappingIncomplete is an answer that named nobody, to a
+	// form with a mapping whose answers give no guest: an e-mail that is
+	// not an address, or no first and last name. No Ticket; a 204.
+	FormResponseMappingIncomplete FormResponseOutcome = "mapping_incomplete"
 	// FormResponseFormsRejected is a declined answer that marked the
 	// Tickets it had written (Ticket.FormsRejectedAt; K6): the panel warns
 	// and offers to cancel them. A 204 still.
@@ -163,12 +183,12 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		return FormResponseResult{}, ErrForbidden
 	}
 	if r.FormID == uuid.Nil {
-		return FormResponseResult{}, ErrInvalid
+		return FormResponseResult{}, invalid(CodeFormIDRequired)
 	}
 	switch r.Status {
 	case FormResponseAccepted, FormResponsePending, FormResponseDeclined:
 	default:
-		return FormResponseResult{}, ErrInvalid
+		return FormResponseResult{}, invalid(CodeFormStatusInvalid)
 	}
 	// A draft's form writes Tickets too (ADR 0066): its editors linked the
 	// form and shared it; an answer not written now would be lost.
@@ -211,7 +231,7 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 	switch {
 	case r.UserID != nil:
 		if *r.UserID == uuid.Nil {
-			return FormResponseResult{}, ErrInvalid
+			return FormResponseResult{}, invalid(CodeUserIDInvalid)
 		}
 	case r.Guest != nil:
 		guest = normalizeGuest(*r.Guest)
@@ -221,15 +241,21 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 			return FormResponseResult{Outcome: FormResponseNoRespondent}, nil
 		}
 		if guest.FirstName == "" || guest.LastName == "" {
-			return FormResponseResult{}, ErrInvalid
+			return FormResponseResult{}, invalid(CodeGuestNameRequired)
 		}
 	default:
 		return FormResponseResult{Outcome: FormResponseNoRespondent}, nil
 	}
 	listing := listingForm(events, r.FormID)
 	listed := len(listing)
-	if listed == 0 {
-		return FormResponseResult{Outcome: FormResponseNotListed}, nil
+	if r.GuestEvents != nil && r.UserID == nil {
+		listing = onlyEvents(listing, r.GuestEvents)
+	}
+	if r.OnlyEvents != nil {
+		listing = onlyEvents(listing, r.OnlyEvents)
+	}
+	if len(listing) == 0 {
+		return FormResponseResult{Outcome: FormResponseNotListed, ListingEvents: listed}, nil
 	}
 	listing = notCancelled(listing)
 	if len(listing) == 0 {
@@ -260,24 +286,9 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 	admission := Admission{Waitlist: true, FormResponse: r.ResponseID}
 	var active, waitlisted, full int
 	for _, ev := range listing {
-		eventID := ev.ID
-		written := false
 		var got Ticket
-		if r.UserID != nil {
-			got, err = s.applyRegistered(ctx, eventID, *r.UserID, admission)
-			written = err == nil
-			if errors.Is(err, ErrConflict) || errors.Is(err, ErrTicketWaitlisted) {
-				// The Ticket already there: its status tells the outcome.
-				if existing, getErr := s.tickets.GetByOwnerEvent(ctx, *r.UserID, eventID); getErr == nil {
-					got = existing
-				}
-			}
-		} else {
-			var applied GuestApplication
-			applied, err = s.writeGuest(ctx, eventID, guest, false, admission)
-			written = err == nil && applied.Result == GuestCreated
-			got = applied.Ticket
-		}
+		var written bool
+		got, written, err = s.admitFormAnswer(ctx, ev.ID, r.UserID, guest, admission)
 		switch {
 		case errors.Is(err, ErrEventFull):
 			full++
@@ -309,6 +320,28 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		result.Outcome = FormResponseEventFull
 	}
 	return result, nil
+}
+
+// admitFormAnswer writes, or finds, the Ticket an accepted answer earns on
+// one Event (RecordFormResponse's step for each Event, and an organizer's
+// sending of an Unticketed respondent's Ticket): a REGISTERED one for
+// userID, else a guest one for guest, as untrusted (no rename). written is
+// a new or reopened Ticket; got is the Ticket the person holds there, when
+// known.
+func (s *service) admitFormAnswer(ctx context.Context, eventID uuid.UUID, userID *uuid.UUID, guest GuestInfo, admission Admission) (got Ticket, written bool, err error) {
+	if userID != nil {
+		got, err = s.applyRegistered(ctx, eventID, *userID, admission)
+		written = err == nil
+		if errors.Is(err, ErrConflict) || errors.Is(err, ErrTicketWaitlisted) {
+			// The Ticket already there: its status tells the outcome.
+			if existing, getErr := s.tickets.GetByOwnerEvent(ctx, *userID, eventID); getErr == nil {
+				got = existing
+			}
+		}
+		return got, written, err
+	}
+	applied, err := s.writeGuest(ctx, eventID, guest, false, admission)
+	return applied.Ticket, err == nil && applied.Result == GuestCreated, err
 }
 
 // declineFormResponse marks what a declined answer had earned (Yusuf, K6
@@ -374,6 +407,21 @@ func (s *service) keepAcceptedAnswer(ctx context.Context, t Ticket, r FormRespon
 	}
 	_, err := marks.KeepFormResponse(ctx, t.ID, r.FormID, r.ResponseID, r.UserID)
 	return err
+}
+
+// onlyEvents keeps the Events whose id is one of ids (FormResponse.GuestEvents,
+// OnlyEvents).
+func onlyEvents(listing []event.Event, ids []uuid.UUID) []event.Event {
+	out := listing[:0:0]
+	for _, ev := range listing {
+		for _, id := range ids {
+			if ev.ID == id {
+				out = append(out, ev)
+				break
+			}
+		}
+	}
+	return out
 }
 
 func listsEvent(events []event.Event, id uuid.UUID) bool {

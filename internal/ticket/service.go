@@ -38,6 +38,18 @@ type Service interface {
 	PromoteTicket(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error)
 	RecordFormResponse(ctx context.Context, p authz.Principal, r FormResponse) (FormResponseResult, error)
 	CanRecordFormResponse(p authz.Principal) bool
+	// AdmitFormRespondent writes an Unticketed respondent's Ticket on the
+	// Event (docs/form-respondents.md); the caller checked who may.
+	AdmitFormRespondent(ctx context.Context, eventID uuid.UUID, r FormRespondent) (FormRespondentOutcome, error)
+	// KeepFormRespondent applies an accepted answer to the person's Ticket
+	// on the Event without writing one; EnsureFormRespondent makes sure core
+	// has a signed-in person's row; BeginFormRespondentSend opens the
+	// sending's Team audit row, FinishFormRespondentJob closes a send-all
+	// job's when the job ended (docs/form-respondents.md).
+	KeepFormRespondent(ctx context.Context, eventID uuid.UUID, r FormRespondent) error
+	EnsureFormRespondent(ctx context.Context, userID uuid.UUID) (bool, error)
+	BeginFormRespondentSend(ctx context.Context, p authz.Principal, eventID uuid.UUID) (*FormRespondentSend, error)
+	FinishFormRespondentJob(ctx context.Context, eventID, jobID uuid.UUID, sum FormRespondentSummary, err error)
 	Mine(ctx context.Context, p authz.Principal) ([]Ticket, error)
 	// MineIncluding is the holder's active Tickets and those of the other
 	// statuses include names (GET /v1/tickets/me?include=…).
@@ -248,7 +260,7 @@ func (s *service) ListAssignableUsers(ctx context.Context, p authz.Principal, ev
 	if err := s.seen(&p, ev); err != nil {
 		return nil, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign) {
+	if !s.authz.Allow(p, eventResource(ev, authz.TypeTicket), authz.Assign) {
 		return nil, ErrForbidden
 	}
 	query = strings.TrimSpace(query)
@@ -586,7 +598,7 @@ func (s *service) readable(ctx context.Context, p authz.Principal, t Ticket) err
 	if err := s.seen(&p, ev); err != nil {
 		return err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Read) {
+	if !s.authz.Allow(p, eventResource(ev, authz.TypeTicket), authz.Read) {
 		return ErrForbidden
 	}
 	return nil
@@ -612,7 +624,7 @@ func (s *service) ApplyJoining(ctx context.Context, p authz.Principal, eventID u
 	}
 	ownerID, err := uuid.Parse(p.ID)
 	if err != nil {
-		return Ticket{}, ErrInvalid
+		return Ticket{}, invalid(CodeTokenSubjectInvalid)
 	}
 	return s.applyRegistered(ctx, eventID, ownerID, Admission{Waitlist: joinWaitlist})
 }
@@ -630,14 +642,14 @@ func (s *service) ApplyForOther(ctx context.Context, p authz.Principal, eventID,
 	if err := s.seen(&p, ev); err != nil {
 		return Ticket{}, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign) {
+	if !s.authz.Allow(p, eventResource(ev, authz.TypeTicket), authz.Assign) {
 		return Ticket{}, ErrForbidden
 	}
 	if ev.Status == event.StatusCancelled {
 		return Ticket{}, ErrEventCancelled
 	}
 	if userID == uuid.Nil {
-		return Ticket{}, ErrInvalid
+		return Ticket{}, invalid(CodeUserIDInvalid)
 	}
 	if err := s.resolveApplyTarget(ctx, userID); err != nil {
 		return Ticket{}, err
@@ -749,6 +761,22 @@ func (s *service) create(ctx context.Context, t Ticket, a Admission) (Ticket, er
 	return s.tickets.Create(ctx, t)
 }
 
+// missingGuestFields names the fields of a normalized g a guest
+// application needs and lacks, in the body's order.
+func missingGuestFields(g GuestInfo) []string {
+	missing := []string{}
+	if g.FirstName == "" {
+		missing = append(missing, "firstName")
+	}
+	if g.LastName == "" {
+		missing = append(missing, "lastName")
+	}
+	if g.Email == "" {
+		missing = append(missing, "email")
+	}
+	return missing
+}
+
 func normalizeGuest(g GuestInfo) GuestInfo {
 	g.FirstName = strings.TrimSpace(g.FirstName)
 	g.LastName = strings.TrimSpace(g.LastName)
@@ -779,8 +807,8 @@ func (s *service) ApplyGuest(ctx context.Context, p authz.Principal, eventID uui
 // it says no more than before about whether the e-mail had applied.
 func (s *service) ApplyGuestJoining(ctx context.Context, p authz.Principal, eventID uuid.UUID, g GuestInfo, joinWaitlist bool) (GuestApplication, error) {
 	g = normalizeGuest(g)
-	if g.FirstName == "" || g.LastName == "" || g.Email == "" {
-		return GuestApplication{}, ErrInvalid
+	if missing := missingGuestFields(g); len(missing) > 0 {
+		return GuestApplication{}, invalidWith(CodeGuestFieldsRequired, map[string]any{"fields": missing})
 	}
 	ev, err := s.events.Get(ctx, eventID)
 	if err != nil {
@@ -853,8 +881,8 @@ func (s *service) untrustedWaitlisted(ctx context.Context, eventID uuid.UUID, a 
 // is offered to. A product's service identity is not one.
 func (s *service) operatorOf(p authz.Principal, ev event.Event) bool {
 	return p.Product == "" && p.ID != "" &&
-		(s.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: ev.OwnerTeam}, authz.Update) ||
-			s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign))
+		(s.authz.Allow(p, eventResource(ev, authz.TypeEvent), authz.Update) ||
+			s.authz.Allow(p, eventResource(ev, authz.TypeTicket), authz.Assign))
 }
 
 // guestApplyTrusted reports whether p may write a guest with a token, see the
@@ -964,7 +992,7 @@ func (s *service) MineIncluding(ctx context.Context, p authz.Principal, include 
 	}
 	ownerID, err := uuid.Parse(p.ID)
 	if err != nil {
-		return nil, ErrInvalid
+		return nil, invalid(CodeTokenSubjectInvalid)
 	}
 	tickets, err := s.tickets.ListByOwner(ctx, ownerID)
 	if err != nil {
@@ -1082,7 +1110,7 @@ func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uu
 	if err := s.seen(&p, ev); err != nil {
 		return nil, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Read) {
+	if !s.authz.Allow(p, eventResource(ev, authz.TypeTicket), authz.Read) {
 		return nil, ErrForbidden
 	}
 	tickets, err := s.tickets.ListByEvent(ctx, eventID)
@@ -1110,7 +1138,7 @@ func (s *service) ListByEventStatus(ctx context.Context, p authz.Principal, even
 	if err := s.seen(&p, ev); err != nil {
 		return nil, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Read) {
+	if !s.authz.Allow(p, eventResource(ev, authz.TypeTicket), authz.Read) {
 		return nil, ErrForbidden
 	}
 	tickets, err := store.ListByEventStatus(ctx, eventID, statuses)
@@ -1152,7 +1180,7 @@ func (s *service) GetByUserEvent(ctx context.Context, p authz.Principal, userID,
 func (s *service) ListQuery(ctx context.Context, p authz.Principal, email string, userID *uuid.UUID) ([]Ticket, error) {
 	email = strings.TrimSpace(email)
 	if email == "" && userID == nil {
-		return nil, ErrInvalid
+		return nil, invalid(CodeTicketQueryRequired)
 	}
 
 	var byUser []Ticket
@@ -1328,7 +1356,7 @@ func (s *service) ticketSessionDay(ctx context.Context, t Ticket, sessionID uuid
 		return event.Session{}, event.Day{}, err
 	}
 	if day.EventID != t.EventID {
-		return event.Session{}, event.Day{}, ErrInvalid
+		return event.Session{}, event.Day{}, invalid(CodeSessionNotInEvent)
 	}
 	return sess, day, nil
 }
@@ -1414,7 +1442,7 @@ func (s *service) CheckInMe(ctx context.Context, p authz.Principal, sessionID uu
 func (s *service) checkInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID, doorToken string) (CheckIn, error) {
 	ownerID, err := uuid.Parse(p.ID)
 	if err != nil {
-		return CheckIn{}, ErrInvalid
+		return CheckIn{}, invalid(CodeTokenSubjectInvalid)
 	}
 	sess, eventID, err := s.sessionAndEvent(ctx, sessionID)
 	if err != nil {
@@ -1462,7 +1490,7 @@ func (s *service) CheckInGuest(ctx context.Context, sessionID uuid.UUID, g Guest
 func (s *service) checkInGuest(ctx context.Context, sessionID uuid.UUID, g GuestCheckIn) (CheckIn, error) {
 	email, key := strings.TrimSpace(g.Email), strings.TrimSpace(g.TicketKey)
 	if email == "" && key == "" {
-		return CheckIn{}, ErrInvalid
+		return CheckIn{}, invalid(CodeEmailOrTicketKeyRequired)
 	}
 	sess, eventID, err := s.sessionAndEvent(ctx, sessionID)
 	if err != nil {
@@ -1821,7 +1849,7 @@ func (s *service) ResolveAndCheckIn(
 func (s *service) findDoorTicket(ctx context.Context, ev event.Event, target DoorCheckInTarget) (Ticket, string, error) {
 	query := normalizedDoorValue(target.Query)
 	if target.PersonID == nil && query == "" {
-		return Ticket{}, "", ErrInvalid
+		return Ticket{}, "", invalid(CodeDoorQueryRequired)
 	}
 	if target.PersonID == nil {
 		row, found, err := s.doorTicketByCode(ctx, ev.ID, target.Query)
@@ -2083,20 +2111,32 @@ func (s *service) sessionActivity(ctx context.Context, ev event.Event, sessionID
 }
 
 func doorResource(ev event.Event) authz.Resource {
-	ids := make([]string, 0, len(ev.DoorStaffIDs))
-	for _, id := range ev.DoorStaffIDs {
-		ids = append(ids, id.String())
-	}
-	return authz.Resource{
-		Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam, DoorStaffIDs: ids,
-	}
+	return eventResource(ev, authz.TypeTicket)
 }
 
-func principalInOwnerTeam(p authz.Principal, ownerTeam string) bool {
-	if ownerTeam == "" {
+// doorScanTeams are the Event's organizer teams whose membership counts at
+// the door: its Owner team and its "members" Co-organizer teams
+// (docs/co-organizers.md), those p is in alone (memberOfTeam).
+func doorScanTeams(p authz.Principal, ev event.Event) []string {
+	var out []string
+	if memberOfTeam(p, ev.OwnerTeam) {
+		out = append(out, ev.OwnerTeam)
+	}
+	for _, team := range ev.CoOrganizers {
+		if team.Management == event.ManagementMembers && memberOfTeam(p, team.Code) {
+			out = append(out, team.Code)
+		}
+	}
+	return out
+}
+
+// memberOfTeam reports whether one of p's Groups is the team's or below it,
+// by its code as a whole path segment.
+func memberOfTeam(p authz.Principal, team string) bool {
+	if team == "" {
 		return false
 	}
-	marker := "/" + ownerTeam
+	marker := "/" + team
 	for _, group := range p.Groups {
 		if strings.HasSuffix(group, marker) || strings.Contains(group, marker+"/") {
 			return true
@@ -2105,15 +2145,27 @@ func principalInOwnerTeam(p authz.Principal, ownerTeam string) bool {
 	return false
 }
 
+// canUseDoor reports whether p may work ev's door: door staff, an
+// organizer team's Leader or a Co-organizer person, Privileged; or a member
+// of an organizer team whose membership counts while that team's Team door
+// scan is on, which is read only for the teams p is in.
 func (s *service) canUseDoor(ctx context.Context, p authz.Principal, ev event.Event) bool {
 	resource := doorResource(ev)
 	if s.authz.Allow(p, resource, authz.Validate) {
 		return true
 	}
-	if !principalInOwnerTeam(p, ev.OwnerTeam) {
+	teams := doorScanTeams(p, ev)
+	if len(teams) == 0 {
 		return false
 	}
-	resource.TeamDoorScan = s.teamDoorScan(ctx, ev.OwnerTeam)
+	for _, team := range teams {
+		if s.teamDoorScan(ctx, team) {
+			resource.TeamDoorScanTeams = append(resource.TeamDoorScanTeams, team)
+		}
+	}
+	if len(resource.TeamDoorScanTeams) == 0 {
+		return false
+	}
 	return s.authz.Allow(p, resource, authz.Validate)
 }
 

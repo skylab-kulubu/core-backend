@@ -110,7 +110,8 @@ at the door that day.
 The order, as the Session door's, all before any code is read:
 
 1. No such Event, or a draft the caller may not see: `404` (the list's
-   `date` is read after the door's rule: a bad one is `400`).
+   `date` is read after the door's rule: a bad one is `400
+   entry_date_invalid`).
 2. To write: a draft, a cancelled or archived Event, or one that ended over
    a day ago (the Ticket QR's own window): `403 event_closed` with
    `reason` (`event_not_published`, `event_cancelled`, `event_archived`,
@@ -123,8 +124,11 @@ The order, as the Session door's, all before any code is read:
 Then the code, with the Session scan's answers: `401 ticket_qr_invalid` /
 `ticket_qr_expired`, `410 ticket_qr_superseded`, `404` for another Event's
 Ticket or none. A second entry the same day is `409 already_entered` with
-`name` (who is already in). The desk: `404` none, `409` (title "Ambiguous
-Match") more than one.
+`name` (who is already in). The desk: `404` none, `409 ambiguous_match`
+(title "Ambiguous Match") more than one, `400 door_query_required` for
+neither `personId` nor `query`, `400 door_target_invalid` for a `personId`
+that is not a UUID, `400 invalid_body` for a body that is not JSON
+([problem-codes.md](problem-codes.md)).
 
 Each entry and undo at the Event's door logs one line:
 `{"event":"venue_entry","actorId":…,"eventId":…,"source":…}` and

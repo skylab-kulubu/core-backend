@@ -20,10 +20,15 @@ events (`forms.response.created` and `forms.response.status_changed`, with
 `EVENTS_FORMS_ENABLED=true`; [integration-events.md](integration-events.md#coreforms-forms-events)),
 which carry no guest's name or e-mail (core reads them from Forms) and the
 invite code as the `davet` hidden field. A third, the pull from Forms'
-list (an organizer's backfill and the daily catch-up,
-[form-pulls.md](form-pulls.md)), takes the same rule. All end in
+list (the daily catch-up, [form-pulls.md](form-pulls.md)), takes the same
+rule. With `EVENTS_FORMS_ENABLED=true` every way in also keeps the answers
+that earn no Ticket now as Unticketed respondents (pending in Forms, or the
+Event's "Otomatik bilet gönder" off), for the organizer to send
+([form-respondents.md](form-respondents.md)); off, the rule alone, as below. All end in
 `ticket.Service.RecordFormResponse`; what this page says of an answer holds
-for each. The HTTP report goes when Forms stops sending it, after at most
+for each. An accepted answer that names nobody (no `userId`, no `guest`) to
+a form an Event maps gets the guest its mapped answers give, by every way
+in ([form-mappings.md](form-mappings.md)). The HTTP report goes when Forms stops sending it, after at most
 one to two days of both (hub ticket R16).
 
 ## Endpoint
@@ -56,7 +61,7 @@ that no Event lists: it writes nothing for it, and the report's log line
 | `200` `{"outcome": "waitlisted"}` | done: every Event of the form that took the answer is full, and the answer is on the waiting list of at least one ([event-capacity.md](event-capacity.md)); core tells the person (while `TICKET_STATUS_MAIL` is on); stop sending the report |
 | `200` `{"outcome": "event_full"}` | done, and no Ticket was written: every Event of the form is full with its waiting list off; stop sending the report |
 | `200` `{"outcome": "registration_closed"}` | done, and no Ticket was written: the report said when the answer was sent (`submittedAt`), and by then every Event of the form not cancelled had closed applying ([event-registration-closure.md](event-registration-closure.md)); stop sending the report |
-| `400` | a malformed report: a form id or body core cannot read, an unknown `status`, a zero `userId`, or a `guest` with an e-mail but without a first name or last name; sending it again will not help |
+| `400` | a malformed report, with its `code` ([problem-codes.md](problem-codes.md)): a form id or body core cannot read (`invalid_id`, `invalid_body`), the zero form id (`form_id_required`), an unknown `status` (`form_status_invalid`), a zero `userId` (`user_id_invalid`), or a `guest` with an e-mail but without a first name or last name (`guest_name_required`); sending it again will not help |
 | `401` | no valid token |
 | `403` | the token is not the forms service account's with `ticket:forms`; core refuses it before reading the request, so a malformed report from such a caller is `403` too |
 | `5xx` | core could not finish; send the report again |
@@ -146,6 +151,9 @@ operator's cancellation, [ticket-cancellation.md](ticket-cancellation.md)).
   mail from core (Forms sends its own). The answer is still `204`; the
   log's `outcome` is `forms_rejected`, else `not_accepted`.
 - A later `accepted` report of the same answer clears the mark.
+- Ticket answers carry `formsStatus` (`accepted`, `pending`, `declined`;
+  none for a Ticket no answer wrote), read from `form_response_status`, for
+  the panel's badge ([form-respondents.md](form-respondents.md#the-tickets-forms-status)).
 - A Ticket Forms' decline cancelled before K6 (`cancelledBy: form`) is
   reopened by its answer's acceptance, as below.
 - Account erasure clears `form_response_id` with the person's other data;
@@ -182,7 +190,7 @@ other than the three), `outcome`, `tickets_written` (new Tickets only),
 status (`0` when the report ended before they were read). More than one is a
 form shared before the one-place rule; such a form is left as it is and the
 line is how it shows.
-`outcome` is `recorded`, `not_accepted`, `forms_rejected`, `cancelled` (before K6), `no_respondent`, `not_listed`,
+`outcome` is `recorded`, `not_accepted`, `forms_rejected`, `respondent_kept` ([form-respondents.md](form-respondents.md)), `cancelled` (before K6), `no_respondent`, `not_listed`,
 `event_cancelled`, `event_ended`, `registration_closed`, `waitlisted`, `event_full`, `person_unavailable`, `invalid` or `failed`. The line never carries the
 `userId`, a name or an e-mail.
 

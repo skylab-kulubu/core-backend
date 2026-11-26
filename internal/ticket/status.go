@@ -80,6 +80,22 @@ type FormsRejectionStore interface {
 	KeepFormResponse(ctx context.Context, id, formID, responseID uuid.UUID, userID *uuid.UUID) (bool, error)
 }
 
+// FormsStatusOf is a Ticket's Ticket.FormsStatus: "" for a Ticket no forms
+// answer wrote, declined when Forms declined it (K6), else the answer's
+// status as kept (tickets.form_response_status), accepted for an answer
+// kept before that column.
+func FormsStatusOf(fromForm bool, status *string, rejectedAt *time.Time) string {
+	switch {
+	case !fromForm:
+		return ""
+	case rejectedAt != nil:
+		return string(FormResponseDeclined)
+	case status != nil && *status != "":
+		return *status
+	}
+	return string(FormResponseAccepted)
+}
+
 // CancelBlockStore reads which of the Tickets ids no cancellation may
 // touch (PostgresStore, MemoryStore): one with a check-in, or of a
 // Competition's current Entrant, as Cancel refuses them

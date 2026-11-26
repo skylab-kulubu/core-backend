@@ -29,9 +29,11 @@ type BackfillEvents interface {
 	ListIncludingDrafts(ctx context.Context, ownerTeam string) ([]event.Event, error)
 }
 
-// Backfills takes an organizer's "Bu kişilere de bilet yaz" (SPEC §10 eki,
-// R13 eki 1): it queues a pull of every accepted answer of a form an Event
-// lists, for the Puller to write their Tickets by the one Ticket rule.
+// Backfills takes an organizer's request to gather a form's answers again
+// (SPEC §10 eki, R13 eki 1; since hub bilet 04, K1 of 2026-11-25): it
+// queues the gathering (PullCollect) of every answer of a form an Event
+// lists, kept as Unticketed respondents; it writes no Ticket
+// (docs/form-respondents.md).
 type Backfills struct {
 	Events BackfillEvents
 	Authz  authz.Authorizer
@@ -58,7 +60,7 @@ func (b *Backfills) Request(ctx context.Context, p authz.Principal, eventID, for
 	if err != nil {
 		return false, err
 	}
-	if p.ServiceAccount || !b.Authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: ev.OwnerTeam}, authz.Update) {
+	if p.ServiceAccount || !b.Authz.Allow(p, event.AuthzResource(ev, authz.TypeEvent, time.Now()), authz.Update) {
 		if ev.Status == event.StatusDraft {
 			// A draft is shown to its editors only (ADR 0066).
 			return false, ErrBackfillEventNotFound

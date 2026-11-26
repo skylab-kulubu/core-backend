@@ -1,5 +1,6 @@
-"""Worker processes: each request's PDF work runs in one of a few child
-processes, so a PDF that takes too long is stopped by killing its process.
+"""Worker processes: each request's PDF or font work runs in one of a few
+child processes, so an input that takes too long is stopped by killing its
+process.
 """
 
 from __future__ import annotations
@@ -21,9 +22,17 @@ JOBS_PER_WORKER = 200
 DEFAULT_WORKER_MEMORY_MIB = 300
 
 
-def _run(op: str, args: tuple, test_hooks: bool) -> object:
-    from . import ops
+def _input(op: str) -> tuple[str, str]:
+    """What the op reads, for its problem codes and details: font ops answer
+    font_unreadable and font_timeout, the others pdf_…."""
+    return ("font", "font") if op.startswith("font") else ("pdf", "PDF")
 
+
+def _run(op: str, args: tuple, test_hooks: bool) -> object:
+    from . import fonts, ops
+
+    if op == "font-sanitize":
+        return fonts.sanitize(*args)
     if op == "inspect":
         return ops.inspect(*args)
     if op == "strip-text":
@@ -32,10 +41,10 @@ def _run(op: str, args: tuple, test_hooks: bool) -> object:
         return ops.place(*args)
     if op == "render":
         return ops.render(*args)
-    if test_hooks and op == "sleep":
+    if test_hooks and op in ("sleep", "font-sleep"):
         time.sleep(float(args[0]))
         return b"slept"
-    if test_hooks and op == "die":
+    if test_hooks and op in ("die", "font-die"):
         os._exit(3)
     raise Problem("not_found", f"no operation {op}")
 
@@ -57,7 +66,7 @@ def _limit_memory(mib: int) -> None:
 
 def main(conn, test_hooks: bool, memory_mib: int = 0) -> None:  # the child process
     # Load the libraries before the first job, then cap the memory.
-    from . import ops  # noqa: F401
+    from . import fonts, ops  # noqa: F401
 
     _limit_memory(memory_mib)
     while True:
@@ -73,10 +82,12 @@ def main(conn, test_hooks: bool, memory_mib: int = 0) -> None:  # the child proc
         except Problem as p:
             conn.send(("problem", p.code, p.detail, p.extra))
         except MemoryError:
-            conn.send(("problem", "pdf_unreadable", "the PDF needs too much memory", {}))
+            kind, what = _input(op)
+            conn.send(("problem", f"{kind}_unreadable", f"the {what} needs too much memory", {}))
         except Exception as exc:  # a library error on a hostile input
             traceback.print_exc(file=sys.stderr)
-            conn.send(("problem", "pdf_unreadable", f"the PDF could not be processed ({exc.__class__.__name__})", {}))
+            kind, what = _input(op)
+            conn.send(("problem", f"{kind}_unreadable", f"the {what} could not be processed ({exc.__class__.__name__})", {}))
 
 
 @dataclass
@@ -154,13 +165,16 @@ class Pool:
             traceback.print_exc(file=sys.stderr)
             return w
 
-    def run(self, op: str, *args: object) -> object:
+    def run(self, op: str, *args: object, timeout: float | None = None) -> object:
+        """Runs op on a free worker; timeout (s) shortens the pool's for this
+        job."""
+        limit = self.timeout if timeout is None else min(self.timeout, timeout)
         try:
             w = self._idle.get(timeout=self.queue_wait)
         except queue.Empty:
             raise Problem("busy", "every worker is busy") from None
         try:
-            w, outcome = self._job(w, op, args)
+            w, outcome = self._job(w, op, args, limit)
         finally:
             if not self._closed:
                 self._idle.put(w)
@@ -171,7 +185,7 @@ class Pool:
         _, code, detail, extra = outcome
         raise Problem(code, detail, **extra)
 
-    def _job(self, w: _Worker, op: str, args: tuple) -> tuple[_Worker, object]:
+    def _job(self, w: _Worker, op: str, args: tuple, timeout: float) -> tuple[_Worker, object]:
         """Runs one job on w; answers the worker to put back (w or its
         replacement) and the reply or a Problem."""
         if not w.process.is_alive():
@@ -184,16 +198,17 @@ class Pool:
             # The worker went away before the job: not the client, not the PDF.
             w = self._replace(w)
             return w, Problem("internal", "the worker could not take the job")
-        if not w.conn.poll(self.timeout):  # type: ignore[attr-defined]
+        kind, what = _input(op)
+        if not w.conn.poll(timeout):  # type: ignore[attr-defined]
             w = self._replace(w)
-            return w, Problem("pdf_timeout", f"the PDF took longer than {self.timeout:g} s")
+            return w, Problem(f"{kind}_timeout", f"the {what} took longer than {timeout:g} s")
         try:
             reply = w.conn.recv()  # type: ignore[attr-defined]
         except (EOFError, OSError):
             # It died on this PDF (its memory cap, a crash in a library): the
             # same PDF would do it again.
             w = self._replace(w)
-            return w, Problem("pdf_unreadable", "reading the PDF stopped its worker (memory or a crash)")
+            return w, Problem(f"{kind}_unreadable", f"reading the {what} stopped its worker (memory or a crash)")
         w.jobs += 1
         if w.jobs >= JOBS_PER_WORKER:
             w = self._replace(w)

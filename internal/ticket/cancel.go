@@ -32,7 +32,7 @@ func (s *service) statusStore() (StatusStore, error) {
 // ordinary member may not.
 func (s *service) ticketOperator(p authz.Principal, ev event.Event) bool {
 	return p.ID != "" && p.Product == "" &&
-		s.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: ev.OwnerTeam}, authz.Update)
+		s.authz.Allow(p, eventResource(ev, authz.TypeEvent), authz.Update)
 }
 
 // privilegedOperator reports whether p cancels as Privileged (the audit
@@ -151,7 +151,7 @@ func HolderCancel(ctx context.Context, tickets Store, events event.Store, t Tick
 func (s *service) cancelByOperator(ctx context.Context, p authz.Principal, id uuid.UUID, reason string, notify bool) (Ticket, error) {
 	reason = strings.TrimSpace(reason)
 	if utf8.RuneCountInString(reason) > MaxCancelReason {
-		return Ticket{}, ErrInvalid
+		return Ticket{}, invalidWith(CodeCancelReasonTooLong, map[string]any{"max": MaxCancelReason})
 	}
 	store, err := s.statusStore()
 	if err != nil {
