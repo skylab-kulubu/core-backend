@@ -21,6 +21,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/qr"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/ticket/theme"
+	"github.com/skylab-kulubu/core-backend/internal/ticketimage"
 	"github.com/skylab-kulubu/core-backend/internal/ticketqr"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -86,6 +87,15 @@ type Service struct {
 	// Entries reads what the page polls on the Event's day (CheckIns):
 	// core's Postgres store. Nil answers every key 404.
 	Entries EntryStore
+	// TicketImages reads the Event's choice for the PDF's band
+	// (docs/ticket-image.md); nil, or a failed read, cuts the cover's
+	// middle.
+	TicketImages TicketImages
+}
+
+// TicketImages reads an Event's ticket image choice (ticketimage.Store).
+type TicketImages interface {
+	Get(ctx context.Context, eventID uuid.UUID) (ticketimage.Setting, error)
 }
 
 // EntryStore reads a Ticket's own check-ins by its key in one query
@@ -167,13 +177,18 @@ type View struct {
 	MapAttributionURL string `json:"mapAttributionUrl,omitempty"`
 	OwnerTeam         string `json:"ownerTeam"`
 	OrganizerName     string `json:"organizerName"` // organizer.Name(OwnerTeam): the club for YK, DK, ADMIN, none
-	EventStatus       string `json:"eventStatus"`
-	HolderName        string `json:"holderName"`
-	Code              string `json:"code"`
-	QRToken           string `json:"qrToken"`
-	QRURL             string `json:"qrUrl"`
-	PDFURL            string `json:"pdfUrl"`
-	State             string `json:"state"`
+	// CoOrganizerTeams and CoOrganizerNames are the Event's Co-organizer
+	// teams shown outside the panel and their names (docs/co-organizers.md);
+	// left out for none, never a helper team or a person.
+	CoOrganizerTeams []string `json:"coOrganizerTeams,omitempty"`
+	CoOrganizerNames string   `json:"coOrganizerNames,omitempty"`
+	EventStatus      string   `json:"eventStatus"`
+	HolderName       string   `json:"holderName"`
+	Code             string   `json:"code"`
+	QRToken          string   `json:"qrToken"`
+	QRURL            string   `json:"qrUrl"`
+	PDFURL           string   `json:"pdfUrl"`
+	State            string   `json:"state"`
 	// Cancellable is whether the holder may cancel the Ticket from the page
 	// now (POST …/cancel, ticket.HolderCancellable): an active Ticket until
 	// its Event starts, a waitlisted one until it ends.
@@ -278,6 +293,7 @@ func (s *Service) Page(ctx context.Context, key string) (View, error) {
 		MapsURL:       MapsURL(ev.Location, ev.LocationAddress, ev.LocationLat, ev.LocationLng),
 		MapImageURL:   media.ConfiguredAddresses().Object(ev.MapImageURL),
 		OwnerTeam:     ev.OwnerTeam, OrganizerName: organizer.Name(ev.OwnerTeam), EventStatus: string(ev.Status),
+		CoOrganizerTeams: event.PublicCoOrganizerTeams(ev), CoOrganizerNames: organizer.CoNames(event.PublicCoOrganizerTeams(ev)),
 		HolderName: o.holder, Code: o.ticket.Code, State: o.state,
 		Theme:         Theme{Key: th.Key, Accent: Accent(ev)},
 		CoverImageURL: media.ConfiguredAddresses().Object(ev.CoverImageURL),
@@ -437,7 +453,8 @@ func (s *Service) document(ctx context.Context, o opened, token string) (Documen
 		EventName: ev.Name, Start: ev.StartDate, End: ev.EndDate,
 		Venue: ev.Location, VenueAddress: ev.LocationAddress,
 		DirectionsURL: DirectionsURL(ev.Location, ev.LocationAddress, ev.LocationLat, ev.LocationLng),
-		OwnerTeam:     ev.OwnerTeam, HolderName: o.holder, Code: o.ticket.Code, QRToken: token,
+		OwnerTeam:     ev.OwnerTeam, CoOrganizers: organizer.CoNames(event.PublicCoOrganizerTeams(ev)),
+		HolderName: o.holder, Code: o.ticket.Code, QRToken: token,
 		Description: ev.Description, Theme: th, IssuedAt: s.now(),
 	}
 	program, err := s.program(ctx, ev)
@@ -448,9 +465,7 @@ func (s *Service) document(ctx context.Context, o opened, token string) (Documen
 	if len(ev.CoverColors) > 0 {
 		doc.BandColor = ev.CoverColors[0]
 	}
-	if ev.CoverImageID != nil {
-		doc.BandJPEG = s.band(ctx, *ev.CoverImageID)
-	}
+	doc.BandJPEG = s.ticketBand(ctx, ev)
 	if ev.MapImageID != nil && s.images != nil {
 		if data, contentType, ok := s.images.Image(ctx, *ev.MapImageID, ""); ok {
 			doc.Map, doc.MapType = data, contentType
@@ -511,25 +526,59 @@ func compareTimes(a, b *time.Time) int {
 	}
 }
 
-// band is the cover's band, cut from its page size and kept a while; nil
-// when the cover cannot be read (the band is then its colour).
-func (s *Service) band(ctx context.Context, cover uuid.UUID) []byte {
+// ticketBand is the band's picture for the Event: the image and region
+// its ticket image choice names, else the cover's middle; nil when there is
+// no picture to cut (the band is then the cover's colour).
+func (s *Service) ticketBand(ctx context.Context, ev event.Event) []byte {
+	setting := ticketimage.Setting{Source: ticketimage.SourceAuto}
+	if s.TicketImages != nil {
+		if got, err := s.TicketImages.Get(ctx, ev.ID); err == nil {
+			setting = got
+		}
+	}
+	img, crop := setting.Band(ev.CoverImageID)
+	if img == nil {
+		return nil
+	}
+	data := s.band(ctx, *img, crop)
+	if data == nil && ev.CoverImageID != nil && *img != *ev.CoverImageID {
+		// The chosen image cannot be read: the cover's middle.
+		data = s.band(ctx, *ev.CoverImageID, nil)
+	}
+	return data
+}
+
+// band is the image's band, cut from its largest readable copy to the
+// region (nil: its middle) and kept a while; nil when the image cannot be
+// read.
+func (s *Service) band(ctx context.Context, id uuid.UUID, crop *ticketimage.Crop) []byte {
 	if s.images == nil {
 		return nil
 	}
 	now := s.now()
-	if data, ok := s.bands.get(cover, now); ok {
+	key := bandKey(id, crop)
+	if data, ok := s.bands.get(key, now); ok {
 		return data
 	}
-	data, _, ok := s.images.Image(ctx, cover, media.SizePage)
-	if !ok {
-		return nil
+	var cut []byte
+	var ok bool
+	if src, has := s.images.(BandSources); has {
+		if data, read := src.BandSource(ctx, id); read {
+			cut, ok = Band(data, crop)
+		}
 	}
-	cut, ok := CoverBand(data)
 	if !ok {
-		return nil
+		// No original to cut, or one Band could not (too large to decode):
+		// the page size, once.
+		data, _, read := s.images.Image(ctx, id, media.SizePage)
+		if !read {
+			return nil
+		}
+		if cut, ok = Band(data, crop); !ok {
+			return nil
+		}
 	}
-	s.bands.put(cover, cut, now)
+	s.bands.put(key, cut, now)
 	return cut
 }
 

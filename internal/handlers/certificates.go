@@ -27,7 +27,11 @@ func certError(c fiber.Ctx, err error) error {
 	var refused *certificate.InvalidError
 	var unavailable *certificate.UnavailableError
 	var eventTemplateExists *certificate.EventTemplateExistsError
+	var fontExists *certificate.FontExistsError
 	switch {
+	case errors.As(err, &fontExists):
+		return problemWithFields(c, fiber.StatusConflict, "Conflict", "Conflict", certificate.CodeFontExists,
+			fiber.Map{"fontId": fontExists.FontID})
 	case errors.As(err, &eventTemplateExists):
 		return problemWithFields(c, fiber.StatusConflict, "Conflict", "Conflict", certificate.CodeTemplateEventExists,
 			fiber.Map{"templateId": eventTemplateExists.TemplateID})

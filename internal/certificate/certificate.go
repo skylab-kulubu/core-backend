@@ -38,6 +38,11 @@ type Certificate struct {
 	JobID             *uuid.UUID `json:"jobId,omitempty"`
 	RevokedAt         *time.Time `json:"revokedAt,omitempty"`
 	IssuedAt          time.Time  `json:"issuedAt"`
+	// CoOrganizerTeams are the Event's Co-organizer teams shown outside the
+	// panel when it was issued (docs/co-organizers.md): its snapshot, as
+	// OwnerTeam, never changed after. Nil for a certificate issued before
+	// core kept it, empty for none. Only the public verification names them.
+	CoOrganizerTeams []string `json:"-"`
 	// Attendance is the attendance it was issued on; nil for a certificate
 	// issued before core kept it. Only the public verification shows it.
 	Attendance *AttendanceSnapshot `json:"-"`
@@ -124,4 +129,23 @@ type Service interface {
 	// (docs/certificate-event-templates.md).
 	EventTemplate(ctx context.Context, p authz.Principal, eventID uuid.UUID) (EventTemplateState, error)
 	CreateEventTemplate(ctx context.Context, p authz.Principal, eventID uuid.UUID, in EventTemplateInput) (Template, error)
+	// AssetInfo and AssetPreview are a certificate asset's size and the
+	// picture the template editor draws it with (pdf-tools for a PDF).
+	AssetInfo(ctx context.Context, p authz.Principal, id uuid.UUID) (AssetInfo, error)
+	AssetPreview(ctx context.Context, p authz.Principal, id uuid.UUID, maxPx int) (AssetPreview, error)
+	// AssetText lists a PDF asset's text and ConvertAssetText turns the
+	// chosen pieces into layout elements over a new PDF without them
+	// (docs/certificate-template-errors.md, "Background text conversion").
+	// templateID (optional) matches the text against the fonts of that
+	// template's team and the club's.
+	AssetText(ctx context.Context, p authz.Principal, id uuid.UUID, templateID *uuid.UUID) (AssetText, error)
+	ConvertAssetText(ctx context.Context, p authz.Principal, id uuid.UUID, req TextConversionRequest) (TextConversion, error)
+	// ListFonts, CreateFont, FontFile and ArchiveFont are the teams' and
+	// the club's certificate fonts (docs/certificate-fonts.md).
+	// ListFonts with templateID is that template's editor's list (team,
+	// club, and the fonts its draft keeps); else team's and the club's.
+	ListFonts(ctx context.Context, p authz.Principal, team string, templateID *uuid.UUID) ([]Font, error)
+	CreateFont(ctx context.Context, p authz.Principal, in FontInput) (Font, error)
+	FontFile(ctx context.Context, p authz.Principal, id uuid.UUID) (FontFile, error)
+	ArchiveFont(ctx context.Context, p authz.Principal, id uuid.UUID) error
 }

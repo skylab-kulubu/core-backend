@@ -31,8 +31,9 @@ type Ledger interface {
 // Records are the codes core's own records hold.
 type Records interface {
 	// Held reports whether an Owner team record of core (an Event, a
-	// certificate, a certificate template or its Owner team binding) or a
-	// retired code holds code, compared without case.
+	// certificate, a certificate template or its Owner team binding, an
+	// Event's Co-organizer team) or a retired code holds code, compared
+	// without case.
 	Held(ctx context.Context, code string) (bool, error)
 	// References are the kinds of Owner team record of core that hold
 	// code (RecordEvent, …, in that order), compared without case; none is
@@ -52,10 +53,13 @@ const (
 	RecordCertificate         = "certificate"
 	RecordCertificateTemplate = "certificate_template"
 	RecordTemplateBinding     = "certificate_template_binding"
+	// RecordEventCoOrganizer: an Event names the code as one of its
+	// Co-organizer teams (event_co_organizers, docs/co-organizers.md).
+	RecordEventCoOrganizer = "event_co_organizer"
 )
 
 // recordKinds are the kinds in the order References answers them.
-var recordKinds = []string{RecordEvent, RecordCertificate, RecordCertificateTemplate, RecordTemplateBinding}
+var recordKinds = []string{RecordEvent, RecordCertificate, RecordCertificateTemplate, RecordTemplateBinding, RecordEventCoOrganizer}
 
 // MemoryLedger is a Ledger in this process only: a lock no other core sees
 // and the codes Hold gave it. For tests and for a service without a

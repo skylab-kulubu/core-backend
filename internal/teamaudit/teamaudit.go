@@ -86,6 +86,16 @@ const (
 	// ActionTicketImportPreview is the import's preview, recorded as
 	// ActionTicketImport: what the list would do, nothing written.
 	ActionTicketImportPreview Action = "ticket.import.preview"
+	// ActionCoOrganizerAdd, ActionCoOrganizerRemove and
+	// ActionCoOrganizerChange are an Event's Co-organizer list changed
+	// (docs/co-organizers.md): a team or a person added or removed, or a
+	// team's choices changed. The target is the Event's Owner team
+	// (GroupID, GroupPath), none for an Event without one; before and after
+	// name the Event and the team (State.Code, State.Management,
+	// State.Visibility) or the person (State.PersonID), never a name.
+	ActionCoOrganizerAdd    Action = "co_organizer.add"
+	ActionCoOrganizerRemove Action = "co_organizer.remove"
+	ActionCoOrganizerChange Action = "co_organizer.change"
 	// The user.* actions are a person's account changed from the panel's
 	// person card (docs/user-accounts.md): the target is the person
 	// (TargetUserID), with no Group (GroupID and GroupPath empty). before
@@ -136,6 +146,7 @@ var Actions = []Action{
 	ActionTermExtend, ActionTermHandover, ActionTermExpired,
 	ActionTicketResend, ActionTicketLinkRenew, ActionTicketCancel, ActionTicketRestore, ActionTicketPromote,
 	ActionTicketImport, ActionTicketImportPreview,
+	ActionCoOrganizerAdd, ActionCoOrganizerRemove, ActionCoOrganizerChange,
 	ActionUserEnable, ActionUserDisable, ActionUserPasswordSet, ActionUserPasswordMail,
 	ActionUserEmailChange, ActionUserEmailVerify, ActionUserEmailMail, ActionUserEmailPrimary,
 	ActionUserRequiredActions, ActionUserCredentialRemove, ActionUserIdentityUnlink,
@@ -164,6 +175,13 @@ func (a Action) IsApp() bool {
 // target is the person alone, with no Group.
 func (a Action) IsUser() bool {
 	return slices.Contains(UserActions, a)
+}
+
+// IsCoOrganizer reports whether the action is an Event's Co-organizer
+// list's: its target is the Event's Owner team, or no Group for an Event
+// without one.
+func (a Action) IsCoOrganizer() bool {
+	return a == ActionCoOrganizerAdd || a == ActionCoOrganizerRemove || a == ActionCoOrganizerChange
 }
 
 // IsKeycloak reports whether the action is a Keycloak configuration
@@ -206,10 +224,13 @@ const (
 	// nil subject, and Actor.Client names the job.
 	BasisSystem Basis = "system"
 	// BasisEventEditor: the actor may edit the Event by the Event policy
-	// (a member of a team whose members edit its Events, GECEKODU) without
-	// being Privileged or a Leader. Only a Ticket's cancellation and its
-	// taking back (docs/ticket-cancellation.md) carry it; Actor.ViaGroupID
-	// names the Event's team.
+	// (a member of a team whose members edit its Events, GECEKODU; one of
+	// its Co-organizers, docs/co-organizers.md) without being Privileged or
+	// a Leader of the Event's team or a Team above it. A copy's
+	// co_organizer.add rows (reason "copy") by a Co-organizer carry it. A Ticket's
+	// cancellation and its taking back (docs/ticket-cancellation.md), its
+	// promotion and import, and its resend and link renewal by a
+	// Co-organizer carry it; Actor.ViaGroupID names the Event's team.
 	BasisEventEditor Basis = "event_editor"
 	// BasisConsole is a change made in Keycloak's own console (or its Admin
 	// REST API by anyone but core), read back from Keycloak's admin events
@@ -366,6 +387,18 @@ type State struct {
 	CredentialType  string   `json:"credentialType,omitempty"`
 	Provider        string   `json:"provider,omitempty"`
 	Fields          []string `json:"fields,omitempty"`
+	// Management, Visibility and PersonID are a co_organizer.* row's: a
+	// Co-organizer team's choices (its code is Code), or the Co-organizer
+	// person (a subject). Absent on every other row.
+	Management string `json:"management,omitempty"`
+	Visibility string `json:"visibility,omitempty"`
+	PersonID   string `json:"personId,omitempty"`
+	// Changes is how many changes a refused write of the list asked for
+	// (its one denied row); Reason is why a row was written without a
+	// write of the list ("copy": an Event's copy carried it). Absent on
+	// every other row.
+	Changes int    `json:"changes,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 	// Import is a ticket.import row's counts; absent on every other row.
 	Import *ImportCounts `json:"import,omitempty"`
 	// Operation and ResourceType are Keycloak's names of a console change
@@ -400,7 +433,19 @@ type ImportCounts struct {
 	Duplicates int `json:"duplicates"`
 	// Mail is whether the new Tickets' mail was asked for.
 	Mail bool `json:"mail"`
+	// Source is what was imported: "form_respondents" for a sending of
+	// Unticketed respondents' Tickets (docs/form-respondents.md); empty
+	// for an attendee list (CSV). JobID is the send-all job the row
+	// counts (all: true), whose own counts it holds once the job ended;
+	// Skipped are that job's rows sent no Ticket (pending, or held one).
+	Source  string `json:"source,omitempty"`
+	JobID   string `json:"jobId,omitempty"`
+	Skipped int    `json:"skipped,omitempty"`
 }
+
+// SourceFormRespondents is ImportCounts.Source of a form respondents'
+// sending.
+const SourceFormRespondents = "form_respondents"
 
 // Limits of what a row holds. A longer text is cut, so a long value never
 // stops a write; a path longer than MaxPath is refused (Keycloak paths are
@@ -529,7 +574,8 @@ func (r Record) normalize() (Record, string) {
 	case BasisEventEditor:
 		if _, err := uuid.Parse(r.Actor.ViaGroupID); err != nil ||
 			(r.Action != ActionTicketCancel && r.Action != ActionTicketRestore && r.Action != ActionTicketPromote &&
-				r.Action != ActionTicketImport && r.Action != ActionTicketImportPreview) {
+				r.Action != ActionTicketImport && r.Action != ActionTicketImportPreview &&
+				r.Action != ActionTicketResend && r.Action != ActionTicketLinkRenew && r.Action != ActionCoOrganizerAdd) {
 			return r, "invalid_basis"
 		}
 	case BasisConsole:
@@ -575,6 +621,11 @@ func (r Record) normalize() (Record, string) {
 		if r.GroupID != "" || r.GroupPath != "" {
 			return r, "invalid_path"
 		}
+	} else if r.Action.IsCoOrganizer() && r.GroupID == "" {
+		// An Event without an Owner team: no Group, no path.
+		if r.GroupPath != "" {
+			return r, "invalid_path"
+		}
 	} else if r.GroupID == "" && r.Action != ActionTeamCreate {
 		return r, "no_group"
 	}
@@ -583,7 +634,7 @@ func (r Record) normalize() (Record, string) {
 			return r, "invalid_group"
 		}
 	}
-	if r.GroupID != "" || (!r.Action.IsApp() && !r.Action.IsUser() && !r.Action.IsKeycloak()) {
+	if r.GroupID != "" || (!r.Action.IsApp() && !r.Action.IsUser() && !r.Action.IsKeycloak() && !r.Action.IsCoOrganizer()) {
 		if !strings.HasPrefix(r.GroupPath, "/") || utf8.RuneCountInString(r.GroupPath) > MaxPath || !utf8.ValidString(r.GroupPath) {
 			return r, "invalid_path"
 		}
@@ -626,6 +677,15 @@ func (s *State) normalize() *State {
 	if _, err := uuid.Parse(s.EventID); err == nil {
 		out.EventID = s.EventID
 	}
+	if _, err := uuid.Parse(s.PersonID); err == nil {
+		out.PersonID = s.PersonID
+	}
+	out.Management = cut(s.Management, MaxIdentifier)
+	out.Visibility = cut(s.Visibility, MaxIdentifier)
+	if s.Changes > 0 {
+		out.Changes = s.Changes
+	}
+	out.Reason = cut(s.Reason, MaxIdentifier)
 	if s.Resend > 0 {
 		out.Resend = s.Resend
 	}

@@ -183,7 +183,27 @@ def _font_size(obj: object) -> float:
     return float(size.value)
 
 
-def pdfium_holders(page: pdfium.PdfPage, textpage: pdfium.PdfTextPage) -> dict[tuple[int, ...], PdfiumHolder]:
+# The page object kinds /inspect counts (Analysis.objects).
+_OBJECT_KINDS = {
+    pdfium_c.FPDF_PAGEOBJ_TEXT: "text",
+    pdfium_c.FPDF_PAGEOBJ_PATH: "path",
+    pdfium_c.FPDF_PAGEOBJ_IMAGE: "image",
+    pdfium_c.FPDF_PAGEOBJ_SHADING: "shading",
+    pdfium_c.FPDF_PAGEOBJ_FORM: "form",
+}
+
+
+def empty_object_counts() -> dict[str, int]:
+    return {kind: 0 for kind in _OBJECT_KINDS.values()}
+
+
+def pdfium_holders(
+    page: pdfium.PdfPage, textpage: pdfium.PdfTextPage, counts: dict[str, int] | None = None
+) -> dict[tuple[int, ...], PdfiumHolder]:
+    """The page's text objects by holder (the page, each Form XObject).
+    counts, when given, gets how many objects of each kind the page draws,
+    Form XObjects' included: a page with shapes and no text had its text
+    turned into outlines, one with an image alone is a picture."""
     holders: dict[tuple[int, ...], PdfiumHolder] = {}
 
     def visit(path: tuple[int, ...], count: int, get, to_page: Matrix, depth: int) -> None:
@@ -192,6 +212,8 @@ def pdfium_holders(page: pdfium.PdfPage, textpage: pdfium.PdfTextPage) -> dict[t
         for i in range(count):
             obj = get(i)
             kind = pdfium_c.FPDFPageObj_GetType(obj)
+            if counts is not None and kind in _OBJECT_KINDS:
+                counts[_OBJECT_KINDS[kind]] += 1
             if kind == pdfium_c.FPDF_PAGEOBJ_TEXT:
                 font = pdfium_c.FPDFTextObj_GetFont(obj)
                 holder.texts.append(
@@ -427,6 +449,7 @@ class Analysis:
     streams: dict[tuple[int, ...], StreamHolder]
     spans: list[Span]  # every text object, in order
     truncated: bool
+    objects: dict[str, int] = field(default_factory=empty_object_counts)
 
 
 def _same_font(base: str | None, pdfium_base: str) -> bool:
@@ -501,18 +524,21 @@ def analyze(data: bytes, *, single_page: bool) -> Analysis:
     page = pdf.pages[0]
     geometry = page_geometry(page.obj)
     doc = open_pdfium(data)
+    counts = empty_object_counts()
     try:
         ppage = doc[0]
         textpage = ppage.get_textpage()
         try:
-            holders = pdfium_holders(ppage, textpage)
+            holders = pdfium_holders(ppage, textpage, counts)
             spans, streams, truncated = _pair(pdf, page, holders, geometry, ppage)
         finally:
             textpage.close()
             ppage.close()
     finally:
         doc.close()
-    return Analysis(pdf=pdf, geometry=geometry, pages=len(pdf.pages), streams=streams, spans=spans, truncated=truncated)
+    return Analysis(
+        pdf=pdf, geometry=geometry, pages=len(pdf.pages), streams=streams, spans=spans, truncated=truncated, objects=counts
+    )
 
 
 def _pair(pdf, page, holders, geometry, ppage):

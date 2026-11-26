@@ -60,6 +60,16 @@ const (
 	// docs/event-updated-notification.md#the-editors-choice), three years
 	// after it was given, as the Team audit record (Yusuf, 2026-11-25).
 	EventChangeNoticePeriod = 3 * 365 * day
+	// CoOrganizerPeoplePeriod: an Event's Co-organizer people
+	// (event_co_organizers' person rows, docs/co-organizers.md), its end +
+	// 90 days, as its door staff. Their rights end 30 days after the Event
+	// (event.CoOrganizerPersonGrace), before the row goes; a team row lives
+	// with the Event.
+	CoOrganizerPeoplePeriod = 90 * day
+	// FormRespondentPeriod: an Unticketed respondent (event_form_respondents,
+	// docs/form-respondents.md), the Event's end + 2 years, as a guest's
+	// identity (an Event without a date: the row's created_at).
+	FormRespondentPeriod = GuestIdentityPeriod
 )
 
 // Schema is what a run reads from the database before it builds the rules.
@@ -85,6 +95,8 @@ func Rules(c Config, s Schema) []Rule {
 	rules = append(rules, subjectRequestRules()...)
 	rules = append(rules, managementTermRules()...)
 	rules = append(rules, eventChangeNoticeRules()...)
+	rules = append(rules, coOrganizerPeopleRules()...)
+	rules = append(rules, formRespondentRules()...)
 	return append(rules, auditRules(c)...)
 }
 
@@ -317,6 +329,30 @@ func eventChangeNoticeRules() []Rule {
 		Name: "event_change_notices_age", Version: 1, Kind: KindSweep, Action: ActionDelete,
 		Table: "event_change_notice_choices", alias: "cn", key: "id", Period: EventChangeNoticePeriod,
 		where: `cn.decided_at < $1`,
+	}}
+}
+
+// coOrganizerPeopleRules delete an Event's Co-organizer people 90 days after
+// its end, as door_staff does its door staff: a relationship row, counted
+// and left while the Event has no date. A team row is never touched.
+func coOrganizerPeopleRules() []Rule {
+	return []Rule{{
+		Name: "co_organizer_people", Version: 1, Kind: KindSweep, Action: ActionDelete,
+		Table: "event_co_organizers", alias: "co", key: "ctid", Period: CoOrganizerPeoplePeriod,
+		where:      `co.user_id IS NOT NULL AND (SELECT ` + eventEndSQL("ce") + ` FROM events ce WHERE ce.id = co.event_id) < $1`,
+		anchorless: `co.user_id IS NOT NULL AND (SELECT ` + eventEndSQL("ce") + ` FROM events ce WHERE ce.id = co.event_id) IS NULL`,
+	}}
+}
+
+// formRespondentRules delete an Unticketed respondent two years after its
+// Event's end, as guest_identity scrubs a guest Ticket; an Event without a
+// date counts from the row's created_at, so every row is dated. The row
+// goes whole: it is nothing but who answered.
+func formRespondentRules() []Rule {
+	return []Rule{{
+		Name: "form_respondents", Version: 1, Kind: KindSweep, Action: ActionDelete,
+		Table: "event_form_respondents", alias: "fr", key: "id", Period: FormRespondentPeriod,
+		where: `COALESCE((SELECT ` + eventEndSQL("fe") + ` FROM events fe WHERE fe.id = fr.event_id), fr.created_at) < $1`,
 	}}
 }
 

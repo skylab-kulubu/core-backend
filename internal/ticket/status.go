@@ -54,6 +54,48 @@ type FormResponseStore interface {
 	FormResponseTickets(ctx context.Context, responseID uuid.UUID) ([]Ticket, error)
 }
 
+// FormsRejectionStore keeps Forms' decline of a Ticket's answer as a mark
+// instead of a cancellation (Yusuf, K6 2026-11-25; PostgresStore,
+// MemoryStore).
+type FormsRejectionStore interface {
+	// MarkFormsRejected marks the Ticket declined in Forms at at (its
+	// answer's status declined); false when it is cancelled or marked
+	// already.
+	// A Ticket whose answer's form is not kept (bound before migration
+	// 20261127110000) takes formID, the report's.
+	MarkFormsRejected(ctx context.Context, id, formID uuid.UUID, at time.Time) (bool, error)
+	// MarkFormResponsePending keeps that the answer responseID waits for
+	// Forms' review again: its Tickets (not cancelled) lose their mark.
+	MarkFormResponsePending(ctx context.Context, responseID uuid.UUID) error
+	// KeepFormResponse keeps the accepted answer responseID of the form
+	// formID on a Ticket it found or wrote, not cancelled, whose answer is
+	// a forms answer (form_response_id set), and whose holder is the
+	// answer's (userID the owner, or nil for a guest Ticket). True when it
+	// did: the answer is the Ticket's own (written or reopened by it, or
+	// accepted again), or the Ticket's answer is of the same form and no
+	// longer accepted (declined, a correction asked, pending again), so the
+	// newer answer takes it over. Its status is then accepted and its mark
+	// cleared. Another form's answer (an extra form), or one while the
+	// Ticket's answer stands, never takes it over.
+	KeepFormResponse(ctx context.Context, id, formID, responseID uuid.UUID, userID *uuid.UUID) (bool, error)
+}
+
+// FormsStatusOf is a Ticket's Ticket.FormsStatus: "" for a Ticket no forms
+// answer wrote, declined when Forms declined it (K6), else the answer's
+// status as kept (tickets.form_response_status), accepted for an answer
+// kept before that column.
+func FormsStatusOf(fromForm bool, status *string, rejectedAt *time.Time) string {
+	switch {
+	case !fromForm:
+		return ""
+	case rejectedAt != nil:
+		return string(FormResponseDeclined)
+	case status != nil && *status != "":
+		return *status
+	}
+	return string(FormResponseAccepted)
+}
+
 // CancelBlockStore reads which of the Tickets ids no cancellation may
 // touch (PostgresStore, MemoryStore): one with a check-in, or of a
 // Competition's current Entrant, as Cancel refuses them

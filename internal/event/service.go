@@ -11,6 +11,8 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/organizer"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 )
 
 type Service interface {
@@ -23,6 +25,15 @@ type Service interface {
 	// the drafts p may see (VisibleTo), every team's or ownerTeam's.
 	List(ctx context.Context, p *authz.Principal, ownerTeam string, activeOnly, drafts bool) ([]Event, error)
 	ListLifecycle(ctx context.Context, p authz.Principal, ownerTeam string, visibility lifecycle.Visibility) ([]Event, error)
+	// ListTeam is List for a team's Events: those team names as their
+	// Owner team or as one of their Co-organizer teams shown outside the
+	// panel (a helper team is never matched; ?team=, docs/co-organizers.md).
+	ListTeam(ctx context.Context, p *authz.Principal, team string, activeOnly, drafts bool) ([]Event, error)
+	// ListManaged reads the current Events p may edit (Update, its
+	// Co-organizers included), drafts included (?managed=true): every
+	// team's, or ownerTeam's (as Owner team) or team's (as ListTeam) when
+	// one is given.
+	ListManaged(ctx context.Context, p authz.Principal, ownerTeam, team string, activeOnly bool) ([]Event, error)
 	// Get reads the Event p may see: a draft that p may not see is
 	// ErrNotFound, as are the reads of its days and Sessions below.
 	Get(ctx context.Context, p *authz.Principal, id uuid.UUID) (Event, error)
@@ -123,6 +134,13 @@ type service struct {
 	// now is the clock a Co-organizer person's end is read against; nil is
 	// time.Now.
 	now func() time.Time
+	// formsLinked hears of the forms a write linked (ServiceOptions.FormsLinked).
+	formsLinked FormsLinkedHook
+	// audit records the changes of the Co-organizer list in the Team audit
+	// record; nil records none (a test). groups finds the Event's Owner
+	// team's Group, the row's target.
+	audit  teamaudit.Writer
+	groups TeamGroups
 }
 
 func NewService(store Store, az authz.Authorizer, publicBase ...string) Service {
@@ -189,6 +207,7 @@ func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
 	// edit the Event; anyone sees the teams shown as Co-organizer.
 	in.CoOrganizersView, in.CoOrganizerIDsView = nil, nil
 	in.CoOrganizerTeams = PublicCoOrganizerTeams(in)
+	in.CoOrganizerNames = organizer.CoNames(in.CoOrganizerTeams)
 	if p != nil && len(in.CoOrganizers)+len(in.CoOrganizerIDs) > 0 && s.authz.Allow(*p, s.eventResource(in, authz.TypeEvent), authz.Update) {
 		in.CoOrganizersView = slices.Clone(in.CoOrganizers)
 		in.CoOrganizerIDsView = slices.Clone(in.CoOrganizerIDs)
@@ -216,6 +235,7 @@ func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
 	}
 	in.AttendanceWelcomeMail = onUnlessOff(in.AttendanceWelcomeMail)
 	in.AttendanceRecordedMail = onUnlessOff(in.AttendanceRecordedMail)
+	in.FormResponsesAutoTicket = onUnlessOff(in.FormResponsesAutoTicket)
 	return in
 }
 
@@ -263,6 +283,55 @@ func (s *service) List(ctx context.Context, p *authz.Principal, ownerTeam string
 	return s.publishAll(s.visibleOnly(p, events)), nil
 }
 
+func (s *service) ListTeam(ctx context.Context, p *authz.Principal, team string, activeOnly, drafts bool) ([]Event, error) {
+	if !drafts || activeOnly || p == nil {
+		events, err := s.store.ListTeam(ctx, team, activeOnly, false)
+		if err != nil {
+			return nil, err
+		}
+		return s.publishAll(events), nil
+	}
+	events, err := s.store.ListTeam(ctx, team, false, true)
+	if err != nil {
+		return nil, err
+	}
+	return s.publishAll(s.visibleOnly(p, events)), nil
+}
+
+// ListManaged decides each Event on the Event itself (AuthzResource): a
+// Co-organizer team's or person's Events come with the Owner team's, and a
+// Leader of a Team above with the Team's. It reads the candidates of the
+// whole club, as the dashboard does: the token alone cannot name the Teams
+// below the ones p leads.
+func (s *service) ListManaged(ctx context.Context, p authz.Principal, ownerTeam, team string, activeOnly bool) ([]Event, error) {
+	var (
+		events []Event
+		err    error
+	)
+	if team != "" {
+		events, err = s.store.ListTeam(ctx, team, activeOnly, true)
+	} else {
+		events, err = s.store.ListIncludingDrafts(ctx, ownerTeam)
+	}
+	if err != nil {
+		return nil, err
+	}
+	now := s.clock()
+	out := make([]Event, 0, len(events))
+	for _, e := range events {
+		if ownerTeam != "" && e.OwnerTeam != ownerTeam {
+			continue
+		}
+		if activeOnly && !e.ActiveAt(now) {
+			continue
+		}
+		if s.authz.Allow(p, s.eventResource(e, authz.TypeEvent), authz.Update) {
+			out = append(out, e)
+		}
+	}
+	return s.publishAll(out), nil
+}
+
 // visibleOnly are the events p may see, decided per Event: its
 // Co-organizers are its own (docs/co-organizers.md).
 func (s *service) visibleOnly(p *authz.Principal, events []Event) []Event {
@@ -299,7 +368,7 @@ func (s *service) Get(ctx context.Context, p *authz.Principal, id uuid.UUID) (Ev
 }
 
 func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (_ Event, err error) {
-	defer func() { err = s.shownTo(&p, err) }()
+	defer func() { err = s.shownTo(ctx, &p, err) }()
 	if in.Name == "" || in.Location == "" {
 		return Event{}, ErrInvalid
 	}
@@ -354,6 +423,7 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (_ Ev
 	created, err := s.store.Create(ctx, in)
 	if err == nil {
 		s.syncEventForms(ctx, created)
+		s.linkedForms(ctx, created, nil)
 	}
 	return s.detail(ctx, created, err)
 }
@@ -391,7 +461,7 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 // update writes the Event build makes of the stored one, once p may edit
 // it. syncForms re-binds the Event's form short links after the write.
 func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, build func(existing Event) (Event, error), syncForms bool) (_ Event, err error) {
-	defer func() { err = s.shownTo(&p, err) }()
+	defer func() { err = s.shownTo(ctx, &p, err) }()
 	existing, err := s.store.Get(ctx, id)
 	if err != nil {
 		return Event{}, err
@@ -480,6 +550,7 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 	updated, err := s.store.Update(ctx, in)
 	if err == nil && syncForms {
 		s.syncEventForms(ctx, updated)
+		s.linkedForms(ctx, updated, listedForms(existing))
 	}
 	return s.detail(ctx, updated, err)
 }
@@ -508,7 +579,7 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 }
 
 func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (_ Event, err error) {
-	defer func() { err = s.shownTo(&p, err) }()
+	defer func() { err = s.shownTo(ctx, &p, err) }()
 	existing, err := s.store.GetIncludingArchived(ctx, id)
 	if err != nil {
 		return Event{}, err
@@ -805,7 +876,7 @@ func (s *service) daySessionForms(ctx context.Context, dayID uuid.UUID) ([]Sessi
 }
 
 func (s *service) RestoreDay(ctx context.Context, p authz.Principal, id uuid.UUID) (_ Day, err error) {
-	defer func() { err = s.shownTo(&p, err) }()
+	defer func() { err = s.shownTo(ctx, &p, err) }()
 	existing, err := s.store.GetDayIncludingArchived(ctx, id)
 	if err != nil {
 		return Day{}, err
@@ -897,7 +968,7 @@ func (s *service) sessionEvent(ctx context.Context, eventDayID uuid.UUID) (Event
 }
 
 func (s *service) CreateSession(ctx context.Context, p authz.Principal, sess Session) (_ Session, err error) {
-	defer func() { err = s.shownTo(&p, err) }()
+	defer func() { err = s.shownTo(ctx, &p, err) }()
 	if err := validateSession(sess); err != nil {
 		return Session{}, ErrInvalid
 	}
@@ -933,7 +1004,7 @@ func (s *service) syncSessionForms(ctx context.Context, eventDayID uuid.UUID) {
 }
 
 func (s *service) UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session, cancelled *bool, feedback SessionFeedback) (_ Session, err error) {
-	defer func() { err = s.shownTo(&p, err) }()
+	defer func() { err = s.shownTo(ctx, &p, err) }()
 	existing, err := s.store.GetSession(ctx, id)
 	if err != nil {
 		return Session{}, err
@@ -1003,7 +1074,7 @@ func (s *service) DeleteSession(ctx context.Context, p authz.Principal, id uuid.
 }
 
 func (s *service) RestoreSession(ctx context.Context, p authz.Principal, id uuid.UUID) (_ Session, err error) {
-	defer func() { err = s.shownTo(&p, err) }()
+	defer func() { err = s.shownTo(ctx, &p, err) }()
 	existing, err := s.store.GetSessionIncludingArchived(ctx, id)
 	if err != nil {
 		return Session{}, err

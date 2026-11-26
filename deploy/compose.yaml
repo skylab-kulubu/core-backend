@@ -109,6 +109,8 @@ services:
       EVENT_CHANGED_NOTIFICATION: ${EVENT_CHANGED_NOTIFICATION:-off}
       # The mail a person added to an Event's door staff gets (docs/door-staff-mail.md).
       DOOR_STAFF_MAIL: ${DOOR_STAFF_MAIL:-off}
+      # The mails of a change of an Event's Co-organizers (docs/co-organizers.md#mails).
+      CO_ORGANIZER_MAIL: ${CO_ORGANIZER_MAIL:-off}
       PANEL_URL: ${PANEL_URL:-}
       # The reminder the day before an Event (docs/event-reminder.md).
       EVENT_REMINDER_NOTIFICATION: ${EVENT_REMINDER_NOTIFICATION:-off}
@@ -120,6 +122,8 @@ services:
       SKYNOTIFY_ATTENDANCE_RECORDED_TEMPLATE_KEY: ${SKYNOTIFY_ATTENDANCE_RECORDED_TEMPLATE_KEY-event.attendance-recorded}
       ATTENDANCE_MAIL_PER_MINUTE: ${ATTENDANCE_MAIL_PER_MINUTE:-20}
       GOTENBERG_URL: ${GOTENBERG_URL:-http://gotenberg:3000}
+      # pdf-tools (pdf-tools/README.md, profile certs): unset turns its features off.
+      PDF_TOOLS_URL: ${PDF_TOOLS_URL:-http://pdf-tools:8080}
       PUBLIC_API_ORIGIN: ${PUBLIC_API_ORIGIN:-}
       PUBLIC_VERIFY_ORIGIN: ${PUBLIC_VERIFY_ORIGIN:-https://skyl.app/c}
       # The certificate page's address: pdfUrl opens the PDF there (docs/certificate-pdf-address.md).

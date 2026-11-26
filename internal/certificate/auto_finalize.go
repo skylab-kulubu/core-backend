@@ -87,7 +87,7 @@ type autoFinalizeMetrics struct {
 func (s *service) Prometheus() string {
 	return fmt.Sprintf("# TYPE core_certificate_auto_finalized_total counter\ncore_certificate_auto_finalized_total %d\n"+
 		"# TYPE core_certificate_auto_finalize_errors_total counter\ncore_certificate_auto_finalize_errors_total %d\n",
-		s.autoMetrics.finalized.Load(), s.autoMetrics.errors.Load()) + s.mailPDF.prometheus()
+		s.autoMetrics.finalized.Load(), s.autoMetrics.errors.Load()) + s.mailPDF.prometheus() + s.pdfToolsErrors.prometheus()
 }
 
 // AutoFinalize closes, at now, the attendance of every Event due: published
@@ -188,6 +188,7 @@ func (s *service) mailAutoFinalized(ctx context.Context, ev event.Event, queued 
 	mailer.CertificateAutoFinalized(ctx, u.Email, strings.TrimSpace(u.FirstName+" "+u.LastName), map[string]string{
 		"FirstName": u.FirstName, "EventName": ev.Name, "EventId": ev.ID.String(),
 		"CertificateCount": strconv.Itoa(queued), "OwnerTeam": organizer.Name(ev.OwnerTeam),
+		"CoOrganizers": organizer.CoNames(event.PublicCoOrganizerTeams(ev)),
 	})
 }
 
@@ -236,7 +237,7 @@ func (s *service) Rescan(ctx context.Context, p authz.Principal, eventID uuid.UU
 	if err != nil {
 		return RescanResult{}, err
 	}
-	if !s.canIssue(p, ev.OwnerTeam) {
+	if !s.canIssue(p, ev) {
 		return RescanResult{}, ErrForbidden
 	}
 	if err := issuable(ev); err != nil {

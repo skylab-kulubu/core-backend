@@ -186,6 +186,31 @@ func TestOrganizers_EventVia(t *testing.T) {
 	}
 }
 
+// The Media upload rules of an Event's editor name no Event: a person who
+// may create none for any team uploads while the media service says they
+// hold a Co-organizer seat (Resource.CoOrganizerSeat,
+// docs/co-organizers.md); which Event the Media ends up on is decided when
+// it is linked. A service account never does.
+func TestOrganizers_UploadWithACoOrganizerSeat(t *testing.T) {
+	t.Parallel()
+	auth := NewAuthorizer(DefaultPolicy())
+	for _, rule := range []MediaUploader{MediaUploaderEventEditor, MediaUploaderCertificateTemplateEditor} {
+		seated := Resource{Type: TypeMedia, MediaUploader: rule, CoOrganizerSeat: true}
+		if !auth.Allow(Principal{ID: "person"}, seated, Upload) {
+			t.Errorf("%s: a seated person may not upload", rule)
+		}
+		if auth.Allow(Principal{ID: "person"}, Resource{Type: TypeMedia, MediaUploader: rule}, Upload) {
+			t.Errorf("%s: a person without a seat uploads", rule)
+		}
+		if auth.Allow(Principal{ID: "svc", ServiceAccount: true}, seated, Upload) {
+			t.Errorf("%s: a service account uploads", rule)
+		}
+	}
+	if auth.Allow(Principal{ID: "person"}, Resource{Type: TypeMedia, MediaUploader: MediaUploaderServiceOnly, CoOrganizerSeat: true}, Upload) {
+		t.Error("a seat opened a service-only purpose")
+	}
+}
+
 // An Owner team whose rule opens editing to its members (GECEKODU): its
 // member edits and reads Tickets, as before, and nothing more.
 func TestOrganizers_OwnerMemberOfAMembersTeam(t *testing.T) {

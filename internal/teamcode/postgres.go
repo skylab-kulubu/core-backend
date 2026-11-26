@@ -90,6 +90,7 @@ func (r *postgresRecords) Held(ctx context.Context, code string) (bool, error) {
 			OR EXISTS (SELECT 1 FROM certificates WHERE lower(owner_team) = lower($1))
 			OR EXISTS (SELECT 1 FROM certificate_templates WHERE lower(owner_team) = lower($1))
 			OR EXISTS (SELECT 1 FROM certificate_template_bindings WHERE scope = 'ownerTeam' AND lower(scope_key) = lower($1))
+			OR EXISTS (SELECT 1 FROM event_co_organizers WHERE lower(team_code) = lower($1))
 			OR EXISTS (SELECT 1 FROM retired_team_codes WHERE lower(code) = lower($1))`, code).Scan(&held)
 	if err != nil {
 		return false, fmt.Errorf("%w: held: %w", ErrUnavailable, err)
@@ -98,18 +99,19 @@ func (r *postgresRecords) Held(ctx context.Context, code string) (bool, error) {
 }
 
 func (r *postgresRecords) References(ctx context.Context, code string) ([]string, error) {
-	var event, certificate, template, binding bool
+	var event, certificate, template, binding, coOrganizer bool
 	err := r.tx.QueryRow(ctx, `
 		SELECT EXISTS (SELECT 1 FROM events WHERE lower(owner_team) = lower($1)),
 			EXISTS (SELECT 1 FROM certificates WHERE lower(owner_team) = lower($1)),
 			EXISTS (SELECT 1 FROM certificate_templates WHERE lower(owner_team) = lower($1)),
-			EXISTS (SELECT 1 FROM certificate_template_bindings WHERE scope = 'ownerTeam' AND lower(scope_key) = lower($1))`, code).
-		Scan(&event, &certificate, &template, &binding)
+			EXISTS (SELECT 1 FROM certificate_template_bindings WHERE scope = 'ownerTeam' AND lower(scope_key) = lower($1)),
+			EXISTS (SELECT 1 FROM event_co_organizers WHERE lower(team_code) = lower($1))`, code).
+		Scan(&event, &certificate, &template, &binding, &coOrganizer)
 	if err != nil {
 		return nil, fmt.Errorf("%w: references: %w", ErrUnavailable, err)
 	}
 	var out []string
-	for i, held := range []bool{event, certificate, template, binding} {
+	for i, held := range []bool{event, certificate, template, binding, coOrganizer} {
 		if held {
 			out = append(out, recordKinds[i])
 		}
@@ -147,6 +149,7 @@ func (l *PostgresLedger) RecordCodes(ctx context.Context) (map[string][]string, 
 			UNION ALL SELECT btrim(owner_team), 1 FROM certificates
 			UNION ALL SELECT btrim(owner_team), 2 FROM certificate_templates
 			UNION ALL SELECT btrim(scope_key), 3 FROM certificate_template_bindings WHERE scope = 'ownerTeam'
+			UNION ALL SELECT btrim(team_code), 4 FROM event_co_organizers WHERE team_code IS NOT NULL
 		) AS named
 		WHERE code IS NOT NULL AND code <> ''
 		ORDER BY code, kind`)

@@ -67,17 +67,17 @@ func (s *PostgresStore) Copy(ctx context.Context, plan CopyPlan) (Event, []strin
 			registration_closes_at, feedback_mode, feedback_auto_send,
 			location_lat, location_lng, location_address, attendance_min_count, attendance_auto_finalize,
 			waitlist_enabled, entry_mode, attendance_welcome_mail, attendance_recorded_mail,
-			external_registration_url, attendee_note
+			external_registration_url, attendee_note, form_responses_auto_ticket
 		) VALUES ($2, $3, $4, $5, $6, $7, $1, $8, $9, $10, `+copySeasonSQL+`,
 			$11, $12, 'draft', $13, $14, $15, $16, $17, $18, $19, $20, $21, COALESCE($22::boolean, true), $23,
-			COALESCE($24::boolean, true), COALESCE($25::boolean, true), $26, COALESCE($27::text, ''))
+			COALESCE($24::boolean, true), COALESCE($25::boolean, true), $26, COALESCE($27::text, ''), COALESCE($28::boolean, true))
 		ON CONFLICT (id) DO NOTHING`,
 		e.StartDate, e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.Capacity,
 		e.EndDate, e.Ranked, e.PrizeInfo, attendanceRule(e.AttendanceRule), e.AttendanceRatio,
 		plan.Source, e.RegistrationClosesAt, string(feedbackMode(e.FeedbackMode)), e.FeedbackAutoSend,
 		e.LocationLat, e.LocationLng, e.LocationAddress, e.AttendanceMinCount, e.AttendanceAutoFinalize,
 		e.WaitlistEnabled, e.EntryMode, e.AttendanceWelcomeMail, e.AttendanceRecordedMail,
-		e.ExternalRegistrationURL, e.AttendeeNote)
+		e.ExternalRegistrationURL, e.AttendeeNote, e.FormResponsesAutoTicket)
 	if err != nil {
 		return Event{}, nil, err
 	}
@@ -94,6 +94,9 @@ func (s *PostgresStore) Copy(ctx context.Context, plan CopyPlan) (Event, []strin
 		return Event{}, nil, err
 	}
 	if err := s.copyDoorStaff(ctx, tx, plan, skippedParts); err != nil {
+		return Event{}, nil, err
+	}
+	if err := copyCoOrganizers(ctx, tx, plan, skippedParts); err != nil {
 		return Event{}, nil, err
 	}
 	if err := copySchedule(ctx, tx, plan); err != nil {
@@ -173,6 +176,41 @@ func (s *PostgresStore) copyDoorStaff(ctx context.Context, tx pgx.Tx, plan CopyP
 	default:
 		return nil
 	}
+}
+
+// copyCoOrganizers writes the copy's Co-organizer teams with their choices
+// and, with CopyWrite, the source's Co-organizer people whose accounts are
+// active (docs/co-organizers.md); who copies is who added them.
+func copyCoOrganizers(ctx context.Context, tx pgx.Tx, plan CopyPlan, skippedParts map[string]bool) error {
+	for _, team := range plan.CoOrganizerTeams {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO event_co_organizers (event_id, team_code, management, visibility, added_by)
+			VALUES ($1, $2, $3, $4, $5)`,
+			plan.Event.ID, team.Code, string(team.Management), string(team.Visibility), plan.By); err != nil {
+			return err
+		}
+	}
+	switch plan.CoOrganizerPeople {
+	case CopyRefused:
+		var has bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM event_co_organizers WHERE event_id = $1 AND user_id IS NOT NULL)`, plan.Source).Scan(&has); err != nil {
+			return err
+		}
+		skippedParts[SkippedCoOrganizerPeople] = has
+	case CopyWrite:
+		_, err := tx.Exec(ctx, `
+			INSERT INTO event_co_organizers (event_id, user_id, added_by)
+			SELECT $2, c.user_id, $3 FROM event_co_organizers c
+			JOIN users u ON u.id = c.user_id AND u.account_state = 'active'
+			WHERE c.event_id = $1
+				AND NOT EXISTS (SELECT 1 FROM account_deletion_requests r WHERE r.subject_id = c.user_id)`,
+			plan.Source, plan.Event.ID, plan.By)
+		if subjectlock.IsInactiveAccountReference(err) {
+			return ErrForbidden
+		}
+		return err
+	}
+	return nil
 }
 
 // copySchedule copies the source's current days and their current

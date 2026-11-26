@@ -70,14 +70,13 @@ func TestFormReportReopensOnlyFormsOwnCancellationOnPostgres(t *testing.T) {
 		}
 	}
 
-	// Forms' own decline, then an acceptance: reopened, mailed again.
+	// Forms' own decline cancelled it before K6 (2026-11-25; a decline
+	// marks since), then an acceptance: reopened, mailed again.
 	declinedThenAccepted := acceptedGuest(formID, "Alan", "Turing", "form@example.com")
 	report(declinedThenAccepted)
-	declinedThenAccepted.Status = ticket.FormResponseDeclined
-	if got := report(declinedThenAccepted); got.Outcome != ticket.FormResponseCancelled {
-		t.Fatalf("decline %+v", got)
+	if _, _, err := e.store.Cancel(ctx, written("form@example.com").ID, ticket.CancelledByForm, ""); err != nil {
+		t.Fatal(err)
 	}
-	declinedThenAccepted.Status = ticket.FormResponseAccepted
 	if got := report(declinedThenAccepted); got.TicketsWritten != 1 {
 		t.Fatalf("acceptance after the decline %+v", got)
 	}

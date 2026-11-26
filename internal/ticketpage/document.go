@@ -41,7 +41,10 @@ type Document struct {
 	VenueAddress  string
 	DirectionsURL string
 	OwnerTeam     string
-	HolderName    string
+	// CoOrganizers names the Event's Co-organizer teams shown outside the
+	// panel (organizer.CoNames); empty draws no "Ortak düzenleyen" line.
+	CoOrganizers string
+	HolderName   string
 	// Code is the Ticket's code as shown, XXXX-XXXX.
 	Code        string
 	QRToken     string
@@ -303,6 +306,11 @@ func RenderHTML(d Document) (document, header string, err error) {
 		{Label: "Yer", Value: venue, Wide: true},
 		{Label: "Katılımcı", Value: d.HolderName},
 		{Label: "Düzenleyen", Value: organizedBy},
+	}
+	// The Co-organizer teams shown outside the panel, under the organizer
+	// (docs/co-organizers.md); none draws no line.
+	if co := strings.TrimSpace(d.CoOrganizers); co != "" {
+		p.Fields = append(p.Fields, field{Label: "Ortak düzenleyen", Value: co, Wide: true})
 	}
 	for _, day := range d.Days {
 		if len(day.Sessions) == 0 {

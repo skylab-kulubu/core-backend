@@ -315,6 +315,7 @@ The initial entries:
 | `profile_picture` | authenticated | JPEG, PNG, WebP, GIF | 5 MiB | public | single-step | core |
 | `event_cover`, `event_gallery` | event_editor | JPEG, PNG, WebP, GIF, SVG | 10 MiB | public | single-step | core |
 | `certificate_asset` | certificate_template_editor | PNG, JPEG, PDF | 20 MiB | private | single-step | core |
+| `certificate_font` | certificate_font_editor | TTF, OTF, WOFF2 (by the first bytes, kept as they came; [certificate-fonts.md](certificate-fonts.md)) | 10 MiB | private | single-step | core (a certificate font's file; a layout that uses it) |
 | `cms_image` | authenticated | JPEG, PNG, WebP, GIF, SVG | 10 MiB | public | single-step | cms (no service client yet) |
 | `cms_file` | authenticated | PDF | 20 MiB | public | single-step | cms (no service client yet) |
 | `answer_file` | authenticated | PDF, JPEG, PNG, DOCX | 50 MiB | private, scanned | single-step | forms |
@@ -1348,6 +1349,7 @@ anonymization and maintenance SQL:
 | User profile picture (`users.profile_picture_id`) | `user` | `profile_picture` |
 | Certificate template draft (`draft_layout` background and image elements) | `certificate_template` | `certificate_asset` |
 | Published certificate template version (`layout` and `asset_manifest`) | `certificate_template_version` | `certificate_asset` |
+| A certificate font's checked file (`certificate_fonts.media_id`, migration `20261127183000`) | `certificate_font` | `certificate_font` |
 
 `owner_service` is `core` for all of them. Only a changed link is written: a
 record that still links a Media archived after it was linked can be saved as
@@ -1393,7 +1395,7 @@ stable `code`, and the members `mediaId` and `role`:
 
 | Status | `code` | Extra members | When |
 |---|---|---|---|
-| 422 | `media_purpose_mismatch` | `purpose` | The Media's purpose does not fit the role. An Event cover, gallery photo or video poster needs `event_cover` or `event_gallery` (the organizer's picker offers every photo of the team's Events for all three); an Event's file needs `club_file` and its video `video`; a certificate asset needs `certificate_asset`. A profile picture or a CMS page's PDF cannot be a cover. |
+| 422 | `media_purpose_mismatch` | `purpose` | The Media's purpose does not fit the role. An Event cover, gallery photo or video poster needs `event_cover` or `event_gallery` (the organizer's picker offers every photo of the team's Events for all three); an Event's file needs `club_file` and its video `video`; a certificate asset needs `certificate_asset` (a layout's element font may also be a `certificate_font`), a certificate font's file `certificate_font`. A profile picture or a CMS page's PDF cannot be a cover. |
 | 422 | `media_not_linkable` | | There is no such Media, or it is archived, its blob is purged or being purged, or its expiry has passed. A pending or attached Media can be linked, and so can a scanning one (an Answer file while its malware scan runs); a rejected one cannot (its object is being or was deleted). A Media removed from a record can be linked again until its window ends. |
 | 403 | `media_team_mismatch` | | Team media library: the Media is on an Event (archived ones included) of another Owner team, as its cover, a gallery photo, a file, a video or a video's poster. An Event may reuse a photo, file or video of another Event of its own Owner team. |
 

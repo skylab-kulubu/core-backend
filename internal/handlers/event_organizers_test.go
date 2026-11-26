@@ -206,6 +206,35 @@ func TestEventOrganizersWritesOff(t *testing.T) {
 	}
 }
 
+// What stays the Owner team's, end to end: a Co-organizer team's Leader
+// edits the Event (200) but deleting it, moving it to another Owner team
+// and changing its list are 403 (docs/co-organizers.md).
+func TestEventCoOrganizerReservedHTTP(t *testing.T) {
+	t.Parallel()
+	svc := event.NewServiceWithOptions(event.NewMemoryStore(), authz.NewAuthorizer(authz.DefaultPolicy()), event.ServiceOptions{
+		Teams: organizerTree{"WEBLAB": "/UYELER/ARGE/WEBLAB", "ARTLAB": "/UYELER/SANAT/ARTLAB"}, CoOrganizersWrite: true,
+	})
+	ykApp := organizersApp(t, yk(), svc)
+	created := organizersCall(t, ykApp, fiber.MethodPost, "/v1/events", `{"name":"Hack","location":"YTÜ","ownerTeam":"ARTLAB","status":"draft"}`)
+	id, _ := created.body["id"].(string)
+	if got := organizersCall(t, ykApp, fiber.MethodPut, "/v1/events/"+id+"/organizers", `{"teams":[{"code":"WEBLAB"}]}`); got.status != fiber.StatusOK {
+		t.Fatalf("PUT %d %s", got.status, got.raw)
+	}
+	co := organizersApp(t, weblabLeader(), svc)
+	if got := organizersCall(t, co, fiber.MethodPatch, "/v1/events/"+id, `{"name":"Hack 2"}`); got.status != fiber.StatusOK {
+		t.Fatalf("edit %d %s", got.status, got.raw)
+	}
+	for name, call := range map[string][3]string{
+		"delete":          {fiber.MethodDelete, "/v1/events/" + id, ""},
+		"move":            {fiber.MethodPatch, "/v1/events/" + id, `{"ownerTeam":"WEBLAB"}`},
+		"change the list": {fiber.MethodPut, "/v1/events/" + id + "/organizers", `{"teams":[]}`},
+	} {
+		if got := organizersCall(t, co, call[0], call[1], call[2]); got.status != fiber.StatusForbidden {
+			t.Errorf("%s: %d %s", name, got.status, got.raw)
+		}
+	}
+}
+
 // A Co-organizer person's PATCH that clears the end of their own rights is
 // 403 co_organizer_person_dates; another field is written.
 func TestEventCoOrganizerPersonDatesHTTP(t *testing.T) {
@@ -226,5 +255,12 @@ func TestEventCoOrganizerPersonDatesHTTP(t *testing.T) {
 	}
 	if got := organizersCall(t, personApp, fiber.MethodPatch, "/v1/events/"+id, `{"name":"Hack 2"}`); got.status != fiber.StatusOK {
 		t.Errorf("a name: %d %s", got.status, got.raw)
+	}
+	// An Event with a start alone: clearing it is 403 too.
+	if got := organizersCall(t, ykApp, fiber.MethodPatch, "/v1/events/"+id, `{"endDate":null}`); got.status != fiber.StatusOK {
+		t.Fatalf("YK clears the end: %d %s", got.status, got.raw)
+	}
+	if got := organizersCall(t, personApp, fiber.MethodPatch, "/v1/events/"+id, `{"startDate":null}`); got.status != fiber.StatusForbidden || got.body["code"] != "co_organizer_person_dates" {
+		t.Errorf("startDate null: %d %s", got.status, got.raw)
 	}
 }

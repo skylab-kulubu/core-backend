@@ -34,11 +34,36 @@ type ManagedTeamsSource interface {
 // that decides their requests (docs/authz-roles.md), and which sites they
 // may edit in the CMS, a hint for the UI that decides nothing.
 type CapabilitiesHandler struct {
-	az      authz.Authorizer
-	sites   EditableSitesSource
-	teams   ManagedTeamsSource
-	expired ExpiredMembershipsSource
-	logger  *log.Logger
+	az         authz.Authorizer
+	sites      EditableSitesSource
+	teams      ManagedTeamsSource
+	expired    ExpiredMembershipsSource
+	attendance AttendanceMailSource
+	logger     *log.Logger
+}
+
+// AttendanceMailSource answers which of the door's mails a scan queues now
+// (ticket.PostgresStore.AttendanceMailOn, docs/attendance-mail.md).
+type AttendanceMailSource interface {
+	AttendanceMailOn() (welcome, recorded bool)
+}
+
+// WithAttendanceMail answers features from source; without it both door
+// mails read off.
+func (h *CapabilitiesHandler) WithAttendanceMail(source AttendanceMailSource) *CapabilitiesHandler {
+	h.attendance = source
+	return h
+}
+
+// capabilityFeatures says whether core sends what an Event's switches ask
+// for: the same for every caller, a hint for the panel that decides nothing.
+type capabilityFeatures struct {
+	// AttendanceWelcomeMail and AttendanceRecordedMail are whether a scan
+	// queues the door's "hoş geldin" and "katılımın alındı" mails now;
+	// off, an Event's attendanceWelcomeMail/attendanceRecordedMail is kept
+	// but sends nothing.
+	AttendanceWelcomeMail  bool `json:"attendanceWelcomeMail"`
+	AttendanceRecordedMail bool `json:"attendanceRecordedMail"`
 }
 
 // ExpiredMembershipsSource answers a person's management memberships whose
@@ -88,6 +113,9 @@ type capabilitiesAnswer struct {
 	// the panel's banner (grup-yonetimi 11, 12). A hint: the term decides
 	// nothing. Empty when the terms are off or cannot be read.
 	ExpiredManagementMemberships []membershipterm.ExpiredMembership `json:"expiredManagementMemberships"`
+	// Features are what core sends now whatever an Event asks for
+	// (capabilityFeatures).
+	Features capabilityFeatures `json:"features"`
 }
 
 // Get answers GET /v1/users/me/capabilities. It is the caller's own answer,
@@ -103,8 +131,17 @@ func (h *CapabilitiesHandler) Get(c fiber.Ctx) error {
 	c.Set(fiber.HeaderCacheControl, "no-store")
 	return c.JSON(capabilitiesAnswer{
 		Capabilities: h.az.Capabilities(p), EditableSites: h.editableSites(c, p), ManagedTeams: h.managedTeams(c, p),
-		ExpiredManagementMemberships: h.expiredMemberships(c, p),
+		ExpiredManagementMemberships: h.expiredMemberships(c, p), Features: h.features(),
 	})
+}
+
+// features reads the door's mails' state; without a source both are off.
+func (h *CapabilitiesHandler) features() capabilityFeatures {
+	if h.attendance == nil {
+		return capabilityFeatures{}
+	}
+	welcome, recorded := h.attendance.AttendanceMailOn()
+	return capabilityFeatures{AttendanceWelcomeMail: welcome, AttendanceRecordedMail: recorded}
 }
 
 // expiredMemberships never fails the answer: a read that fails answers an
