@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/skylab-kulubu/core-backend/internal/brandfont"
+	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/organizer"
 	"github.com/skylab-kulubu/core-backend/internal/qr"
 	"github.com/skylab-kulubu/core-backend/internal/ticket/theme"
@@ -36,7 +37,9 @@ type Document struct {
 	Start, End *time.Time
 	// Venue is the place's name (the Event's location), VenueAddress its
 	// street address; DirectionsURL the directions link the place's QR
-	// holds.
+	// holds, and the link of the place's name, address, map, QR and its
+	// underlined "Yol tarifi" in the PDF (Chromium keeps an <a href> as a
+	// link annotation).
 	Venue         string
 	VenueAddress  string
 	DirectionsURL string
@@ -49,6 +52,12 @@ type Document struct {
 	Code        string
 	QRToken     string
 	Description string
+	// TicketNote is the organizer's announcement (docs/ticket-note.md), as
+	// the ticket mails carry it: a compact section before the place's (the
+	// note before the map, Yusuf 2026-11-26), never split, with its text and
+	// for its first WhatsApp (else https) address a small QR with a link
+	// under it, as the place's directions. "" draws no section.
+	TicketNote string
 	// Days is the programme, in order; a day without Sessions is left out.
 	Days []ProgramDay
 	// BandJPEG is the cover band: the cover cut to the band's shape. Without
@@ -279,6 +288,12 @@ type page struct {
 	Directions  template.URL
 	Issued      string
 	KVKK        string
+	// The ticket note's box: its parts, the address of its button and QR,
+	// whether that is a WhatsApp group, and the QR.
+	NoteParts    []event.NotePart
+	NoteLink     string
+	NoteWhatsApp bool
+	NoteQR       template.URL
 }
 
 // RenderHTML is the ticket's document and its page head (Chromium's header
@@ -350,6 +365,19 @@ func RenderHTML(d Document) (document, header string, err error) {
 		}
 	}
 	p.Single = len(p.Days) == 1 && len(p.Days[0].Rows) == 1
+	if note := strings.TrimSpace(d.TicketNote); note != "" {
+		_, p.NoteParts = event.TicketNoteParts(event.Event{TicketNote: &note})
+		var whatsApp string
+		p.NoteLink, whatsApp = event.TicketNoteLink(p.NoteParts)
+		p.NoteWhatsApp = whatsApp != ""
+		if p.NoteLink != "" {
+			svg, err := qr.PlainSVG(p.NoteLink)
+			if err != nil {
+				return "", "", err
+			}
+			p.NoteQR = template.URL("data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString(svg))
+		}
+	}
 	if d.DirectionsURL != "" {
 		directions, err := qr.PlainSVG(d.DirectionsURL)
 		if err != nil {
@@ -499,6 +527,17 @@ td.kisi{color:#444;text-align:right;white-space:nowrap}
 .yer .harita{width:100%;height:auto;display:block;border:.5pt solid var(--ink);margin-top:2mm}
 .yer figure{flex:none;width:24mm;display:flex;flex-direction:column;justify-content:flex-end;font-size:7.5pt;color:var(--muted);text-align:center}
 .yer figure img{width:24mm;height:24mm;display:block;margin-bottom:1mm}
+.yer a.git,.duyuru a.git{display:block;color:inherit;text-decoration:none}
+.yer figure a.git span,.duyuru figure a.git span{display:block;color:var(--accent);font-size:8.5pt;font-weight:700;line-height:1.25;text-decoration:underline;text-underline-offset:.5mm}
+section.duyuru{margin-top:4mm;break-inside:avoid}
+.duyuru>h2{margin-bottom:1.5mm}
+.duyuru .satir{display:flex;gap:5mm;align-items:center}
+.duyuru .kutu{flex:1;min-width:0}
+.duyuru .metin{font-size:9.5pt;line-height:1.45;white-space:pre-line;overflow-wrap:anywhere}
+.duyuru .metin a{color:inherit;text-decoration:underline}
+.duyuru figure{flex:none;text-align:center}
+.duyuru figure img{width:13mm;height:13mm;display:block;margin:0 auto .6mm}
+.duyuru figure a.git span{white-space:nowrap;font-size:8pt}
 .atif{font-size:6.5pt;color:var(--muted);margin-top:1mm}
 .dip{margin-top:5.5mm;padding-top:2mm;border-top:.5pt solid var(--ink);font-size:7.3pt;line-height:1.55;color:#333;break-inside:avoid}
 {{if .Notes}}td.otr .not{display:block;font-size:7.6pt;font-weight:400;color:var(--muted);margin-top:.3mm}
@@ -513,7 +552,8 @@ td.kisi{color:#444;text-align:right;white-space:nowrap}
 {{end}}</div>
 {{if .Days}}<section class="program"><h2>Program</h2><div class="gunler" style="--sutun:{{.Columns}}">{{range .Days}}<div class="gun">{{if gt (len $.Days) 1}}<h3>{{.Heading}}{{if .Date}} <span>· {{.Date}}</span>{{end}}</h3>{{end}}<table{{if $.Single}} class="tek"{{end}}>{{range .Rows}}<tr><td class="saat">{{.Time}}</td><td class="otr">{{.Title}}{{if .Note}}<span class="not">{{.Note}}</span>{{end}}</td><td class="kisi">{{.Speaker}}</td></tr>{{end}}</table></div>{{end}}</div></section>
 {{end}}{{if .Description}}<section class="hakkinda"><h2>Etkinlik hakkında</h2><p class="aciklama">{{.Description}}</p></section>
-{{end}}<section class="yer"><h2>Etkinlik yeri</h2><div class="satir"><div class="kutu"><div class="ad">{{.D.Venue}}</div>{{if .D.VenueAddress}}<div class="adres">{{.D.VenueAddress}}</div>{{end}}{{if .MapImage}}<img class="harita" src="{{.MapImage}}" alt="Etkinlik yeri haritası">{{end}}</div>{{if .Directions}}<figure><img alt="Yol tarifi QR kodu" src="{{.Directions}}">Yol tarifi</figure>{{end}}</div>
+{{end}}{{if .NoteParts}}<section class="duyuru"><h2>Duyuru</h2><div class="satir"><div class="kutu"><p class="metin">{{range .NoteParts}}{{if .URL}}<a href="{{.URL}}">{{.Text}}</a>{{else}}{{.Text}}{{end}}{{end}}</p></div>{{if .NoteQR}}<figure><a class="git" href="{{.NoteLink}}"><img alt="Duyuru bağlantısı QR kodu" src="{{.NoteQR}}"><span>{{if .NoteWhatsApp}}WhatsApp grubuna katıl{{else}}Bağlantıyı aç{{end}}</span></a></figure>{{end}}</div></section>
+{{end}}<section class="yer"><h2>Etkinlik yeri</h2><div class="satir"><div class="kutu">{{if .D.DirectionsURL}}<a class="git" href="{{.D.DirectionsURL}}">{{end}}<div class="ad">{{.D.Venue}}</div>{{if .D.VenueAddress}}<div class="adres">{{.D.VenueAddress}}</div>{{end}}{{if .D.DirectionsURL}}</a>{{end}}{{if .MapImage}}{{if .D.DirectionsURL}}<a class="git" href="{{.D.DirectionsURL}}">{{end}}<img class="harita" src="{{.MapImage}}" alt="Etkinlik yeri haritası">{{if .D.DirectionsURL}}</a>{{end}}{{end}}</div>{{if .Directions}}<figure><a class="git" href="{{.D.DirectionsURL}}"><img alt="Yol tarifi QR kodu" src="{{.Directions}}"><span>Yol tarifi</span></a></figure>{{end}}</div>
 {{if .MapImage}}{{if .D.MapAttribution}}<p class="atif">{{.D.MapAttribution}}</p>{{end}}{{end}}</section>
 <footer class="dip"><p>Bu bilet kişiye özeldir. Düzenlenme: {{.Issued}}</p><p>Etkinlikte fotoğraf ve video çekilir, Kulübün kanallarında paylaşılabilir. Kişisel veriler KVKK Metni&#39;ne göre işlenir: {{.KVKK}}</p></footer>
 </body>

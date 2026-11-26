@@ -67,7 +67,7 @@ func stripEmoji(s string) string {
 // the PDF's typefaces have none, and the renderer would draw a box. The
 // ticket page and the mails keep the text as it is.
 func withoutEmoji(d Document) Document {
-	for _, field := range []*string{&d.EventName, &d.Venue, &d.VenueAddress, &d.OwnerTeam, &d.CoOrganizers, &d.HolderName, &d.Description} {
+	for _, field := range []*string{&d.EventName, &d.Venue, &d.VenueAddress, &d.OwnerTeam, &d.CoOrganizers, &d.HolderName, &d.Description, &d.TicketNote} {
 		*field = stripEmoji(*field)
 	}
 	if len(d.Days) == 0 {

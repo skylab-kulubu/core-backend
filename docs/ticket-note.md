@@ -21,12 +21,23 @@ or isolate, a zero-width character) is `400 event_ticket_note_invalid`.
 ## In the mails
 
 `event.ticket-created`, `event.waitlist-promoted` and `event.reminder`
-carry two more variables, always there:
+carry four more variables, always there:
 
 | Variable | Value |
 |---|---|
 | `TicketNote` | the note as stored, `""` for none |
 | `TicketNoteParts` | `[{Text, Url}]`: the note cut at its `https://` addresses (trailing punctuation left out), `Url` empty for plain text; `[]` for none |
+| `TicketNoteLink` | the address the note's button opens: its first WhatsApp address (`chat.whatsapp.com`, `whatsapp.com`, `wa.me`), else its first `https://` one; `""` for none |
+| `TicketNoteWhatsApp` | `"1"` when `TicketNoteLink` is a WhatsApp address, `""` otherwise |
+
+### The button
+
+Kağan and Yusuf (2026-11-26) asked for the WhatsApp group to stand out: the
+template draws the note in a box and, when `TicketNoteLink` is set, a
+table-based button under it, "WhatsApp grubuna katıl" for a WhatsApp
+address and "Bağlantıyı aç" for any other. Without an address there is no
+button. A core of before sends neither variable: the box shows the note,
+no button.
 
 Only `https://` addresses become links: an `http://` address, or anything
 else, stays text. The template (skynotify-frontend `TicketNote` in
@@ -36,4 +47,16 @@ and the address. A template seeded before the note ignores the two
 variables, and the note's template with a core of before shows nothing.
 
 The waiting list's and the cancellation's mails do not carry it. The
-ticket page and the PDF ticket do not show it (yet).
+ticket page does not show it (yet).
+
+## In the PDF ticket
+
+The PDF ticket (ticket-page.md) shows it in a compact section "Duyuru"
+before "Etkinlik yeri" (the note before the map, Yusuf 2026-11-26), never
+split: the note's text, its https addresses links, and for the button's
+address (`TicketNoteLink`'s rule) a small QR on white with "WhatsApp grubuna
+katıl" ("Bağlantıyı aç" for another address) under it, underlined in the
+theme's accent; the QR and the line are links. When it does not fit on the
+first page it moves to the next, before the place. No address, no QR;
+no note, no section. Its emoji are left out, as from every text the PDF
+prints.

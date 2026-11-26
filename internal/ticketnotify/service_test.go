@@ -206,7 +206,7 @@ func TestMemberGetsOneNotificationBySubject(t *testing.T) {
 		t.Fatalf("source %+v", c.source)
 	}
 	want := map[string]string{"EventId": e.ev.ID.String(), "EventName": "Kodlama Gecesi", "Venue": "D-Blok", "OwnerTeam": "WEBLAB", "EventDate": "10.11.2026 18:30", "CoOrganizers": "", "TicketNote": "",
-		"Theme": "", "EventBannerUrl": ""}
+		"TicketNoteLink": "", "TicketNoteWhatsApp": "", "MapUrl": "", "Theme": "", "EventBannerUrl": ""}
 	for k, v := range want {
 		if c.vars[k] != v {
 			t.Fatalf("vars[%s] = %q, want %q (%v)", k, c.vars[k], v, c.vars)
@@ -444,6 +444,9 @@ func TestTicketMailCarriesTheTicketNote(t *testing.T) {
 	}
 	if got, _ := raw["TicketNoteParts"].([]event.NotePart); !slices.Equal(got, want) {
 		t.Fatalf("TicketNoteParts %#v", raw["TicketNoteParts"])
+	}
+	if raw["TicketNoteLink"] != "https://chat.whatsapp.com/Ornek123" || raw["TicketNoteWhatsApp"] != "1" {
+		t.Fatalf("button %v %v", raw["TicketNoteLink"], raw["TicketNoteWhatsApp"])
 	}
 }
 
