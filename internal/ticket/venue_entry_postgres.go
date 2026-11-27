@@ -86,7 +86,7 @@ func (s *PostgresStore) RemoveVenueEntry(ctx context.Context, id uuid.UUID) (boo
 
 func (s *PostgresStore) VenueEntriesOn(ctx context.Context, eventID uuid.UUID, date string) ([]DoorEntry, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT v.id, v.ticket_id, v.entry_date::text, v.event_day_id, v.source, v.created_at, `+doorNameSQL+`
+		SELECT v.id, v.ticket_id, v.entry_date::text, v.event_day_id, v.source, v.created_at, v.scanned_at, `+doorNameSQL+`
 		FROM venue_entries v
 		JOIN tickets t ON t.id = v.ticket_id
 		LEFT JOIN users u ON u.id = t.owner_id
@@ -100,7 +100,7 @@ func (s *PostgresStore) VenueEntriesOn(ctx context.Context, eventID uuid.UUID, d
 	out := make([]DoorEntry, 0)
 	for rows.Next() {
 		e := DoorEntry{Kind: KindEntry}
-		if err := rows.Scan(&e.ID, &e.TicketID, &e.EntryDate, &e.EventDayID, &e.Source, &e.CreatedAt, &e.Name); err != nil {
+		if err := rows.Scan(&e.ID, &e.TicketID, &e.EntryDate, &e.EventDayID, &e.Source, &e.CreatedAt, &e.ScannedAt, &e.Name); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

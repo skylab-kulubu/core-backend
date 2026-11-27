@@ -3,6 +3,7 @@ package formsfeed
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -357,5 +358,50 @@ func TestMappingRoutesRules(t *testing.T) {
 	store.rows = map[[2]uuid.UUID]Mapping{{open.ID, form}: valid}
 	if err := m.Delete(ctx, editor, open.ID, form); err != nil || len(store.rows) != 0 {
 		t.Fatalf("delete, form gone: %v", err)
+	}
+}
+
+// Every Event's mapping of a form is read in one request to Forms: a save
+// that takes the form's mappings past MaxFields questions is refused; the
+// Event's own earlier mapping does not count (it is replaced).
+func TestAMappingKeepsTheFormsQuestionsWithinOneRead(t *testing.T) {
+	form := uuid.New()
+	address := "https://forms.yildizskylab.com/" + form.String()
+	ev := event.Event{ID: uuid.New(), OwnerTeam: "WEBLAB", Status: event.StatusPublished, FormURL: address}
+	editor := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/YK"}}
+	var questions []Question
+	for i := 1; i <= 30; i++ {
+		questions = append(questions, Question{ID: fmt.Sprintf("q%d", i)})
+	}
+	store := &memMappings{}
+	m := &Mappings{
+		Events: backfillEvents{events: []event.Event{ev}}, Authz: authz.NewAuthorizer(authz.DefaultPolicy()), Store: store,
+		Forms: stubForm{form: Form{FormID: form, Questions: questions, Collaborators: []Collaborator{{UserID: uuid.MustParse(editor.ID), Role: RoleEditor}}, AccessListed: true}},
+		On:    true, Now: time.Now,
+	}
+	ctx := context.Background()
+	// Two other Events' mappings name q1–q16 (16 questions).
+	for _, other := range []Mapping{
+		{EventID: uuid.New(), FormID: form, FirstName: "q1", LastName: "q2", Email: "q3", Phone: "q4", University: "q5", Department: "q6", Grade: "q7"},
+		{EventID: uuid.New(), FormID: form, FirstName: "q8", LastName: "q9", Email: "q10", Phone: "q11", University: "q12", Department: "q13", Grade: "q14", FullName: "q15"},
+	} {
+		if _, _, err := store.Put(ctx, other); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fits := Mapping{EventID: ev.ID, FormID: form, FullName: "q16", Email: "q17", Phone: "q18", Grade: "q19", University: "q20"}
+	if _, _, err := m.Put(ctx, editor, fits); err != nil {
+		t.Fatalf("20 questions: %v", err)
+	}
+	over := fits
+	over.Department = "q21"
+	if _, _, err := m.Put(ctx, editor, over); !errors.Is(err, ErrMappingTooManyQuestions) {
+		t.Fatalf("21 questions: %v", err)
+	}
+	// The same questions as the others' count once.
+	shared := fits
+	shared.Department = "q6"
+	if _, _, err := m.Put(ctx, editor, shared); err != nil {
+		t.Fatalf("a question another Event maps too: %v", err)
 	}
 }

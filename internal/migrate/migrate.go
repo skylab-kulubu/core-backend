@@ -2022,6 +2022,38 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 	20261127210000: `
 		SELECT 1 FROM pg_constraint
 		WHERE conrelid = to_regclass('public.events') AND conname = 'events_ticket_note_check' AND convalidated`,
+	// An attendee export in the Team audit record (docs/attendee-export.md):
+	// the action check takes ticket.export, and the event editor's basis
+	// with it. Rolling back keeps the action check wide.
+	20261127223000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.export%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.export%'
+		)`,
+	// An Event's raffles (docs/raffle.md): their two tables, and the Team
+	// audit checks taking raffle.draw and raffle.forfeit (as an event
+	// editor's too). Rolling back keeps all of them.
+	20261127233000: `
+		SELECT 1
+		WHERE to_regclass('public.event_raffles') IS NOT NULL
+		  AND to_regclass('public.event_raffle_entries') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%raffle.forfeit%'
+		  )
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%raffle.forfeit%'
+		  )`,
 	// SkyNotify's names (ADR 0091): the step CHECK takes erase_skynotify and
 	// not erase_skymail. The file renames the rows in the same transaction.
 	// After a rollback (db/tasima/skynotify-geri.sql) the CHECK names
@@ -2195,6 +2227,18 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND conname IN ('event_form_mappings_names_check', 'event_form_mappings_ids_check')
 		) = 2
 		AND to_regclass('public.event_form_mappings_form_idx') IS NOT NULL`,
+	// Guest account links (docs/guest-account-links.md): the mark's two
+	// checks, which name its columns, and the switch's table (read by name:
+	// before the migration it does not exist). Rolling back keeps all of
+	// them (it takes the links back, not the schema).
+	20261127234500: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM pg_constraint
+			WHERE conname IN ('tickets_owner_link_check', 'certificates_owner_link_check')
+			  AND conrelid IN (to_regclass('public.tickets'), to_regclass('public.certificates'))
+		) = 2
+		AND to_regclass('public.guest_account_link_settings') IS NOT NULL`,
 	// Forms' decline of a Ticket's answer kept as a mark, with the
 	// answer's form and status (K6, docs/form-response-tickets.md).
 	20261127110000: `
@@ -2278,6 +2322,63 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		AND to_regclass('public.co_organizer_notifications_due_idx') IS NOT NULL
 		AND to_regclass('public.co_organizer_notifications_user_idx') IS NOT NULL
 		AND to_regclass('public.co_organizer_notifications_actor_idx') IS NOT NULL`,
+	// Walk-in at the door (docs/walk-in.md): the guest's university,
+	// department and grade with their checks, the entry source walk_in, and
+	// the audit action ticket.walk_in with the basis door_staff. Rolling
+	// back keeps the columns and puts back the checks without walk_in, so
+	// the newer image runs the file again.
+	20261127220000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.tickets') AND conname = 'tickets_guest_grade_check' AND convalidated
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.tickets') AND conname = 'tickets_guest_university_check' AND convalidated
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.tickets') AND conname = 'tickets_guest_department_check' AND convalidated
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.venue_entries') AND conname = 'venue_entries_source_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%walk_in%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.walk_in%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%door_staff%'
+		)`,
+	// A form mapping's details (docs/form-mappings.md#the-details): the four
+	// question columns and their check, a respondent's four detail columns
+	// and theirs.
+	20261128010000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'event_form_mappings'
+			  AND column_name IN ('phone_question', 'university_question', 'department_question', 'grade_question')
+		) = 4
+		AND (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'event_form_respondents'
+			  AND column_name IN ('phone_number', 'university', 'department', 'grade')
+		) = 4
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.event_form_mappings') AND conname = 'event_form_mappings_details_check' AND convalidated
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.event_form_respondents') AND conname = 'event_form_respondents_details_check' AND convalidated
+		)`,
 	// A certificate's snapshot of its Event's Co-organizer teams
 	// (docs/co-organizers.md).
 	20261127120000: `

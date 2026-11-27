@@ -166,7 +166,7 @@ var scanOutcomes = []string{"checked_in", "already", "not_found", "invalid", "ex
 // (docs/venue-entry.md). Neither names anybody.
 type DoorScanMetrics struct {
 	counts  [9]atomic.Uint64
-	entries [3]atomic.Uint64
+	entries [4]atomic.Uint64
 	// offline counts the scans sent later (docs/offline-door.md) by
 	// outcome: written, resent (the same scan again), other_door (another
 	// door's scan, or one core took as it came, holds the record).

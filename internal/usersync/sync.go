@@ -104,6 +104,13 @@ func (r Report) changed() bool {
 	return false
 }
 
+// GuestLinker links guest Tickets and certificates to the accounts their
+// addresses now are (guestlink.Linker, docs/guest-account-links.md): the
+// pass's last step, under its lock. It logs its own failures.
+type GuestLinker interface {
+	LinkGuests(ctx context.Context)
+}
+
 // Worker runs the sync.
 type Worker struct {
 	dir      Directory
@@ -112,7 +119,9 @@ type Worker struct {
 	mailer   Mailer
 	config   Config
 	logf     func(string, ...any)
-	wake     chan struct{}
+	// guests is the pass's last step; nil for none.
+	guests GuestLinker
+	wake   chan struct{}
 	// pageDelay, opDelay and wakeGap are the package's; tests shorten them.
 	pageDelay, opDelay, wakeGap, sendTimeout time.Duration
 	now                                      func() time.Time
@@ -141,6 +150,9 @@ func New(dir Directory, accounts Accounts, rows Rows, mailer Mailer, config Conf
 		welcome: map[mail.WelcomeOutcome]int64{},
 	}
 }
+
+// SetGuestLinker makes l the last step of every pass that read Keycloak.
+func (w *Worker) SetGuestLinker(l GuestLinker) { w.guests = l }
 
 // Wake asks for a pass soon (not sooner than wakeGap after the last). It
 // never blocks, and a nil worker ignores it.
@@ -312,6 +324,11 @@ func (w *Worker) Pass(ctx context.Context) (Report, error) {
 		if err := w.sendWelcome(ctx, p.ID, &report); err != nil {
 			report.Errors++
 		}
+	}
+	// A new account, a verified address: the guest Tickets and
+	// certificates of its addresses become its own.
+	if w.guests != nil && ctx.Err() == nil {
+		w.guests.LinkGuests(ctx)
 	}
 	return report, nil
 }

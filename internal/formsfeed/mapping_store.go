@@ -35,11 +35,18 @@ type PostgresMappings struct{ pool *pgxpool.Pool }
 func NewPostgresMappings(pool *pgxpool.Pool) *PostgresMappings { return &PostgresMappings{pool: pool} }
 
 const mappingColumns = `event_id, form_id, COALESCE(first_name_question, ''), COALESCE(last_name_question, ''),
-	COALESCE(full_name_question, ''), email_question, updated_by, updated_at`
+	COALESCE(full_name_question, ''), email_question, updated_by, updated_at,
+	COALESCE(phone_question, ''), COALESCE(university_question, ''), COALESCE(department_question, ''), COALESCE(grade_question, '')`
+
+// mappingTargets are where scanMapping reads a row of mappingColumns.
+func mappingTargets(m *Mapping) []any {
+	return []any{&m.EventID, &m.FormID, &m.FirstName, &m.LastName, &m.FullName, &m.Email, &m.UpdatedBy, &m.UpdatedAt,
+		&m.Phone, &m.University, &m.Department, &m.Grade}
+}
 
 func scanMapping(row pgx.Row) (Mapping, error) {
 	var m Mapping
-	err := row.Scan(&m.EventID, &m.FormID, &m.FirstName, &m.LastName, &m.FullName, &m.Email, &m.UpdatedBy, &m.UpdatedAt)
+	err := row.Scan(mappingTargets(&m)...)
 	return m, err
 }
 
@@ -60,15 +67,20 @@ func (s *PostgresMappings) Put(ctx context.Context, m Mapping) (Mapping, bool, e
 	var saved Mapping
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO event_form_mappings AS m
-			(event_id, form_id, first_name_question, last_name_question, full_name_question, email_question, updated_by, updated_at)
-		VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8)
+			(event_id, form_id, first_name_question, last_name_question, full_name_question, email_question, updated_by, updated_at,
+			 phone_question, university_question, department_question, grade_question)
+		VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8,
+			NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''), NULLIF($12, ''))
 		ON CONFLICT (event_id, form_id) DO UPDATE SET
 			first_name_question = EXCLUDED.first_name_question, last_name_question = EXCLUDED.last_name_question,
 			full_name_question = EXCLUDED.full_name_question, email_question = EXCLUDED.email_question,
+			phone_question = EXCLUDED.phone_question, university_question = EXCLUDED.university_question,
+			department_question = EXCLUDED.department_question, grade_question = EXCLUDED.grade_question,
 			updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at
 		RETURNING `+mappingColumns+`, (xmax = 0)`,
-		m.EventID, m.FormID, m.FirstName, m.LastName, m.FullName, m.Email, m.UpdatedBy, m.UpdatedAt.UTC()).
-		Scan(&saved.EventID, &saved.FormID, &saved.FirstName, &saved.LastName, &saved.FullName, &saved.Email, &saved.UpdatedBy, &saved.UpdatedAt, &created)
+		m.EventID, m.FormID, m.FirstName, m.LastName, m.FullName, m.Email, m.UpdatedBy, m.UpdatedAt.UTC(),
+		m.Phone, m.University, m.Department, m.Grade).
+		Scan(append(mappingTargets(&saved), &created)...)
 	return saved, created, err
 }
 

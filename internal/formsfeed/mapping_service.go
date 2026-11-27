@@ -154,7 +154,8 @@ func (m *Mappings) Get(ctx context.Context, p authz.Principal, eventID, formID u
 
 // Put checks and saves the mapping: ErrMappingInvalid for one that breaks
 // the rule, a *MappingQuestionMissingError for ids the form does not have
-// (read from Forms now), ErrFormsPullOff with the switch off. created is true when there was none (the first
+// (read from Forms now), ErrMappingTooManyQuestions for one that takes the
+// form's mappings past MaxFields questions, ErrFormsPullOff with the switch off. created is true when there was none (the first
 // save, which bilet 04 may hang the backfill on).
 func (m *Mappings) Put(ctx context.Context, p authz.Principal, in Mapping) (saved Mapping, created bool, err error) {
 	ev, err := m.editable(ctx, p, in.EventID, in.FormID)
@@ -176,6 +177,20 @@ func (m *Mappings) Put(ctx context.Context, p authz.Principal, in Mapping) (save
 	}
 	if missing := in.MissingFrom(form.Questions); len(missing) > 0 {
 		return Mapping{}, false, &MappingQuestionMissingError{Missing: missing}
+	}
+	// Every Event's mapping of the form is read in one request to Forms.
+	all, err := m.Store.ForForm(ctx, in.FormID)
+	if err != nil {
+		return Mapping{}, false, err
+	}
+	together := []Mapping{in}
+	for _, other := range all {
+		if other.EventID != in.EventID {
+			together = append(together, other)
+		}
+	}
+	if len(MappedFields(together)) > MaxFields {
+		return Mapping{}, false, ErrMappingTooManyQuestions
 	}
 	in.UpdatedBy = nil
 	if id, err := uuid.Parse(p.ID); err == nil {

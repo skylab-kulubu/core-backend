@@ -65,6 +65,7 @@ the night's. The summary counts by the stored day: a night is one row.
 | Attendance QR, `check-in/me`, `check-in/guest` | Check-in + the day's entry if none (`attendance`) | the same |
 | Session desk, `check-in/resolve`, and `POST /v1/tickets/{t}/sessions/{s}/check-in` | Check-in + the day's entry if none (`desk`) | the same |
 | Event desk, `POST /v1/events/{id}/entries/resolve` | the day's entry (`desk`) | the same |
+| Walk-in, `POST /v1/events/{id}/entries/walk-in` ([walk-in.md](walk-in.md)) | the Ticket alone | the Ticket and the day's entry (`walk_in`; `desk` for a Ticket it found) |
 
 - Nobody is refused attendance for not having been scanned at the door
   (Yusuf, 22 November): the Check-in writes the missing entry in the same
