@@ -239,6 +239,10 @@ func (a *afterCheckIn) EnterUser(ctx context.Context, p authz.Principal, eventID
 	return a.inner.EnterUser(ctx, p, eventID, userID)
 }
 
+func (a *afterCheckIn) WalkIn(ctx context.Context, p authz.Principal, eventID uuid.UUID, w WalkIn) (WalkInOutcome, error) {
+	return a.inner.WalkIn(ctx, p, eventID, w)
+}
+
 func (a *afterCheckIn) ResolveEntry(ctx context.Context, p authz.Principal, eventID uuid.UUID, target DoorCheckInTarget) (DoorEntry, error) {
 	return a.inner.ResolveEntry(ctx, p, eventID, target)
 }
@@ -253,4 +257,12 @@ func (a *afterCheckIn) EntrySummary(ctx context.Context, p authz.Principal, even
 
 func (a *afterCheckIn) ListEntries(ctx context.Context, p authz.Principal, eventID uuid.UUID, date string) ([]DoorEntry, error) {
 	return a.inner.ListEntries(ctx, p, eventID, date)
+}
+
+func (a *afterCheckIn) BeginExport(ctx context.Context, p authz.Principal, eventID uuid.UUID, req ExportRequest) (*ExportData, error) {
+	return a.inner.BeginExport(ctx, p, eventID, req)
+}
+
+func (a *afterCheckIn) FinishExport(ctx context.Context, data *ExportData, rows int, err error) {
+	a.inner.FinishExport(ctx, data, rows, err)
 }

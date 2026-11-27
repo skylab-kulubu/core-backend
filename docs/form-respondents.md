@@ -277,13 +277,13 @@ Migration `20261127170000`:
 
 | Table / column | What | Kept |
 | --- | --- | --- |
-| `event_form_respondents` | `event_id`, `form_id`, `form_response_id` (one row an answer on an Event), `user_id` for a signed-in person (then no name or address), else `first_name`, `last_name`, `email`; `submitted_at`, `forms_status`, `source`, `created_at` | until the person holds a Ticket, the answer is declined, the Event lets the form go (same transaction), account erasure, or two years after the Event's end (retention rule `form_respondents`) |
+| `event_form_respondents` | `event_id`, `form_id`, `form_response_id` (one row an answer on an Event), `user_id` for a signed-in person (then no name or address), else `first_name`, `last_name`, `email` and the optional details `phone_number`, `university`, `department`, `grade` ([form-mappings.md](form-mappings.md#the-details), migration `20261128010000`; the guest's Ticket takes them when it is sent); `submitted_at`, `forms_status`, `source`, `created_at` | until the person holds a Ticket, the answer is declined, the Event lets the form go (same transaction), account erasure, or two years after the Event's end (retention rule `form_respondents`) |
 | `respondent_ticket_jobs` | a send-all job: Event, form, the organizer's subject, state, counts, the last row handled | 30 days after it finished; account erasure clears the subject |
 | `event_form_collect_counts` | an Event's form: the last full gathering's `missing_name`, `missing_email`, `no_person` | with the Event; the form let go takes it |
 | `events.form_responses_auto_ticket` | the setting | with the Event |
 | `form_pulls.kind = 'collect'` | the gathering | until done, at most a week |
 
-Never an answer's text, an unmapped answer or anything else of Forms.
+Never an answer's text (a guest's details are read from the mapped answers, the grade as a key), an unmapped answer or anything else of Forms.
 
 - **Retention:** rule `form_respondents` ([retention-sweep.md](retention-sweep.md)):
   the Event's end + 2 years (as `guest_identity`), an Event without a date

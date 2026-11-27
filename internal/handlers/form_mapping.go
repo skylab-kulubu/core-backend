@@ -34,13 +34,18 @@ func NewFormMappingHandler(mappings FormMappings, logger *log.Logger) *FormMappi
 }
 
 // mappingJSON is a mapping as the routes read and answer it: question ids,
-// null for none.
+// null for none. phone, university, department and grade are optional
+// (a body without them names none).
 type mappingJSON struct {
-	FirstName *string    `json:"firstName"`
-	LastName  *string    `json:"lastName"`
-	FullName  *string    `json:"fullName"`
-	Email     *string    `json:"email"`
-	UpdatedAt *time.Time `json:"updatedAt,omitempty"`
+	FirstName  *string    `json:"firstName"`
+	LastName   *string    `json:"lastName"`
+	FullName   *string    `json:"fullName"`
+	Email      *string    `json:"email"`
+	Phone      *string    `json:"phone"`
+	University *string    `json:"university"`
+	Department *string    `json:"department"`
+	Grade      *string    `json:"grade"`
+	UpdatedAt  *time.Time `json:"updatedAt,omitempty"`
 }
 
 func idOrNull(id string) *string {
@@ -58,7 +63,10 @@ func valueOf(id *string) string {
 }
 
 func mappingOut(m formsfeed.Mapping, withTime bool) mappingJSON {
-	out := mappingJSON{FirstName: idOrNull(m.FirstName), LastName: idOrNull(m.LastName), FullName: idOrNull(m.FullName), Email: idOrNull(m.Email)}
+	out := mappingJSON{
+		FirstName: idOrNull(m.FirstName), LastName: idOrNull(m.LastName), FullName: idOrNull(m.FullName), Email: idOrNull(m.Email),
+		Phone: idOrNull(m.Phone), University: idOrNull(m.University), Department: idOrNull(m.Department), Grade: idOrNull(m.Grade),
+	}
 	if withTime && !m.UpdatedAt.IsZero() {
 		at := m.UpdatedAt.UTC()
 		out.UpdatedAt = &at
@@ -85,7 +93,8 @@ func (h *FormMappingHandler) ids(c fiber.Ctx) (authz.Principal, uuid.UUID, uuid.
 
 // Questions is GET /v1/events/{id}/forms/{formId}/questions: 200 {formId,
 // title, questions: [{id, type, question, inputType, identity}],
-// suggestion: {firstName, lastName, fullName, email}}.
+// suggestion: {firstName, lastName, fullName, email, …}} (the details are
+// never suggested: null).
 func (h *FormMappingHandler) Questions(c fiber.Ctx) error {
 	p, eventID, formID, err := h.ids(c)
 	if err != nil {
@@ -116,7 +125,8 @@ func (h *FormMappingHandler) Get(c fiber.Ctx) error {
 }
 
 // Put is PUT /v1/events/{id}/forms/{formId}/mapping with {firstName,
-// lastName, fullName, email} (question ids, null or "" for none): 201 when
+// lastName, fullName, email, phone, university, department, grade}
+// (question ids, null or "" for none): 201 when
 // it is the first, 200 when it replaced one, with the mapping.
 func (h *FormMappingHandler) Put(c fiber.Ctx) error {
 	p, eventID, formID, err := h.ids(c)
@@ -130,6 +140,7 @@ func (h *FormMappingHandler) Put(c fiber.Ctx) error {
 	saved, created, err := h.mappings.Put(c.Context(), p, formsfeed.Mapping{
 		EventID: eventID, FormID: formID,
 		FirstName: valueOf(body.FirstName), LastName: valueOf(body.LastName), FullName: valueOf(body.FullName), Email: valueOf(body.Email),
+		Phone: valueOf(body.Phone), University: valueOf(body.University), Department: valueOf(body.Department), Grade: valueOf(body.Grade),
 	})
 	h.log(c, "put", eventID, formID, err)
 	if err != nil {
@@ -174,6 +185,9 @@ func (h *FormMappingHandler) error(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusNotFound, "Not Found", "form_not_found")
 	case errors.Is(err, formsfeed.ErrMappingInvalid):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "mapping_invalid")
+	case errors.Is(err, formsfeed.ErrMappingTooManyQuestions):
+		return problemWithFields(c, fiber.StatusBadRequest, "Bad Request", "Bad Request",
+			"mapping_too_many_questions", fiber.Map{"max": formsfeed.MaxFields})
 	case errors.As(err, &missing):
 		// The ids are the caller's own; never an answer.
 		return problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Entity", "Unprocessable Entity",

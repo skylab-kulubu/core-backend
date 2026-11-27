@@ -141,3 +141,5 @@ that is invalid or retired, is logged and the form keeps its own link.
 - Give the forms service client the `url:forms` role.
 - The skyl.app proxy already forwards every path to `/v1/go/…`, so
   `/{alias}/ig` reaches the channel route without a proxy change.
+  The bare root `skyl.app/` is not rewritten and reaches Core as `/`
+  (see `docs/short-link-miss-page.md`).

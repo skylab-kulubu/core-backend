@@ -183,10 +183,22 @@ func shortLinkMissPage(c fiber.Ctx, gone bool) error {
 	return c.Status(status).Send(page)
 }
 
-// ShortLinkRoot is skyl.app/ with no alias (/v1/go and /v1/go/): the club
-// site, for a person and a program alike.
+// ShortLinkRoot is /v1/go with no alias (and /v1/go/): the club site, for a
+// person and a program alike. skyl.app/ itself arrives as / (ShortLinkBareRoot).
 func ShortLinkRoot(c fiber.Ctx) error {
 	c.Set(fiber.HeaderCacheControl, "no-store")
 	c.Set(fiber.HeaderLocation, shortLinkHome)
 	return c.SendStatus(fiber.StatusFound)
+}
+
+// ShortLinkBareRoot is skyl.app/ as it reaches Core: the proxy turns
+// skyl.app/{path} into /v1/go/{path} only when there is a path, so the bare
+// root arrives as /. A browser goes to the club site as from /v1/go; any
+// other caller falls through to the 404 problem JSON it got before.
+func ShortLinkBareRoot(c fiber.Ctx) error {
+	c.Vary(fiber.HeaderAccept)
+	if !wantsShortLinkPage(c) {
+		return c.Next()
+	}
+	return ShortLinkRoot(c)
 }

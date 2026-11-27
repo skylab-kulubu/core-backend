@@ -97,6 +97,7 @@ func Rules(c Config, s Schema) []Rule {
 	rules = append(rules, eventChangeNoticeRules()...)
 	rules = append(rules, coOrganizerPeopleRules()...)
 	rules = append(rules, formRespondentRules()...)
+	rules = append(rules, linkedGuestRules()...)
 	return append(rules, auditRules(c)...)
 }
 
@@ -117,9 +118,17 @@ var ticketEventEndSQL = `(SELECT ` + eventEndSQL("te") + ` FROM events te WHERE 
 // owner holds, the rule account erasure follows too.
 const guestTicketSQL = `t.owner_id IS NULL`
 
+// guestPhoneTicketSQL: a Ticket that holds a guest's phone: a GUEST Ticket,
+// with an owner or not. A guest Ticket linked to the account its address is
+// (docs/guest-account-links.md) keeps its name and e-mail as the account's
+// data, but its phone was asked for the Event alone and goes on the same
+// day as an unlinked guest's (guest_phone v2).
+const guestPhoneTicketSQL = `t.ticket_type = 'GUEST'`
+
 // guestIdentityHeldSQL: the Ticket still holds the guest's identity, or one
 // of its certificates without an owner still holds their address.
 const guestIdentityHeldSQL = `(t.guest_first_name <> '' OR t.guest_last_name <> '' OR t.guest_email <> '' OR t.guest_phone_number <> ''
+	OR t.guest_university <> '' OR t.guest_department <> '' OR t.guest_grade <> ''
 	OR EXISTS (SELECT 1 FROM certificates gc WHERE gc.ticket_id = t.id AND gc.owner_id IS NULL AND gc.recipient_email <> ''))`
 
 // guestPersonSQL is a guest Ticket's person: its normalized address. Guest
@@ -132,7 +141,7 @@ const guestPersonSQL = `lower(btrim(t.guest_email))`
 // lower-cased alike (a guest who later became a member is one person,
 // ADR-0062), with when each was taken.
 const personTicketsSQL = `SELECT lower(btrim(pt.guest_email)) AS person, pt.event_id, pt.created_at AS registered FROM tickets pt
-		WHERE pt.owner_id IS NULL AND btrim(pt.guest_email) <> ''
+		WHERE pt.ticket_type = 'GUEST' AND btrim(pt.guest_email) <> ''
 	UNION ALL SELECT lower(btrim(pu.email)), mt.event_id, mt.created_at FROM tickets mt JOIN users pu ON pu.id = mt.owner_id
 		WHERE btrim(pu.email) <> ''
 	UNION ALL SELECT lower(btrim(pu.school_email)), mt.event_id, mt.created_at FROM tickets mt JOIN users pu ON pu.id = mt.owner_id
@@ -221,23 +230,31 @@ func sweepRules(s Schema) []Rule {
 	}
 	return []Rule{
 		{
-			Name: "guest_phone", Version: 1, Kind: KindSweep, Action: ActionScrub,
+			// v2: a guest Ticket linked to an account too (guestPhoneTicketSQL).
+			Name: "guest_phone", Version: 2, Kind: KindSweep, Action: ActionScrub,
 			Table: "tickets", alias: "t", key: "id", Period: GuestPhonePeriod,
-			where:      guestTicketSQL + ` AND t.guest_phone_number <> '' AND ` + ticketEventEndSQL + ` < $1`,
+			where:      guestPhoneTicketSQL + ` AND t.guest_phone_number <> '' AND ` + ticketEventEndSQL + ` < $1`,
 			set:        `guest_phone_number = '', updated_at = now()`,
-			anchorless: guestTicketSQL + ` AND t.guest_phone_number <> '' AND ` + ticketEventEndSQL + ` IS NULL`,
+			anchorless: guestPhoneTicketSQL + ` AND t.guest_phone_number <> '' AND ` + ticketEventEndSQL + ` IS NULL`,
 		},
 		{
 			// v2: a member's own Events date their earlier guest Tickets.
 			// v3: an Event without a date counts from the Ticket's
 			// registration, so the rule dates every row (no anchorless).
+			// v4: a Walk-in's university, department and grade go with the
+			// identity (docs/walk-in.md).
+			// v5: a guest Ticket linked to an account
+			// (docs/guest-account-links.md) dates the address's person as
+			// any guest Ticket of it does (personTicketsSQL); the linked
+			// Ticket itself is the account's (guestTicketSQL).
 			// guest_phone and door_staff still count such rows and leave
 			// them: a phone 90 days after registration could go before an
 			// undated Event even took place, and door staff have no date.
-			Name: "guest_identity", Version: 3, Kind: KindSweep, Action: ActionScrub,
+			Name: "guest_identity", Version: 5, Kind: KindSweep, Action: ActionScrub,
 			Table: "tickets", RelatedTable: "certificates", alias: "t", key: "id", Period: GuestIdentityPeriod,
 			where: guestIdentityDue,
-			set:   `guest_first_name = '', guest_last_name = '', guest_email = '', guest_phone_number = '', updated_at = now()`,
+			set: `guest_first_name = '', guest_last_name = '', guest_email = '', guest_phone_number = '',
+				guest_university = '', guest_department = '', guest_grade = '', updated_at = now()`,
 			// The certificate keeps its recipient name, serial and PDF: the
 			// verification record (ADR-0062). Only its address goes.
 			related: `UPDATE certificates gc SET recipient_email = '' FROM batch
@@ -341,6 +358,24 @@ func coOrganizerPeopleRules() []Rule {
 		Table: "event_co_organizers", alias: "co", key: "ctid", Period: CoOrganizerPeoplePeriod,
 		where:      `co.user_id IS NOT NULL AND (SELECT ` + eventEndSQL("ce") + ` FROM events ce WHERE ce.id = co.event_id) < $1`,
 		anchorless: `co.user_id IS NOT NULL AND (SELECT ` + eventEndSQL("ce") + ` FROM events ce WHERE ce.id = co.event_id) IS NULL`,
+	}}
+}
+
+// linkedGuestRules: a guest Ticket linked to an account
+// (docs/guest-account-links.md) keeps its name and e-mail as the account's,
+// but the university, department and grade a Walk-in or a form's mapping
+// gave were asked for the Event: they go two years after it, as an
+// unlinked guest's go with its identity (GuestIdentityPeriod). An Event
+// without a date counts from the Ticket's registration, as guest_identity
+// v3.
+func linkedGuestRules() []Rule {
+	return []Rule{{
+		Name: "linked_guest_details", Version: 1, Kind: KindSweep, Action: ActionScrub,
+		Table: "tickets", alias: "t", key: "id", Period: GuestIdentityPeriod,
+		where: `t.ticket_type = 'GUEST' AND t.owner_id IS NOT NULL
+			AND (t.guest_university <> '' OR t.guest_department <> '' OR t.guest_grade <> '')
+			AND COALESCE(` + ticketEventEndSQL + `, t.created_at) < $1`,
+		set: `guest_university = '', guest_department = '', guest_grade = '', updated_at = now()`,
 	}}
 }
 
