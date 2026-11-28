@@ -19,6 +19,8 @@ type MemoryStore struct {
 	checkIns map[uuid.UUID]CheckIn
 	// entries are the Venue entries (docs/venue-entry.md).
 	entries map[uuid.UUID]VenueEntry
+	// undos are the door marks taken back, as door_undos.
+	undos []DoorUndo
 	// events reads an Event's capacity (UseEvents); nil bounds none.
 	events EventGetter
 	// seq orders the Tickets as written: the waiting list's order where
@@ -384,11 +386,18 @@ func (s *MemoryStore) enteredLocked(ticketID uuid.UUID, date string) bool {
 	return false
 }
 
-// removeCheckInLocked deletes the check-in id and takes back the entry it
-// wrote, or hands it to the Ticket's other check-in that day; s.mu is held.
-func (s *MemoryStore) removeCheckInLocked(id uuid.UUID) {
+// removeCheckInLocked takes back the check-in id and the entry it wrote,
+// or hands that to the Ticket's other check-in that day, keeping what goes
+// as door undos by undoneBy; s.mu is held.
+func (s *MemoryStore) removeCheckInLocked(id uuid.UUID, undoneBy *uuid.UUID) {
 	gone := s.checkIns[id]
 	delete(s.checkIns, id)
+	eventID := s.byID[gone.TicketID].EventID
+	now := time.Now().UTC()
+	s.undos = append(s.undos, DoorUndo{
+		ID: gone.ID, Kind: KindCheckIn, TicketID: gone.TicketID, EventID: eventID, SessionID: &gone.SessionID,
+		Source: string(gone.Source), ByUserID: gone.ByUserID, WrittenAt: gone.CreatedAt, UndoneAt: now, UndoneBy: undoneBy,
+	})
 	var other *uuid.UUID
 	for _, c := range s.checkIns {
 		if c.TicketID == gone.TicketID && c.EventDayID == gone.EventDayID {
@@ -403,6 +412,7 @@ func (s *MemoryStore) removeCheckInLocked(id uuid.UUID) {
 		}
 		if other == nil && e.Source != EntryScan {
 			delete(s.entries, eid)
+			s.undos = append(s.undos, entryUndo(e, now, undoneBy))
 			continue
 		}
 		e.CheckInID = other
@@ -410,12 +420,12 @@ func (s *MemoryStore) removeCheckInLocked(id uuid.UUID) {
 	}
 }
 
-func (s *MemoryStore) RemoveCheckIn(_ context.Context, ticketID, sessionID uuid.UUID) (bool, error) {
+func (s *MemoryStore) RemoveCheckIn(_ context.Context, ticketID, sessionID uuid.UUID, undoneBy *uuid.UUID) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, c := range s.checkIns {
 		if c.TicketID == ticketID && c.SessionID == sessionID {
-			s.removeCheckInLocked(id)
+			s.removeCheckInLocked(id, undoneBy)
 			return true, nil
 		}
 	}
@@ -432,13 +442,13 @@ func (s *MemoryStore) CheckInByID(_ context.Context, id uuid.UUID) (CheckIn, err
 	return c, nil
 }
 
-func (s *MemoryStore) RemoveCheckInByID(_ context.Context, id uuid.UUID) (bool, error) {
+func (s *MemoryStore) RemoveCheckInByID(_ context.Context, id uuid.UUID, undoneBy *uuid.UUID) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.checkIns[id]; !ok {
 		return false, nil
 	}
-	s.removeCheckInLocked(id)
+	s.removeCheckInLocked(id, undoneBy)
 	return true, nil
 }
 
@@ -474,14 +484,33 @@ func (s *MemoryStore) VenueEntryByID(_ context.Context, id uuid.UUID) (VenueEntr
 	return e, nil
 }
 
-func (s *MemoryStore) RemoveVenueEntry(_ context.Context, id uuid.UUID) (bool, error) {
+func (s *MemoryStore) RemoveVenueEntry(_ context.Context, id uuid.UUID, undoneBy *uuid.UUID) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.entries[id]; !ok {
+	e, ok := s.entries[id]
+	if !ok {
 		return false, nil
 	}
 	delete(s.entries, id)
+	s.undos = append(s.undos, entryUndo(e, time.Now().UTC(), undoneBy))
 	return true, nil
+}
+
+// entryUndo is the door undo of the entry e taken back at by undoneBy.
+func entryUndo(e VenueEntry, at time.Time, undoneBy *uuid.UUID) DoorUndo {
+	date := e.EntryDate
+	return DoorUndo{
+		ID: e.ID, Kind: KindEntry, TicketID: e.TicketID, EventID: e.EventID, EntryDate: &date,
+		Source: string(e.Source), ByUserID: e.ByUserID, WrittenAt: e.CreatedAt, UndoneAt: at, UndoneBy: undoneBy,
+	}
+}
+
+// DoorUndos are the door marks taken back, oldest first (a test reads
+// them).
+func (s *MemoryStore) DoorUndos() []DoorUndo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.undos)
 }
 
 // VenueEntriesOn names a guest's entry; a member's name is the service's

@@ -76,8 +76,15 @@ func (s *PostgresStore) VenueEntryOn(ctx context.Context, ticketID uuid.UUID, da
 	return e, err
 }
 
-func (s *PostgresStore) RemoveVenueEntry(ctx context.Context, id uuid.UUID) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM venue_entries WHERE id = $1`, id)
+// RemoveVenueEntry takes the entry out of venue_entries and keeps it in
+// door_undos, in one statement (docs/venue-entry.md "Taking back").
+func (s *PostgresStore) RemoveVenueEntry(ctx context.Context, id uuid.UUID, undoneBy *uuid.UUID) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		WITH gone AS (
+			DELETE FROM venue_entries WHERE id = $1
+			RETURNING *
+		)
+		`+undoEntrySQL("$2"), id, undoneBy)
 	if err != nil {
 		return false, err
 	}

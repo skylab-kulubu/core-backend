@@ -58,6 +58,11 @@ type CheckIn struct {
 	ScannedAt *time.Time `json:"scannedAt,omitempty"`
 	// NoMail queues no door mail with it: a scan sent too late for one.
 	NoMail bool `json:"-"`
+	// Source is how it was written and ByUserID the door staff who wrote
+	// it, when an active account (docs/venue-entry.md "Who wrote it"):
+	// AddCheckIn stores them, a stored check-in leaves them out.
+	Source   CheckInSource `json:"-"`
+	ByUserID *uuid.UUID    `json:"-"`
 	// Kind is what a door write answers: check_in, or entry when a scan in
 	// the venue mode wrote the day's Venue entry alone (ID is then the
 	// entry's; docs/venue-entry.md). A stored check-in leaves it out.

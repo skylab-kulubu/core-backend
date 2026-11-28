@@ -1488,7 +1488,7 @@ func (s *service) addSessionCheckIn(ctx context.Context, t Ticket, sessionID uui
 	scannedAt, late := s.scanned(ctx)
 	ci, err := s.tickets.AddCheckIn(ctx, CheckIn{
 		TicketID: t.ID, SessionID: sessionID, EventDayID: sess.EventDayID, Entry: entry,
-		ScannedAt: scannedAt, NoMail: late,
+		ScannedAt: scannedAt, NoMail: late, Source: checkInSource(how.source), ByUserID: how.by,
 	})
 	if err != nil {
 		return CheckIn{}, s.duplicate(ctx, err, t.ID, "", sessionID)

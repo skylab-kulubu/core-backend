@@ -559,8 +559,8 @@ func (s *PostgresStore) AddCheckIn(ctx context.Context, c CheckIn) (CheckIn, err
 	// Check-in (undoing the Check-in keeps it), the others' name it.
 	err := s.pool.QueryRow(ctx, `
 		WITH ci AS (
-			INSERT INTO ticket_checkins (id, ticket_id, event_day_id, session_id, scanned_at)
-			SELECT $1, t.id, $3, $4, $10 FROM tickets t WHERE t.id = $2 AND t.status = 'active'
+			INSERT INTO ticket_checkins (id, ticket_id, event_day_id, session_id, scanned_at, source, by_user_id)
+			SELECT $1, t.id, $3, $4, $10, NULLIF($11, ''), `+activeActorSQL("$12")+` FROM tickets t WHERE t.id = $2 AND t.status = 'active'
 			RETURNING id, ticket_id, event_day_id, session_id, created_at, scanned_at
 		), entry AS (
 			INSERT INTO venue_entries (id, ticket_id, event_id, entry_date, event_day_id, source, check_in_id, by_user_id, scanned_at)
@@ -585,7 +585,7 @@ func (s *PostgresStore) AddCheckIn(ctx context.Context, c CheckIn) (CheckIn, err
 		SELECT ci.id, ci.ticket_id, ci.event_day_id, ci.session_id, ci.created_at, ci.scanned_at, EXISTS (SELECT 1 FROM entry)
 		FROM ci
 	`, c.ID, c.TicketID, c.EventDayID, c.SessionID, date, source, by, s.mailWelcome.Load() && !c.NoMail,
-		s.mailRecorded.Load() && !c.NoMail, c.ScannedAt).Scan(
+		s.mailRecorded.Load() && !c.NoMail, c.ScannedAt, string(c.Source), c.ByUserID).Scan(
 		&c.ID, &c.TicketID, &c.EventDayID, &c.SessionID, &c.CreatedAt, &c.ScannedAt, &c.EntryWritten)
 	c.NoMail = false
 	if isUnique(err) {
@@ -609,20 +609,21 @@ func isUnique(err error) bool {
 	return errors.As(err, &pg) && pg.Code == "23505"
 }
 
-// RemoveCheckIn deletes the one row (ticket_id, session_id) is unique on.
-// Nothing on the tickets row is derived from its check-ins: every reader
-// counts ticket_checkins itself.
-func (s *PostgresStore) RemoveCheckIn(ctx context.Context, ticketID, sessionID uuid.UUID) (bool, error) {
-	return s.removeCheckIn(ctx, `ticket_id = $1 AND session_id = $2`, ticketID, sessionID)
+// RemoveCheckIn takes back the one row (ticket_id, session_id) is unique
+// on. Nothing on the tickets row is derived from its check-ins: every
+// reader counts ticket_checkins itself.
+func (s *PostgresStore) RemoveCheckIn(ctx context.Context, ticketID, sessionID uuid.UUID, undoneBy *uuid.UUID) (bool, error) {
+	return s.removeCheckIn(ctx, undoneBy, `ticket_id = $1 AND session_id = $2`, ticketID, sessionID)
 }
 
-// removeCheckIn deletes the check-in where names and, in the same
+// removeCheckIn takes back the check-in where names and, in the same
 // transaction, the Venue entry it wrote (docs/venue-entry.md): taken back
 // when the Ticket has no other check-in that day, else handed to that one,
-// which holds it now. A scanned entry names no check-in and stays. The
-// entry is settled before the check-in goes: its foreign key would clear
-// check_in_id first.
-func (s *PostgresStore) removeCheckIn(ctx context.Context, where string, args ...any) (bool, error) {
+// which holds it now. A scanned entry names no check-in and stays. What is
+// taken back moves to door_undos with who took it back (Deletion
+// lifecycle): the live tables keep what stands. The entry is settled
+// before the check-in goes: its foreign key would clear check_in_id first.
+func (s *PostgresStore) removeCheckIn(ctx context.Context, undoneBy *uuid.UUID, where string, args ...any) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -646,16 +647,38 @@ func (s *PostgresStore) removeCheckIn(ctx context.Context, where string, args ..
 			UPDATE venue_entries SET check_in_id = (SELECT id FROM other)
 			WHERE check_in_id = $1 AND EXISTS (SELECT 1 FROM other)
 			RETURNING id
+		), gone AS (
+			DELETE FROM venue_entries
+			WHERE check_in_id = $1 AND source IN ('attendance', 'desk') AND NOT EXISTS (SELECT 1 FROM other)
+			RETURNING *
 		)
-		DELETE FROM venue_entries
-		WHERE check_in_id = $1 AND source IN ('attendance', 'desk') AND NOT EXISTS (SELECT 1 FROM other)
-	`, id, ticketID, dayID); err != nil {
+		`+undoEntrySQL("$4")+`
+	`, id, ticketID, dayID, undoneBy); err != nil {
 		return false, err
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM ticket_checkins WHERE id = $1`, id); err != nil {
+	if _, err := tx.Exec(ctx, `
+		WITH gone AS (
+			DELETE FROM ticket_checkins WHERE id = $1
+			RETURNING *
+		)
+		INSERT INTO door_undos (id, kind, ticket_id, event_id, session_id, event_day_id, source, by_user_id, written_at, scanned_at, undone_by)
+		SELECT g.id, 'check_in', g.ticket_id, t.event_id, g.session_id, g.event_day_id, g.source,
+			`+activeActorSQL("g.by_user_id")+`, g.created_at, g.scanned_at, `+activeActorSQL("$2")+`
+		FROM gone g JOIN tickets t ON t.id = g.ticket_id
+	`, id, undoneBy); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
+}
+
+// undoEntrySQL keeps the Venue entries a CTE named gone deleted as door
+// undos by undoneBy (a parameter): the row as it was, its writer while
+// still an active account.
+func undoEntrySQL(undoneBy string) string {
+	return `INSERT INTO door_undos (id, kind, ticket_id, event_id, event_day_id, entry_date, source, by_user_id, written_at, scanned_at, undone_by)
+		SELECT g.id, 'entry', g.ticket_id, g.event_id, g.event_day_id, g.entry_date, g.source,
+			` + activeActorSQL("g.by_user_id") + `, g.created_at, g.scanned_at, ` + activeActorSQL(undoneBy) + `
+		FROM gone g`
 }
 
 func (s *PostgresStore) CheckInByID(ctx context.Context, id uuid.UUID) (CheckIn, error) {
@@ -670,8 +693,8 @@ func (s *PostgresStore) CheckInByID(ctx context.Context, id uuid.UUID) (CheckIn,
 	return c, err
 }
 
-func (s *PostgresStore) RemoveCheckInByID(ctx context.Context, id uuid.UUID) (bool, error) {
-	return s.removeCheckIn(ctx, `id = $1`, id)
+func (s *PostgresStore) RemoveCheckInByID(ctx context.Context, id uuid.UUID, undoneBy *uuid.UUID) (bool, error) {
+	return s.removeCheckIn(ctx, undoneBy, `id = $1`, id)
 }
 
 // CheckInOf is the Ticket's Check-in at the Session (ScanRecords).

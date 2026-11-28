@@ -45,7 +45,7 @@ click list and a form's channel statistics keep looking 90 days back
 clicks turn 90 days old. Until apply it is the clicks of the last 90 days;
 from apply on it only grows, counting every click since then.
 
-## Rules (rule set v14)
+## Rules (rule set v15)
 
 "Event end" is the Event's `end_date`, else its last day's `end_date`, else
 its `start_date` (ADR-0062). For `guest_identity`, an Event with none of them
@@ -176,6 +176,12 @@ The Unticketed respondents ([`form-respondents.md`](form-respondents.md#data); r
 | Rule | Selects | Period | Action |
 |---|---|---|---|
 | `form_respondents` | an `event_form_respondents` row | `FormRespondentPeriod`, the Event end + 2 years (as `guest_identity`); an Event with no date counts from the row's `created_at`, so every row is dated | row deleted (it holds nothing but who answered, with a guest's optional details) |
+
+The door's taken-back marks ([`venue-entry.md`](venue-entry.md#taking-back); rule set v15, 2026-11-28):
+
+| Rule | Selects | Period | Action |
+|---|---|---|---|
+| `door_undos_age` | a `door_undos` row: a Check-in or Venue entry the door took back | `DoorUndoPeriod`, 3 years after `undone_at`, as the Team audit record (it records an operator's action at the door) | row deleted; the Check-ins and Venue entries that stand live with their Ticket |
 
 ## Schedule, lock and periods
 

@@ -189,7 +189,7 @@ func (s *service) UndoEntry(ctx context.Context, p authz.Principal, eventID, ent
 	if entry.EventID != ev.ID {
 		return ErrNotFound
 	}
-	removed, err := s.tickets.RemoveVenueEntry(ctx, entryID)
+	removed, err := s.tickets.RemoveVenueEntry(ctx, entryID, undoerOf(p))
 	if err != nil {
 		return err
 	}
