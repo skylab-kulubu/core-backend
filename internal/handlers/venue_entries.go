@@ -89,6 +89,25 @@ func (h *TicketHandler) EntrySummary(c fiber.Ctx) error {
 	return c.JSON(summary)
 }
 
+// DoorStaffStats is GET /v1/events/:eventId/door-staff/stats
+// (docs/door-staff-stats.md).
+func (h *TicketHandler) DoorStaffStats(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	eventID, err := uuid.Parse(c.Params("eventId"))
+	if err != nil {
+		return badID(c, "eventId")
+	}
+	stats, err := h.svc.DoorStaffStats(c.Context(), p, eventID)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.JSON(stats)
+}
+
 // ListEntries is GET /v1/events/:eventId/entries?date=YYYY-MM-DD (today
 // without one).
 func (h *TicketHandler) ListEntries(c fiber.Ctx) error {

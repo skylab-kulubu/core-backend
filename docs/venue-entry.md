@@ -133,7 +133,7 @@ For an Event without Sessions this is the only door; any Event has it.
 | `POST /v1/events/{id}/entries/scan` | `{"token"}` (Ticket QR `tk-*`, SkyPass QR, Wallet `SPW1:…`) or `{"uid"}` (card) | `201 {"id","kind":"entry","entryDate","eventDayId"?,"source","name","createdAt"}` |
 | `POST /v1/events/{id}/entries/resolve` | `{"query"}` (Ticket code `XXXX-XXXX`, name, e-mail) or `{"personId"}` | as scan, `source: "desk"` |
 | `DELETE /v1/events/{id}/entries/{entryId}` | | `204` |
-| `GET /v1/events/{id}/entries/summary` | | `{"days":[{"date","eventDayId"?,"total","bySource":{"scan","desk","attendance"}}]}` |
+| `GET /v1/events/{id}/entries/summary` | | `{"days":[{"date","eventDayId"?,"total","bySource":{"scan","desk","attendance","walk_in"}}]}` |
 | `GET /v1/events/{id}/entries?date=YYYY-MM-DD` | the venue day now falls on without `date` | `[{"id","kind","entryDate","eventDayId"?,"source","name","createdAt"}]`, newest first |
 
 No answer carries the Ticket's id or an e-mail, as the door's other

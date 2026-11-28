@@ -119,7 +119,7 @@ func (s *PostgresStore) VenueEntryDays(ctx context.Context, eventID uuid.UUID) (
 	rows, err := s.pool.Query(ctx, `
 		SELECT v.entry_date::text, (array_agg(v.event_day_id) FILTER (WHERE v.event_day_id IS NOT NULL))[1],
 			count(*), count(*) FILTER (WHERE v.source = 'scan'), count(*) FILTER (WHERE v.source = 'desk'),
-			count(*) FILTER (WHERE v.source = 'attendance')
+			count(*) FILTER (WHERE v.source = 'attendance'), count(*) FILTER (WHERE v.source = 'walk_in')
 		FROM venue_entries v
 		WHERE v.event_id = $1
 		GROUP BY v.entry_date
@@ -132,12 +132,12 @@ func (s *PostgresStore) VenueEntryDays(ctx context.Context, eventID uuid.UUID) (
 	out := make([]EntryDay, 0)
 	for rows.Next() {
 		var day EntryDay
-		var scan, desk, attendance int
-		if err := rows.Scan(&day.Date, &day.EventDayID, &day.Total, &scan, &desk, &attendance); err != nil {
+		var scan, desk, attendance, walkIn int
+		if err := rows.Scan(&day.Date, &day.EventDayID, &day.Total, &scan, &desk, &attendance, &walkIn); err != nil {
 			return nil, err
 		}
 		day.BySource = map[string]int{
-			string(EntryScan): scan, string(EntryDesk): desk, string(EntryAttendance): attendance,
+			string(EntryScan): scan, string(EntryDesk): desk, string(EntryAttendance): attendance, string(EntryWalkIn): walkIn,
 		}
 		out = append(out, day)
 	}

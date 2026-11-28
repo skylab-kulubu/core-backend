@@ -23,7 +23,8 @@ the column is left out.
 {"report": "attendees", "format": "xlsx", "sessionId": null, "ticketIds": ["…"]}
 ```
 
-- `report`: `attendees`, `session`, `matrix`, `entries` or `certificates`.
+- `report`: `attendees`, `session`, `matrix`, `entries`, `certificates` or
+  `door_staff`. `door_staff` takes no `ticketIds` (it has no Ticket rows).
 - `format`: `xlsx` (default) or `csv`.
 - `sessionId`: the Session of a `session` report, and only of it.
 - `ticketIds` (optional): the rows the panel shows ("ekrandakini indir").
@@ -76,6 +77,7 @@ the cell (`'+905551112233`): the XLSX is the format to read phones in
 | `matrix` (Katılım matrisi) | the active Tickets, by name | one column per live Session in the program's order ("(sayılır)" when counted), ✓ where checked in; Toplam katıldığı oturum, then the counts |
 | `entries` (Alana giriş) | every Venue entry, day by day | Gün first; Telefon, Üniversite, Bölüm, Sınıf, Giriş zamanı, Cihazda okutma zamanı (an offline scan's), Yol (QR okutma / Kapı listesi (elle) / Oturum katılımıyla / Kapıda kayıt) |
 | `certificates` (Sertifikalar) | the active Tickets, by name | Sayılan oturumlardan katıldığı, Sayılan oturum sayısı, Sertifika durumu, Seri no, Veriliş, İptal |
+| `door_staff` (Kapı görevlileri) | each person who wrote at the door, most first, then "Katılımcının kendisi (oturum QR)" and "Yazanı bilinmeyen" ([door-staff-stats.md](door-staff-stats.md)) | no person columns: Görevli (the account's name, never an e-mail), Alana giriş and its Giriş: tarama / masa / kapıda kayıt, Oturum yoklaması and its Yoklama: tarama / masa, Kapıda kayıt (bilet), Geri alınan, Geri aldığı, İlk işlem, Son işlem, En yoğun saat |
 
 The counts are the certificate rule's ([certificate-rule.md](certificate-rule.md)),
 read once per export by `certificate.Service.Standings`, the same count the
@@ -85,9 +87,9 @@ yok" for an Event without a rule) and, for a reader of certificates,
 Sertifika durumu (Verildi, Kuyrukta, Hata, İptal edildi, Uygun verilmedi,
 Eşik altı). A Ticket that is not active has none.
 
-Not written: a Session Check-in's way (QR, door, by hand) and who wrote
-it, which core does not keep; a Venue entry's door staff; the form's
-answers beyond the fields it maps onto the Ticket.
+Not written: a Venue entry's or a Session Check-in's door staff in the
+people's reports (the `door_staff` report counts them); the form's answers
+beyond the fields it maps onto the Ticket.
 
 ## Audit and log
 

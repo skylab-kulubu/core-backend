@@ -951,6 +951,7 @@ func New(deps Deps) *fiber.App {
 	// The Event's door without a Session: Venue entry (docs/venue-entry.md).
 	app.Post("/v1/events/:eventId/entries/resolve", tickets.ResolveEntry)
 	app.Get("/v1/events/:eventId/entries/summary", tickets.EntrySummary)
+	app.Get("/v1/events/:eventId/door-staff/stats", tickets.DoorStaffStats)
 	app.Get("/v1/events/:eventId/entries", tickets.ListEntries)
 	app.Delete("/v1/events/:eventId/entries/:entryId", tickets.UndoEntry)
 	// Walk-in at the door (docs/walk-in.md): a person with no Ticket
