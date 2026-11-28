@@ -664,6 +664,11 @@ func (s *PostgresStore) anonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		// Venue entries stay with their Tickets (docs/venue-entry.md); the
 		// door staff who wrote one is forgotten.
 		`UPDATE venue_entries SET by_user_id = NULL WHERE by_user_id = $1`,
+		// So is who wrote a Check-in, and who wrote or took back a door
+		// mark taken back (door_undos); the marks stay.
+		`UPDATE ticket_checkins SET by_user_id = NULL WHERE by_user_id = $1`,
+		`UPDATE door_undos SET by_user_id = NULL WHERE by_user_id = $1`,
+		`UPDATE door_undos SET undone_by = NULL WHERE undone_by = $1`,
 		`UPDATE urls SET created_by = NULL WHERE created_by = $1`,
 		`UPDATE url_hits
 		SET user_id = NULL, ip = '', user_agent = '', referer = '',

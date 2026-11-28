@@ -17,7 +17,7 @@ func (s *service) UndoCheckIn(ctx context.Context, p authz.Principal, ticketID, 
 		return err
 	}
 	return s.undoCheckIn(ctx, p, t, sessionID, func() (bool, error) {
-		return s.tickets.RemoveCheckIn(ctx, t.ID, sessionID)
+		return s.tickets.RemoveCheckIn(ctx, t.ID, sessionID, undoerOf(p))
 	})
 }
 
@@ -46,7 +46,7 @@ func (s *service) UndoCheckInByID(ctx context.Context, p authz.Principal, sessio
 		return err
 	}
 	return s.undoCheckIn(ctx, p, t, sessionID, func() (bool, error) {
-		return s.tickets.RemoveCheckInByID(ctx, checkInID)
+		return s.tickets.RemoveCheckInByID(ctx, checkInID, undoerOf(p))
 	})
 }
 
@@ -80,6 +80,12 @@ func (s *service) undoCheckIn(ctx context.Context, p authz.Principal, t Ticket, 
 	return nil
 }
 
+// undoerOf is who takes a door mark back, when p names an account: the
+// door undo keeps it (docs/venue-entry.md "Taking back").
+func undoerOf(p authz.Principal) *uuid.UUID {
+	return staffEntry(EntryDesk, p).by
+}
+
 // undoSessionEntry takes back the Venue entry entryID at sessionID's door:
 // ErrNotFound when it is not an entry of the Session's Event.
 func (s *service) undoSessionEntry(ctx context.Context, p authz.Principal, sessionID, entryID uuid.UUID) error {
@@ -97,6 +103,6 @@ func (s *service) undoSessionEntry(ctx context.Context, p authz.Principal, sessi
 		return err
 	}
 	return s.undoCheckIn(ctx, p, t, sessionID, func() (bool, error) {
-		return s.tickets.RemoveVenueEntry(ctx, entryID)
+		return s.tickets.RemoveVenueEntry(ctx, entryID, undoerOf(p))
 	})
 }

@@ -70,6 +70,11 @@ const (
 	// docs/form-respondents.md), the Event's end + 2 years, as a guest's
 	// identity (an Event without a date: the row's created_at).
 	FormRespondentPeriod = GuestIdentityPeriod
+	// DoorUndoPeriod: a door mark taken back (door_undos,
+	// docs/venue-entry.md "Taking back"), three years after it was taken
+	// back, as the Team audit record: it records an operator's action at the
+	// door.
+	DoorUndoPeriod = 3 * 365 * day
 )
 
 // Schema is what a run reads from the database before it builds the rules.
@@ -98,6 +103,7 @@ func Rules(c Config, s Schema) []Rule {
 	rules = append(rules, coOrganizerPeopleRules()...)
 	rules = append(rules, formRespondentRules()...)
 	rules = append(rules, linkedGuestRules()...)
+	rules = append(rules, doorUndoRules()...)
 	return append(rules, auditRules(c)...)
 }
 
@@ -376,6 +382,17 @@ func linkedGuestRules() []Rule {
 			AND (t.guest_university <> '' OR t.guest_department <> '' OR t.guest_grade <> '')
 			AND COALESCE(` + ticketEventEndSQL + `, t.created_at) < $1`,
 		set: `guest_university = '', guest_department = '', guest_grade = '', updated_at = now()`,
+	}}
+}
+
+// doorUndoRules delete a door mark taken back three years after it was
+// taken back (undone_at). The Check-ins and Venue entries that stand live
+// with their Ticket, as before.
+func doorUndoRules() []Rule {
+	return []Rule{{
+		Name: "door_undos_age", Version: 1, Kind: KindSweep, Action: ActionDelete,
+		Table: "door_undos", alias: "du", key: "id", Period: DoorUndoPeriod,
+		where: `du.undone_at < $1`,
 	}}
 }
 

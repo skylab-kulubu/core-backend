@@ -37,14 +37,15 @@ type Store interface {
 	Update(ctx context.Context, t Ticket) (Ticket, error)
 	AddCheckIn(ctx context.Context, c CheckIn) (CheckIn, error)
 	HasCheckIn(ctx context.Context, ticketID, sessionID uuid.UUID) (bool, error)
-	// RemoveCheckIn deletes the check-in ticketID has at sessionID; false
+	// RemoveCheckIn takes back the check-in ticketID has at sessionID,
+	// keeping it as a door undo by undoneBy (nil for nobody named); false
 	// when it has none there.
-	RemoveCheckIn(ctx context.Context, ticketID, sessionID uuid.UUID) (bool, error)
+	RemoveCheckIn(ctx context.Context, ticketID, sessionID uuid.UUID, undoneBy *uuid.UUID) (bool, error)
 	// CheckInByID is the check-in with id: ErrNotFound when none has it.
 	CheckInByID(ctx context.Context, id uuid.UUID) (CheckIn, error)
-	// RemoveCheckInByID deletes the check-in with id; false when none has
-	// it.
-	RemoveCheckInByID(ctx context.Context, id uuid.UUID) (bool, error)
+	// RemoveCheckInByID takes back the check-in with id as RemoveCheckIn
+	// does; false when none has it.
+	RemoveCheckInByID(ctx context.Context, id uuid.UUID, undoneBy *uuid.UUID) (bool, error)
 	// GetByAccessKey is the Ticket the ticket page's key opens
 	// (docs/ticket-page.md): ErrNotFound when none has it.
 	GetByAccessKey(ctx context.Context, key string) (Ticket, error)
@@ -62,9 +63,10 @@ type VenueEntryStore interface {
 	AddVenueEntry(ctx context.Context, e VenueEntry) (VenueEntry, error)
 	// VenueEntryByID is the entry with id: ErrNotFound when none.
 	VenueEntryByID(ctx context.Context, id uuid.UUID) (VenueEntry, error)
-	// RemoveVenueEntry deletes the entry with id; false when none has it.
-	// The day's check-ins stay.
-	RemoveVenueEntry(ctx context.Context, id uuid.UUID) (bool, error)
+	// RemoveVenueEntry takes back the entry with id, keeping it as a door
+	// undo by undoneBy (nil for nobody named); false when none has it. The
+	// day's check-ins stay.
+	RemoveVenueEntry(ctx context.Context, id uuid.UUID, undoneBy *uuid.UUID) (bool, error)
 	// VenueEntriesOn are the Event's entries on date (YYYY-MM-DD), newest
 	// first, each with the name the door shows (a member's is left empty
 	// where the store does not know it).

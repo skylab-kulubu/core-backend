@@ -212,7 +212,7 @@ func TestWorkerOnPostgres(t *testing.T) {
 	}
 	// The member's Check-in is undone; their welcome stays (an attendance
 	// entry goes with its Check-in, docs/venue-entry.md: then it drops too).
-	if ok, err := e.tickets.RemoveCheckInByID(ctx, undo.ID); err != nil || !ok {
+	if ok, err := e.tickets.RemoveCheckInByID(ctx, undo.ID, nil); err != nil || !ok {
 		t.Fatalf("undo %v %v", ok, err)
 	}
 	now = now.Add(3 * time.Minute)
@@ -258,7 +258,7 @@ func TestWorkerOnPostgres(t *testing.T) {
 		t.Fatalf("after the new scan %+v", last)
 	}
 	// A third scan after it went queues nothing.
-	if ok, err := e.tickets.RemoveCheckIn(ctx, e.member.ID, e.open.ID); err != nil || !ok {
+	if ok, err := e.tickets.RemoveCheckIn(ctx, e.member.ID, e.open.ID, nil); err != nil || !ok {
 		t.Fatal(err)
 	}
 	e.checkIn(t, e.member, e.open)

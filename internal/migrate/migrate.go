@@ -2356,6 +2356,35 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
 			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%door_staff%'
 		)`,
+	// Who wrote a Check-in and the door's taken-back marks
+	// (docs/venue-entry.md): the two columns with their check and guard,
+	// and door_undos with its two guards.
+	20261128120000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'ticket_checkins' AND column_name IN ('source', 'by_user_id')
+		) = 2
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.ticket_checkins') AND conname = 'ticket_checkins_source_check' AND convalidated
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.ticket_checkins') AND tgname = 'ticket_checkins_require_active_writer' AND NOT tgisinternal
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.door_undos') AND conname = 'door_undos_kind_check' AND convalidated
+		)
+		AND (
+			SELECT count(*) FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.door_undos') AND NOT tgisinternal
+			  AND tgname IN ('door_undos_require_active_writer', 'door_undos_require_active_undoer')
+		) = 2
+		AND to_regclass('public.door_undos_event_idx') IS NOT NULL
+		AND to_regclass('public.door_undos_undone_at_idx') IS NOT NULL
+		AND to_regclass('public.ticket_checkins_by_user_idx') IS NOT NULL`,
 	// A form mapping's details (docs/form-mappings.md#the-details): the four
 	// question columns and their check, a respondent's four detail columns
 	// and theirs.

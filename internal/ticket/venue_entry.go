@@ -31,6 +31,33 @@ const (
 	EntryWalkIn EntrySource = "walk_in"
 )
 
+// CheckInSource is how a Check-in was written (ticket_checkins.source).
+type CheckInSource string
+
+const (
+	// CheckInScan: the door scanned a credential.
+	CheckInScan CheckInSource = "scan"
+	// CheckInDesk: the door desk found the person or checked them in by
+	// their Ticket.
+	CheckInDesk CheckInSource = "desk"
+	// CheckInSelf: the person's own, the attendance QR, check-in/me or a
+	// guest's.
+	CheckInSelf CheckInSource = "self"
+)
+
+// checkInSource is the Check-in source of a door write that would write
+// the Venue entry source.
+func checkInSource(source EntrySource) CheckInSource {
+	switch source {
+	case EntryScan:
+		return CheckInScan
+	case EntryAttendance:
+		return CheckInSelf
+	default:
+		return CheckInDesk
+	}
+}
+
 // entrySources are the sources in the order the metric and the summary
 // list them.
 var entrySources = []EntrySource{EntryScan, EntryDesk, EntryAttendance, EntryWalkIn}
@@ -80,6 +107,27 @@ type DoorEntry struct {
 	Name       string      `json:"name"`
 	CreatedAt  time.Time   `json:"createdAt"`
 	ScannedAt  *time.Time  `json:"scannedAt,omitempty"`
+}
+
+// DoorUndo is a Check-in (Kind check_in) or a Venue entry (Kind entry)
+// the door took back (docs/venue-entry.md "Taking back"): the mark as it
+// was, when and by whom. It is no longer counted anywhere but in the door
+// staff statistics.
+type DoorUndo struct {
+	ID        uuid.UUID
+	Kind      string
+	TicketID  uuid.UUID
+	EventID   uuid.UUID
+	SessionID *uuid.UUID
+	EntryDate *string
+	// Source is the mark's source: an EntrySource for an entry, a
+	// CheckInSource (or "" for one written before the column) for a
+	// Check-in.
+	Source    string
+	ByUserID  *uuid.UUID
+	WrittenAt time.Time
+	UndoneAt  time.Time
+	UndoneBy  *uuid.UUID
 }
 
 // EntryConflictError is a second entry the same day: the name of who is

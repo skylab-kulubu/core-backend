@@ -79,7 +79,38 @@ the night's. The summary counts by the stored day: a night is one row.
   its Ticket (ADR-0062) and an erased person's Ticket keeps its entries,
   anonymous.
 
+## Who wrote it
+
+A Check-in keeps, as its Venue entry does, how it was written and who
+wrote it (migration `20261128120000`):
+
+| `ticket_checkins.source` | Written by |
+|---|---|
+| `scan` | a staff scan at a Session's door (Ticket QR, SkyPass, Wallet, card; an offline scan sent later too) |
+| `desk` | the Session desk (`check-in/resolve`, `POST /v1/tickets/{t}/sessions/{s}/check-in`) |
+| `self` | the person: the attendance QR, `check-in/me`, `check-in/guest` |
+
+- `ticket_checkins.by_user_id` is the door staff who wrote it when an
+  active account (none for `self`), the same current-identity link as
+  `venue_entries.by_user_id`: account erasure clears it.
+- A Check-in written before the migration has neither (`NULL`); nothing
+  is guessed into the rows. Its Venue entry, when the Check-in wrote one
+  (`check_in_id`), still says `attendance` or `desk` and who.
+
 ## Taking back
+
+What the door takes back is not destroyed (Deletion lifecycle): the row
+leaves its table and goes to `door_undos` in the same transaction, as it
+was (kind `check_in` or `entry`, the Ticket, the Event, the Session or the
+day, its source, who wrote it and when) with `undone_at` and `undone_by`
+(who took it back, when an active account). Every reader of the Check-ins
+and the Venue entries (the door, the certificate rule, the reports, the
+exports, the mails) reads only what stands, so the Ticket can be checked in
+again the same day: that is a new row, and the one taken back stays in
+`door_undos`. The door staff statistics count them. A taken-back row
+lives as long as its Ticket and goes three years after `undone_at`
+([retention-sweep.md](retention-sweep.md), `door_undos_age`); account
+erasure clears its two people.
 
 - **A Check-in** (`DELETE /v1/tickets/{t}/sessions/{s}/check-in`,
   `DELETE /v1/sessions/{s}/check-ins/{id}`): the entry that Check-in wrote

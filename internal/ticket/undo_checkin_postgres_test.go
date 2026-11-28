@@ -56,7 +56,7 @@ func TestUndoCheckInDeletesTheRowOnPostgres(t *testing.T) {
 	if len(got.CheckIns) != 1 || got.CheckIns[0].SessionID != other.ID {
 		t.Fatalf("check-ins %+v", got.CheckIns)
 	}
-	if removed, err := store.RemoveCheckIn(ctx, tk.ID, sess.ID); err != nil || removed {
+	if removed, err := store.RemoveCheckIn(ctx, tk.ID, sess.ID, nil); err != nil || removed {
 		t.Fatalf("second remove %v %v", removed, err)
 	}
 	if err := svc.UndoCheckIn(ctx, weblabLead, tk.ID, sess.ID); !errors.Is(err, ticket.ErrNotFound) {
@@ -80,7 +80,7 @@ func TestUndoCheckInDeletesTheRowOnPostgres(t *testing.T) {
 	if _, err := store.CheckInByID(ctx, again.ID); !errors.Is(err, ticket.ErrNotFound) {
 		t.Fatalf("after undo by id: %v", err)
 	}
-	if removed, err := store.RemoveCheckInByID(ctx, again.ID); err != nil || removed {
+	if removed, err := store.RemoveCheckInByID(ctx, again.ID, nil); err != nil || removed {
 		t.Fatalf("second remove by id %v %v", removed, err)
 	}
 	if after, err := svc.DoorActivity(ctx, weblabLead, sess.ID); err != nil || after.Total != 0 {
