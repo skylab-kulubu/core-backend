@@ -480,3 +480,40 @@ func TestAttendeeExportWalkIn(t *testing.T) {
 		t.Fatalf("entries %d %s", got.status, got.body)
 	}
 }
+
+// The door staff report (docs/door-staff-stats.md): a row per person who
+// wrote at the door, by name and never by e-mail, then the people's own;
+// the door staff themselves cannot download it, and it takes no Ticket
+// selection.
+func TestAttendeeExportDoorStaff(t *testing.T) {
+	t.Parallel()
+	f := newExportFixture(t)
+	ctx := t.Context()
+	staff := f.staff
+	if _, err := f.store.AddVenueEntry(ctx, ticket.VenueEntry{TicketID: f.tickets["member"].ID, EntryDate: "2026-11-27", Source: ticket.EntryDesk, ByUserID: &staff}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.AddVenueEntry(ctx, ticket.VenueEntry{TicketID: f.tickets["formula"].ID, EntryDate: "2026-11-27", Source: ticket.EntryAttendance}); err != nil {
+		t.Fatal(err)
+	}
+	a := f.app(f.leader())
+	got := f.call(t, a, map[string]any{"report": "door_staff", "format": "csv"})
+	body := string(got.body)
+	if got.status != fiber.StatusOK || !strings.Contains(got.header["Content-Disposition"], "kapi-gorevlileri") ||
+		!strings.Contains(body, "Görevli;Alana giriş;Giriş: tarama;Giriş: masa") ||
+		!strings.Contains(body, "Silinmiş kullanıcı;1;0;1;0;0;0;0;0;0;0;") ||
+		!strings.Contains(body, "Yazanı bilinmeyen;1;0;0;0;4;") ||
+		!strings.Contains(body, "Katılımcının kendisi (oturum QR);1;") || strings.Contains(body, "@") {
+		t.Fatalf("door staff %d %s", got.status, body)
+	}
+	rows := f.audit.Rows()
+	if last := rows[len(rows)-1]; last.Action != teamaudit.ActionTicketExport || last.After == nil || last.After.Export == nil || last.After.Export.Report != "door_staff" {
+		t.Fatalf("audit %+v", last)
+	}
+	if got := f.call(t, a, map[string]any{"report": "door_staff", "ticketIds": []uuid.UUID{f.tickets["ada"].ID}}); got.status != fiber.StatusBadRequest {
+		t.Fatalf("selected: %d", got.status)
+	}
+	if got := f.call(t, f.app(authn.Identity{ID: f.staff}), map[string]any{"report": "door_staff"}); got.status != fiber.StatusForbidden {
+		t.Fatalf("door staff: %d %s", got.status, got.body)
+	}
+}

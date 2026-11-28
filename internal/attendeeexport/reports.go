@@ -21,6 +21,7 @@ var reportNames = map[string]string{
 	ticket.ExportMatrix:       "Katılım matrisi",
 	ticket.ExportEntries:      "Alana giriş",
 	ticket.ExportCertificates: "Sertifikalar",
+	ticket.ExportDoorStaff:    "Kapı görevlileri",
 }
 
 // fileSlugs are the reports' names in a file name.
@@ -30,6 +31,7 @@ var fileSlugs = map[string]string{
 	ticket.ExportMatrix:       "katilim-matrisi",
 	ticket.ExportEntries:      "alana-giris",
 	ticket.ExportCertificates: "sertifikalar",
+	ticket.ExportDoorStaff:    "kapi-gorevlileri",
 }
 
 // NeedsStandings reports whether the report counts attendance by the
@@ -53,6 +55,8 @@ func Build(d *ticket.ExportData, standings *certificate.Standings) (Table, error
 		return b.entries(), nil
 	case ticket.ExportCertificates:
 		return b.certificates(), nil
+	case ticket.ExportDoorStaff:
+		return doorStaff(d.DoorStaff), nil
 	}
 	return Table{}, fmt.Errorf("attendeeexport: unknown report %q", d.Request.Report)
 }
@@ -479,4 +483,66 @@ func (b *builder) certificates() Table {
 		rows = append(rows, row)
 	}
 	return Table{Sheet: reportNames[ticket.ExportCertificates], Columns: cols, Rows: rows}
+}
+
+// doorStaff is the door staff statistics: a row per person who wrote at the
+// door, by name (never an e-mail), then the marks no door staff is named
+// on. The counts are what stands; Geri alınan is the person's marks taken
+// back, Geri aldığı the marks they took back.
+func doorStaff(stats *ticket.DoorStaffStats) Table {
+	cols := []Column{
+		{Header: "Görevli", Width: 24},
+		{Header: "Alana giriş", Kind: Number, Width: 11},
+		{Header: "Giriş: tarama", Kind: Number, Width: 11},
+		{Header: "Giriş: masa", Kind: Number, Width: 11},
+		{Header: "Giriş: kapıda kayıt", Kind: Number, Width: 11},
+		{Header: "Oturum yoklaması", Kind: Number, Width: 11},
+		{Header: "Yoklama: tarama", Kind: Number, Width: 11},
+		{Header: "Yoklama: masa", Kind: Number, Width: 11},
+		{Header: "Kapıda kayıt (bilet)", Kind: Number, Width: 11},
+		{Header: "Geri alınan", Kind: Number, Width: 10},
+		{Header: "Geri aldığı", Kind: Number, Width: 10},
+		{Header: "İlk işlem", Kind: DateTime, Width: 17},
+		{Header: "Son işlem", Kind: DateTime, Width: 17},
+		{Header: "En yoğun saat", Width: 20},
+	}
+	rows := [][]any{}
+	if stats == nil {
+		return Table{Sheet: reportNames[ticket.ExportDoorStaff], Columns: cols, Rows: rows}
+	}
+	for _, r := range stats.Staff {
+		name := r.Name
+		if name == "" {
+			name = "Adsız hesap"
+		}
+		rows = append(rows, []any{
+			name, r.Entries.Total, r.Entries.Scan, r.Entries.Desk, r.Entries.WalkIn,
+			r.CheckIns.Total, r.CheckIns.Scan, r.CheckIns.Desk, r.WalkIns, r.Undone, r.Undid,
+			r.FirstAt, r.LastAt, peakHour(r.Hours),
+		})
+	}
+	if o := stats.Others; o != nil {
+		if o.SelfEntries+o.SelfCheckIns > 0 {
+			rows = append(rows, []any{"Katılımcının kendisi (oturum QR)", o.SelfEntries, 0, 0, 0, o.SelfCheckIns, 0, 0, 0, 0, 0, (*time.Time)(nil), (*time.Time)(nil), ""})
+		}
+		if o.UnattributedEntries+o.UnattributedCheckIns > 0 {
+			rows = append(rows, []any{"Yazanı bilinmeyen", o.UnattributedEntries, 0, 0, 0, o.UnattributedCheckIns, 0, 0, 0, 0, 0, (*time.Time)(nil), (*time.Time)(nil), ""})
+		}
+	}
+	return Table{Sheet: reportNames[ticket.ExportDoorStaff], Columns: cols, Rows: rows}
+}
+
+// peakHour is the hour with the most marks, as "27.11.2026 10:00 (34)";
+// the earliest of a tie; "" for none.
+func peakHour(hours []ticket.DoorHour) string {
+	best := -1
+	for i, h := range hours {
+		if best < 0 || h.Count > hours[best].Count {
+			best = i
+		}
+	}
+	if best < 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s (%d)", FormatTime(hours[best].Hour), hours[best].Count)
 }

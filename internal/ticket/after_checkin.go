@@ -259,6 +259,10 @@ func (a *afterCheckIn) ListEntries(ctx context.Context, p authz.Principal, event
 	return a.inner.ListEntries(ctx, p, eventID, date)
 }
 
+func (a *afterCheckIn) DoorStaffStats(ctx context.Context, p authz.Principal, eventID uuid.UUID) (DoorStaffStats, error) {
+	return a.inner.DoorStaffStats(ctx, p, eventID)
+}
+
 func (a *afterCheckIn) BeginExport(ctx context.Context, p authz.Principal, eventID uuid.UUID, req ExportRequest) (*ExportData, error) {
 	return a.inner.BeginExport(ctx, p, eventID, req)
 }

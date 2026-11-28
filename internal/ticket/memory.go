@@ -868,3 +868,100 @@ func (s *MemoryStore) KeepFormResponse(_ context.Context, id, formID, responseID
 	s.byID[id] = t
 	return true, nil
 }
+
+// DoorStats counts the door's marks as PostgresStore does, from what the
+// memory store keeps; it keeps no Team audit record, so no Walk-ins.
+func (s *MemoryStore) DoorStats(_ context.Context, eventID uuid.UUID) (DoorStatsData, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	type key struct {
+		by     uuid.UUID
+		named  bool
+		kind   string
+		source string
+	}
+	type hourKey struct {
+		by   uuid.UUID
+		hour time.Time
+	}
+	marks := map[key]*DoorMarkCount{}
+	hours := map[hourKey]int{}
+	add := func(by *uuid.UUID, kind, source string, at time.Time) {
+		k := key{kind: kind, source: source}
+		if by != nil {
+			k.by, k.named = *by, true
+		}
+		m, ok := marks[k]
+		if !ok {
+			m = &DoorMarkCount{Kind: kind, Source: source, FirstAt: at, LastAt: at}
+			if by != nil {
+				id := *by
+				m.By = &id
+			}
+			marks[k] = m
+		}
+		m.Count++
+		if at.Before(m.FirstAt) {
+			m.FirstAt = at
+		}
+		if at.After(m.LastAt) {
+			m.LastAt = at
+		}
+		if by != nil {
+			l := at.In(istanbul)
+			hours[hourKey{*by, time.Date(l.Year(), l.Month(), l.Day(), l.Hour(), 0, 0, 0, istanbul)}]++
+		}
+	}
+	at := func(created time.Time, scanned *time.Time) time.Time {
+		if scanned != nil {
+			return *scanned
+		}
+		return created
+	}
+	for _, e := range s.entries {
+		if e.EventID == eventID {
+			add(e.ByUserID, KindEntry, string(e.Source), at(e.CreatedAt, e.ScannedAt))
+		}
+	}
+	for _, c := range s.checkIns {
+		if s.byID[c.TicketID].EventID == eventID {
+			add(c.ByUserID, KindCheckIn, string(c.Source), at(c.CreatedAt, c.ScannedAt))
+		}
+	}
+	out := DoorStatsData{Hours: map[uuid.UUID][]DoorHour{}, WalkIns: []DoorPersonCount{}}
+	for _, m := range marks {
+		out.Marks = append(out.Marks, *m)
+	}
+	for k, n := range hours {
+		out.Hours[k.by] = append(out.Hours[k.by], DoorHour{Hour: k.hour, Count: n})
+	}
+	for id := range out.Hours {
+		slices.SortFunc(out.Hours[id], func(a, b DoorHour) int { return a.Hour.Compare(b.Hour) })
+	}
+	undone, undid := map[uuid.UUID]*DoorPersonCount{}, map[uuid.UUID]*DoorPersonCount{}
+	count := func(into map[uuid.UUID]*DoorPersonCount, id *uuid.UUID, at time.Time) {
+		if id == nil {
+			return
+		}
+		c, ok := into[*id]
+		if !ok {
+			c = &DoorPersonCount{UserID: *id, FirstAt: at, LastAt: at}
+			into[*id] = c
+		}
+		c.Count++
+		c.LastAt = at
+	}
+	for _, u := range s.undos {
+		if u.EventID == eventID {
+			count(undone, u.ByUserID, u.UndoneAt)
+			count(undid, u.UndoneBy, u.UndoneAt)
+		}
+	}
+	for _, c := range undone {
+		out.Undone = append(out.Undone, *c)
+	}
+	for _, c := range undid {
+		out.Undid = append(out.Undid, *c)
+	}
+	return out, nil
+}

@@ -26,10 +26,12 @@ const (
 	ExportMatrix       = "matrix"
 	ExportEntries      = "entries"
 	ExportCertificates = "certificates"
+	// ExportDoorStaff is the door staff statistics (docs/door-staff-stats.md).
+	ExportDoorStaff = "door_staff"
 )
 
 // ExportReports are every report, in the panel's order.
-var ExportReports = []string{ExportAttendees, ExportSession, ExportMatrix, ExportEntries, ExportCertificates}
+var ExportReports = []string{ExportAttendees, ExportSession, ExportMatrix, ExportEntries, ExportCertificates, ExportDoorStaff}
 
 // MaxExportSelection is the most Tickets a selected export names.
 const MaxExportSelection = 20000
@@ -83,7 +85,9 @@ type ExportData struct {
 	// it no certificate column is written and the certificate report is
 	// refused.
 	Certificates bool
-	audit        *auditRecord
+	// DoorStaff is the door staff statistics, for the door_staff report.
+	DoorStaff *DoorStaffStats
+	audit     *auditRecord
 }
 
 // ErrExportInvalid is a request no report answers: an unknown report or
@@ -95,6 +99,11 @@ func validExport(req ExportRequest) bool {
 		return false
 	}
 	if (req.Report == ExportSession) != (req.SessionID != uuid.Nil) {
+		return false
+	}
+	// The door staff report is about the door staff: no Ticket rows to
+	// choose.
+	if req.Report == ExportDoorStaff && req.Selected {
 		return false
 	}
 	return len(req.TicketIDs) <= MaxExportSelection && (req.Selected || len(req.TicketIDs) == 0)
@@ -170,6 +179,13 @@ func (s *service) BeginExport(ctx context.Context, p authz.Principal, eventID uu
 			}
 			out.Entries = append(out.Entries, entries...)
 		}
+	}
+	if req.Report == ExportDoorStaff {
+		stats, err := s.doorStaffStats(ctx, ev, DoorStatsAll, p)
+		if err != nil {
+			return nil, err
+		}
+		out.DoorStaff = &stats
 	}
 	// The row is opened once the request is known good; a reader who is
 	// neither Privileged nor a Leader is recorded as an event editor

@@ -130,6 +130,10 @@ type EventDoor interface {
 	BeginExport(ctx context.Context, p authz.Principal, eventID uuid.UUID, req ExportRequest) (*ExportData, error)
 	FinishExport(ctx context.Context, data *ExportData, rows int, err error)
 	ListEntries(ctx context.Context, p authz.Principal, eventID uuid.UUID, date string) ([]DoorEntry, error)
+	// DoorStaffStats is the Event's door staff statistics
+	// (docs/door-staff-stats.md): every row for a reader of its Tickets,
+	// the caller's own for its door staff.
+	DoorStaffStats(ctx context.Context, p authz.Principal, eventID uuid.UUID) (DoorStaffStats, error)
 	// WalkIn is the door registering a person with no Ticket ("Kapıda
 	// kayıt", docs/walk-in.md): their guest Ticket, and in the venue Entry
 	// mode the day's entry. The ctx carries the caller for the Team audit
